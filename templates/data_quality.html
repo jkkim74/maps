@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block topbar_actions %}
+<select class="topbar-btn" onchange="changeMode(this.value)" id="mode-select">
+  <option value="live">Live</option>
+  <option value="backtest">Backtest</option>
+</select>
+{% endblock %}
+{% block content %}
+<div id="dq-kpi"><div class="loading"><div class="spinner"></div></div></div>
+
+<div class="section-header"><span class="section-title">거부 사유 분포</span><hr></div>
+<div class="card"><div class="card-body" id="dq-reasons">
+  <div class="loading"><div class="spinner"></div></div>
+</div></div>
+
+<div class="section-header"><span class="section-title">거부율 추이 (90일)</span><hr></div>
+<div class="chart-container">
+  <div class="chart-title">LINE · daily reject ratio + 5% threshold</div>
+  <div id="dq-chart" style="min-height:200px">
+    <div class="loading"><div class="spinner"></div></div>
+  </div>
+</div>
+{% endblock %}
+{% block extra_scripts %}
+<script>
+function changeMode(m) {
+  const url = new URL(location.href);
+  url.searchParams.set('mode', m);
+  location.href = url.toString();
+}
+document.addEventListener('DOMContentLoaded', () => {
+  const m = new URLSearchParams(location.search).get('mode') || 'live';
+  document.getElementById('mode-select').value = m;
+});
+</script>
+{% endblock %}

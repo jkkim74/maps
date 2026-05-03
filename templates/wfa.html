@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block content %}
+<div id="wfa-kpi"><div class="loading"><div class="spinner"></div></div></div>
+
+<div class="section-header"><span class="section-title">5-fold 결과 (3년 IS / 1년 OOS)</span><hr></div>
+<div class="card"><div class="card-body" id="wfa-folds">
+  <div class="loading"><div class="spinner"></div></div>
+</div></div>
+
+<div class="section-header"><span class="section-title">fold별 OOS Sharpe</span><hr></div>
+<div class="chart-container">
+  <div id="wfa-bar-chart" style="height:200px">
+    <div class="empty-state" style="padding:32px"><div class="empty-sub">WFA 실행 후 표시됩니다</div></div>
+  </div>
+</div>
+{% endblock %}

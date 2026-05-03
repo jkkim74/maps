@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block content %}
+<div id="kpi-area"><div class="loading"><div class="spinner"></div>로딩 중...</div></div>
+
+<div class="grid-2">
+  <div>
+    <div class="section-header"><span class="section-title">전략별 기여도</span><hr></div>
+    <div class="card"><div class="card-body" id="contrib-area"><div class="loading"><div class="spinner"></div></div></div></div>
+  </div>
+  <div>
+    <div class="section-header"><span class="section-title">최근 알림 (24h)</span><hr></div>
+    <div class="card"><div class="card-body" id="alerts-area"><div class="loading"><div class="spinner"></div></div></div></div>
+  </div>
+</div>
+{% endblock %}

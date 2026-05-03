@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=1280">
+  <title>MAPS — {{ title }}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:wght@600&family=IBM+Plex+Sans+KR:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/main.css">
+  <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+  {% block extra_head %}{% endblock %}
+</head>
+<body data-screen="{{ screen }}">
+
+<!-- ── 사이드바 ──────────────────────────────────────────────────────────── -->
+<aside class="sidebar">
+  <div class="sidebar-logo">
+    <div class="logo-text">MAPS</div>
+    <div class="logo-sub">Market-Adaptive Profit Mgmt</div>
+  </div>
+
+  <nav>
+    <div class="nav-section">
+      <div class="nav-section-label">메인 워크플로</div>
+      <a href="/dashboard"       class="nav-item {% if screen == 'dashboard' %}active{% endif %}">
+        <span class="nav-scr">01</span>대시보드 홈
+      </a>
+      <a href="/strategies"      class="nav-item {% if screen == 'strategies' %}active{% endif %}">
+        <span class="nav-scr">02</span>전략 관리
+      </a>
+      <a href="/market"          class="nav-item {% if screen == 'market' %}active{% endif %}">
+        <span class="nav-scr">03</span>장세 · 팩터
+      </a>
+      <a href="/candidates"      class="nav-item {% if screen == 'candidates' %}active{% endif %}">
+        <span class="nav-scr">04</span>종목 후보
+      </a>
+      <a href="/orders"          class="nav-item {% if screen == 'orders' %}active{% endif %}">
+        <span class="nav-scr">05</span>주문 · 체결
+      </a>
+      <a href="/risk"            class="nav-item {% if screen == 'risk' %}active{% endif %}">
+        <span class="nav-scr">06</span>리스크 · 모니터
+      </a>
+      <a href="/backtest"        class="nav-item {% if screen == 'backtest' %}active{% endif %}">
+        <span class="nav-scr">07</span>백테스트 콘솔
+      </a>
+    </div>
+
+    <div class="nav-section">
+      <div class="nav-section-label">검증 · 견고성</div>
+      <a href="/robustness"      class="nav-item {% if screen == 'robustness' %}active{% endif %}">
+        <span class="nav-scr">08</span>Trend Robustness
+        <span class="nav-badge p0">P0</span>
+      </a>
+      <a href="/trend-strength"  class="nav-item {% if screen == 'trend-strength' %}active{% endif %}">
+        <span class="nav-scr">09</span>TrendStrength
+        <span class="nav-badge new">NEW</span>
+      </a>
+      <a href="/research"        class="nav-item {% if screen == 'research' %}active{% endif %}">
+        <span class="nav-scr">10</span>Research
+      </a>
+      <a href="/wfa"             class="nav-item {% if screen == 'wfa' %}active{% endif %}">
+        <span class="nav-scr">11</span>WFA 리포트
+      </a>
+      <a href="/cost-sensitivity" class="nav-item {% if screen == 'cost-sensitivity' %}active{% endif %}">
+        <span class="nav-scr">12</span>Cost Sensitivity
+      </a>
+    </div>
+
+    <div class="nav-section">
+      <div class="nav-section-label">모니터링</div>
+      <a href="/live-monitor"    class="nav-item {% if screen == 'live-monitor' %}active{% endif %}">
+        <span class="nav-scr">13</span>Live Monitor
+        <span class="nav-badge p0">P0</span>
+      </a>
+      <a href="/data-quality"    class="nav-item {% if screen == 'data-quality' %}active{% endif %}">
+        <span class="nav-scr">14</span>Data Quality
+        <span class="nav-badge p0">P0</span>
+      </a>
+    </div>
+  </nav>
+</aside>
+
+<!-- ── 메인 ──────────────────────────────────────────────────────────────── -->
+<div class="main">
+  <header class="topbar">
+    <span class="topbar-title">{{ title }}</span>
+    <span class="topbar-meta">SCR-{{ "%02d"|format(loop_scr|default(1)) }} · MAPS v0.2</span>
+    <div class="topbar-spacer"></div>
+    {% block topbar_actions %}{% endblock %}
+    <button class="topbar-btn" onclick="location.reload()">↺ 새로고침</button>
+  </header>
+
+  <div class="content">
+    {% block content %}{% endblock %}
+  </div>
+</div>
+
+<script src="/static/js/app.js"></script>
+{% block extra_scripts %}{% endblock %}
+</body>
+</html>
