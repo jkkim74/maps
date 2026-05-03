@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -31,10 +32,22 @@ from maps.api.data_quality import router as data_quality_router
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    """앱 시작/종료 수명주기 핸들러."""
+    import maps.common.models  # noqa: F401 — 모델 등록
+
+    Base.metadata.create_all(bind=engine)
+    logger.info("MAPS 서버 시작 완료")
+    yield
+
+
 app = FastAPI(
     title="MAPS — Market-Adaptive Profit Management System",
     version="0.2.0",
     description="검증 중심 자동매매 플랫폼",
+    lifespan=_lifespan,
 )
 
 app.add_middleware(
@@ -64,15 +77,6 @@ app.include_router(wfa_router)
 app.include_router(cost_sensitivity_router)
 app.include_router(live_monitor_router)
 app.include_router(data_quality_router)
-
-
-@app.on_event("startup")
-async def startup() -> None:
-    """앱 시작 시 DB 테이블 생성 (개발용)."""
-    import maps.common.models  # noqa: F401 — 모델 등록
-
-    Base.metadata.create_all(bind=engine)
-    logger.info("MAPS 서버 시작 완료")
 
 
 # ── 헬스체크 ──────────────────────────────────────────────────────────────────

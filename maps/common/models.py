@@ -40,8 +40,8 @@ class SecurityMetadata(Base):
     delisting_date: Mapped[datetime.date | None] = mapped_column(Date, nullable=True)
     has_adjusted_price: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     updated_at: Mapped[datetime.datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.datetime.utcnow,
-        onupdate=datetime.datetime.utcnow,
+        DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc),
+        onupdate=lambda: datetime.datetime.now(datetime.timezone.utc),
     )
 
 
@@ -62,7 +62,7 @@ class UniverseQualityLog(Base):
     rejection_ratio: Mapped[float] = mapped_column(Float, nullable=False)
     alert_sent: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime.datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.datetime.utcnow
+        DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc)
     )
 
 
@@ -81,7 +81,7 @@ class CollectionLog(Base):
     items: Mapped[int | None] = mapped_column(Integer, nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.datetime.utcnow
+        DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc)
     )
 
 
@@ -102,7 +102,7 @@ class ParameterPlateauResults(Base):
     grade: Mapped[str] = mapped_column(String(4), nullable=False)    # A | B | C | D | F
     best_params_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.datetime.utcnow
+        DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc)
     )
 
 
@@ -122,7 +122,7 @@ class WalkForwardResults(Base):
     passed: Mapped[bool] = mapped_column(Boolean, nullable=False)
     fail_reasons_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.datetime.utcnow
+        DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc)
     )
 
 
@@ -140,7 +140,7 @@ class MonteCarloSequenceResults(Base):
     mdd_limit: Mapped[float] = mapped_column(Float, nullable=False)
     mc_within_limit: Mapped[bool] = mapped_column(Boolean, nullable=False)
     created_at: Mapped[datetime.datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.datetime.utcnow
+        DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc)
     )
 
 
@@ -160,7 +160,7 @@ class PromotionHistory(Base):
     passed: Mapped[bool] = mapped_column(Boolean, nullable=False)
     fail_reasons_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     evaluated_at: Mapped[datetime.datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.datetime.utcnow
+        DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc)
     )
 
 
@@ -177,7 +177,7 @@ class TradeabilityWeightLog(Base):
     score_after: Mapped[float] = mapped_column(Float, nullable=False)
     changed_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.datetime.utcnow
+        DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc)
     )
 
 
@@ -202,7 +202,7 @@ class OrderLog(Base):
     broker: Mapped[str | None] = mapped_column(String(16), nullable=True)  # mock | kis | kiwoom
     mode: Mapped[str | None] = mapped_column(String(16), nullable=True)    # mock | live_small | live
     created_at: Mapped[datetime.datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.datetime.utcnow
+        DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc)
     )
 
 
@@ -222,7 +222,7 @@ class KillSwitchLog(Base):
     new_entry_blocked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     approved_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.datetime.utcnow
+        DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc)
     )
 
 
@@ -240,7 +240,7 @@ class StrategyParamLog(Base):
     effective_at: Mapped[datetime.date] = mapped_column(Date, nullable=False)
     reason: Mapped[str] = mapped_column(String(32), nullable=False)   # initial | wfa_update | manual
     created_at: Mapped[datetime.datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.datetime.utcnow
+        DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc)
     )
 
 
@@ -259,5 +259,5 @@ class CostModelAssumptions(Base):
     effective_at: Mapped[datetime.date] = mapped_column(Date, nullable=False)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.datetime.utcnow
+        DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc)
     )

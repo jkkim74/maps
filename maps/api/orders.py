@@ -76,14 +76,30 @@ def get_orders(db: Session = Depends(get_db)) -> OrdersResponse:
         ks.event_type in ("trigger", "approved") for ks in latest_ks.values()
     )
 
+    # 실제 슬리피지: 금일 체결 주문의 fill_price vs order_price 평균 괴리율
+    # (대형/중소형 분류는 종목 시가총액 연동 후 세분화 예정 — 현재는 통합 평균)
+    fill_rows_with_price = [
+        r for r in rows
+        if r.status in ("filled", "FILLED", "partially_filled", "PARTIAL")
+        and r.fill_price is not None
+        and r.order_price is not None
+        and r.order_price > 0
+    ]
+    actual_slip: float | None = None
+    if fill_rows_with_price:
+        actual_slip = sum(
+            abs(r.fill_price - r.order_price) / r.order_price  # type: ignore[operator]
+            for r in fill_rows_with_price
+        ) / len(fill_rows_with_price)
+
     return OrdersResponse(
         auto_order_active=auto_order_active,
         pending=pending,
         fills_today=fills,
         slippage=SlippageStats(
-            large_cap_actual=None,
+            large_cap_actual=actual_slip,
             large_cap_assumed=0.0005,
-            mid_small_actual=None,
+            mid_small_actual=actual_slip,
             mid_small_assumed=0.0015,
         ),
     )

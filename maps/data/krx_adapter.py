@@ -1,12 +1,17 @@
 """KRX Open API 어댑터.
 
-실제 API 키는 환경변수 KRX_API_KEY.
-키가 없으면 MockKRXAdapter(테스트용 더미 데이터)를 사용한다.
+Phase 1.1: pykrx 라이브러리로 KRX 데이터를 수집한다.
+  pip install pykrx
+API 키 없이 KRX 데이터 포털을 직접 접근한다.
+
+KRX_API_KEY 환경변수가 없어도 동작한다.
+테스트 환경에서는 MockKRXAdapter를 사용한다.
 """
 
 from __future__ import annotations
 
 import datetime
+import logging
 import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -14,6 +19,8 @@ from dataclasses import dataclass, field
 import pandas as pd
 
 from maps.common.exceptions import DataCollectionError
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -79,32 +86,119 @@ class KRXAdapterBase(ABC):
 
 
 class KRXAdapter(KRXAdapterBase):
-    """KRX Open API 실 연동 어댑터.
+    """KRX 데이터 어댑터 — pykrx 기반 Phase 1.1 구현.
 
-    환경변수 KRX_API_KEY 가 필요하다.
-    Phase 1 구현 전까지는 NotImplementedError를 발생시킨다.
+    pykrx 는 API 키 없이 KRX 데이터 포털을 스크래핑한다.
+    설치: pip install pykrx
+
+    KRX_API_KEY 환경변수는 더 이상 필요하지 않다.
+    pykrx 미설치 시 DataCollectionError가 발생한다.
     """
 
-    BASE_URL = "https://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd"
-
     def __init__(self) -> None:
-        self._api_key = os.getenv("KRX_API_KEY", "")
-        if not self._api_key:
+        try:
+            import pykrx  # noqa: F401
+        except ImportError as e:
             raise DataCollectionError(
-                "KRX_API_KEY 환경변수가 없습니다. MockKRXAdapter를 사용하세요."
-            )
+                "pykrx 라이브러리가 필요합니다: pip install pykrx"
+            ) from e
 
     def get_ohlcv(self, ref_date: datetime.date) -> list[OHLCVData]:
-        raise NotImplementedError("KRX OHLCV 수집 — Phase 1.1 구현 예정")
+        """ref_date 기준 KOSPI + KOSDAQ 전 종목 OHLCV를 반환한다."""
+        try:
+            from pykrx import stock as _krx
+        except ImportError as e:
+            raise DataCollectionError("pykrx 라이브러리가 필요합니다: pip install pykrx") from e
+
+        date_str = ref_date.strftime("%Y%m%d")
+        frames: list[pd.DataFrame] = []
+        for market in ("KOSPI", "KOSDAQ"):
+            try:
+                df = _krx.get_market_ohlcv(date_str, market=market)
+                if df is not None and not df.empty:
+                    df["_market"] = market
+                    frames.append(df)
+            except Exception as exc:
+                logger.warning("KRX OHLCV 수집 실패 [%s %s]: %s", market, date_str, exc)
+
+        if not frames:
+            return []
+
+        combined = pd.concat(frames)
+        result: list[OHLCVData] = []
+        for ticker, row in combined.iterrows():
+            try:
+                result.append(OHLCVData(
+                    date=ref_date,
+                    ticker=str(ticker),
+                    open=float(row.get("시가", 0) or 0),
+                    high=float(row.get("고가", 0) or 0),
+                    low=float(row.get("저가", 0) or 0),
+                    close=float(row.get("종가", 0) or 0),
+                    volume=int(row.get("거래량", 0) or 0),
+                    adj_close=None,
+                ))
+            except (TypeError, ValueError) as exc:
+                logger.debug("OHLCV 행 변환 오류 [%s]: %s", ticker, exc)
+        logger.info("KRX OHLCV 수집 완료 [%s]: %d종목", date_str, len(result))
+        return result
 
     def get_security_meta(self, ref_date: datetime.date) -> list[SecurityMeta]:
-        raise NotImplementedError("KRX 종목 메타 수집 — Phase 1.1 구현 예정")
+        """ref_date 기준 KOSPI + KOSDAQ 상장 종목 메타를 반환한다."""
+        try:
+            from pykrx import stock as _krx
+        except ImportError as e:
+            raise DataCollectionError("pykrx 라이브러리가 필요합니다: pip install pykrx") from e
+
+        date_str = ref_date.strftime("%Y%m%d")
+        result: list[SecurityMeta] = []
+        for market in ("KOSPI", "KOSDAQ"):
+            try:
+                tickers = _krx.get_market_ticker_list(date_str, market=market)
+                for ticker in tickers:
+                    try:
+                        name = _krx.get_market_ticker_name(ticker)
+                    except Exception:
+                        name = ticker
+                    result.append(SecurityMeta(
+                        ticker=ticker,
+                        name=name,
+                        market=market,
+                        security_type="STOCK",
+                        listing_date=None,
+                        delisting_date=None,
+                    ))
+            except Exception as exc:
+                logger.warning("KRX 종목 메타 수집 실패 [%s]: %s", market, exc)
+        logger.info("KRX 종목 메타 수집 완료 [%s]: %d종목", date_str, len(result))
+        return result
 
     def get_halt_list(self, ref_date: datetime.date) -> list[str]:
-        raise NotImplementedError("KRX 거래정지 목록 — Phase 1.1 구현 예정")
+        """ref_date 에 거래정지 중인 ticker 목록을 반환한다.
+
+        pykrx 는 거래정지 전용 API를 제공하지 않는다.
+        거래량 0 을 heuristic으로 사용한다 (공식 정지 목록과 다를 수 있음).
+        Phase 5에서 KRX 공시 API로 교체 예정.
+        """
+        ohlcv = self.get_ohlcv(ref_date)
+        halts = [d.ticker for d in ohlcv if d.volume == 0]
+        if halts:
+            logger.info("거래정지 추정 [%s]: %d종목 (거래량 0 기준)", ref_date, len(halts))
+        return halts
 
     def get_managed_list(self, ref_date: datetime.date) -> list[str]:
-        raise NotImplementedError("KRX 관리종목 목록 — Phase 1.1 구현 예정")
+        """ref_date 에 관리종목으로 지정된 ticker 목록을 반환한다.
+
+        pykrx 는 관리종목 전용 API를 제공하지 않는다.
+        Phase 5에서 KRX DART 공시 API로 교체 예정.
+        현재는 빈 목록을 반환한다 (보수적: 관리종목 필터 없음).
+        """
+        logger.warning(
+            "get_managed_list: pykrx 미지원 — 관리종목 필터 비활성 (%s). "
+            "Phase 5에서 DART API 연동 예정.",
+            ref_date,
+        )
+        return []
 
 
 class MockKRXAdapter(KRXAdapterBase):

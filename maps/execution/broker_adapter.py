@@ -147,3 +147,29 @@ class BrokerAdapter(abc.ABC):
     def get_balance(self) -> float:
         """현금 잔고 (하위 호환)."""
         return self.get_account_balance().cash
+
+
+def get_broker(mode: str = "mock", **kwargs) -> BrokerAdapter:
+    """브로커 어댑터 팩토리.
+
+    Args:
+        mode: "mock" | "kis" | "kiwoom"
+        **kwargs: MockBroker 전용 — initial_cash, price_feed
+
+    Returns:
+        BrokerAdapter 구현체.
+
+    Raises:
+        ValueError: 알 수 없는 mode.
+        BrokerAdapterError: 자격증명 환경변수 누락 (kis/kiwoom).
+    """
+    if mode == "mock":
+        from maps.execution.mock_broker import MockBroker
+        return MockBroker(**kwargs)
+    if mode == "kis":
+        from maps.execution.kis_adapter import KISAdapter
+        return KISAdapter()
+    if mode == "kiwoom":
+        from maps.execution.kiwoom_adapter import KiwoomAdapter
+        return KiwoomAdapter()
+    raise ValueError(f"알 수 없는 브로커 모드: {mode!r}  (mock | kis | kiwoom)")
