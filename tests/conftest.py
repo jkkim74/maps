@@ -2,7 +2,23 @@
 
 from __future__ import annotations
 
+import sys
+
 import pytest
+
+# Windows cp949 콘솔에서 한글 경고·로그가 깨지는 문제 수정
+# SetConsoleOutputCP(65001) = UTF-8 코드 페이지 강제
+if sys.platform == "win32":
+    try:
+        import ctypes
+        ctypes.windll.kernel32.SetConsoleOutputCP(65001)
+        ctypes.windll.kernel32.SetConsoleCP(65001)
+    except Exception:
+        pass
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 

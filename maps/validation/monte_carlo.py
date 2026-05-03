@@ -218,7 +218,7 @@ class BlockBootstrapTester:
 
         if is_risk:
             warnings.warn(
-                f"군집성 위험: BBoot/MC p95 비율={ratio:.2f} >= {self.CLUSTER_RISK_THRESHOLD}",
+                f"Cluster risk: BBoot/MC p95 ratio={ratio:.2f} >= {self.CLUSTER_RISK_THRESHOLD}",
                 stacklevel=2,
             )
         return ratio, is_risk

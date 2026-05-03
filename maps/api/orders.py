@@ -12,7 +12,7 @@ from maps.api.schemas import (
     OrdersResponse,
     SlippageStats,
 )
-from maps.common.models import OrderLog
+from maps.common.models import KillSwitchLog, OrderLog
 
 router = APIRouter(prefix="/api/v1/orders", tags=["SCR-05 Orders"])
 
@@ -61,8 +61,23 @@ def get_orders(db: Session = Depends(get_db)) -> OrdersResponse:
         if r.status in ("filled", "FILLED", "partially_filled", "PARTIAL")
     ]
 
+    # 활성 Kill Switch(trigger/approved)가 하나라도 있으면 자동 주문 비활성
+    ks_recent = (
+        db.query(KillSwitchLog)
+        .order_by(KillSwitchLog.created_at.desc(), KillSwitchLog.id.desc())
+        .limit(200)
+        .all()
+    )
+    latest_ks: dict[str, KillSwitchLog] = {}
+    for ks in ks_recent:
+        if ks.strategy_id and ks.strategy_id not in latest_ks:
+            latest_ks[ks.strategy_id] = ks
+    auto_order_active = not any(
+        ks.event_type in ("trigger", "approved") for ks in latest_ks.values()
+    )
+
     return OrdersResponse(
-        auto_order_active=True,
+        auto_order_active=auto_order_active,
         pending=pending,
         fills_today=fills,
         slippage=SlippageStats(
