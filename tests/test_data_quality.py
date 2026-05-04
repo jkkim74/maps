@@ -46,6 +46,7 @@ def _stock(
         listing_date=ld,
         delisting_date=delisting_date,
         has_adjusted_price=has_adjusted_price,
+        latest_ohlcv_date=REF_DATE,
         halt_periods=halt_periods or [],
         managed_periods=managed_periods or [],
     )
@@ -155,3 +156,75 @@ def test_rejection_alert_called_when_ratio_exceeds_threshold():
 
     assert len(alerts) == 1
     assert "[DQ]" in alerts[0]
+
+
+def test_managed_stock_excluded():
+    managed = _stock(
+        "A",
+        managed_periods=[ManagedPeriod("A", REF_DATE - datetime.timedelta(days=1), None)],
+    )
+
+    flt = DataQualityFilter(db=_make_db(), mode="live")
+    result = flt.generate(REF_DATE, [managed])
+
+    assert result.rejected[0]["reason"] == "managed_stock"
+
+
+def test_trading_halted_excluded():
+    halted = _stock(
+        "A",
+        halt_periods=[HaltPeriod("A", REF_DATE, REF_DATE)],
+    )
+
+    flt = DataQualityFilter(db=_make_db(), mode="live")
+    result = flt.generate(REF_DATE, [halted])
+
+    assert result.rejected[0]["reason"] == "trading_halted"
+
+
+def test_live_delisted_excluded_on_delisting_date():
+    delisted = _stock("A", delisting_date=REF_DATE)
+
+    flt = DataQualityFilter(db=_make_db(), mode="live")
+    result = flt.generate(REF_DATE, [delisted])
+
+    assert result.rejected[0]["reason"] == "delisted"
+
+
+def test_missing_price_data_excluded():
+    missing = _stock("A")
+    missing.latest_ohlcv_date = REF_DATE - datetime.timedelta(days=1)
+
+    flt = DataQualityFilter(db=_make_db(), mode="live")
+    result = flt.generate(REF_DATE, [missing])
+
+    assert result.rejected[0]["reason"] == "missing_price_data"
+
+
+def test_missing_ohlcv_fields_excluded():
+    missing = _stock("A")
+    missing.missing_ohlcv_fields = {"close"}
+
+    flt = DataQualityFilter(db=_make_db(), mode="live")
+    result = flt.generate(REF_DATE, [missing])
+
+    assert result.rejected[0]["reason"] == "missing_ohlcv_fields"
+
+
+def test_missing_history_excluded():
+    missing = _stock("A")
+    missing.missing_data_days_20d = 2
+
+    flt = DataQualityFilter(db=_make_db(), mode="live")
+    result = flt.generate(REF_DATE, [missing])
+
+    assert result.rejected[0]["reason"] == "missing_history"
+
+
+def test_unadjusted_price_excluded():
+    unadjusted = _stock("A", has_adjusted_price=False)
+
+    flt = DataQualityFilter(db=_make_db(), mode="live")
+    result = flt.generate(REF_DATE, [unadjusted])
+
+    assert result.rejected[0]["reason"] == "unadjusted_price"

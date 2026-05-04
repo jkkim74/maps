@@ -8,6 +8,20 @@ async function apiFetch(path) {
   return res.json();
 }
 
+async function apiPost(path, body) {
+  const res = await fetch('/api/v1' + path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    let msg = `API POST ${path} → ${res.status}`;
+    try { const j = await res.json(); msg = j.detail || msg; } catch (_) {}
+    throw new Error(msg);
+  }
+  return res.json();
+}
+
 // ── 포맷 유틸 ────────────────────────────────────────────────────────────────
 const fmt = {
   pct:    v => v == null ? '—' : (v >= 0 ? '+' : '') + (v * 100).toFixed(1) + '%',
@@ -35,6 +49,16 @@ function stageBadge(stage) {
 
 function passBadge(passed) {
   return passed ? badge('PASS', 'pass') : badge('FAIL', 'fail');
+}
+
+function directionBadge(direction) {
+  const map = {
+    up: ['UP', 'pass'],
+    down: ['DOWN', 'fail'],
+    flat: ['FLAT', 'info'],
+  };
+  const [label, cls] = map[direction] || [direction ?? '—', 'info'];
+  return badge(label, cls);
 }
 
 function loading(id) {
@@ -128,6 +152,152 @@ async function loadStrategies() {
         <th>전략 ID</th><th>단계</th><th>Tradeability</th><th>Plateau</th><th>MC MDD p95</th><th>WFA</th><th>승격</th>
       </tr></thead><tbody>${rows}</tbody></table>`;
   } catch (e) { empty('strategies-area', `오류: ${e.message}`); }
+}
+
+// ── SCR-03 장세 · 팩터 ───────────────────────────────────────────────────────
+async function loadMarket() {
+  loading('market-kpi');
+  loading('market-assets');
+  try {
+    const d = await apiFetch('/market');
+    const regimeClass = d.weekly_trend === 'fail' ? 'fail' : d.regime === 'strong' ? 'pass' : d.regime === 'weak' ? 'warn' : 'info';
+    document.getElementById('market-kpi').innerHTML = `
+      <div class="kpi-grid">
+        <div class="kpi-card ${regimeClass}">
+          <div class="kpi-label">Market Regime</div>
+          <div class="kpi-value">${(d.regime ?? '—').toUpperCase()}</div>
+          <div class="kpi-sub">Weekly ${d.weekly_trend ?? '—'}</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Entry Limit</div>
+          <div class="kpi-value">${fmt.pct1(d.limit_ratio)}</div>
+          <div class="kpi-sub">장세 × 주봉 필터</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">KOSPI TS</div>
+          <div class="kpi-value">${fmt.score(d.kospi_ts)}</div>
+          <div class="kpi-sub">추세 강도</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Updated</div>
+          <div class="kpi-value">${fmt.date(d.updated_at)}</div>
+          <div class="kpi-sub">KRX index weekly</div>
+        </div>
+      </div>`;
+
+    if (!d.assets || d.assets.length === 0) {
+      empty('market-assets', '장세 데이터 없음');
+      return;
+    }
+
+    const rows = d.assets.map(a => `
+      <tr>
+        <td>${a.name}</td>
+        <td>${directionBadge(a.direction)}</td>
+        <td class="mono">${a.value == null ? '—' : a.value.toLocaleString('ko-KR', { maximumFractionDigits: 2 })}</td>
+      </tr>`).join('');
+    document.getElementById('market-assets').innerHTML =
+      `<table><thead><tr><th>자산군</th><th>방향</th><th>최근 주봉 종가</th></tr></thead><tbody>${rows}</tbody></table>`;
+  } catch (e) {
+    empty('market-kpi', `오류: ${e.message}`);
+    empty('market-assets', '');
+  }
+}
+
+// ── SCR-04 종목 후보 ─────────────────────────────────────────────────────────
+async function loadCandidates() {
+  loading('candidates-kpi');
+  loading('candidates-area');
+  try {
+    const d = await apiFetch('/candidates');
+    document.getElementById('candidates-kpi').innerHTML = `
+      <div class="kpi-grid">
+        <div class="kpi-card"><div class="kpi-label">Universe</div><div class="kpi-value">${d.universe_count}</div><div class="kpi-sub">${d.ref_date}</div></div>
+        <div class="kpi-card pass"><div class="kpi-label">Final</div><div class="kpi-value">${d.final_count}</div><div class="kpi-sub">저장 후보</div></div>
+        <div class="kpi-card warn"><div class="kpi-label">Excluded</div><div class="kpi-value">${d.missing_count}</div><div class="kpi-sub">품질 필터 제외</div></div>
+        <div class="kpi-card"><div class="kpi-label">Strategy</div><div class="kpi-value">${d.strategy_id}</div><div class="kpi-sub">candidate snapshot</div></div>
+      </div>`;
+
+    if (!d.candidates || d.candidates.length === 0) {
+      empty('candidates-area', '후보 스냅샷 없음');
+      return;
+    }
+
+    const rows = d.candidates.map(c => `
+      <tr>
+        <td class="mono">${c.ticker}</td>
+        <td>${c.name}</td>
+        <td>${badge(c.ts_bucket, 'info')}</td>
+        <td class="mono">${fmt.score(c.factor_score)}</td>
+        <td class="mono">${fmt.score(c.trend_strength)}</td>
+        <td class="mono">${fmt.score(c.final_score)}</td>
+        <td>${c.weekly_pass ? passBadge(true) : passBadge(false)}</td>
+        <td class="mono">${c.estimated_qty ?? '—'}</td>
+      </tr>`).join('');
+    document.getElementById('candidates-area').innerHTML =
+      `<table><thead><tr><th>티커</th><th>종목명</th><th>TS</th><th>Factor</th><th>Trend</th><th>Final</th><th>Weekly</th><th>수량</th></tr></thead><tbody>${rows}</tbody></table>`;
+  } catch (e) {
+    empty('candidates-kpi', `오류: ${e.message}`);
+    empty('candidates-area', '');
+  }
+}
+
+// ── SCR-06 리스크 · 모니터 ───────────────────────────────────────────────────
+async function loadRisk() {
+  loading('risk-kpi');
+  loading('risk-gauges');
+  loading('risk-holdings');
+  try {
+    const d = await apiFetch('/risk');
+    const shortRatio = d.short_term_limit > 0 ? Math.abs(d.short_term_risk) / d.short_term_limit : 0;
+    const longRatio = d.long_term_limit > 0 ? d.long_term_risk / d.long_term_limit : 0;
+    document.getElementById('risk-kpi').innerHTML = `
+      <div class="kpi-grid">
+        <div class="kpi-card ${shortRatio >= 1 ? 'fail' : shortRatio >= 0.8 ? 'warn' : 'pass'}"><div class="kpi-label">Daily Risk</div><div class="kpi-value">${fmt.pct1(Math.abs(d.short_term_risk))}</div><div class="kpi-sub">한도 ${fmt.pct1(d.short_term_limit)}</div></div>
+        <div class="kpi-card ${longRatio >= 1 ? 'fail' : longRatio >= 0.8 ? 'warn' : 'info'}"><div class="kpi-label">MC Risk Ratio</div><div class="kpi-value">${fmt.pct1(d.long_term_risk)}</div><div class="kpi-sub">전략군 최대 비율</div></div>
+        <div class="kpi-card"><div class="kpi-label">Max Exposure</div><div class="kpi-value">${fmt.pct1(d.max_exposure_pct)}</div><div class="kpi-sub">단일 보유 비중</div></div>
+        <div class="kpi-card"><div class="kpi-label">Positions</div><div class="kpi-value">${d.position_count}</div><div class="kpi-sub">Kill Switch 또는 보유 종목</div></div>
+      </div>`;
+
+    if (!d.gauges || d.gauges.length === 0) {
+      empty('risk-gauges', '리스크 게이지 없음');
+    } else {
+      const rows = d.gauges.map(g => {
+        const ratio = Math.max(0, Math.min(g.ratio || 0, 1));
+        const fillClass = ratio >= 1 ? 'fail' : ratio >= 0.8 ? 'warn' : 'info';
+        return `
+          <tr>
+            <td class="mono">${g.strategy_id}</td>
+            <td class="mono">${fmt.pct1(g.current_risk)}</td>
+            <td class="mono">${fmt.pct1(g.limit)}</td>
+            <td><div class="gauge-bar"><div class="gauge-fill ${fillClass}" style="width:${Math.round(ratio * 100)}%"></div></div><div class="kpi-sub">${fmt.pct1(g.ratio)}</div></td>
+          </tr>`;
+      }).join('');
+      document.getElementById('risk-gauges').innerHTML =
+        `<table><thead><tr><th>전략</th><th>현재 위험</th><th>한도</th><th>사용률</th></tr></thead><tbody>${rows}</tbody></table>`;
+    }
+
+    if (!d.holdings || d.holdings.length === 0) {
+      empty('risk-holdings', '보유 종목 없음');
+    } else {
+      const rows = d.holdings.map(h => `
+        <tr>
+          <td class="mono">${h.ticker}</td>
+          <td>${h.strategy_id}</td>
+          <td class="mono">${h.entry_price.toLocaleString('ko-KR')}</td>
+          <td class="mono">${h.current_price == null ? '—' : h.current_price.toLocaleString('ko-KR')}</td>
+          <td class="mono">${fmt.pct(h.pnl_pct)}</td>
+          <td class="mono">${fmt.pct1(h.exposure_pct)}</td>
+          <td class="mono">${h.stop_price == null ? '—' : h.stop_price.toLocaleString('ko-KR')}</td>
+        </tr>`).join('');
+      document.getElementById('risk-holdings').innerHTML =
+        `<table><thead><tr><th>티커</th><th>전략</th><th>진입가</th><th>현재가</th><th>PnL</th><th>비중</th><th>손절</th></tr></thead><tbody>${rows}</tbody></table>`;
+    }
+  } catch (e) {
+    empty('risk-kpi', `오류: ${e.message}`);
+    empty('risk-gauges', '');
+    empty('risk-holdings', '');
+  }
 }
 
 // ── SCR-08 Robustness ─────────────────────────────────────────────────────────
@@ -330,14 +500,238 @@ async function loadWfa() {
   } catch (e) { empty('wfa-kpi', `오류: ${e.message}`); }
 }
 
+// ── SCR-07 백테스트 콘솔 ──────────────────────────────────────────────────────
+async function loadBacktest() {
+  loading('bt-progress-section');
+  loading('bt-result-kpi');
+  loading('bt-runs-area');
+  try {
+    const d = await apiFetch('/backtest');
+    const runs = d.recent_runs;
+
+    // 전략 드롭다운을 API가 내려준 runnable 목록으로 채운다
+    const sel = document.getElementById('bt-strategy');
+    if (sel && d.available_strategies && d.available_strategies.length) {
+      const current = sel.value;
+      sel.innerHTML = d.available_strategies
+        .map(s => `<option value="${s}"${s === current ? ' selected' : ''}>${s}</option>`)
+        .join('');
+    }
+
+    _renderBtProgress(runs.length > 0 ? runs[0] : null);
+    _renderBtResultKpi(runs.find(r => r.status === 'done') ?? null);
+    _renderBtRunsTable(runs);
+  } catch (e) {
+    empty('bt-progress-section', `오류: ${e.message}`);
+    empty('bt-result-kpi', `오류: ${e.message}`);
+    empty('bt-runs-area', '');
+  }
+}
+
+async function runBacktest() {
+  const strategyId = document.getElementById('bt-strategy')?.value || 'pullback_v3';
+  const btn = document.querySelector('.bt-run-btn');
+
+  // 버튼 로딩 상태
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ 실행 중...'; }
+
+  // 진행률 섹션: 1/5 실행 중 표시
+  document.getElementById('bt-progress-section').innerHTML = `
+    <div class="bt-steps">
+      <div class="bt-step bt-step-running">
+        <div class="bt-step-num">1/5</div>
+        <div class="bt-step-name">단일 백테스트</div>
+        <div class="bt-step-state">실행 중...</div>
+      </div>
+      ${['Plateau 그리드','Walk-Forward','Monte Carlo','Block Bootstrap'].map((l,i)=>`
+      <div class="bt-step bt-step-wait">
+        <div class="bt-step-num">${i+2}/5</div>
+        <div class="bt-step-name">${l}</div>
+        <div class="bt-step-state">대기</div>
+      </div>`).join('')}
+    </div>`;
+
+  try {
+    const result = await apiPost('/backtest/run', { strategy_id: strategyId });
+
+    // 결과로 KPI 갱신
+    _renderBtResultKpi(result);
+
+    // 진행률: 1/5 완료로 갱신
+    _renderBtProgress({ ...result, status: 'done', progress_pct: 20 });
+
+    // 실행 목록 새로고침
+    loading('bt-runs-area');
+    const d = await apiFetch('/backtest');
+    // 방금 실행한 결과를 목록 맨 앞에 추가해서 표시
+    _renderBtRunsTable([result, ...d.recent_runs]);
+
+  } catch (e) {
+    document.getElementById('bt-progress-section').innerHTML =
+      `<div class="empty-state" style="padding:24px">
+         <div class="empty-text" style="color:var(--color-fail)">실행 실패</div>
+         <div class="empty-sub">${e.message}</div>
+       </div>`;
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '▶ 실행'; }
+  }
+}
+
+const BT_STEPS = [
+  { label: '단일 백테스트', maxPct: 20 },
+  { label: 'Plateau 그리드', maxPct: 40 },
+  { label: 'Walk-Forward', maxPct: 60 },
+  { label: 'Monte Carlo',   maxPct: 80 },
+  { label: 'Block Bootstrap', maxPct: 100 },
+];
+
+function _renderBtProgress(run) {
+  if (!run) { empty('bt-progress-section', '최근 실행 이력 없음'); return; }
+
+  const pct = run.status === 'done' ? 100 : run.progress_pct;
+  const stepsHtml = BT_STEPS.map((s, i) => {
+    const minPct = i * 20;
+    let cls, stateLabel;
+    if (pct >= s.maxPct) {
+      cls = 'bt-step-done'; stateLabel = '완료';
+    } else if (pct > minPct) {
+      cls = 'bt-step-running';
+      stateLabel = Math.round((pct - minPct) * 5) + '%';
+    } else {
+      cls = 'bt-step-wait'; stateLabel = '대기';
+    }
+    return `<div class="bt-step ${cls}">
+      <div class="bt-step-num">${i + 1}/5</div>
+      <div class="bt-step-name">${s.label}</div>
+      <div class="bt-step-state">${stateLabel}</div>
+    </div>`;
+  }).join('');
+
+  const note = run.status === 'done'
+    ? `<div class="text-muted" style="font-size:11px;margin-top:16px">전체 검증 완료 · SCR-08 (Robustness)에 자동 등록됩니다.</div>`
+    : '';
+
+  document.getElementById('bt-progress-section').innerHTML =
+    `<div class="bt-steps">${stepsHtml}</div>${note}`;
+}
+
+function _renderBtResultKpi(run) {
+  if (!run) {
+    document.getElementById('bt-result-kpi').innerHTML =
+      `<div class="empty-state" style="padding:32px"><div class="empty-sub">백테스트 실행 후 결과가 표시됩니다</div></div>`;
+    return;
+  }
+
+  const cagrCls = run.net_cagr == null ? '' : run.net_cagr > 0 ? 'pass' : 'fail';
+  const mddCls  = run.mdd == null ? '' : Math.abs(run.mdd) > 0.18 ? 'warn' : '';
+  const shpCls  = run.sharpe == null ? '' : run.sharpe >= 1.0 ? 'pass' : '';
+
+  document.getElementById('bt-result-kpi').innerHTML = `
+    <div class="kpi-grid">
+      <div class="kpi-card ${cagrCls}">
+        <div class="kpi-label">Net CAGR</div>
+        <div class="kpi-value">${fmt.pct(run.net_cagr)}</div>
+        <div class="kpi-sub">${run.strategy_id}</div>
+      </div>
+      <div class="kpi-card ${mddCls}">
+        <div class="kpi-label">MDD (MC p95)</div>
+        <div class="kpi-value">${run.mdd != null ? fmt.pct1(Math.abs(run.mdd)) : '—'}</div>
+        <div class="kpi-sub">최대 낙폭</div>
+      </div>
+      <div class="kpi-card ${shpCls}">
+        <div class="kpi-label">Sharpe</div>
+        <div class="kpi-value">${fmt.num2(run.sharpe)}</div>
+        <div class="kpi-sub">목표 1.0 이상</div>
+      </div>
+      <div class="kpi-card info">
+        <div class="kpi-label">거래 수</div>
+        <div class="kpi-value">${run.trade_count ?? '—'}</div>
+        <div class="kpi-sub">전략 기간 내</div>
+      </div>
+    </div>
+    <div class="text-muted" style="font-size:11px;margin-bottom:24px">
+      전체 검증 완료 후 SCR-08 (Robustness)에 자동 등록됩니다.
+    </div>`;
+}
+
+function _renderBtRunsTable(runs) {
+  if (runs.length === 0) { empty('bt-runs-area', '실행 이력 없음'); return; }
+
+  const statusCls = { done: 'pass', error: 'fail', running: 'warn', queued: 'info' };
+  const rows = runs.map(r => `
+    <tr>
+      <td class="mono text-muted" style="font-size:11px">${r.run_id}</td>
+      <td class="mono">${r.strategy_id}</td>
+      <td>${badge(r.status.toUpperCase(), statusCls[r.status] ?? 'info')}</td>
+      <td class="mono">${r.progress_pct.toFixed(0)}%</td>
+      <td class="mono">${r.net_cagr != null ? fmt.pct(r.net_cagr) : '—'}</td>
+      <td class="mono">${r.mdd != null ? fmt.pct1(Math.abs(r.mdd)) : '—'}</td>
+      <td class="mono">${fmt.num2(r.sharpe)}</td>
+      <td class="mono">${r.trade_count ?? '—'}</td>
+      <td class="mono text-muted">${fmt.date(r.started_at)}</td>
+    </tr>`).join('');
+
+  document.getElementById('bt-runs-area').innerHTML = `
+    <div class="text-muted mb-16" style="font-size:12px">총 ${runs.length}건 (WFA 기준 최근 50건)</div>
+    <table>
+      <thead><tr>
+        <th>Run ID</th><th>전략</th><th>상태</th><th>진행률</th>
+        <th>Net CAGR</th><th>MDD p95</th><th>Sharpe</th><th>거래수</th><th>시작일</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+}
+
 // ── 페이지별 초기화 디스패처 ──────────────────────────────────────────────────
+// Ops Config
+async function loadOpsConfig() {
+  loading('ops-summary');
+  loading('ops-config-area');
+  try {
+    const d = await apiFetch('/ops/config');
+    const stateClass = d.ready ? 'pass' : 'warn';
+    document.getElementById('ops-summary').innerHTML = `
+      <div class="kpi-grid">
+        <div class="kpi-card ${stateClass}"><div class="kpi-label">Readiness</div><div class="kpi-value">${d.ready ? 'READY' : 'CHECK'}</div><div class="kpi-sub">${d.missing_required.length} missing required</div></div>
+        <div class="kpi-card"><div class="kpi-label">Broker</div><div class="kpi-value">${d.broker_mode}</div><div class="kpi-sub">${d.live_trading_enabled ? 'live switch on' : 'live switch off'}</div></div>
+        <div class="kpi-card"><div class="kpi-label">Data</div><div class="kpi-value">${d.data_provider}</div><div class="kpi-sub">market data provider</div></div>
+      </div>`;
+
+    const warnings = d.warnings.length
+      ? `<div class="alert-item"><div class="alert-dot WARN"></div><div class="alert-msg">${d.warnings.join('<br>')}</div></div>`
+      : '';
+    const sections = d.sections.map(section => {
+      const rows = section.fields.map(f => `
+        <tr>
+          <td class="mono">${f.env_var}</td>
+          <td>${f.description}</td>
+          <td>${f.required ? badge('required', 'warn') : badge('optional', 'info')}</td>
+          <td>${f.configured ? badge('set', 'pass') : badge('empty', f.required ? 'fail' : 'info')}</td>
+          <td class="mono">${f.value || '-'}</td>
+        </tr>`).join('');
+      return `
+        <div class="section-header"><span class="section-title">${section.title} - ${section.status}</span><hr></div>
+        <table><thead><tr><th>ENV</th><th>Description</th><th>Required</th><th>Status</th><th>Current</th></tr></thead><tbody>${rows}</tbody></table>`;
+    }).join('');
+    document.getElementById('ops-config-area').innerHTML = warnings + sections;
+  } catch (e) {
+    empty('ops-summary', `Error: ${e.message}`);
+    empty('ops-config-area', '');
+  }
+}
+
 const PAGE_LOADERS = {
   dashboard:        loadDashboard,
   strategies:       loadStrategies,
+  market:           loadMarket,
+  candidates:       loadCandidates,
+  risk:             loadRisk,
+  backtest:         loadBacktest,
   robustness:       loadRobustness,
   'live-monitor':   loadLiveMonitor,
   'data-quality':   loadDataQuality,
   wfa:              loadWfa,
+  'ops-config':     loadOpsConfig,
 };
 
 document.addEventListener('DOMContentLoaded', () => {

@@ -462,3 +462,77 @@ tbody tr:hover { background: var(--bg-hover); }
   .grid-2 { grid-template-columns: 1fr; }
   .grid-3 { grid-template-columns: 1fr 1fr; }
 }
+
+/* ── SCR-07 백테스트 콘솔 ──────────────────────────────────────────────────── */
+.bt-settings-table { width: 100%; border-collapse: collapse; }
+.bt-settings-table td { padding: 9px 12px; border-bottom: 1px solid rgba(42,49,69,.5); font-size: 13px; vertical-align: middle; }
+.bt-settings-table tr:last-child td { border-bottom: none; }
+
+.bt-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  white-space: nowrap;
+  width: 110px;
+}
+
+.bt-run-btn {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 10px 28px;
+  border-radius: 8px;
+  border: 1px solid var(--color-accent);
+  background: rgba(212,168,92,.1);
+  color: var(--color-accent);
+  cursor: pointer;
+  transition: all 0.15s;
+  letter-spacing: 0.08em;
+}
+.bt-run-btn:hover { background: rgba(212,168,92,.22); }
+
+.bt-steps { display: flex; align-items: stretch; }
+
+.bt-step {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 16px 20px;
+  border-right: 1px solid var(--border);
+  position: relative;
+}
+.bt-step:last-child { border-right: none; }
+
+.bt-step-num {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: var(--text-muted);
+  letter-spacing: 0.1em;
+}
+.bt-step-name { font-size: 13px; font-weight: 500; }
+.bt-step-state { font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 500; margin-top: 2px; }
+
+.bt-step-done .bt-step-name  { color: var(--text-primary); }
+.bt-step-done .bt-step-state { color: var(--color-pass); }
+.bt-step-done::before {
+  content: ''; position: absolute;
+  top: 0; left: 0; right: 0; height: 3px;
+  background: var(--color-pass);
+  border-radius: 2px 2px 0 0;
+}
+
+.bt-step-running .bt-step-name  { color: var(--text-primary); }
+.bt-step-running .bt-step-state { color: var(--color-warn); }
+.bt-step-running::before {
+  content: ''; position: absolute;
+  top: 0; left: 0; right: 0; height: 3px;
+  background: var(--color-warn);
+  border-radius: 2px 2px 0 0;
+}
+
+.bt-step-wait .bt-step-name  { color: var(--text-muted); }
+.bt-step-wait .bt-step-state { color: var(--text-muted); }

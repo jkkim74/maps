@@ -1,8 +1,7 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="empty-state">
-  <div class="empty-icon">○</div>
-  <div class="empty-text">장세/팩터 분석</div>
-  <div class="empty-sub">Phase 3 MarketRegime 모듈 연동 후 활성화됩니다.</div>
-</div>
+<div id="market-kpi"><div class="loading"><div class="spinner"></div>로딩 중...</div></div>
+
+<div class="section-header"><span class="section-title">자산군 추세</span><hr></div>
+<div class="card"><div class="card-body" id="market-assets"><div class="loading"><div class="spinner"></div></div></div></div>
 {% endblock %}

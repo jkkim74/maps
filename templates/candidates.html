@@ -1,8 +1,7 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="empty-state">
-  <div class="empty-icon">○</div>
-  <div class="empty-text">종목 후보 풀</div>
-  <div class="empty-sub">KRX API + TrendStrength 연동 후 활성화됩니다.</div>
-</div>
+<div id="candidates-kpi"><div class="loading"><div class="spinner"></div>로딩 중...</div></div>
+
+<div class="section-header"><span class="section-title">최신 후보 종목</span><hr></div>
+<div class="card"><div class="card-body" id="candidates-area"><div class="loading"><div class="spinner"></div></div></div></div>
 {% endblock %}

@@ -11,6 +11,8 @@ import datetime
 from dataclasses import dataclass, field
 from enum import Enum
 
+from maps.common.settings import get_settings
+
 
 class OrderSide(str, Enum):
     BUY = "buy"
@@ -85,6 +87,20 @@ class AccountBalance:
         return self.cash + self.positions_value
 
 
+@dataclass
+class PendingOrder:
+    """Open order returned by a live broker."""
+
+    order_id: str
+    ticker: str
+    side: OrderSide
+    quantity: int
+    remaining_quantity: int
+    order_price: float | None = None
+    submitted_at: datetime.datetime | None = None
+    raw: dict | None = None
+
+
 class BrokerAdapter(abc.ABC):
     """브로커 추상 인터페이스.
 
@@ -148,8 +164,16 @@ class BrokerAdapter(abc.ABC):
         """현금 잔고 (하위 호환)."""
         return self.get_account_balance().cash
 
+    def get_open_orders(self) -> list[PendingOrder]:
+        """Return open/unfilled orders when the broker supports it."""
+        raise NotImplementedError
 
-def get_broker(mode: str = "mock", **kwargs) -> BrokerAdapter:
+    def get_daily_order_results(self) -> list[OrderResult]:
+        """Return same-day broker order/fill states when supported."""
+        raise NotImplementedError
+
+
+def get_broker(mode: str | None = None, **kwargs) -> BrokerAdapter:
     """브로커 어댑터 팩토리.
 
     Args:
@@ -163,13 +187,14 @@ def get_broker(mode: str = "mock", **kwargs) -> BrokerAdapter:
         ValueError: 알 수 없는 mode.
         BrokerAdapterError: 자격증명 환경변수 누락 (kis/kiwoom).
     """
-    if mode == "mock":
+    resolved_mode = mode or get_settings().maps_broker_mode
+    if resolved_mode == "mock":
         from maps.execution.mock_broker import MockBroker
         return MockBroker(**kwargs)
-    if mode == "kis":
+    if resolved_mode == "kis":
         from maps.execution.kis_adapter import KISAdapter
         return KISAdapter()
-    if mode == "kiwoom":
+    if resolved_mode == "kiwoom":
         from maps.execution.kiwoom_adapter import KiwoomAdapter
         return KiwoomAdapter()
     raise ValueError(f"알 수 없는 브로커 모드: {mode!r}  (mock | kis | kiwoom)")

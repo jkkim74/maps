@@ -21,6 +21,7 @@ from maps.common.exceptions import (
 )
 from maps.common.models import KillSwitchLog
 from maps.execution.broker_adapter import AccountBalance, BrokerAdapter, Order
+from maps.ops.notifications import SlackNotifier
 
 logger = logging.getLogger(__name__)
 
@@ -65,10 +66,12 @@ class RiskManager:
         broker: BrokerAdapter,
         db: Session,
         config: RiskConfig | None = None,
+        notifier: SlackNotifier | None = None,
     ) -> None:
         self._broker = broker
         self._db = db
         self._cfg = config or RiskConfig()
+        self._notifier = notifier or SlackNotifier()
         self._killed: dict[str, KillSwitchEvent] = {}
         self._failure_counts: dict[str, int] = {}
 
@@ -231,6 +234,7 @@ class RiskManager:
         event.liquidation_approved = True
         event.approved_by = approved_by
         self._log_kill_switch(event)
+        self._notify_kill_switch(event)
         logger.info("청산 승인 [%s] by %s", strategy_id, approved_by)
         return event
 
@@ -249,6 +253,7 @@ class RiskManager:
         event.liquidation_approved = True
         event.approved_by = released_by
         self._log_kill_switch(event)
+        self._notify_kill_switch(event)
         logger.info("Kill Switch 해제 [%s] by %s", strategy_id, released_by)
 
     # ------------------------------------------------------------------
@@ -271,6 +276,7 @@ class RiskManager:
         )
         self._killed[strategy_id] = event
         self._log_kill_switch(event)
+        self._notify_kill_switch(event)
         logger.warning("Kill Switch 발동 [%s]: %s", strategy_id, detail)
         return event
 
@@ -299,3 +305,18 @@ class RiskManager:
             )
         )
         self._db.commit()
+
+    def _notify_kill_switch(self, event: KillSwitchEvent) -> None:
+        if not event.new_entry_blocked:
+            event_type = "deactivate"
+        elif event.liquidation_approved:
+            event_type = "approved"
+        else:
+            event_type = "trigger"
+        self._notifier.send_kill_switch(
+            strategy_id=event.strategy_id,
+            event_type=event_type,
+            reason=event.reason.value,
+            detail=event.detail,
+            approved_by=event.approved_by,
+        )

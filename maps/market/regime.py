@@ -124,13 +124,16 @@ class MarketRegimeAnalyzer:
                 up_count += 1
             total += 1
 
-        up_ratio = up_count / total if total > 0 else 0.0
-        if up_ratio >= 0.7:
-            regime = RegimeLabel.STRONG
-        elif up_ratio >= 0.4:
+        if total == 0:
             regime = RegimeLabel.MIXED
         else:
-            regime = RegimeLabel.WEAK
+            up_ratio = up_count / total
+            if up_ratio >= 0.7:
+                regime = RegimeLabel.STRONG
+            elif up_ratio >= 0.4:
+                regime = RegimeLabel.MIXED
+            else:
+                regime = RegimeLabel.WEAK
 
         weekly_trend = self._check_weekly_trend()
 
@@ -148,6 +151,8 @@ class MarketRegimeAnalyzer:
             return WeeklyTrendLabel.PASS
         try:
             closes = self._provider.get_weekly_closes("KOSPI", self._MA40W + 1)
+            if len(closes) < self._MA40W:
+                return WeeklyTrendLabel.PASS
             arr = np.array(closes, dtype=float)
             ma10 = float(arr[-self._MA10W:].mean())
             ma20 = float(arr[-self._MA20W:].mean())

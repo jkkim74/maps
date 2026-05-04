@@ -24,10 +24,10 @@ from __future__ import annotations
 
 import datetime
 import logging
-import os
 import platform
 
 from maps.common.exceptions import BrokerAdapterError
+from maps.common.settings import get_settings
 from maps.execution.broker_adapter import (
     AccountBalance,
     BrokerAdapter,
@@ -53,8 +53,9 @@ class KiwoomAdapter(BrokerAdapter):
                 "Linux/macOS 환경에서는 KISAdapter 또는 MockBroker를 사용하세요."
             )
 
-        self._account_no = os.getenv("KIWOOM_ACCOUNT_NO", "")
-        self._password = os.getenv("KIWOOM_PASSWORD", "")
+        settings = get_settings()
+        self._account_no = settings.kiwoom_account_no
+        self._password = settings.kiwoom_password
 
         missing = [
             k for k, v in {

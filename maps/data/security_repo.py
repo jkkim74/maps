@@ -45,6 +45,9 @@ class Security:
     listing_date: datetime.date | None = None
     delisting_date: datetime.date | None = None
     has_adjusted_price: bool = False
+    latest_ohlcv_date: datetime.date | None = None
+    missing_ohlcv_fields: set[str] = field(default_factory=set)
+    missing_data_days_20d: int = 0
 
     # 이력 데이터 (레포지터리가 주입)
     halt_periods: list[HaltPeriod] = field(default_factory=list)
@@ -57,6 +60,18 @@ class Security:
     def has_adjusted_price_as_of(self, ref_date: datetime.date) -> bool:
         """ref_date 기준으로 수정주가가 있으면 True."""
         return self.has_adjusted_price
+
+    def has_live_ohlcv_as_of(self, ref_date: datetime.date) -> bool:
+        """ref_date 기준으로 사용할 수 있는 OHLCV 바가 있으면 True."""
+        return self.latest_ohlcv_date == ref_date
+
+    def has_required_ohlcv_fields(self) -> bool:
+        """필수 OHLCV 필드가 모두 존재하고 유효하면 True."""
+        return not self.missing_ohlcv_fields
+
+    def has_excessive_missing_history(self, max_missing_days: int) -> bool:
+        """최근 20거래일 결측 허용치를 넘으면 True."""
+        return self.missing_data_days_20d > max_missing_days
 
     def is_halted_on(self, ref_date: datetime.date) -> bool:
         """ref_date 에 거래정지 중이면 True."""

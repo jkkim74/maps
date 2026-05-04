@@ -12,6 +12,9 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from maps.common.db import Base, engine
+from maps.common.logging_config import configure_logging
+
+configure_logging()
 
 # ── 라우터 임포트 ─────────────────────────────────────────────────────────────
 from maps.api.dashboard import router as dashboard_router
@@ -28,8 +31,9 @@ from maps.api.wfa import router as wfa_router
 from maps.api.cost_sensitivity import router as cost_sensitivity_router
 from maps.api.live_monitor import router as live_monitor_router
 from maps.api.data_quality import router as data_quality_router
+from maps.api.ops_config import router as ops_config_router
+from maps.api.scheduler import router as scheduler_router
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
@@ -37,10 +41,18 @@ logger = logging.getLogger(__name__)
 async def _lifespan(app: FastAPI):
     """앱 시작/종료 수명주기 핸들러."""
     import maps.common.models  # noqa: F401 — 모델 등록
+    from maps.ops.scheduler import (
+        shutdown_operational_scheduler,
+        start_operational_scheduler_if_enabled,
+    )
 
     Base.metadata.create_all(bind=engine)
+    start_operational_scheduler_if_enabled()
     logger.info("MAPS 서버 시작 완료")
-    yield
+    try:
+        yield
+    finally:
+        shutdown_operational_scheduler()
 
 
 app = FastAPI(
@@ -77,6 +89,8 @@ app.include_router(wfa_router)
 app.include_router(cost_sensitivity_router)
 app.include_router(live_monitor_router)
 app.include_router(data_quality_router)
+app.include_router(ops_config_router)
+app.include_router(scheduler_router)
 
 
 # ── 헬스체크 ──────────────────────────────────────────────────────────────────
@@ -104,6 +118,7 @@ _SCREEN_MAP = {
     "cost-sensitivity": "Cost Sensitivity",
     "live-monitor":     "Live Monitor",
     "data-quality":     "Data Quality",
+    "ops-config":       "Ops Config",
 }
 
 
@@ -190,3 +205,8 @@ async def scr13(request: Request) -> HTMLResponse:
 @app.get("/data-quality", response_class=HTMLResponse)
 async def scr14(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "data_quality.html", _ctx(request, "data-quality"))
+
+
+@app.get("/ops-config", response_class=HTMLResponse)
+async def scr15(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(request, "ops_config.html", _ctx(request, "ops-config"))

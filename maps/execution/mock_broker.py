@@ -22,6 +22,7 @@ from maps.execution.broker_adapter import (
     OrderResult,
     OrderSide,
     OrderStatus,
+    PendingOrder,
     Position,
 )
 
@@ -175,6 +176,23 @@ class MockBroker(BrokerAdapter):
 
     def get_positions(self) -> dict[str, int]:
         return {t: p.quantity for t, p in self._positions.items() if p.quantity > 0}
+
+    def get_open_orders(self) -> list[PendingOrder]:
+        return [
+            PendingOrder(
+                order_id=order_id,
+                ticker=order.ticker,
+                side=order.side,
+                quantity=order.quantity,
+                remaining_quantity=order.quantity,
+                order_price=order.limit_price,
+                raw={"strategy_id": order.strategy_id},
+            )
+            for order_id, order in self._pending.items()
+        ]
+
+    def get_daily_order_results(self) -> list[OrderResult]:
+        return list(self._filled)
 
     # ------------------------------------------------------------------
     # MockBroker 전용 메서드

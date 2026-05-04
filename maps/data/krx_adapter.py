@@ -23,6 +23,20 @@ from maps.common.exceptions import DataCollectionError
 logger = logging.getLogger(__name__)
 
 
+def _classify_security_type(name: str) -> str:
+    text = name.upper()
+    if "스팩" in name or "SPAC" in text:
+        return "SPAC"
+    if "ETF" in text or "ETN" in text:
+        return "ETF"
+    return "STOCK"
+
+
+def _env_tickers(name: str) -> set[str]:
+    raw = os.getenv(name, "")
+    return {item.strip() for item in raw.split(",") if item.strip()}
+
+
 @dataclass
 class OHLCVData:
     """일별 OHLCV 데이터."""
@@ -128,15 +142,20 @@ class KRXAdapter(KRXAdapterBase):
         result: list[OHLCVData] = []
         for ticker, row in combined.iterrows():
             try:
+                close = float(row.get("종가", 0) or 0)
                 result.append(OHLCVData(
                     date=ref_date,
                     ticker=str(ticker),
                     open=float(row.get("시가", 0) or 0),
                     high=float(row.get("고가", 0) or 0),
                     low=float(row.get("저가", 0) or 0),
-                    close=float(row.get("종가", 0) or 0),
+                    close=close,
                     volume=int(row.get("거래량", 0) or 0),
-                    adj_close=None,
+                    # pykrx daily OHLCV is adjusted for split/rights events in
+                    # the common endpoint. Store close as adj_close so the
+                    # downstream adjusted-price gate can make an explicit
+                    # decision instead of treating every live bar as missing.
+                    adj_close=close if close > 0 else None,
                 ))
             except (TypeError, ValueError) as exc:
                 logger.debug("OHLCV 행 변환 오류 [%s]: %s", ticker, exc)
@@ -164,7 +183,7 @@ class KRXAdapter(KRXAdapterBase):
                         ticker=ticker,
                         name=name,
                         market=market,
-                        security_type="STOCK",
+                        security_type=_classify_security_type(name),
                         listing_date=None,
                         delisting_date=None,
                     ))
@@ -182,8 +201,9 @@ class KRXAdapter(KRXAdapterBase):
         """
         ohlcv = self.get_ohlcv(ref_date)
         halts = [d.ticker for d in ohlcv if d.volume == 0]
+        halts = sorted(set(halts) | _env_tickers("MAPS_HALTED_TICKERS"))
         if halts:
-            logger.info("거래정지 추정 [%s]: %d종목 (거래량 0 기준)", ref_date, len(halts))
+            logger.info("거래정지 추정 [%s]: %d종목 (거래량 0 + manual override)", ref_date, len(halts))
         return halts
 
     def get_managed_list(self, ref_date: datetime.date) -> list[str]:
@@ -193,12 +213,16 @@ class KRXAdapter(KRXAdapterBase):
         Phase 5에서 KRX DART 공시 API로 교체 예정.
         현재는 빈 목록을 반환한다 (보수적: 관리종목 필터 없음).
         """
-        logger.warning(
-            "get_managed_list: pykrx 미지원 — 관리종목 필터 비활성 (%s). "
-            "Phase 5에서 DART API 연동 예정.",
-            ref_date,
-        )
-        return []
+        managed = sorted(_env_tickers("MAPS_MANAGED_TICKERS"))
+        if managed:
+            logger.warning("관리종목 manual override 적용 [%s]: %d종목", ref_date, len(managed))
+        else:
+            logger.warning(
+                "get_managed_list: pykrx 미지원 — MAPS_MANAGED_TICKERS 비어 있음 (%s). "
+                "DART/KRX 공식 상태 API 연동 전까지 manual override를 사용하세요.",
+                ref_date,
+            )
+        return managed
 
 
 class MockKRXAdapter(KRXAdapterBase):

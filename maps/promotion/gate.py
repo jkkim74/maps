@@ -33,6 +33,8 @@ _DEFAULT_WEIGHTS = WEIGHT_PRESETS["balanced"]
 _MC_CHECK_STAGES: frozenset[str] = frozenset(
     ["mock_candidate", "live_candidate", "live"]
 )
+_MIN_MOCK_MONTHS_FOR_LIVE_SMALL = 3
+_MIN_REPLAY_TRADING_DAYS_FOR_LIVE_SMALL = 63
 
 
 class PromotionStage(str, Enum):
@@ -114,6 +116,11 @@ class PromotionGate:
         if current_stage.value in _MC_CHECK_STAGES and resolved_group:
             self._check_mc_limit(metrics, resolved_group, reasons)
 
+        # Mock -> Live Small: real account entry requires either three months
+        # of mock trading or an explicitly approved replay equivalent.
+        if current_stage == PromotionStage.MOCK_CANDIDATE:
+            self._check_live_small_readiness(metrics, reasons)
+
         # ── 점수 계산 ──
         score = 0.0
         try:
@@ -174,6 +181,26 @@ class PromotionGate:
             reasons.append(
                 f"MC MDD p95={mc_mdd:.2%} > 허용 한도={limit:.2%} [{strategy_group}]"
             )
+
+    def _check_live_small_readiness(
+        self,
+        metrics: dict[str, float],
+        reasons: list[str],
+    ) -> None:
+        """Require 3 months of Mock or an equivalent replay before Live Small."""
+        mock_months = float(metrics.get("mock_months", 0.0) or 0.0)
+        if mock_months >= _MIN_MOCK_MONTHS_FOR_LIVE_SMALL:
+            return
+
+        replay_passed = bool(metrics.get("replay_equivalent_passed", 0.0))
+        replay_days = int(metrics.get("replay_trading_days", 0.0) or 0)
+        if replay_passed and replay_days >= _MIN_REPLAY_TRADING_DAYS_FOR_LIVE_SMALL:
+            return
+
+        reasons.append(
+            "Live Small 진입 차단: Mock 3개월 미충족 및 동등 리플레이 검증 미충족 "
+            f"(mock_months={mock_months:.1f}, replay_days={replay_days}, replay_passed={replay_passed})"
+        )
 
     def _compute_score(self, metrics: dict[str, float], reasons: list[str]) -> float:
         """가중치 합산 점수 (0~100). 누락 메트릭은 reasons에 기록하고 0점 처리."""

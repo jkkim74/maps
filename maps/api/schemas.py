@@ -194,8 +194,14 @@ class BacktestRunItem(BaseModel):
     started_at: str | None
 
 
+class BacktestRunRequest(BaseModel):
+    strategy_id: str = "pullback_v3"
+    params: dict | None = None
+
+
 class BacktestResponse(BaseModel):
     recent_runs: list[BacktestRunItem]
+    available_strategies: list[str] = []
 
 
 # ── SCR-08 Robustness ─────────────────────────────────────────────────────────
@@ -376,3 +382,31 @@ class DataQualityResponse(BaseModel):
     alert_sent: bool
     rejection_reasons: list[RejectionReasonItem]
     history_90d: list[QualityHistoryPoint]
+
+
+# Ops configuration
+
+class OpsConfigField(BaseModel):
+    name: str
+    env_var: str
+    configured: bool
+    required: bool
+    value: str
+    description: str
+
+
+class OpsConfigSection(BaseModel):
+    key: str
+    title: str
+    status: str
+    fields: list[OpsConfigField]
+
+
+class OpsConfigResponse(BaseModel):
+    ready: bool
+    broker_mode: str
+    live_trading_enabled: bool
+    data_provider: str
+    missing_required: list[str]
+    warnings: list[str]
+    sections: list[OpsConfigSection]

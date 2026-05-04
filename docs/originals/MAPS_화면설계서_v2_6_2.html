@@ -1,0 +1,3069 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MAPS v2.6.2 화면설계서</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,600;9..144,800&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg-0: #0a0e14;
+  --bg-1: #0f1419;
+  --bg-2: #151b23;
+  --bg-3: #1c242e;
+  --bg-4: #232d39;
+  --line: #2a3744;
+  --line-2: #3a4a5c;
+  --text-0: #e6edf3;
+  --text-1: #b9c5d1;
+  --text-2: #7d8ca1;
+  --text-3: #5a6b80;
+  --accent: #d4a85c;       /* 골드: 핵심 KPI / 액션 */
+  --accent-dim: #8a6f3d;
+  --green: #4ade80;        /* Pass */
+  --green-dim: #2d6a4f;
+  --red: #f87171;          /* Fail / Risk */
+  --red-dim: #7f1d1d;
+  --blue: #60a5fa;          /* Info */
+  --blue-dim: #1e3a5f;
+  --amber: #fbbf24;        /* Warning */
+  --purple: #c084fc;       /* Research */
+  --grid-line: rgba(255,255,255,0.04);
+  --shadow-1: 0 1px 2px rgba(0,0,0,0.4);
+  --shadow-2: 0 4px 16px rgba(0,0,0,0.5);
+  --font-display: 'Fraunces', Georgia, serif;
+  --font-body: 'IBM Plex Sans KR', -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Consolas', monospace;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+  background: var(--bg-0);
+  color: var(--text-0);
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  scroll-behavior: smooth;
+}
+body {
+  background-image:
+    radial-gradient(circle at 15% 0%, rgba(212,168,92,0.04) 0%, transparent 40%),
+    radial-gradient(circle at 90% 100%, rgba(96,165,250,0.03) 0%, transparent 50%);
+  min-height: 100vh;
+}
+::selection { background: var(--accent); color: var(--bg-0); }
+
+/* ============ 레이아웃 ============ */
+.app {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  min-height: 100vh;
+}
+
+/* ============ 사이드바 ============ */
+.sidebar {
+  background: var(--bg-1);
+  border-right: 1px solid var(--line);
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+  padding: 24px 0;
+}
+.sidebar::-webkit-scrollbar { width: 6px; }
+.sidebar::-webkit-scrollbar-track { background: transparent; }
+.sidebar::-webkit-scrollbar-thumb { background: var(--line); border-radius: 3px; }
+
+.brand {
+  padding: 0 24px 24px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 16px;
+}
+.brand-title {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 24px;
+  letter-spacing: -0.02em;
+  color: var(--text-0);
+  line-height: 1.1;
+}
+.brand-subtitle {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.15em;
+  color: var(--accent);
+  text-transform: uppercase;
+  margin-top: 6px;
+}
+.brand-version {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-3);
+  margin-top: 12px;
+}
+
+.nav-section {
+  padding: 16px 0 8px;
+}
+.nav-section-title {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  padding: 0 24px 8px;
+}
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 24px;
+  color: var(--text-2);
+  text-decoration: none;
+  font-size: 13px;
+  border-left: 2px solid transparent;
+  transition: all 0.15s ease;
+  cursor: pointer;
+}
+.nav-item:hover {
+  background: var(--bg-2);
+  color: var(--text-0);
+  border-left-color: var(--accent-dim);
+}
+.nav-item.active {
+  background: var(--bg-2);
+  color: var(--accent);
+  border-left-color: var(--accent);
+}
+.nav-code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-3);
+  min-width: 50px;
+}
+.nav-item.active .nav-code { color: var(--accent); }
+.nav-tag {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  padding: 2px 6px;
+  border-radius: 2px;
+  letter-spacing: 0.1em;
+}
+.nav-tag.new { background: var(--accent-dim); color: var(--bg-0); }
+
+/* ============ 메인 ============ */
+.main {
+  padding: 0;
+  max-width: 100%;
+}
+.screen-section {
+  border-bottom: 1px solid var(--line);
+  padding: 0;
+  display: none;
+}
+.screen-section.active { display: block; }
+
+.screen-header {
+  background: linear-gradient(180deg, var(--bg-1) 0%, var(--bg-0) 100%);
+  border-bottom: 1px solid var(--line);
+  padding: 32px 48px 24px;
+  position: relative;
+}
+.screen-header::before {
+  content: '';
+  position: absolute;
+  bottom: -1px;
+  left: 48px;
+  width: 60px;
+  height: 2px;
+  background: var(--accent);
+}
+.screen-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  margin-bottom: 8px;
+}
+.screen-id {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.15em;
+  color: var(--accent);
+  text-transform: uppercase;
+}
+.screen-status {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 2px;
+  letter-spacing: 0.1em;
+}
+.screen-status.new {
+  background: var(--accent-dim);
+  color: var(--bg-0);
+}
+.screen-status.existing {
+  background: var(--bg-3);
+  color: var(--text-2);
+}
+.screen-title {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 36px;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+  margin: 8px 0 12px;
+}
+.screen-purpose {
+  color: var(--text-1);
+  font-size: 15px;
+  max-width: 800px;
+}
+
+/* 화면 본문 */
+.screen-body {
+  padding: 32px 48px 64px;
+  display: grid;
+  grid-template-columns: 1fr 320px;
+  gap: 32px;
+}
+.screen-main { min-width: 0; }
+.screen-side {
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 20px;
+  height: fit-content;
+  position: sticky;
+  top: 24px;
+}
+
+/* 섹션 블록 */
+.spec-block {
+  margin-bottom: 32px;
+}
+.spec-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.spec-label::before {
+  content: '';
+  width: 12px;
+  height: 1px;
+  background: var(--accent);
+}
+.spec-title {
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: 22px;
+  letter-spacing: -0.01em;
+  margin-bottom: 16px;
+  color: var(--text-0);
+}
+
+/* 와이어프레임 컨테이너 */
+.wireframe {
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  overflow: hidden;
+  position: relative;
+}
+.wireframe-header {
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--line);
+  padding: 10px 16px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-2);
+}
+.wireframe-dots {
+  display: flex;
+  gap: 6px;
+}
+.wireframe-dots span {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--line-2);
+}
+.wireframe-path {
+  font-family: var(--font-mono);
+  color: var(--text-3);
+}
+.wireframe-body {
+  padding: 16px;
+  background: var(--bg-1);
+  min-height: 300px;
+}
+
+/* KPI 카드 */
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.kpi-card {
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 12px 14px;
+  position: relative;
+  overflow: hidden;
+}
+.kpi-card::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 2px;
+  height: 100%;
+  background: var(--accent);
+  opacity: 0.6;
+}
+.kpi-card.green::after { background: var(--green); }
+.kpi-card.red::after { background: var(--red); }
+.kpi-card.blue::after { background: var(--blue); }
+.kpi-label {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  margin-bottom: 4px;
+}
+.kpi-value {
+  font-family: var(--font-mono);
+  font-size: 22px;
+  font-weight: 500;
+  color: var(--text-0);
+  letter-spacing: -0.02em;
+}
+.kpi-value.gold { color: var(--accent); }
+.kpi-value.green { color: var(--green); }
+.kpi-value.red { color: var(--red); }
+.kpi-delta {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  margin-top: 4px;
+  color: var(--text-2);
+}
+.kpi-delta.up { color: var(--green); }
+.kpi-delta.down { color: var(--red); }
+
+/* 데이터 테이블 */
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.data-table th {
+  background: var(--bg-2);
+  color: var(--text-3);
+  font-weight: 500;
+  text-align: left;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.data-table td {
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--line);
+  color: var(--text-1);
+}
+.data-table tr:hover td { background: var(--bg-2); }
+.data-table .num { text-align: right; }
+.data-table .pos { color: var(--green); }
+.data-table .neg { color: var(--red); }
+.data-table .accent { color: var(--accent); }
+
+/* 배지 */
+.badge {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 2px 7px;
+  border-radius: 2px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  font-weight: 500;
+}
+.badge.pass { background: var(--green-dim); color: var(--green); }
+.badge.fail { background: var(--red-dim); color: var(--red); }
+.badge.warn { background: rgba(251,191,36,0.15); color: var(--amber); }
+.badge.info { background: var(--blue-dim); color: var(--blue); }
+.badge.research { background: rgba(192,132,252,0.15); color: var(--purple); }
+.badge.live { background: var(--green); color: var(--bg-0); }
+.badge.mock { background: var(--accent-dim); color: var(--bg-0); }
+.badge.alert { background: rgba(251,191,36,0.15); color: var(--amber); }
+
+/* 사이드바 (스크린별) */
+.side-block { margin-bottom: 24px; }
+.side-block:last-child { margin-bottom: 0; }
+.side-label {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  margin-bottom: 10px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--line);
+}
+.side-list {
+  list-style: none;
+  font-size: 12px;
+  color: var(--text-1);
+}
+.side-list li {
+  padding: 5px 0;
+  display: flex;
+  gap: 8px;
+}
+.side-list li::before {
+  content: '─';
+  color: var(--text-3);
+  flex-shrink: 0;
+}
+.role-pill {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 2px 6px;
+  border: 1px solid var(--line-2);
+  border-radius: 2px;
+  margin: 0 4px 4px 0;
+  color: var(--text-1);
+}
+.role-pill.full { border-color: var(--green); color: var(--green); }
+.role-pill.read { border-color: var(--blue); color: var(--blue); }
+.role-pill.none { border-color: var(--red); color: var(--red); opacity: 0.5; }
+
+/* 시나리오 박스 */
+.scenario {
+  background: var(--bg-1);
+  border-left: 2px solid var(--accent);
+  padding: 14px 18px;
+  margin-bottom: 12px;
+  font-size: 13px;
+  color: var(--text-1);
+}
+.scenario-title {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.15em;
+  color: var(--accent);
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+.scenario-steps {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-1);
+  white-space: pre-wrap;
+  line-height: 1.7;
+}
+.scenario.exception { border-left-color: var(--red); }
+.scenario.exception .scenario-title { color: var(--red); }
+
+/* 컴포넌트 정의표 */
+.comp-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.comp-table th, .comp-table td {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+.comp-table th {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  background: var(--bg-1);
+  font-weight: 500;
+}
+.comp-table td:first-child {
+  font-family: var(--font-mono);
+  color: var(--accent);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.comp-table td { color: var(--text-1); }
+.comp-table .type {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-3);
+}
+
+/* 차트 자리 표시자 */
+.chart-placeholder {
+  background: var(--bg-2);
+  border: 1px dashed var(--line-2);
+  border-radius: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  position: relative;
+  overflow: hidden;
+}
+.chart-placeholder::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(var(--grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
+  background-size: 20px 20px;
+  pointer-events: none;
+}
+
+/* 레이아웃 그리드 */
+.layout-grid {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.layout-grid.cols-2 { grid-template-columns: 1fr 1fr; }
+.layout-grid.cols-3 { grid-template-columns: 1fr 1fr 1fr; }
+.layout-grid.cols-4 { grid-template-columns: repeat(4, 1fr); }
+.layout-grid.split-2-1 { grid-template-columns: 2fr 1fr; }
+
+/* 스크린 인덱스 헤더 */
+.cover {
+  padding: 80px 48px 48px;
+  border-bottom: 1px solid var(--line);
+  background:
+    radial-gradient(ellipse at top right, rgba(212,168,92,0.06), transparent 60%),
+    var(--bg-0);
+  position: relative;
+}
+.cover-tag {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.3em;
+  color: var(--accent);
+  text-transform: uppercase;
+  margin-bottom: 24px;
+}
+.cover-title {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 64px;
+  line-height: 0.95;
+  letter-spacing: -0.03em;
+  margin-bottom: 16px;
+  max-width: 900px;
+}
+.cover-title em {
+  font-style: italic;
+  font-weight: 300;
+  color: var(--accent);
+}
+.cover-subtitle {
+  font-size: 18px;
+  color: var(--text-1);
+  max-width: 700px;
+  margin-bottom: 48px;
+}
+.cover-meta {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 32px;
+  max-width: 800px;
+  padding-top: 32px;
+  border-top: 1px solid var(--line);
+}
+.cover-meta-item .meta-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  margin-bottom: 6px;
+}
+.cover-meta-item .meta-value {
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: 18px;
+  color: var(--text-0);
+}
+.cover-meta-item .meta-value.mono {
+  font-family: var(--font-mono);
+  font-size: 14px;
+}
+
+/* 화면 인덱스 그리드 */
+.index-grid {
+  padding: 32px 48px 64px;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 16px;
+}
+.index-card {
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 20px 24px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  text-decoration: none;
+  color: inherit;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  position: relative;
+}
+.index-card:hover {
+  border-color: var(--accent-dim);
+  background: var(--bg-2);
+  transform: translateX(2px);
+}
+.index-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-3);
+  letter-spacing: 0.1em;
+}
+.index-card-id { color: var(--accent); }
+.index-card-title {
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  color: var(--text-0);
+}
+.index-card-desc {
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* 화면 상단 KPI 바 */
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  margin-bottom: 16px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.toolbar-divider {
+  width: 1px;
+  height: 16px;
+  background: var(--line);
+}
+.toolbar-label { color: var(--text-3); }
+.toolbar-value { color: var(--text-0); }
+.toolbar-btn {
+  background: var(--bg-3);
+  border: 1px solid var(--line);
+  color: var(--text-1);
+  padding: 4px 10px;
+  border-radius: 2px;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.05em;
+}
+.toolbar-btn:hover { background: var(--bg-4); border-color: var(--line-2); }
+.toolbar-btn.primary {
+  background: var(--accent);
+  color: var(--bg-0);
+  border-color: var(--accent);
+}
+.toolbar-btn.primary:hover { background: #e8bd6f; }
+
+/* 미니 차트 라인 */
+.spark {
+  display: inline-block;
+  vertical-align: middle;
+  width: 60px;
+  height: 16px;
+}
+
+/* 진행 표시 */
+.progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.progress-bar {
+  flex: 1;
+  height: 4px;
+  background: var(--bg-3);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+}
+.progress-fill.green { background: var(--green); }
+.progress-fill.red { background: var(--red); }
+
+/* 텍스트 블록 */
+.prose {
+  color: var(--text-1);
+  font-size: 14px;
+  line-height: 1.7;
+  max-width: 75ch;
+}
+.prose p { margin-bottom: 12px; }
+.prose code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background: var(--bg-2);
+  padding: 1px 6px;
+  border-radius: 2px;
+  color: var(--accent);
+}
+
+/* 상태점 */
+.dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  margin-right: 4px;
+  vertical-align: middle;
+}
+.dot.green { background: var(--green); box-shadow: 0 0 6px var(--green); }
+.dot.red { background: var(--red); }
+.dot.amber { background: var(--amber); }
+.dot.gray { background: var(--text-3); }
+
+/* 트리 (메뉴/계층) */
+.tree {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-1);
+  line-height: 1.8;
+}
+.tree .branch { color: var(--text-3); }
+.tree .leaf { color: var(--text-1); }
+.tree .new { color: var(--accent); }
+
+/* 푸터 */
+.footer {
+  padding: 32px 48px;
+  border-top: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-3);
+  letter-spacing: 0.1em;
+  text-align: center;
+}
+
+/* 애니메이션 */
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.screen-section.active > * {
+  animation: fadeUp 0.4s ease both;
+}
+.screen-section.active .screen-header { animation-delay: 0.05s; }
+.screen-section.active .screen-body { animation-delay: 0.15s; }
+
+/* 반응형 */
+@media (max-width: 1100px) {
+  .screen-body { grid-template-columns: 1fr; }
+  .screen-side { position: static; }
+}
+@media (max-width: 768px) {
+  .app { grid-template-columns: 1fr; }
+  .sidebar { position: static; height: auto; }
+  .cover-title { font-size: 40px; }
+  .cover-meta { grid-template-columns: 1fr 1fr; }
+  .index-grid { grid-template-columns: 1fr; padding: 24px; }
+  .screen-header, .screen-body { padding-left: 24px; padding-right: 24px; }
+}
+</style>
+</head>
+<body>
+<div class="app">
+
+<!-- ============ 사이드바 ============ -->
+<aside class="sidebar">
+  <div class="brand">
+    <div class="brand-title">MAPS</div>
+    <div class="brand-subtitle">Screen Design</div>
+    <div class="brand-version">v2.6.2 / CODE-SPEC SYNC</div>
+  </div>
+
+  <nav>
+    <div class="nav-section">
+      <div class="nav-section-title">표지</div>
+      <div class="nav-item active" data-target="cover"><span class="nav-code">000</span>화면 인덱스</div>
+    </div>
+
+    <div class="nav-section">
+      <div class="nav-section-title">메인 워크플로</div>
+      <div class="nav-item" data-target="scr-01"><span class="nav-code">SCR-01</span>대시보드 홈</div>
+      <div class="nav-item" data-target="scr-02"><span class="nav-code">SCR-02</span>전략 관리</div>
+      <div class="nav-item" data-target="scr-03"><span class="nav-code">SCR-03</span>장세/팩터</div>
+      <div class="nav-item" data-target="scr-04"><span class="nav-code">SCR-04</span>종목 후보</div>
+      <div class="nav-item" data-target="scr-05"><span class="nav-code">SCR-05</span>주문/체결</div>
+      <div class="nav-item" data-target="scr-06"><span class="nav-code">SCR-06</span>리스크/모니터</div>
+      <div class="nav-item" data-target="scr-07"><span class="nav-code">SCR-07</span>백테스트</div>
+    </div>
+
+    <div class="nav-section">
+      <div class="nav-section-title">v2.6.1 신규</div>
+      <div class="nav-item" data-target="scr-08"><span class="nav-code">SCR-08</span>견고성<span class="nav-tag new">NEW</span></div>
+      <div class="nav-item" data-target="scr-09"><span class="nav-code">SCR-09</span>추세 강도<span class="nav-tag new">NEW</span></div>
+      <div class="nav-item" data-target="scr-10"><span class="nav-code">SCR-10</span>연구 전략<span class="nav-tag new">NEW</span></div>
+      <div class="nav-item" data-target="scr-11"><span class="nav-code">SCR-11</span>WFA 리포트<span class="nav-tag new">NEW</span></div>
+      <div class="nav-item" data-target="scr-12"><span class="nav-code">SCR-12</span>비용 민감도<span class="nav-tag new">NEW</span></div>
+      <div class="nav-item" data-target="scr-13"><span class="nav-code">SCR-13</span>실거래 모니터<span class="nav-tag new">NEW</span></div>
+    </div>
+
+    <div class="nav-section">
+      <div class="nav-section-title">v2.6.2 신규</div>
+      <div class="nav-item" data-target="scr-14"><span class="nav-code">SCR-14</span>데이터 품질<span class="nav-tag new">NEW</span></div>
+    </div>
+
+    <div class="nav-section">
+      <div class="nav-section-title">부록</div>
+      <div class="nav-item" data-target="appendix-roles">A. 권한 매트릭스</div>
+      <div class="nav-item" data-target="appendix-flow">B. 화면 전이</div>
+      <div class="nav-item" data-target="appendix-design">C. 디자인 시스템</div>
+    </div>
+  </nav>
+</aside>
+
+<!-- ============ 메인 ============ -->
+<main class="main">
+
+<!-- 표지 / 인덱스 -->
+<section class="screen-section active" id="cover">
+  <div class="cover">
+    <div class="cover-tag">MAPS · Screen Design Document v2.6.2</div>
+    <h1 class="cover-title">파라미터가 살아남는 자리에서 <em>전략은 비로소 화면이 된다</em></h1>
+    <p class="cover-subtitle">MAPS v2.6.2의 14개 화면은 단일 최적값이 아니라 견고성 영역을 시각화한다. 모든 화면은 정량 임계값, 단계별 승격 KPI, 데이터 품질 게이트에 묶여 있다.</p>
+    <div class="cover-meta">
+      <div class="cover-meta-item">
+        <div class="meta-label">버전</div>
+        <div class="meta-value mono">v2.6.2</div>
+      </div>
+      <div class="cover-meta-item">
+        <div class="meta-label">화면 수</div>
+        <div class="meta-value mono">14 (기존 7 + 신규 7)</div>
+      </div>
+      <div class="cover-meta-item">
+        <div class="meta-label">대상 사용자</div>
+        <div class="meta-value">개인 운용자 / 연구자</div>
+      </div>
+      <div class="cover-meta-item">
+        <div class="meta-label">디바이스</div>
+        <div class="meta-value">데스크탑 (1280+) 우선</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="index-grid">
+    <a class="index-card" data-target="scr-01">
+      <div class="index-card-meta"><span class="index-card-id">SCR-01</span><span class="badge info">EXISTING</span></div>
+      <div class="index-card-title">대시보드 홈</div>
+      <div class="index-card-desc">계좌·전략·장세·자동대응 상태를 한 화면에 요약. 모든 워크플로의 진입점.</div>
+    </a>
+    <a class="index-card" data-target="scr-02">
+      <div class="index-card-meta"><span class="index-card-id">SCR-02</span><span class="badge info">EXISTING</span></div>
+      <div class="index-card-title">전략 관리</div>
+      <div class="index-card-desc">전략 라이프사이클 (Research → Alert → Mock → Live Small → Live) + PromotionGate.</div>
+    </a>
+    <a class="index-card" data-target="scr-03">
+      <div class="index-card-meta"><span class="index-card-id">SCR-03</span><span class="badge info">EXISTING</span></div>
+      <div class="index-card-title">장세 · 팩터 분석</div>
+      <div class="index-card-desc">MarketRegime × WeeklyTrend 매트릭스. 진입 정책 자동 적용.</div>
+    </a>
+    <a class="index-card" data-target="scr-04">
+      <div class="index-card-meta"><span class="index-card-id">SCR-04</span><span class="badge info">EXISTING</span></div>
+      <div class="index-card-title">종목 후보 풀</div>
+      <div class="index-card-desc">Factor + TrendStrength 게이트 통과 종목. S5 자동 제외 가시화.</div>
+    </a>
+    <a class="index-card" data-target="scr-05">
+      <div class="index-card-meta"><span class="index-card-id">SCR-05</span><span class="badge info">EXISTING</span></div>
+      <div class="index-card-title">주문 · 체결</div>
+      <div class="index-card-desc">실시간 주문 큐 + 체결 슬리피지 실측. CostModel 가정과 자동 비교.</div>
+    </a>
+    <a class="index-card" data-target="scr-06">
+      <div class="index-card-meta"><span class="index-card-id">SCR-06</span><span class="badge info">EXISTING</span></div>
+      <div class="index-card-title">리스크 · 모니터</div>
+      <div class="index-card-desc">전략군별 위험·노출 한도 관제. Exposure Cap·총위험 실시간 게이지.</div>
+    </a>
+    <a class="index-card" data-target="scr-07">
+      <div class="index-card-meta"><span class="index-card-id">SCR-07</span><span class="badge info">EXISTING</span></div>
+      <div class="index-card-title">백테스트 콘솔</div>
+      <div class="index-card-desc">단일 전략 백테스트 + Plateau/Walk-Forward/MC 자동 동반 실행.</div>
+    </a>
+    <a class="index-card" data-target="scr-08">
+      <div class="index-card-meta"><span class="index-card-id">SCR-08</span><span class="badge new" style="background:var(--accent-dim);color:var(--bg-0)">NEW</span></div>
+      <div class="index-card-title">Trend Robustness</div>
+      <div class="index-card-desc">Plateau heatmap, MC vs Block Bootstrap MDD 분포, Tradeability 점수.</div>
+    </a>
+    <a class="index-card" data-target="scr-09">
+      <div class="index-card-meta"><span class="index-card-id">SCR-09</span><span class="badge new" style="background:var(--accent-dim);color:var(--bg-0)">NEW</span></div>
+      <div class="index-card-title">TrendStrength Monitor</div>
+      <div class="index-card-desc">S1~S5 5단계 분포 + 주봉 확인 + 결측 종목 가시화.</div>
+    </a>
+    <a class="index-card" data-target="scr-10">
+      <div class="index-card-meta"><span class="index-card-id">SCR-10</span><span class="badge new" style="background:var(--accent-dim);color:var(--bg-0)">NEW</span></div>
+      <div class="index-card-title">Research Strategies</div>
+      <div class="index-card-desc">Donchian/Bollinger/Pyramiding 신호 + PromotionGate 통과 현황.</div>
+    </a>
+    <a class="index-card" data-target="scr-11">
+      <div class="index-card-meta"><span class="index-card-id">SCR-11</span><span class="badge new" style="background:var(--accent-dim);color:var(--bg-0)">NEW</span></div>
+      <div class="index-card-title">Walk-Forward Report</div>
+      <div class="index-card-desc">5-fold WFA fold별 Sharpe·Gain-to-Pain. 변동계수 기준 통과 판정.</div>
+    </a>
+    <a class="index-card" data-target="scr-12">
+      <div class="index-card-meta"><span class="index-card-id">SCR-12</span><span class="badge new" style="background:var(--accent-dim);color:var(--bg-0)">NEW</span></div>
+      <div class="index-card-title">Cost Sensitivity</div>
+      <div class="index-card-desc">슬리피지 ±50% 시나리오 Net CAGR 변화. 거래비용 가정 거버넌스.</div>
+    </a>
+    <a class="index-card" data-target="scr-13">
+      <div class="index-card-meta"><span class="index-card-id">SCR-13</span><span class="badge new" style="background:var(--accent-dim);color:var(--bg-0)">NEW</span></div>
+      <div class="index-card-title">Live Monitor</div>
+      <div class="index-card-desc">실측 MDD/슬리피지 vs 가정. 자동 대응 발동 이력 + 사용자 승인 큐.</div>
+    </a>
+    <a class="index-card" data-target="scr-14" style="border-color:var(--accent-dim)">
+      <div class="index-card-meta"><span class="index-card-id">SCR-14</span><span class="badge" style="background:var(--accent);color:var(--bg-0);font-size:9px">v2.6.2</span></div>
+      <div class="index-card-title">Data Quality</div>
+      <div class="index-card-desc">DataQualityFilter 거부 종목 현황. 생존자 편향 차단 확인. 6개 기준별 거부 통계 + as-of-date 유니버스 검증.</div>
+    </a>
+  </div>
+</section>
+
+<!-- ============ SCR-01 대시보드 홈 ============ -->
+<section class="screen-section" id="scr-01">
+  <div class="screen-header">
+    <div class="screen-meta">
+      <span class="screen-id">SCR-01</span>
+      <span class="screen-status existing">EXISTING · 추정 사양</span>
+    </div>
+    <h2 class="screen-title">대시보드 홈</h2>
+    <p class="screen-purpose">계좌 자산곡선, 활성 전략 상태, 장세 지표, 자동 대응 알림을 한 화면에 묶는 진입점. 사용자는 평일 16:30 이후 이 화면만 확인하면 그날 시스템이 정상 작동했는지 즉시 판단할 수 있어야 한다.</p>
+  </div>
+
+  <div class="screen-body">
+    <div class="screen-main">
+
+      <div class="spec-block">
+        <div class="spec-label">와이어프레임</div>
+        <div class="wireframe">
+          <div class="wireframe-header">
+            <div class="wireframe-dots"><span></span><span></span><span></span></div>
+            <span class="wireframe-path">maps.local / dashboard</span>
+          </div>
+          <div class="wireframe-body">
+            <div class="toolbar">
+              <span class="toolbar-label">기간</span>
+              <span class="toolbar-value">2026-04-01 ~ 2026-05-02</span>
+              <div class="toolbar-divider"></div>
+              <span class="toolbar-label">자동 대응</span>
+              <span class="toolbar-value"><span class="dot green"></span>정상 운영</span>
+              <div class="toolbar-divider"></div>
+              <span class="toolbar-label">마지막 갱신</span>
+              <span class="toolbar-value">2026-05-02 16:31:04</span>
+              <button class="toolbar-btn" style="margin-left:auto">새로고침</button>
+              <button class="toolbar-btn primary">SCR-13 모니터</button>
+            </div>
+
+            <div class="kpi-grid">
+              <div class="kpi-card"><div class="kpi-label">총 자산</div><div class="kpi-value gold">₩142,308,500</div><div class="kpi-delta up">+1.2% MoM</div></div>
+              <div class="kpi-card green"><div class="kpi-label">YTD CAGR</div><div class="kpi-value green">+18.4%</div><div class="kpi-delta">목표 20% 대비</div></div>
+              <div class="kpi-card red"><div class="kpi-label">현재 MDD</div><div class="kpi-value red">−4.8%</div><div class="kpi-delta">한도 28% 대비</div></div>
+              <div class="kpi-card blue"><div class="kpi-label">Sharpe (1Y)</div><div class="kpi-value">1.42</div><div class="kpi-delta up">목표 1.0 ↑</div></div>
+              <div class="kpi-card"><div class="kpi-label">활성 전략</div><div class="kpi-value">4 <span style="font-size:12px;color:var(--text-3)">/ 7</span></div><div class="kpi-delta">2 Live · 2 Mock</div></div>
+            </div>
+
+            <div class="layout-grid split-2-1">
+              <div>
+                <div class="spec-label">계좌 자산곡선</div>
+                <div class="chart-placeholder" style="height:240px">EQUITY CURVE · 12M · with MDD shading</div>
+              </div>
+              <div>
+                <div class="spec-label">전략별 기여도</div>
+                <table class="data-table">
+                  <thead><tr><th>전략</th><th class="num">기여</th><th>상태</th></tr></thead>
+                  <tbody>
+                    <tr><td>Pullback</td><td class="num pos">+8.2%</td><td><span class="badge live">LIVE</span></td></tr>
+                    <tr><td>ATH Trend</td><td class="num pos">+6.4%</td><td><span class="badge live">LIVE</span></td></tr>
+                    <tr><td>Multi-Asset</td><td class="num pos">+3.1%</td><td><span class="badge mock">MOCK</span></td></tr>
+                    <tr><td>Donchian R</td><td class="num">±0.0%</td><td><span class="badge alert">ALERT</span></td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div class="layout-grid cols-2" style="margin-top:16px">
+              <div>
+                <div class="spec-label">장세 / 자산군 추세</div>
+                <div class="chart-placeholder" style="height:140px">MULTI-ASSET TREND · 5M MA</div>
+              </div>
+              <div>
+                <div class="spec-label">최근 알림 (24h)</div>
+                <table class="data-table">
+                  <tbody>
+                    <tr><td><span class="badge warn">WARN</span></td><td>슬리피지 실측 +28% (소형주)</td><td class="accent">14:22</td></tr>
+                    <tr><td><span class="badge info">INFO</span></td><td>WeeklyTrend 갱신 완료</td><td class="accent">16:20</td></tr>
+                    <tr><td><span class="badge pass">PASS</span></td><td>일일 검증 정상 종료</td><td class="accent">16:31</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="spec-block">
+        <div class="spec-label">컴포넌트 사양</div>
+        <table class="comp-table">
+          <thead><tr><th>ID</th><th>타입</th><th>데이터 소스</th><th>액션</th></tr></thead>
+          <tbody>
+            <tr><td>HEAD-TOOLBAR</td><td><span class="type">Toolbar</span></td><td>system_status, last_run_log</td><td>새로고침 / SCR-13 이동</td></tr>
+            <tr><td>KPI-PORTFOLIO</td><td><span class="type">KPI Card × 5</span></td><td>account_summary view</td><td>클릭 시 SCR-06 이동</td></tr>
+            <tr><td>CHART-EQUITY</td><td><span class="type">Line + Area</span></td><td>daily_equity (12M)</td><td>호버 툴팁, 기간 변경</td></tr>
+            <tr><td>TBL-CONTRIB</td><td><span class="type">DataTable</span></td><td>strategy_pnl_summary</td><td>행 클릭 시 SCR-02 상세</td></tr>
+            <tr><td>CHART-REGIME</td><td><span class="type">Multi-line</span></td><td>multi_asset_trend</td><td>SCR-03 이동</td></tr>
+            <tr><td>TBL-ALERTS</td><td><span class="type">DataTable</span></td><td>alerts (last 24h)</td><td>승인 대기 항목 → SCR-13</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="spec-block">
+        <div class="spec-label">주요 시나리오</div>
+        <div class="scenario">
+          <div class="scenario-title">S1 · 정상 종가 확인 (평일 16:35)</div>
+          <div class="scenario-steps">1. 사용자가 SCR-01 진입 → 토스트 "16:31 검증 정상 종료" 확인
+2. KPI 5개 모두 녹색/골드 → 이상 없음
+3. 알림 영역의 INFO 메시지를 한 번 훑고 종료</div>
+        </div>
+        <div class="scenario">
+          <div class="scenario-title">S2 · MDD 경고 발생</div>
+          <div class="scenario-steps">1. 자산곡선 KPI 카드 빨강 표시 (현재 MDD &gt; 허용 한도 0.8배)
+2. 사용자가 카드 클릭 → SCR-06 (리스크/모니터) 이동
+3. 자동 대응 큐에 "신규 진입 일시 중단" 발동 이력 → SCR-13에서 사용자 승인</div>
+        </div>
+        <div class="scenario exception">
+          <div class="scenario-title">EX1 · 데이터 갱신 실패</div>
+          <div class="scenario-steps">조건: last_run_log 상태가 'failed' 또는 갱신 시각이 17:00 이후
+표시: 토스트 "데이터 갱신 실패. 어제 데이터 기준 표시 중" + 모든 KPI 회색 처리
+대응: 우측 상단 [재실행] 버튼 → DataCollector 수동 트리거</div>
+        </div>
+      </div>
+
+    </div>
+
+    <aside class="screen-side">
+      <div class="side-block">
+        <div class="side-label">화면 ID</div>
+        <div style="font-family:var(--font-mono);font-size:13px;color:var(--accent)">SCR-01 · /dashboard</div>
+      </div>
+      <div class="side-block">
+        <div class="side-label">우선순위</div>
+        <span class="badge live">P0 · 필수</span>
+      </div>
+      <div class="side-block">
+        <div class="side-label">연결 화면</div>
+        <ul class="side-list">
+          <li>SCR-02 전략 관리</li>
+          <li>SCR-03 장세/팩터</li>
+          <li>SCR-06 리스크/모니터</li>
+          <li>SCR-13 실거래 모니터</li>
+        </ul>
+      </div>
+      <div class="side-block">
+        <div class="side-label">데이터 갱신</div>
+        <ul class="side-list">
+          <li>16:15 자산곡선</li>
+          <li>16:20 전략 PNL</li>
+          <li>16:30 자동대응 평가</li>
+        </ul>
+      </div>
+      <div class="side-block">
+        <div class="side-label">권한</div>
+        <span class="role-pill full">운용자 R/W</span>
+        <span class="role-pill read">연구자 R</span>
+        <span class="role-pill read">관리자 R/W</span>
+      </div>
+    </aside>
+  </div>
+</section>
+
+<!-- ============ SCR-02 전략 관리 ============ -->
+<section class="screen-section" id="scr-02">
+  <div class="screen-header">
+    <div class="screen-meta">
+      <span class="screen-id">SCR-02</span>
+      <span class="screen-status existing">EXISTING · 추정 사양 (PromotionGate 연동)</span>
+    </div>
+    <h2 class="screen-title">전략 관리</h2>
+    <p class="screen-purpose">전략 라이프사이클 (Research → Alert → Mock → Live Small → Live) 전체를 한 화면에서 관리한다. PromotionGate가 자동 평가한 승격 후보를 사용자가 승인/거부한다.</p>
+  </div>
+
+  <div class="screen-body">
+    <div class="screen-main">
+      <div class="spec-block">
+        <div class="spec-label">와이어프레임</div>
+        <div class="wireframe">
+          <div class="wireframe-header">
+            <div class="wireframe-dots"><span></span><span></span><span></span></div>
+            <span class="wireframe-path">maps.local / strategies</span>
+          </div>
+          <div class="wireframe-body">
+
+            <div class="toolbar">
+              <span class="toolbar-label">상태 필터</span>
+              <button class="toolbar-btn primary">전체 (7)</button>
+              <button class="toolbar-btn">Live (2)</button>
+              <button class="toolbar-btn">Mock (2)</button>
+              <button class="toolbar-btn">Alert (2)</button>
+              <button class="toolbar-btn">Research (1)</button>
+              <div class="toolbar-divider"></div>
+              <span class="toolbar-label">승격 대기</span>
+              <span class="toolbar-value accent" style="color:var(--accent)">2건</span>
+              <button class="toolbar-btn primary" style="margin-left:auto">+ 새 전략</button>
+            </div>
+
+            <table class="data-table" style="margin-top:8px">
+              <thead><tr>
+                <th>전략 ID</th><th>이름</th><th>단계</th>
+                <th class="num">Tradeability</th>
+                <th class="num">Plateau</th>
+                <th class="num">MC MDD p95</th>
+                <th>WFA</th>
+                <th>승격</th>
+              </tr></thead>
+              <tbody>
+                <tr><td class="accent">str_001</td><td>Pullback v3</td><td><span class="badge live">LIVE</span></td>
+                  <td class="num pos">82</td><td class="num">78</td><td class="num">15.2%</td>
+                  <td><span class="badge pass">PASS</span></td><td>—</td></tr>
+                <tr><td class="accent">str_002</td><td>ATH Outlier</td><td><span class="badge live">LIVE</span></td>
+                  <td class="num pos">76</td><td class="num">71</td><td class="num">28.4%</td>
+                  <td><span class="badge pass">PASS</span></td><td>—</td></tr>
+                <tr><td class="accent">str_003</td><td>Multi-Asset</td><td><span class="badge mock">MOCK</span></td>
+                  <td class="num pos">71</td><td class="num">74</td><td class="num">19.8%</td>
+                  <td><span class="badge pass">PASS</span></td>
+                  <td><button class="toolbar-btn primary" style="font-size:9px;padding:2px 8px">→ Live Small</button></td></tr>
+                <tr><td class="accent">str_004</td><td>Pullback v4 (β)</td><td><span class="badge mock">MOCK</span></td>
+                  <td class="num">63</td><td class="num">68</td><td class="num">17.1%</td>
+                  <td><span class="badge warn">CV 0.6</span></td><td>—</td></tr>
+                <tr><td class="accent">str_005</td><td>Donchian 100/50</td><td><span class="badge alert">ALERT</span></td>
+                  <td class="num">58</td><td class="num">65</td><td class="num">26.3%</td>
+                  <td><span class="badge pass">PASS</span></td>
+                  <td><button class="toolbar-btn" style="font-size:9px;padding:2px 8px">→ Mock</button></td></tr>
+                <tr><td class="accent">str_006</td><td>Bollinger Squeeze</td><td><span class="badge alert">ALERT</span></td>
+                  <td class="num">42</td><td class="num">48</td><td class="num">31.5%</td>
+                  <td><span class="badge fail">FAIL</span></td><td>—</td></tr>
+                <tr><td class="accent">str_007</td><td>Pyramiding (R)</td><td><span class="badge research">RESEARCH</span></td>
+                  <td class="num">—</td><td class="num">—</td><td class="num">—</td>
+                  <td>—</td><td>—</td></tr>
+              </tbody>
+            </table>
+
+            <div class="layout-grid cols-2" style="margin-top:20px">
+              <div>
+                <div class="spec-label">단계별 분포</div>
+                <div class="chart-placeholder" style="height:140px">SANKEY · Stage Flow</div>
+              </div>
+              <div>
+                <div class="spec-label">선택 전략 상세 패널</div>
+                <div class="chart-placeholder" style="height:140px">SELECTED STRATEGY · KPI / Equity / Logs</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="spec-block">
+        <div class="spec-label">컴포넌트 사양</div>
+        <table class="comp-table">
+          <thead><tr><th>ID</th><th>타입</th><th>데이터 소스</th><th>액션</th></tr></thead>
+          <tbody>
+            <tr><td>FILTER-STAGE</td><td><span class="type">Toggle Group</span></td><td>strategies.stage</td><td>리스트 필터</td></tr>
+            <tr><td>TBL-STRATEGIES</td><td><span class="type">DataTable + Sort</span></td><td>strategy_comparison_summary</td><td>행 클릭 → 상세 패널</td></tr>
+            <tr><td>BTN-PROMOTE</td><td><span class="type">Action Button</span></td><td>promotion_history</td><td>승격 승인 → 모달 → DB 기록</td></tr>
+            <tr><td>PNL-DETAIL</td><td><span class="type">Side Panel</span></td><td>strategy_metrics 통합</td><td>SCR-08 / SCR-11 이동 링크</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="spec-block">
+        <div class="spec-label">주요 시나리오</div>
+        <div class="scenario">
+          <div class="scenario-title">S1 · 승격 후보 확인 → 승인</div>
+          <div class="scenario-steps">1. 일요일 02:30. 사용자가 SCR-02 진입 → 상단 "승격 대기 2건" 클릭
+2. PromotionGate가 자동 통과 처리한 str_003 (Mock → Live Small) 행 강조
+3. [→ Live Small] 클릭 → 모달: 통과 체크리스트 + 사용자 메모
+4. 승인 → promotion_history 기록 + str_003.stage 업데이트</div>
+        </div>
+        <div class="scenario exception">
+          <div class="scenario-title">EX1 · WFA 변동계수 임계 근접 (CV 0.6)</div>
+          <div class="scenario-steps">조건: WFA Sharpe std/mean 비율이 0.5 < CV ≤ 0.7 구간
+표시: WFA 컬럼에 노란 "CV 0.6" 배지, 행 자체에는 경고 없음
+정책: 자동 승격 차단. 사용자가 SCR-11에서 fold별 결과 확인 후 수동 결정</div>
+        </div>
+      </div>
+    </div>
+
+    <aside class="screen-side">
+      <div class="side-block">
+        <div class="side-label">화면 ID</div>
+        <div style="font-family:var(--font-mono);font-size:13px;color:var(--accent)">SCR-02 · /strategies</div>
+      </div>
+      <div class="side-block">
+        <div class="side-label">단계 흐름</div>
+        <div class="tree">Research<br><span class="branch">└─</span> Alert Only<br><span class="branch" style="margin-left:14px">└─</span> Mock<br><span class="branch" style="margin-left:28px">└─</span> Live Small<br><span class="branch" style="margin-left:42px">└─</span> Live</div>
+      </div>
+      <div class="side-block">
+        <div class="side-label">승격 게이트</div>
+        <ul class="side-list">
+          <li>Plateau ≥ 70</li>
+          <li>WFA CV ≤ 0.5</li>
+          <li>신호 ≥ 100건</li>
+          <li>관찰 ≥ 6개월</li>
+        </ul>
+      </div>
+      <div class="side-block">
+        <div class="side-label">권한</div>
+        <span class="role-pill full">운용자 R/W</span>
+        <span class="role-pill read">연구자 R</span>
+        <span class="role-pill full">관리자 R/W</span>
+        <div style="font-size:11px;color:var(--text-3);margin-top:8px">승격 승인은 운용자/관리자만 가능</div>
+      </div>
+    </aside>
+  </div>
+</section>
+
+<!-- ============ SCR-03 장세/팩터 ============ -->
+<section class="screen-section" id="scr-03">
+  <div class="screen-header">
+    <div class="screen-meta">
+      <span class="screen-id">SCR-03</span>
+      <span class="screen-status existing">EXISTING · v2.6.1 매트릭스 추가</span>
+    </div>
+    <h2 class="screen-title">장세 · 팩터 분석</h2>
+    <p class="screen-purpose">MarketRegime × WeeklyTrend 매트릭스에 따라 진입 정책이 자동 적용되는 화면. 5개월 자산군 추세, Factor 점수 분포, 현재 셀의 한도 비율을 한눈에 보여준다.</p>
+  </div>
+
+  <div class="screen-body">
+    <div class="screen-main">
+      <div class="spec-block">
+        <div class="spec-label">와이어프레임</div>
+        <div class="wireframe">
+          <div class="wireframe-header">
+            <div class="wireframe-dots"><span></span><span></span><span></span></div>
+            <span class="wireframe-path">maps.local / market</span>
+          </div>
+          <div class="wireframe-body">
+
+            <div class="kpi-grid">
+              <div class="kpi-card"><div class="kpi-label">Market Regime</div><div class="kpi-value gold">MIXED</div><div class="kpi-delta">5M MA 5/8 통과</div></div>
+              <div class="kpi-card green"><div class="kpi-label">Weekly Trend</div><div class="kpi-value green">PASS</div><div class="kpi-delta">10/20 ↑ 20/40 ↑</div></div>
+              <div class="kpi-card"><div class="kpi-label">현재 한도 비율</div><div class="kpi-value gold">50%</div><div class="kpi-delta">전략군별 한도의 절반</div></div>
+              <div class="kpi-card blue"><div class="kpi-label">코스피 TS</div><div class="kpi-value">62.5</div><div class="kpi-delta">S2 약한 강세</div></div>
+            </div>
+
+            <div class="layout-grid cols-2">
+              <div>
+                <div class="spec-label">MarketRegime × WeeklyTrend 매트릭스</div>
+                <table class="data-table" style="font-size:11px">
+                  <thead><tr><th></th><th class="num">Weekly Pass</th><th class="num">Weekly Fail</th></tr></thead>
+                  <tbody>
+                    <tr><td>Strong</td><td class="num pos">진입 100%</td><td class="num neg">차단</td></tr>
+                    <tr style="background:rgba(212,168,92,0.08)">
+                      <td><span style="color:var(--accent)">▶ Mixed (현재)</span></td>
+                      <td class="num accent">진입 50%</td>
+                      <td class="num neg">차단</td>
+                    </tr>
+                    <tr><td>Weak</td><td class="num">ATH/Pullback 25%</td><td class="num neg">전면 차단</td></tr>
+                  </tbody>
+                </table>
+                <p class="prose" style="font-size:12px;margin-top:12px">현재 (Mixed × Pass) 셀이 활성화되어 있으며 모든 전략군이 한도의 50%로 자동 적용된다.</p>
+              </div>
+
+              <div>
+                <div class="spec-label">자산군 추세 (5M MA)</div>
+                <div class="chart-placeholder" style="height:200px">MULTI-ASSET TREND OVERLAY · 8 assets</div>
+                <table class="data-table" style="font-size:11px;margin-top:8px">
+                  <tbody>
+                    <tr><td>KOSPI</td><td class="num pos">+ ↑</td><td>코스닥 +↑</td></tr>
+                    <tr><td>S&P 500</td><td class="num pos">+ ↑</td><td>NASDAQ +↑</td></tr>
+                    <tr><td>USD/KRW</td><td class="num neg">−↓</td><td>금 +↑</td></tr>
+                    <tr><td>WTI</td><td class="num">±</td><td>구리 −↓</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div style="margin-top:20px">
+              <div class="spec-label">Factor 점수 분포 (코스피200)</div>
+              <div class="chart-placeholder" style="height:160px">FACTOR DISTRIBUTION · Value / Momentum / Quality / Liquidity</div>
+            </div>
+
+          </div>
+        </div>
+      </div>
+
+      <div class="spec-block">
+        <div class="spec-label">주요 시나리오</div>
+        <div class="scenario">
+          <div class="scenario-title">S1 · 매트릭스 셀 변경 감지</div>
+          <div class="scenario-steps">1. 매주 금요일 16:20 WeeklyTrendConfirmation 갱신
+2. 셀이 (Strong, Pass) → (Mixed, Pass)로 이동
+3. 우측 상단 토스트 "한도 100% → 50% 자동 적용" 표시
+4. 사용자가 매트릭스 영역 클릭 → SCR-06으로 이동, 한도 게이지 확인</div>
+        </div>
+      </div>
+    </div>
+
+    <aside class="screen-side">
+      <div class="side-block">
+        <div class="side-label">화면 ID</div>
+        <div style="font-family:var(--font-mono);font-size:13px;color:var(--accent)">SCR-03 · /market</div>
+      </div>
+      <div class="side-block">
+        <div class="side-label">갱신 주기</div>
+        <ul class="side-list">
+          <li>Regime: 매일 08:40</li>
+          <li>Weekly: 금요일 16:20</li>
+          <li>Factor: 매일 16:00</li>
+        </ul>
+      </div>
+      <div class="side-block">
+        <div class="side-label">권한</div>
+        <span class="role-pill full">운용자 R</span>
+        <span class="role-pill read">연구자 R</span>
+        <span class="role-pill full">관리자 R/W</span>
+      </div>
+    </aside>
+  </div>
+</section>
+
+<!-- ============ SCR-04 종목 후보 ============ -->
+<section class="screen-section" id="scr-04">
+  <div class="screen-header">
+    <div class="screen-meta">
+      <span class="screen-id">SCR-04</span>
+      <span class="screen-status existing">EXISTING · TrendStrength 게이트 추가</span>
+    </div>
+    <h2 class="screen-title">종목 후보 풀</h2>
+    <p class="screen-purpose">Factor + TrendStrength 게이트를 통과한 후보를 전략별로 보여준다. S5 자동 제외 종목 수와 결측 종목 수도 가시화하여 후보 풀의 품질을 즉시 판단한다.</p>
+  </div>
+
+  <div class="screen-body">
+    <div class="screen-main">
+      <div class="spec-block">
+        <div class="spec-label">와이어프레임</div>
+        <div class="wireframe">
+          <div class="wireframe-header">
+            <div class="wireframe-dots"><span></span><span></span><span></span></div>
+            <span class="wireframe-path">maps.local / candidates</span>
+          </div>
+          <div class="wireframe-body">
+
+            <div class="toolbar">
+              <span class="toolbar-label">전략</span>
+              <button class="toolbar-btn primary">Pullback</button>
+              <button class="toolbar-btn">ATH Trend</button>
+              <button class="toolbar-btn">Multi-Asset</button>
+              <div class="toolbar-divider"></div>
+              <span class="toolbar-label">유니버스</span>
+              <span class="toolbar-value">KOSPI200 + KOSDAQ150 (350)</span>
+              <button class="toolbar-btn" style="margin-left:auto">CSV 내보내기</button>
+            </div>
+
+            <div class="kpi-grid">
+              <div class="kpi-card"><div class="kpi-label">유니버스</div><div class="kpi-value">350</div></div>
+              <div class="kpi-card red"><div class="kpi-label">S5 제외</div><div class="kpi-value red">−42</div><div class="kpi-delta">TS &lt; 20</div></div>
+              <div class="kpi-card"><div class="kpi-label">결측</div><div class="kpi-value">−8</div><div class="kpi-delta">상장 100일 미만</div></div>
+              <div class="kpi-card green"><div class="kpi-label">최종 후보</div><div class="kpi-value green">28</div><div class="kpi-delta">Factor + TS 통과</div></div>
+            </div>
+
+            <table class="data-table">
+              <thead><tr>
+                <th>티커</th><th>종목명</th>
+                <th class="num">Factor</th>
+                <th class="num">TS</th>
+                <th>구간</th>
+                <th class="num">최종점수</th>
+                <th>주봉</th>
+                <th class="num">예상수량</th>
+              </tr></thead>
+              <tbody>
+                <tr><td class="accent">005930</td><td>삼성전자</td><td class="num">87.2</td><td class="num">90.0</td><td><span class="badge pass">S1</span></td><td class="num pos">92.2 (+5)</td><td>↑↑</td><td class="num">42</td></tr>
+                <tr><td class="accent">000660</td><td>SK하이닉스</td><td class="num">82.1</td><td class="num">80.0</td><td><span class="badge pass">S1</span></td><td class="num pos">87.1 (+5)</td><td>↑↑</td><td class="num">15</td></tr>
+                <tr><td class="accent">035720</td><td>카카오</td><td class="num">79.4</td><td class="num">70.0</td><td><span class="badge info">S2</span></td><td class="num">79.4</td><td>↑→</td><td class="num">22</td></tr>
+                <tr><td class="accent">051910</td><td>LG화학</td><td class="num">76.8</td><td class="num">60.0</td><td><span class="badge info">S2</span></td><td class="num">76.8</td><td>↑→</td><td class="num">8</td></tr>
+                <tr><td class="accent">005380</td><td>현대차</td><td class="num">71.5</td><td class="num">50.0</td><td><span class="badge warn">S3</span></td><td class="num neg">— 제외</td><td>→→</td><td class="num">—</td></tr>
+              </tbody>
+            </table>
+
+            <p class="prose" style="font-size:12px;color:var(--text-3);margin-top:12px">S3 (mixed) 이하는 신규 진입 제한 정책에 따라 후보에서 자동 제외된다. Factor 점수가 높아도 차단된다.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="spec-block">
+        <div class="spec-label">주요 시나리오</div>
+        <div class="scenario">
+          <div class="scenario-title">S1 · 후보 확인 → 주문 큐 등록</div>
+          <div class="scenario-steps">1. 16:00 Factor 갱신 후 사용자 진입
+2. 28개 최종 후보 중 상위 5개 선택 (체크박스)
+3. [주문 큐 등록] → SCR-05 (주문/체결) 자동 이동
+4. 다음 거래일 시가에 진입</div>
+        </div>
+        <div class="scenario exception">
+          <div class="scenario-title">EX1 · 결측 비율 과다 (5% 초과)</div>
+          <div class="scenario-steps">조건: 유니버스 대비 insufficient_data 종목 비율 ≥ 5%
+표시: 결측 KPI 카드 빨강 + 토스트 "유니버스 데이터 품질 점검 필요"
+대응: 데이터 갱신 로그 확인, 필요 시 DataCollector 재실행</div>
+        </div>
+      </div>
+    </div>
+
+    <aside class="screen-side">
+      <div class="side-block">
+        <div class="side-label">화면 ID</div>
+        <div style="font-family:var(--font-mono);font-size:13px;color:var(--accent)">SCR-04 · /candidates</div>
+      </div>
+      <div class="side-block">
+        <div class="side-label">게이트 순서</div>
+        <ol class="side-list" style="counter-reset:item">
+          <li>유니버스 (KOSPI200+KOSDAQ150)</li>
+          <li>유동성 필터</li>
+          <li>TS Bucket ≥ S2 게이트</li>
+          <li>Factor 점수 ≥ 60</li>
+          <li>최종 + 가점 정렬</li>
+        </ol>
+      </div>
+      <div class="side-block">
+        <div class="side-label">권한</div>
+        <span class="role-pill full">운용자 R/W</span>
+        <span class="role-pill read">연구자 R</span>
+      </div>
+    </aside>
+  </div>
+</section>
+
+<!-- ============ SCR-05 주문/체결 ============ -->
+<section class="screen-section" id="scr-05">
+  <div class="screen-header">
+    <div class="screen-meta">
+      <span class="screen-id">SCR-05</span>
+      <span class="screen-status existing">EXISTING · 슬리피지 실측 비교 추가</span>
+    </div>
+    <h2 class="screen-title">주문 · 체결</h2>
+    <p class="screen-purpose">실시간 주문 큐와 체결 이력을 관리한다. 모든 체결 결과는 CostModel 가정과 자동 비교되어 슬리피지 실측치가 SCR-13으로 흘러간다.</p>
+  </div>
+
+  <div class="screen-body">
+    <div class="screen-main">
+      <div class="spec-block">
+        <div class="spec-label">와이어프레임</div>
+        <div class="wireframe">
+          <div class="wireframe-header">
+            <div class="wireframe-dots"><span></span><span></span><span></span></div>
+            <span class="wireframe-path">maps.local / orders</span>
+          </div>
+          <div class="wireframe-body">
+
+            <div class="toolbar">
+              <span class="toolbar-label">상태</span>
+              <button class="toolbar-btn primary">대기 (3)</button>
+              <button class="toolbar-btn">체결 (5)</button>
+              <button class="toolbar-btn">취소 (1)</button>
+              <div class="toolbar-divider"></div>
+              <span class="toolbar-label">자동주문</span>
+              <span class="toolbar-value"><span class="dot green"></span>활성</span>
+              <button class="toolbar-btn" style="margin-left:auto">긴급 정지</button>
+            </div>
+
+            <div class="layout-grid split-2-1">
+              <div>
+                <div class="spec-label">주문 큐 (시가 진입 대기)</div>
+                <table class="data-table">
+                  <thead><tr><th>전략</th><th>티커</th><th>방향</th><th class="num">수량</th><th class="num">스탑</th><th>상태</th></tr></thead>
+                  <tbody>
+                    <tr><td>Pullback</td><td class="accent">005930</td><td><span class="badge pass">BUY</span></td><td class="num">42</td><td class="num">68,500</td><td><span class="badge info">PENDING</span></td></tr>
+                    <tr><td>Pullback</td><td class="accent">000660</td><td><span class="badge pass">BUY</span></td><td class="num">15</td><td class="num">132,000</td><td><span class="badge info">PENDING</span></td></tr>
+                    <tr><td>ATH Trend</td><td class="accent">035720</td><td><span class="badge pass">BUY</span></td><td class="num">22</td><td class="num">42,300</td><td><span class="badge info">PENDING</span></td></tr>
+                  </tbody>
+                </table>
+              </div>
+              <div>
+                <div class="spec-label">금일 슬리피지 실측</div>
+                <div class="kpi-card" style="margin-bottom:8px"><div class="kpi-label">대형주 평균</div><div class="kpi-value">0.04%</div><div class="kpi-delta">가정 0.05% (−20%)</div></div>
+                <div class="kpi-card red"><div class="kpi-label">중소형주 평균</div><div class="kpi-value red">0.22%</div><div class="kpi-delta down">가정 0.15% (+47%)</div></div>
+                <p class="prose" style="font-size:11px;color:var(--text-3);margin-top:10px">중소형 슬리피지가 가정 +50% 임계 근접 → SCR-13 모니터에서 추세 확인 필요</p>
+              </div>
+            </div>
+
+            <div style="margin-top:16px">
+              <div class="spec-label">금일 체결 이력</div>
+              <table class="data-table">
+                <thead><tr><th>시각</th><th>티커</th><th>방향</th><th class="num">체결가</th><th class="num">VWAP 대비</th><th class="num">슬립</th><th>상태</th></tr></thead>
+                <tbody>
+                  <tr><td>09:00:12</td><td class="accent">005380</td><td><span class="badge fail">SELL</span></td><td class="num">198,500</td><td class="num">−0.03%</td><td class="num pos">+0.03%</td><td><span class="badge pass">FILLED</span></td></tr>
+                  <tr><td>09:00:18</td><td class="accent">051910</td><td><span class="badge pass">BUY</span></td><td class="num">412,000</td><td class="num">+0.21%</td><td class="num neg">−0.21%</td><td><span class="badge pass">FILLED</span></td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="spec-block">
+        <div class="spec-label">주요 시나리오</div>
+        <div class="scenario exception">
+          <div class="scenario-title">EX1 · 긴급 정지 (Kill Switch)</div>
+          <div class="scenario-steps">조건: 사용자가 [긴급 정지] 클릭 또는 LiveBacktestMonitor 트리거 발동
+처리: 모든 PENDING 주문 즉시 취소 + 자동주문 비활성 + 보유는 유지
+복구: 사용자가 명시적으로 [자동주문 재개] 승인 시까지 정지
+권한: 운용자/관리자만 가능</div>
+        </div>
+      </div>
+    </div>
+
+    <aside class="screen-side">
+      <div class="side-block">
+        <div class="side-label">화면 ID</div>
+        <div style="font-family:var(--font-mono);font-size:13px;color:var(--accent)">SCR-05 · /orders</div>
+      </div>
+      <div class="side-block">
+        <div class="side-label">실시간 갱신</div>
+        <div style="font-family:var(--font-mono);font-size:11px;color:var(--text-2)">WebSocket 1초 주기</div>
+      </div>
+      <div class="side-block">
+        <div class="side-label">권한</div>
+        <span class="role-pill full">운용자 R/W</span>
+        <span class="role-pill none">연구자 X</span>
+        <span class="role-pill full">관리자 R/W</span>
+      </div>
+    </aside>
+  </div>
+</section>
+
+<!-- ============ SCR-06 리스크/모니터 ============ -->
+<section class="screen-section" id="scr-06">
+  <div class="screen-header">
+    <div class="screen-meta">
+      <span class="screen-id">SCR-06</span>
+      <span class="screen-status existing">EXISTING · 한도 게이지 보강</span>
+    </div>
+    <h2 class="screen-title">리스크 · 모니터</h2>
+    <p class="screen-purpose">전략군별 위험 한도, Exposure Cap, 총위험 게이지를 실시간으로 본다. 매트릭스 셀에 따른 한도 비율이 즉시 반영된다.</p>
+  </div>
+
+  <div class="screen-body">
+    <div class="screen-main">
+      <div class="spec-block">
+        <div class="spec-label">와이어프레임</div>
+        <div class="wireframe">
+          <div class="wireframe-header">
+            <div class="wireframe-dots"><span></span><span></span><span></span></div>
+            <span class="wireframe-path">maps.local / risk</span>
+          </div>
+          <div class="wireframe-body">
+
+            <div class="kpi-grid">
+              <div class="kpi-card"><div class="kpi-label">단기 총위험</div><div class="kpi-value gold">1.4%</div><div class="kpi-delta">한도 2% × 0.5 = 1.0%</div></div>
+              <div class="kpi-card"><div class="kpi-label">장기 총위험</div><div class="kpi-value">1.8%</div><div class="kpi-delta">한도 3% × 0.5 = 1.5%</div></div>
+              <div class="kpi-card red"><div class="kpi-label">최대 노출 종목</div><div class="kpi-value red">9.2%</div><div class="kpi-delta">Cap 10%</div></div>
+              <div class="kpi-card"><div class="kpi-label">동시 보유 수</div><div class="kpi-value">12</div></div>
+            </div>
+
+            <div class="layout-grid cols-2">
+              <div>
+                <div class="spec-label">전략군 위험 게이지</div>
+                <div style="margin:8px 0">
+                  <div style="display:flex;justify-content:space-between;font-size:11px;font-family:var(--font-mono);margin-bottom:4px"><span>Pullback</span><span class="accent">1.4% / 1.0% (×140%)</span></div>
+                  <div class="progress-bar"><div class="progress-fill red" style="width:100%"></div></div>
+                </div>
+                <div style="margin:8px 0">
+                  <div style="display:flex;justify-content:space-between;font-size:11px;font-family:var(--font-mono);margin-bottom:4px"><span>ATH Trend</span><span>1.8% / 1.5%</span></div>
+                  <div class="progress-bar"><div class="progress-fill" style="width:90%"></div></div>
+                </div>
+                <div style="margin:8px 0">
+                  <div style="display:flex;justify-content:space-between;font-size:11px;font-family:var(--font-mono);margin-bottom:4px"><span>Multi-Asset</span><span>0.5% / 1.0%</span></div>
+                  <div class="progress-bar"><div class="progress-fill green" style="width:50%"></div></div>
+                </div>
+                <p class="prose" style="font-size:11px;color:var(--text-3);margin-top:12px">Pullback 한도 초과 → SCR-04에서 신규 진입 자동 제한</p>
+              </div>
+              <div>
+                <div class="spec-label">상관관계 매트릭스</div>
+                <div class="chart-placeholder" style="height:200px">CORRELATION HEATMAP · 12 holdings</div>
+              </div>
+            </div>
+
+            <div style="margin-top:16px">
+              <div class="spec-label">현재 보유 (12)</div>
+              <table class="data-table">
+                <thead><tr><th>티커</th><th>전략</th><th class="num">진입가</th><th class="num">현재가</th><th class="num">손익</th><th class="num">노출</th><th>스탑</th></tr></thead>
+                <tbody>
+                  <tr><td class="accent">005930</td><td>Pullback</td><td class="num">71,200</td><td class="num">73,500</td><td class="num pos">+3.2%</td><td class="num">9.2%</td><td class="num">68,500</td></tr>
+                  <tr><td class="accent">000660</td><td>Pullback</td><td class="num">135,000</td><td class="num">142,000</td><td class="num pos">+5.2%</td><td class="num">7.4%</td><td class="num">132,000</td></tr>
+                  <tr><td class="accent">035420</td><td>ATH Trend</td><td class="num">182,000</td><td class="num">175,500</td><td class="num neg">−3.6%</td><td class="num">5.1%</td><td class="num">170,000</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <aside class="screen-side">
+      <div class="side-block">
+        <div class="side-label">화면 ID</div>
+        <div style="font-family:var(--font-mono);font-size:13px;color:var(--accent)">SCR-06 · /risk</div>
+      </div>
+      <div class="side-block">
+        <div class="side-label">한도 정의</div>
+        <ul class="side-list">
+          <li>단기 총위험 ≤ 2%</li>
+          <li>장기 총위험 ≤ 3%</li>
+          <li>단일 종목 ≤ 10%</li>
+          <li>매트릭스 셀별 비율 적용</li>
+        </ul>
+      </div>
+      <div class="side-block">
+        <div class="side-label">권한</div>
+        <span class="role-pill full">운용자 R/W</span>
+        <span class="role-pill read">연구자 R</span>
+        <span class="role-pill full">관리자 R/W</span>
+      </div>
+    </aside>
+  </div>
+</section>
+
+<!-- ============ SCR-07 백테스트 콘솔 ============ -->
+<section class="screen-section" id="scr-07">
+  <div class="screen-header">
+    <div class="screen-meta">
+      <span class="screen-id">SCR-07</span>
+      <span class="screen-status existing">EXISTING · Plateau/WFA/MC 자동 동반</span>
+    </div>
+    <h2 class="screen-title">백테스트 콘솔</h2>
+    <p class="screen-purpose">단일 전략 백테스트 실행 시 Plateau, Walk-Forward, Monte Carlo, Block Bootstrap이 자동으로 동반 실행된다. 결과는 SCR-08, SCR-11로 분기되어 표시된다.</p>
+  </div>
+
+  <div class="screen-body">
+    <div class="screen-main">
+      <div class="spec-block">
+        <div class="spec-label">와이어프레임</div>
+        <div class="wireframe">
+          <div class="wireframe-header">
+            <div class="wireframe-dots"><span></span><span></span><span></span></div>
+            <span class="wireframe-path">maps.local / backtest</span>
+          </div>
+          <div class="wireframe-body">
+
+            <div class="layout-grid cols-2">
+              <div>
+                <div class="spec-label">실행 설정</div>
+                <table class="comp-table">
+                  <tbody>
+                    <tr><td>전략</td><td>Pullback v3</td></tr>
+                    <tr><td>기간</td><td>2015-01 ~ 2026-04 (IS 70% / OOS 30%)</td></tr>
+                    <tr><td>유니버스</td><td>KOSPI200 + KOSDAQ150</td></tr>
+                    <tr><td>비용 모델</td><td>CostModel 2026Q2 기본값</td></tr>
+                    <tr><td>동반 검증</td><td>Plateau ✓ · WFA ✓ · MC ✓ · Block Bootstrap ✓</td></tr>
+                    <tr><td>예상 시간</td><td>~ 2시간 30분</td></tr>
+                  </tbody>
+                </table>
+                <button class="toolbar-btn primary" style="margin-top:12px">▶ 실행</button>
+                <button class="toolbar-btn" style="margin-top:12px">대기 큐에 등록</button>
+              </div>
+              <div>
+                <div class="spec-label">실행 진행률</div>
+                <div style="margin:8px 0">
+                  <div style="display:flex;justify-content:space-between;font-size:11px;font-family:var(--font-mono);margin-bottom:4px"><span>1/5 단일 백테스트</span><span class="pos">완료</span></div>
+                  <div class="progress-bar"><div class="progress-fill green" style="width:100%"></div></div>
+                </div>
+                <div style="margin:8px 0">
+                  <div style="display:flex;justify-content:space-between;font-size:11px;font-family:var(--font-mono);margin-bottom:4px"><span>2/5 Plateau 그리드</span><span class="accent">73%</span></div>
+                  <div class="progress-bar"><div class="progress-fill" style="width:73%"></div></div>
+                </div>
+                <div style="margin:8px 0">
+                  <div style="display:flex;justify-content:space-between;font-size:11px;font-family:var(--font-mono);margin-bottom:4px"><span>3/5 Walk-Forward</span><span style="color:var(--text-3)">대기</span></div>
+                  <div class="progress-bar"><div class="progress-fill" style="width:0%"></div></div>
+                </div>
+                <div style="margin:8px 0">
+                  <div style="display:flex;justify-content:space-between;font-size:11px;font-family:var(--font-mono);margin-bottom:4px"><span>4/5 Monte Carlo</span><span style="color:var(--text-3)">대기</span></div>
+                  <div class="progress-bar"><div class="progress-fill" style="width:0%"></div></div>
+                </div>
+                <div style="margin:8px 0">
+                  <div style="display:flex;justify-content:space-between;font-size:11px;font-family:var(--font-mono);margin-bottom:4px"><span>5/5 Block Bootstrap</span><span style="color:var(--text-3)">대기</span></div>
+                  <div class="progress-bar"><div class="progress-fill" style="width:0%"></div></div>
+                </div>
+              </div>
+            </div>
+
+            <div style="margin-top:20px">
+              <div class="spec-label">결과 요약 (1/5 완료)</div>
+              <div class="kpi-grid">
+                <div class="kpi-card green"><div class="kpi-label">Net CAGR</div><div class="kpi-value green">+22.4%</div></div>
+                <div class="kpi-card red"><div class="kpi-label">MDD</div><div class="kpi-value red">−14.8%</div></div>
+                <div class="kpi-card"><div class="kpi-label">Sharpe</div><div class="kpi-value">1.62</div></div>
+                <div class="kpi-card"><div class="kpi-label">거래 수</div><div class="kpi-value">348</div></div>
+                <div class="kpi-card"><div class="kpi-label">G2P</div><div class="kpi-value">2.18</div></div>
+              </div>
+              <p class="prose" style="font-size:12px;color:var(--text-3);margin-top:12px">전체 검증 완료 후 SCR-08 (Robustness)에 자동 등록됩니다.</p>
+            </div>
+
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <aside class="screen-side">
+      <div class="side-block">
+        <div class="side-label">화면 ID</div>
+        <div style="font-family:var(--font-mono);font-size:13px;color:var(--accent)">SCR-07 · /backtest</div>
+      </div>
+      <div class="side-block">
+        <div class="side-label">SLA</div>
+        <ul class="side-list">
+          <li>전체 ≤ 3시간</li>
+          <li>병렬 처리 (multiprocessing)</li>
+          <li>오프타임 배치 권장</li>
+        </ul>
+      </div>
+      <div class="side-block">
+        <div class="side-label">권한</div>
+        <span class="role-pill full">운용자 R/W</span>
+        <span class="role-pill full">연구자 R/W</span>
+      </div>
+    </aside>
+  </div>
+</section>
+
+<!-- ============ SCR-08 Trend Robustness ============ -->
+<section class="screen-section" id="scr-08">
+  <div class="screen-header">
+    <div class="screen-meta">
+      <span class="screen-id">SCR-08</span>
+      <span class="screen-status new">NEW · v2.6.1</span>
+    </div>
+    <h2 class="screen-title">Trend Robustness</h2>
+    <p class="screen-purpose">전략의 견고성을 한 화면에 모은다. Plateau heatmap, Monte Carlo vs Block Bootstrap MDD 분포, Tradeability 점수가 같이 표시되어 "이 전략을 실계좌에 보내도 되는가"의 판정 근거가 된다.</p>
+  </div>
+
+  <div class="screen-body">
+    <div class="screen-main">
+
+      <div class="spec-block">
+        <div class="spec-label">와이어프레임</div>
+        <div class="wireframe">
+          <div class="wireframe-header">
+            <div class="wireframe-dots"><span></span><span></span><span></span></div>
+            <span class="wireframe-path">maps.local / robustness?strategy=str_001</span>
+          </div>
+          <div class="wireframe-body">
+
+            <div class="toolbar">
+              <span class="toolbar-label">전략</span>
+              <button class="toolbar-btn primary">Pullback v3</button>
+              <button class="toolbar-btn">ATH Outlier</button>
+              <button class="toolbar-btn">Multi-Asset</button>
+              <div class="toolbar-divider"></div>
+              <span class="toolbar-label">가중치 프리셋</span>
+              <button class="toolbar-btn">Conservative</button>
+              <button class="toolbar-btn primary">Balanced</button>
+              <button class="toolbar-btn">Growth</button>
+              <button class="toolbar-btn" style="margin-left:auto">v2.6.2 재실행</button>
+            </div>
+
+            <div class="kpi-grid">
+              <div class="kpi-card green"><div class="kpi-label">Tradeability</div><div class="kpi-value gold">82</div><div class="kpi-delta">≥ 75 LIVE 후보</div></div>
+              <div class="kpi-card"><div class="kpi-label">Plateau</div><div class="kpi-value">78</div><div class="kpi-delta">robust 등급</div></div>
+              <div class="kpi-card"><div class="kpi-label">MC MDD p95</div><div class="kpi-value">15.2%</div><div class="kpi-delta">한도 18% 대비 84%</div></div>
+              <div class="kpi-card"><div class="kpi-label">BBoot MDD p95</div><div class="kpi-value">17.8%</div><div class="kpi-delta">MC 대비 1.17×</div></div>
+              <div class="kpi-card"><div class="kpi-label">OOS / IS</div><div class="kpi-value">0.82</div><div class="kpi-delta">≥ 0.6 통과</div></div>
+              <div class="kpi-card"><div class="kpi-label">Cross-Market</div><div class="kpi-value">75</div><div class="kpi-delta">3/4 차원</div></div>
+            </div>
+
+            <div class="layout-grid cols-2">
+              <div>
+                <div class="spec-label">Parameter Plateau Heatmap</div>
+                <div class="chart-placeholder" style="height:240px">HEATMAP · fast (X) × slow (Y) · color=Gain-to-Pain</div>
+                <table class="data-table" style="font-size:11px;margin-top:8px">
+                  <tbody>
+                    <tr><td>최적점</td><td class="accent">fast=40, slow=120</td><td class="num">G2P 2.18</td></tr>
+                    <tr><td>이웃 9개</td><td>Manhattan d=1</td><td class="num pos">7/9 통과 = 78점</td></tr>
+                  </tbody>
+                </table>
+              </div>
+              <div>
+                <div class="spec-label">MC vs Block Bootstrap MDD 분포</div>
+                <div class="chart-placeholder" style="height:240px">HISTOGRAM × 2 overlay · 1000 simulations</div>
+                <p class="prose" style="font-size:11px;color:var(--text-3);margin-top:10px">Block Bootstrap의 분포가 오른쪽으로 밀려 있다 — 군집성 보존이 MDD를 14% 더 보수적으로 잡았다. 1.17× 비율은 임계 1.5× 미만으로 통과.</p>
+              </div>
+            </div>
+
+            <div style="margin-top:20px">
+              <div class="spec-label">Tradeability 서브스코어 분해</div>
+              <div class="layout-grid cols-4">
+                <div class="kpi-card"><div class="kpi-label">Robustness (×0.30)</div><div class="kpi-value">76</div></div>
+                <div class="kpi-card"><div class="kpi-label">Risk (×0.30)</div><div class="kpi-value">85</div></div>
+                <div class="kpi-card"><div class="kpi-label">Recovery (×0.20)</div><div class="kpi-value">82</div></div>
+                <div class="kpi-card"><div class="kpi-label">Return (×0.20)</div><div class="kpi-value">88</div></div>
+              </div>
+              <p class="prose" style="font-size:11px;color:var(--text-3);margin-top:10px">최종 = 0.30×76 + 0.30×85 + 0.20×82 + 0.20×88 = 81.9 → 82</p>
+            </div>
+
+          </div>
+        </div>
+      </div>
+
+      <div class="spec-block">
+        <div class="spec-label">컴포넌트 사양</div>
+        <table class="comp-table">
+          <thead><tr><th>ID</th><th>타입</th><th>데이터 소스</th><th>액션</th></tr></thead>
+          <tbody>
+            <tr><td>FILTER-STRATEGY</td><td><span class="type">Tab Group</span></td><td>strategy_comparison_summary</td><td>전략 전환 시 전체 재로드</td></tr>
+            <tr><td>FILTER-PRESET</td><td><span class="type">Toggle Group</span></td><td>WEIGHT_PRESETS</td><td>변경 시 Tradeability 즉시 재계산 + audit 로그</td></tr>
+            <tr><td>KPI-ROBUSTNESS</td><td><span class="type">KPI Card × 6</span></td><td>parameter_plateau_results, monte_carlo_sequence_results</td><td>호버 시 임계값 비교</td></tr>
+            <tr><td>HEATMAP-PLATEAU</td><td><span class="type">2D Heatmap</span></td><td>parameter_plateau_results (전체 그리드)</td><td>셀 클릭 시 해당 파라미터 백테스트 결과</td></tr>
+            <tr><td>HIST-MCBOOT</td><td><span class="type">Overlay Histogram</span></td><td>method='monte_carlo' / 'block_bootstrap'</td><td>p95 임계선 표시</td></tr>
+            <tr><td>BREAKDOWN-SUB</td><td><span class="type">KPI Card × 4</span></td><td>tradeability_score 분해</td><td>가중치 변경 즉시 반영</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="spec-block">
+        <div class="spec-label">주요 시나리오</div>
+        <div class="scenario">
+          <div class="scenario-title">S1 · 백테스트 후 견고성 확인 (정상)</div>
+          <div class="scenario-steps">1. SCR-07에서 풀 스위트 완료 → SCR-08 자동 등록 알림
+2. Tradeability 82 (LIVE 후보) 확인
+3. Plateau heatmap에서 최적점이 가운데 위치 → 가장자리 과적합 아님 확인
+4. MC vs BBoot 비율 1.17 (안전) → SCR-02에서 승격 후보 처리</div>
+        </div>
+        <div class="scenario">
+          <div class="scenario-title">S2 · 가중치 프리셋 비교 (의사결정)</div>
+          <div class="scenario-steps">1. Balanced에서 Tradeability 82 → Conservative 클릭
+2. 자동 재계산: Risk 가중치 0.35로 ↑ → 82 → 79
+3. Live 임계 75 유지 통과 → 두 프리셋 모두 LIVE 후보
+4. 사용자 메모 "Conservative 기준에서도 통과" 입력 → audit 로그 기록</div>
+        </div>
+        <div class="scenario exception">
+          <div class="scenario-title">EX1 · MC 통과 / Block Bootstrap 실패</div>
+          <div class="scenario-steps">조건: MC MDD p95 = 17%, BBoot MDD p95 = 28% → 비율 1.65 (임계 1.5 초과)
+표시: BBoot KPI 카드 빨강 + 토스트 "군집성 위험 높음"
+정책: Tradeability와 별개로 PromotionGate에서 mock→live_small 차단
+의미: 평균적으론 견디지만 연속 손실이 몰리면 무너지는 전략</div>
+        </div>
+        <div class="scenario exception">
+          <div class="scenario-title">EX2 · Cross-Market 데이터 누락</div>
+          <div class="scenario-steps">조건: 일본 시장 데이터 라이선스 만료 등으로 4차원 중 2차원만 검증
+처리: Cross-Market KPI에 "2/4 차원" + 회색 표시
+판정: KRX + 미국 최소 2차원 통과 시 75점 부여 (설계서 §10 정책)
+사용자 행동: 추후 데이터 확보 시 재실행</div>
+        </div>
+      </div>
+
+    </div>
+
+    <aside class="screen-side">
+      <div class="side-block">
+        <div class="side-label">화면 ID</div>
+        <div style="font-family:var(--font-mono);font-size:13px;color:var(--accent)">SCR-08 · /robustness</div>
+      </div>
+      <div class="side-block">
+        <div class="side-label">우선순위</div>
+        <span class="badge live">P0 · v2.6.2 핵심</span>
+      </div>
+      <div class="side-block">
+        <div class="side-label">통과 임계</div>
+        <ul class="side-list">
+          <li>Tradeability ≥ 75 → LIVE</li>
+          <li>≥ 60 → MOCK 후보</li>
+          <li>Plateau ≥ 70</li>
+          <li>BBoot/MC ≤ 1.5×</li>
+        </ul>
+      </div>
+      <div class="side-block">
+        <div class="side-label">연결 화면</div>
+        <ul class="side-list">
+          <li>SCR-07 백테스트 (입력)</li>
+          <li>SCR-11 WFA 리포트</li>
+          <li>SCR-02 승격 처리</li>
+        </ul>
+      </div>
+      <div class="side-block">
+        <div class="side-label">권한</div>
+        <span class="role-pill full">운용자 R/W</span>
+        <span class="role-pill full">연구자 R/W</span>
+        <span class="role-pill full">관리자 R/W</span>
+        <div style="font-size:11px;color:var(--text-3);margin-top:8px">프리셋 변경은 운용자/관리자만</div>
+      </div>
+    </aside>
+  </div>
+</section>
+
+<!-- ============ SCR-09 TrendStrength Monitor ============ -->
+<section class="screen-section" id="scr-09">
+  <div class="screen-header">
+    <div class="screen-meta">
+      <span class="screen-id">SCR-09</span>
+      <span class="screen-status new">NEW · v2.6.1</span>
+    </div>
+    <h2 class="screen-title">TrendStrength Monitor</h2>
+    <p class="screen-purpose">유니버스 전체의 추세 강도 분포를 5단계(S1~S5)로 가시화한다. 결측 종목 수, 주봉 확인 통과율, 업종별 쏠림을 같이 본다. 시장 전체의 추세 합의도가 무너지는 시점을 가장 먼저 감지하는 화면.</p>
+  </div>
+
+  <div class="screen-body">
+    <div class="screen-main">
+      <div class="spec-block">
+        <div class="spec-label">와이어프레임</div>
+        <div class="wireframe">
+          <div class="wireframe-header">
+            <div class="wireframe-dots"><span></span><span></span><span></span></div>
+            <span class="wireframe-path">maps.local / trend-strength</span>
+          </div>
+          <div class="wireframe-body">
+
+            <div class="toolbar">
+              <span class="toolbar-label">유니버스</span>
+              <button class="toolbar-btn primary">전체 (350)</button>
+              <button class="toolbar-btn">KOSPI200</button>
+              <button class="toolbar-btn">KOSDAQ150</button>
+              <div class="toolbar-divider"></div>
+              <span class="toolbar-label">기준일</span>
+              <span class="toolbar-value">2026-05-02</span>
+              <div class="toolbar-divider"></div>
+              <span class="toolbar-label">시계열</span>
+              <span class="toolbar-value">최근 30영업일</span>
+            </div>
+
+            <div class="kpi-grid">
+              <div class="kpi-card green"><div class="kpi-label">S1 강세</div><div class="kpi-value green">68</div><div class="kpi-delta">19.4%</div></div>
+              <div class="kpi-card"><div class="kpi-label">S2 약한 강세</div><div class="kpi-value">94</div><div class="kpi-delta">26.9%</div></div>
+              <div class="kpi-card"><div class="kpi-label">S3 혼조</div><div class="kpi-value">112</div><div class="kpi-delta">32.0%</div></div>
+              <div class="kpi-card red"><div class="kpi-label">S4 약한 약세</div><div class="kpi-value red">58</div><div class="kpi-delta">16.6%</div></div>
+              <div class="kpi-card red"><div class="kpi-label">S5 약세</div><div class="kpi-value red">10</div><div class="kpi-delta">2.9%</div></div>
+              <div class="kpi-card"><div class="kpi-label">결측</div><div class="kpi-value">8</div><div class="kpi-delta">2.3%</div></div>
+            </div>
+
+            <div class="layout-grid cols-2">
+              <div>
+                <div class="spec-label">5단계 분포 추이 (30영업일)</div>
+                <div class="chart-placeholder" style="height:200px">STACKED AREA · S1 ~ S5 + 결측</div>
+                <p class="prose" style="font-size:11px;color:var(--text-3);margin-top:10px">S1+S2 합계가 50% 미만으로 떨어지면 시장 전체 추세 약화 신호. 현재 46.3% → 주의 구간.</p>
+              </div>
+              <div>
+                <div class="spec-label">업종별 5단계 쏠림</div>
+                <div class="chart-placeholder" style="height:200px">HORIZONTAL STACKED BAR · sector × bucket</div>
+              </div>
+            </div>
+
+            <div style="margin-top:20px">
+              <div class="spec-label">주봉 확인 매트릭스 (현재)</div>
+              <table class="data-table">
+                <thead><tr><th></th><th class="num">Weekly Pass</th><th class="num">Weekly Fail</th><th class="num">합계</th></tr></thead>
+                <tbody>
+                  <tr><td>S1+S2 (강세)</td><td class="num pos">128</td><td class="num neg">34</td><td class="num">162</td></tr>
+                  <tr><td>S3 (혼조)</td><td class="num">71</td><td class="num">41</td><td class="num">112</td></tr>
+                  <tr><td>S4+S5 (약세)</td><td class="num">12</td><td class="num neg">56</td><td class="num">68</td></tr>
+                </tbody>
+              </table>
+              <p class="prose" style="font-size:11px;color:var(--text-3);margin-top:10px">강세 종목 중 Weekly Fail 비율이 21% → 단기 과열 가능성. 신규 진입 시 주봉 통과 종목 우선.</p>
+            </div>
+
+            <div style="margin-top:20px">
+              <div class="spec-label">결측 종목 (insufficient_data, 8건)</div>
+              <table class="data-table" style="font-size:11px">
+                <thead><tr><th>티커</th><th>종목명</th><th>상장일</th><th class="num">상장일수</th><th>사유</th></tr></thead>
+                <tbody>
+                  <tr><td class="accent">123456</td><td>(예시) 신규IPO-A</td><td>2026-02-15</td><td class="num">76</td><td>상장 100일 미만</td></tr>
+                  <tr><td class="accent">234567</td><td>(예시) 신규IPO-B</td><td>2026-03-08</td><td class="num">55</td><td>상장 100일 미만</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="spec-block">
+        <div class="spec-label">컴포넌트 사양</div>
+        <table class="comp-table">
+          <thead><tr><th>ID</th><th>타입</th><th>데이터 소스</th><th>액션</th></tr></thead>
+          <tbody>
+            <tr><td>KPI-BUCKETS</td><td><span class="type">KPI Card × 6</span></td><td>trend_strength_scores (timeframe='daily')</td><td>카드 클릭 시 종목 리스트</td></tr>
+            <tr><td>CHART-DIST-30D</td><td><span class="type">Stacked Area</span></td><td>최근 30일 일별 분포</td><td>호버 시 일자별 비율</td></tr>
+            <tr><td>CHART-SECTOR</td><td><span class="type">Stacked Bar</span></td><td>sector × bucket pivot</td><td>업종 클릭 시 SCR-04로 이동 (필터 적용)</td></tr>
+            <tr><td>TBL-WEEKLY-MX</td><td><span class="type">DataTable</span></td><td>JOIN trend_strength_scores (weekly)</td><td>셀 클릭 시 해당 조합 종목 리스트</td></tr>
+            <tr><td>TBL-INSUFFICIENT</td><td><span class="type">DataTable</span></td><td>trend_state='insufficient_data'</td><td>—</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="spec-block">
+        <div class="spec-label">주요 시나리오</div>
+        <div class="scenario">
+          <div class="scenario-title">S1 · 시장 전환 감지</div>
+          <div class="scenario-steps">1. 사용자가 매일 09:00 출근 후 SCR-09 진입 (요청 갱신은 매일 08:40)
+2. S1+S2 합계가 전일 52% → 오늘 46% (-6%p)
+3. 추이 차트에서 5일 연속 하락 확인
+4. SCR-03 장세 페이지 이동 → MarketRegime 매트릭스 셀 변동 점검</div>
+        </div>
+        <div class="scenario">
+          <div class="scenario-title">S2 · 업종 쏠림 분석</div>
+          <div class="scenario-steps">1. 업종별 막대에서 "반도체" S1 비율 80% 발견
+2. 막대 클릭 → SCR-04에서 반도체 + S1 필터 자동 적용
+3. 후보 종목들의 Factor 점수 + 노출 한도 점검</div>
+        </div>
+        <div class="scenario exception">
+          <div class="scenario-title">EX1 · 결측 비율 5% 초과</div>
+          <div class="scenario-steps">조건: insufficient_data 종목 비율 ≥ 5% (현재 2.3%, 임계 미만)
+표시: 결측 KPI 카드 빨강 + 토스트 "유니버스 데이터 품질 점검 필요"
+대응: SCR-14 (Data Quality)로 이동, 데이터 갱신 로그 확인</div>
+        </div>
+      </div>
+    </div>
+
+    <aside class="screen-side">
+      <div class="side-block">
+        <div class="side-label">화면 ID</div>
+        <div style="font-family:var(--font-mono);font-size:13px;color:var(--accent)">SCR-09 · /trend-strength</div>
+      </div>
+      <div class="side-block">
+        <div class="side-label">5단계 정의</div>
+        <ul class="side-list">
+          <li>S1 [80,100]</li>
+          <li>S2 [60,80)</li>
+          <li>S3 [40,60)</li>
+          <li>S4 [20,40)</li>
+          <li>S5 [0,20)</li>
+        </ul>
+      </div>
+      <div class="side-block">
+        <div class="side-label">갱신 주기</div>
+        <ul class="side-list">
+          <li>일봉 TS: 매일 08:40</li>
+          <li>주봉 확인: 금요일 16:20</li>
+        </ul>
+      </div>
+      <div class="side-block">
+        <div class="side-label">권한</div>
+        <span class="role-pill full">운용자 R</span>
+        <span class="role-pill read">연구자 R</span>
+        <span class="role-pill full">관리자 R/W</span>
+      </div>
+    </aside>
+  </div>
+</section>
+
+<!-- ============ SCR-10 Research Strategies ============ -->
+<section class="screen-section" id="scr-10">
+  <div class="screen-header">
+    <div class="screen-meta">
+      <span class="screen-id">SCR-10</span>
+      <span class="screen-status new">NEW · v2.6.1</span>
+    </div>
+    <h2 class="screen-title">Research Strategies</h2>
+    <p class="screen-purpose">Donchian, Bollinger, Pyramiding 같은 연구 전략을 별도로 관리한다. 실계좌 자동주문은 절대 금지되며 PromotionGate 통과 현황을 한눈에 본다. 알림 신호와 모의 성과를 함께 표시한다.</p>
+  </div>
+
+  <div class="screen-body">
+    <div class="screen-main">
+      <div class="spec-block">
+        <div class="spec-label">와이어프레임</div>
+        <div class="wireframe">
+          <div class="wireframe-header">
+            <div class="wireframe-dots"><span></span><span></span><span></span></div>
+            <span class="wireframe-path">maps.local / research</span>
+          </div>
+          <div class="wireframe-body">
+
+            <div class="toolbar">
+              <span class="toolbar-label">상태</span>
+              <button class="toolbar-btn primary">전체 (3)</button>
+              <button class="toolbar-btn">Alert Only (2)</button>
+              <button class="toolbar-btn">Mock (1)</button>
+              <div class="toolbar-divider"></div>
+              <span class="toolbar-label" style="color:var(--red)"><span class="dot red"></span>실계좌 자동주문 금지</span>
+              <button class="toolbar-btn" style="margin-left:auto">PromotionGate 평가</button>
+            </div>
+
+            <table class="data-table">
+              <thead><tr>
+                <th>전략</th><th>유형</th><th>상태</th>
+                <th class="num">신호 누적</th>
+                <th class="num">모의 CAGR</th>
+                <th class="num">모의 MDD</th>
+                <th class="num">관찰 기간</th>
+                <th>다음 게이트</th>
+              </tr></thead>
+              <tbody>
+                <tr>
+                  <td class="accent">str_005</td><td>Donchian 100/50</td>
+                  <td><span class="badge mock">MOCK</span></td>
+                  <td class="num">182</td>
+                  <td class="num pos">+14.2%</td>
+                  <td class="num neg">−18.4%</td>
+                  <td class="num">4.2개월</td>
+                  <td><span class="badge warn">Mock→Live 대기 (3개월 충족, MC 검증 중)</span></td>
+                </tr>
+                <tr>
+                  <td class="accent">str_006</td><td>Bollinger Squeeze</td>
+                  <td><span class="badge alert">ALERT</span></td>
+                  <td class="num">68</td>
+                  <td class="num pos">+9.8%</td>
+                  <td class="num neg">−12.2%</td>
+                  <td class="num">3.5개월</td>
+                  <td><span class="badge fail">Alert→Mock 차단 (WFA fail)</span></td>
+                </tr>
+                <tr>
+                  <td class="accent">str_007</td><td>Pyramiding (R)</td>
+                  <td><span class="badge research">RESEARCH</span></td>
+                  <td class="num">—</td>
+                  <td class="num">—</td>
+                  <td class="num">—</td>
+                  <td class="num">—</td>
+                  <td>코드 리뷰 단계</td>
+                </tr>
+              </tbody>
+            </table>
+
+            <div class="layout-grid split-2-1" style="margin-top:20px">
+              <div>
+                <div class="spec-label">선택 전략 상세 (Donchian 100/50)</div>
+                <div class="chart-placeholder" style="height:200px">EQUITY CURVE (Mock) + Signal Markers</div>
+                <table class="data-table" style="font-size:11px;margin-top:8px">
+                  <tbody>
+                    <tr><td>최근 진입 신호</td><td class="accent">005930 삼성전자</td><td>2026-04-28 09:00</td><td>100일 고가 돌파</td></tr>
+                    <tr><td>최근 청산 신호</td><td class="accent">051910 LG화학</td><td>2026-04-15 09:00</td><td>50일 저가 이탈</td></tr>
+                  </tbody>
+                </table>
+              </div>
+              <div>
+                <div class="spec-label">PromotionGate 체크리스트</div>
+                <table class="comp-table" style="font-size:11px">
+                  <tbody>
+                    <tr><td>cagr_ratio</td><td><span class="badge pass">PASS</span> 0.74</td></tr>
+                    <tr><td>mc_within_limit</td><td><span class="badge warn">검증 중</span></td></tr>
+                    <tr><td>min_period</td><td><span class="badge pass">PASS</span> 4.2 / 3개월</td></tr>
+                    <tr><td>v2.6.2 추가</td><td>분모 0 방어 OK</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="spec-block">
+        <div class="spec-label">주요 시나리오</div>
+        <div class="scenario">
+          <div class="scenario-title">S1 · Mock → Live Small 평가</div>
+          <div class="scenario-steps">1. 일요일 02:00 자동 PromotionGate 평가 실행
+2. str_005 (Donchian) 3개월 충족 → MC MDD p95 = 26.3%, 한도 30% → 통과
+3. checks 모두 PASS → SCR-02 (전략관리) 승격 후보 큐에 자동 등록
+4. 사용자가 SCR-02에서 최종 승인 → str_005.stage = 'live_small'</div>
+        </div>
+        <div class="scenario exception">
+          <div class="scenario-title">EX1 · 자동주문 우회 시도 차단</div>
+          <div class="scenario-steps">조건: 사용자 또는 외부 API가 stage='alert_only' 전략에 대해 주문 요청
+처리: OrderManager가 stage 검증 → ResearchStrategyError 예외 발생
+표시: SCR-05 토스트 "Research 전략은 자동주문 불가. SCR-02에서 승격 후 시도"
+권한: 관리자 권한으로도 우회 불가</div>
+        </div>
+      </div>
+    </div>
+
+    <aside class="screen-side">
+      <div class="side-block">
+        <div class="side-label">화면 ID</div>
+        <div style="font-family:var(--font-mono);font-size:13px;color:var(--accent)">SCR-10 · /research</div>
+      </div>
+      <div class="side-block">
+        <div class="side-label">절대 규칙</div>
+        <ul class="side-list">
+          <li>Research → 자동주문 X</li>
+          <li>Alert Only → 알림만</li>
+          <li>Mock → 모의계좌만</li>
+          <li>Live Small 승격은 게이트만</li>
+        </ul>
+      </div>
+      <div class="side-block">
+        <div class="side-label">권한</div>
+        <span class="role-pill read">운용자 R</span>
+        <span class="role-pill full">연구자 R/W</span>
+        <span class="role-pill full">관리자 R/W</span>
+        <div style="font-size:11px;color:var(--text-3);margin-top:8px">신규 연구 전략 등록은 연구자/관리자만</div>
+      </div>
+    </aside>
+  </div>
+</section>
+
+<!-- ============ SCR-11 Walk-Forward Report ============ -->
+<section class="screen-section" id="scr-11">
+  <div class="screen-header">
+    <div class="screen-meta">
+      <span class="screen-id">SCR-11</span>
+      <span class="screen-status new">NEW · v2.6.1 → v2.6.2 4조건 강화</span>
+    </div>
+    <h2 class="screen-title">Walk-Forward Report</h2>
+    <p class="screen-purpose">5-fold WFA의 fold별 IS/OOS 성과를 모두 보여준다. v2.6.2부터 4조건 (Sharpe 평균 &gt; 0, 변동계수 ≤ 0.5, 음수 fold ≤ 1, OOS/IS G2P ≥ 0.6)을 모두 표시하여 "안정적으로 손실 나는 전략"이 통과되지 않도록 한다.</p>
+  </div>
+
+  <div class="screen-body">
+    <div class="screen-main">
+      <div class="spec-block">
+        <div class="spec-label">와이어프레임</div>
+        <div class="wireframe">
+          <div class="wireframe-header">
+            <div class="wireframe-dots"><span></span><span></span><span></span></div>
+            <span class="wireframe-path">maps.local / wfa?strategy=str_001</span>
+          </div>
+          <div class="wireframe-body">
+
+            <div class="toolbar">
+              <span class="toolbar-label">전략</span>
+              <span class="toolbar-value accent">Pullback v3</span>
+              <div class="toolbar-divider"></div>
+              <span class="toolbar-label">실행</span>
+              <span class="toolbar-value">2026-05-01 03:42:18</span>
+              <div class="toolbar-divider"></div>
+              <span class="toolbar-label">최종 판정</span>
+              <span class="badge pass" style="font-size:11px">PASS · 4/4</span>
+            </div>
+
+            <div class="kpi-grid">
+              <div class="kpi-card green"><div class="kpi-label">Sharpe 평균 &gt; 0</div><div class="kpi-value green">1.42</div><div class="kpi-delta">v2.6.2 신규 조건</div></div>
+              <div class="kpi-card green"><div class="kpi-label">변동계수</div><div class="kpi-value green">0.31</div><div class="kpi-delta">≤ 0.5 PASS</div></div>
+              <div class="kpi-card green"><div class="kpi-label">음수 fold 수</div><div class="kpi-value green">0</div><div class="kpi-delta">≤ 1 PASS</div></div>
+              <div class="kpi-card green"><div class="kpi-label">OOS/IS G2P</div><div class="kpi-value green">0.78</div><div class="kpi-delta">≥ 0.6 PASS</div></div>
+            </div>
+
+            <div style="margin-top:8px">
+              <div class="spec-label">5-fold 결과 (3년 IS / 1년 OOS)</div>
+              <table class="data-table">
+                <thead><tr>
+                  <th>Fold</th>
+                  <th>IS 기간</th>
+                  <th>OOS 기간</th>
+                  <th class="num">IS Sharpe</th>
+                  <th class="num">OOS Sharpe</th>
+                  <th class="num">IS G2P</th>
+                  <th class="num">OOS G2P</th>
+                  <th class="num">OOS/IS</th>
+                  <th>최적 파라미터</th>
+                </tr></thead>
+                <tbody>
+                  <tr><td>1</td><td>2018~2020</td><td>2021</td><td class="num">1.82</td><td class="num pos">1.18</td><td class="num">2.14</td><td class="num">1.62</td><td class="num">0.76</td><td class="accent">fast=40, slow=120</td></tr>
+                  <tr><td>2</td><td>2019~2021</td><td>2022</td><td class="num">2.01</td><td class="num pos">0.94</td><td class="num">2.31</td><td class="num">1.48</td><td class="num">0.64</td><td class="accent">fast=40, slow=110</td></tr>
+                  <tr><td>3</td><td>2020~2022</td><td>2023</td><td class="num">1.94</td><td class="num pos">1.78</td><td class="num">2.45</td><td class="num">2.18</td><td class="num">0.89</td><td class="accent">fast=40, slow=120</td></tr>
+                  <tr><td>4</td><td>2021~2023</td><td>2024</td><td class="num">1.76</td><td class="num pos">1.52</td><td class="num">2.08</td><td class="num">1.74</td><td class="num">0.84</td><td class="accent">fast=50, slow=120</td></tr>
+                  <tr><td>5</td><td>2022~2024</td><td>2025</td><td class="num">1.88</td><td class="num pos">1.68</td><td class="num">2.22</td><td class="num">1.82</td><td class="num">0.82</td><td class="accent">fast=40, slow=120</td></tr>
+                </tbody>
+              </table>
+              <p class="prose" style="font-size:11px;color:var(--text-3);margin-top:10px">5개 fold 중 4개가 fast=40, slow=120 또는 인접값에 수렴 → Plateau Score(78)와 일치하는 안정성 패턴</p>
+            </div>
+
+            <div class="layout-grid cols-2" style="margin-top:20px">
+              <div>
+                <div class="spec-label">fold별 OOS Sharpe</div>
+                <div class="chart-placeholder" style="height:160px">BAR CHART · 5 folds · target line at 0</div>
+              </div>
+              <div>
+                <div class="spec-label">IS vs OOS G2P 산점도</div>
+                <div class="chart-placeholder" style="height:160px">SCATTER · y=x reference + 0.6× line</div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      </div>
+
+      <div class="spec-block">
+        <div class="spec-label">주요 시나리오</div>
+        <div class="scenario">
+          <div class="scenario-title">S1 · 4조건 모두 통과 → 정상 승격 진행</div>
+          <div class="scenario-steps">1. SCR-07에서 풀 스위트 완료 → SCR-11 자동 등록
+2. KPI 4개 모두 녹색 → 최종 판정 PASS
+3. SCR-02 (전략관리) → "WFA: PASS" 배지 표시
+4. PromotionGate alert→mock 자동 통과</div>
+        </div>
+        <div class="scenario exception">
+          <div class="scenario-title">EX1 · "안정적으로 나쁜" 전략 차단 (v2.6.2 핵심)</div>
+          <div class="scenario-steps">조건: 모든 fold OOS Sharpe = -0.32 (균일하게 음수)
+v2.6.1 판정: 변동계수 0 → "매우 안정적" PASS (오판)
+v2.6.2 판정: Sharpe 평균 = -0.32 &lt; 0 → 즉시 FAIL
+표시: 첫 KPI 카드 빨강 "Sharpe 평균 ≤ 0 차단"
+의미: 일관되게 손실 나는 전략은 변동성이 낮아도 통과 불가</div>
+        </div>
+        <div class="scenario exception">
+          <div class="scenario-title">EX2 · 특정 fold 한정 작동 차단</div>
+          <div class="scenario-steps">조건: fold 1, 2, 3, 4 음수 / fold 5만 양수 (특정 시기 한정)
+판정: neg_count = 4 &gt; 1 → FAIL (3번째 조건 위반)
+표시: "음수 fold 수" KPI 빨강
+의미: 특정 시장 환경에서만 작동하는 전략 — 검증 통과 불가</div>
+        </div>
+      </div>
+    </div>
+
+    <aside class="screen-side">
+      <div class="side-block">
+        <div class="side-label">화면 ID</div>
+        <div style="font-family:var(--font-mono);font-size:13px;color:var(--accent)">SCR-11 · /wfa</div>
+      </div>
+      <div class="side-block">
+        <div class="side-label">v2.6.2 변경</div>
+        <ul class="side-list">
+          <li>Sharpe 평균 &gt; 0 신규</li>
+          <li>4조건 AND 강화</li>
+          <li>1조건만 깨져도 FAIL</li>
+        </ul>
+      </div>
+      <div class="side-block">
+        <div class="side-label">우회 정책</div>
+        <div style="font-size:12px;color:var(--text-1)">사용자 메모로 통과 사유를 덮어쓸 수 없음. 운용자/관리자 권한으로도 우회 불가.</div>
+      </div>
+      <div class="side-block">
+        <div class="side-label">권한</div>
+        <span class="role-pill read">운용자 R</span>
+        <span class="role-pill full">연구자 R</span>
+        <span class="role-pill full">관리자 R</span>
+      </div>
+    </aside>
+  </div>
+</section>
+
+<!-- ============ SCR-12 Cost Sensitivity ============ -->
+<section class="screen-section" id="scr-12">
+  <div class="screen-header">
+    <div class="screen-meta">
+      <span class="screen-id">SCR-12</span>
+      <span class="screen-status new">NEW · v2.6.1</span>
+    </div>
+    <h2 class="screen-title">Cost Sensitivity</h2>
+    <p class="screen-purpose">CostModel 가정값(거래세 0.18%, 슬리피지 대형주 0.05% / 중소형 0.15%)이 ±50% 변동했을 때 Net CAGR이 어떻게 바뀌는지 본다. 실측치가 가정에서 멀어지면 SCR-13 Live Monitor와 연동되어 알림이 발생한다.</p>
+  </div>
+
+  <div class="screen-body">
+    <div class="screen-main">
+      <div class="spec-block">
+        <div class="spec-label">와이어프레임</div>
+        <div class="wireframe">
+          <div class="wireframe-header">
+            <div class="wireframe-dots"><span></span><span></span><span></span></div>
+            <span class="wireframe-path">maps.local / cost-sensitivity</span>
+          </div>
+          <div class="wireframe-body">
+
+            <div class="toolbar">
+              <span class="toolbar-label">전략</span>
+              <button class="toolbar-btn primary">Pullback v3</button>
+              <button class="toolbar-btn">ATH Outlier</button>
+              <button class="toolbar-btn">Multi-Asset</button>
+              <div class="toolbar-divider"></div>
+              <span class="toolbar-label">CostModel 버전</span>
+              <span class="toolbar-value">2026Q2 (2026-04-01 적용)</span>
+              <button class="toolbar-btn" style="margin-left:auto">분기 가정 리뷰</button>
+            </div>
+
+            <div class="layout-grid cols-2">
+              <div>
+                <div class="spec-label">현재 CostModel 가정 (KRW 기준)</div>
+                <table class="data-table">
+                  <tbody>
+                    <tr><td>증권거래세 (매도)</td><td class="num">0.18%</td><td>코스피·코스닥</td></tr>
+                    <tr><td>증권사 수수료 (왕복)</td><td class="num">0.015%</td><td>—</td></tr>
+                    <tr><td>슬리피지 대형주</td><td class="num">0.05%</td><td>시총 ≥ 5천억</td></tr>
+                    <tr><td>슬리피지 중소형주</td><td class="num">0.15%</td><td>시총 &lt; 5천억</td></tr>
+                    <tr><td>ETF 거래세</td><td class="num">0%</td><td>면제</td></tr>
+                  </tbody>
+                </table>
+              </div>
+              <div>
+                <div class="spec-label">금월 실측 vs 가정</div>
+                <table class="data-table">
+                  <thead><tr><th></th><th class="num">가정</th><th class="num">실측</th><th class="num">편차</th></tr></thead>
+                  <tbody>
+                    <tr><td>대형주 슬립</td><td class="num">0.05%</td><td class="num">0.04%</td><td class="num pos">−20%</td></tr>
+                    <tr><td>중소형 슬립</td><td class="num">0.15%</td><td class="num">0.22%</td><td class="num neg">+47%</td></tr>
+                    <tr><td>총 거래비용</td><td class="num">0.32%</td><td class="num">0.36%</td><td class="num neg">+12%</td></tr>
+                  </tbody>
+                </table>
+                <p class="prose" style="font-size:11px;color:var(--text-3);margin-top:10px">중소형 슬립 +47%는 가정 +50% 임계 근접. 추가 1주만 악화되면 SCR-13에서 자동 알림 발동.</p>
+              </div>
+            </div>
+
+            <div style="margin-top:20px">
+              <div class="spec-label">±50% 시나리오 Net CAGR 분석</div>
+              <div class="chart-placeholder" style="height:200px">SCENARIO LINE · slip × {-50%, -25%, 0%, +25%, +50%}</div>
+              <table class="data-table" style="font-size:11px;margin-top:8px">
+                <thead><tr><th>시나리오</th><th class="num">Net CAGR</th><th class="num">Net Sharpe</th><th class="num">Tradeability</th><th>상태</th></tr></thead>
+                <tbody>
+                  <tr><td>슬립 −50%</td><td class="num pos">+24.8%</td><td class="num">1.78</td><td class="num">86</td><td><span class="badge pass">LIVE</span></td></tr>
+                  <tr><td>슬립 −25%</td><td class="num pos">+23.6%</td><td class="num">1.70</td><td class="num">84</td><td><span class="badge pass">LIVE</span></td></tr>
+                  <tr style="background:rgba(212,168,92,0.08)"><td>가정 (0%)</td><td class="num pos">+22.4%</td><td class="num">1.62</td><td class="num">82</td><td><span class="badge pass">LIVE</span></td></tr>
+                  <tr><td>슬립 +25%</td><td class="num pos">+21.0%</td><td class="num">1.52</td><td class="num">79</td><td><span class="badge pass">LIVE</span></td></tr>
+                  <tr><td>슬립 +50%</td><td class="num pos">+19.6%</td><td class="num">1.42</td><td class="num">76</td><td><span class="badge pass">LIVE</span></td></tr>
+                </tbody>
+              </table>
+              <p class="prose" style="font-size:11px;color:var(--text-3);margin-top:10px">±50% 시나리오 모두 LIVE 임계 75 유지 → 비용 민감도가 안정적인 전략. 견고함의 또 다른 근거.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="spec-block">
+        <div class="spec-label">주요 시나리오</div>
+        <div class="scenario">
+          <div class="scenario-title">S1 · 분기 가정 리뷰 (분기 1일 04:00)</div>
+          <div class="scenario-steps">1. 자동 스케줄러가 review_cost_assumptions() 실행
+2. 직전 분기 평균 실측치 vs 가정 비교
+3. |편차| ≥ 15% 항목이 있으면 사용자에게 가정 갱신 권고
+4. 사용자가 [분기 가정 리뷰] 클릭 → 모달에서 새 가정값 입력 + audit 로그</div>
+        </div>
+        <div class="scenario exception">
+          <div class="scenario-title">EX1 · 슬리피지 가정 +50% 초과 발생</div>
+          <div class="scenario-steps">조건: 월 평균 실측 슬리피지 / 가정 슬리피지 &gt; 1.5
+처리: SCR-13 LiveMonitor가 트리거 → 신규 진입 일시 중단
+표시: 본 화면 KPI 빨강 + Tradeability 즉시 재계산
+PromotionGate: live_small→live 단계는 즉시 fail (slippage_actual_within=0.5 위반)</div>
+        </div>
+      </div>
+    </div>
+
+    <aside class="screen-side">
+      <div class="side-block">
+        <div class="side-label">화면 ID</div>
+        <div style="font-family:var(--font-mono);font-size:13px;color:var(--accent)">SCR-12 · /cost-sensitivity</div>
+      </div>
+      <div class="side-block">
+        <div class="side-label">갱신 주기</div>
+        <ul class="side-list">
+          <li>실측 집계: 매일 16:30</li>
+          <li>±50% 시뮬: 월 1회</li>
+          <li>가정 리뷰: 분기 1일 04:00</li>
+        </ul>
+      </div>
+      <div class="side-block">
+        <div class="side-label">권한</div>
+        <span class="role-pill read">운용자 R</span>
+        <span class="role-pill read">연구자 R</span>
+        <span class="role-pill full">관리자 R/W</span>
+        <div style="font-size:11px;color:var(--text-3);margin-top:8px">가정값 수정은 관리자만</div>
+      </div>
+    </aside>
+  </div>
+</section>
+
+<!-- ============ SCR-13 Live Monitor ============ -->
+<section class="screen-section" id="scr-13">
+  <div class="screen-header">
+    <div class="screen-meta">
+      <span class="screen-id">SCR-13</span>
+      <span class="screen-status new">NEW · v2.6.1</span>
+    </div>
+    <h2 class="screen-title">Live Monitor</h2>
+    <p class="screen-purpose">실거래 중 검증 지표가 깨졌을 때의 자동 대응을 관제한다. MDD가 허용 한도의 0.8배에 도달하면 신규 진입을 자동 중단하고, 한도 도달 시 비중 50% 축소 후 사용자 승인을 대기한다. 실측 슬리피지가 가정에서 ±50% 벗어나면 Tradeability 재계산.</p>
+  </div>
+
+  <div class="screen-body">
+    <div class="screen-main">
+      <div class="spec-block">
+        <div class="spec-label">와이어프레임</div>
+        <div class="wireframe">
+          <div class="wireframe-header">
+            <div class="wireframe-dots"><span></span><span></span><span></span></div>
+            <span class="wireframe-path">maps.local / live-monitor</span>
+          </div>
+          <div class="wireframe-body">
+
+            <div class="toolbar">
+              <span class="toolbar-label">자동 대응</span>
+              <span class="toolbar-value"><span class="dot green"></span>활성</span>
+              <div class="toolbar-divider"></div>
+              <span class="toolbar-label">대기 승인</span>
+              <span class="toolbar-value accent">1건</span>
+              <div class="toolbar-divider"></div>
+              <span class="toolbar-label">최근 트리거</span>
+              <span class="toolbar-value">14:22 (슬립 경고)</span>
+              <button class="toolbar-btn" style="margin-left:auto">이력 전체</button>
+            </div>
+
+            <div class="kpi-grid">
+              <div class="kpi-card"><div class="kpi-label">실측 MDD</div><div class="kpi-value">−18.2%</div><div class="kpi-delta">한도 28% × 0.8 = 22.4% 미만</div></div>
+              <div class="kpi-card"><div class="kpi-label">대형주 슬립</div><div class="kpi-value">0.04%</div><div class="kpi-delta">정상</div></div>
+              <div class="kpi-card red"><div class="kpi-label">중소형 슬립</div><div class="kpi-value red">0.22%</div><div class="kpi-delta down">가정 +47% (임계 50%)</div></div>
+              <div class="kpi-card"><div class="kpi-label">연속 손실</div><div class="kpi-value">3</div><div class="kpi-delta">10 이상 시 트리거</div></div>
+              <div class="kpi-card"><div class="kpi-label">자동 대응 횟수 (30d)</div><div class="kpi-value">2</div></div>
+            </div>
+
+            <div class="layout-grid split-2-1" style="margin-top:8px">
+              <div>
+                <div class="spec-label">자동 대응 트리거 정의</div>
+                <table class="data-table" style="font-size:11px">
+                  <thead><tr><th>트리거</th><th>임계</th><th>대응</th><th>승인</th></tr></thead>
+                  <tbody>
+                    <tr><td>실측 MDD</td><td class="num">≥ 한도 × 0.8</td><td>신규 진입 일시 중단</td><td>자동</td></tr>
+                    <tr><td>실측 MDD</td><td class="num">≥ 한도</td><td>비중 50% 축소</td><td>승인 대기</td></tr>
+                    <tr><td>월평균 슬립</td><td class="num">±50% 벗어남</td><td>Tradeability 재계산</td><td>자동</td></tr>
+                    <tr><td>연속 손실</td><td class="num">≥ 10회</td><td>신규 진입 중단 + Robustness 재실행 큐</td><td>자동</td></tr>
+                    <tr><td>MarketRegime</td><td>강세 → 약세 전환</td><td>전략군별 한도 재산정</td><td>자동</td></tr>
+                  </tbody>
+                </table>
+              </div>
+              <div>
+                <div class="spec-label">대기 승인 큐 (1건)</div>
+                <div style="background:var(--bg-2);border:1px solid var(--red-dim);border-radius:3px;padding:14px">
+                  <div style="font-family:var(--font-mono);font-size:11px;color:var(--red);margin-bottom:8px"><span class="dot red"></span>MDD 한도 도달</div>
+                  <div style="font-size:12px;margin-bottom:8px">str_004 (Pullback v4 β) 실측 MDD = −17.4% / 한도 18%</div>
+                  <div style="font-size:11px;color:var(--text-3);margin-bottom:12px">자동 적용된 임시 조치: 비중 50% 축소</div>
+                  <button class="toolbar-btn primary" style="font-size:10px">승인 (영구 적용)</button>
+                  <button class="toolbar-btn" style="font-size:10px;margin-left:6px">롤백</button>
+                </div>
+              </div>
+            </div>
+
+            <div style="margin-top:20px">
+              <div class="spec-label">최근 30일 트리거 이력</div>
+              <table class="data-table">
+                <thead><tr><th>시각</th><th>트리거</th><th>대상</th><th>대응</th><th>사용자 결정</th></tr></thead>
+                <tbody>
+                  <tr><td>2026-05-02 14:22</td><td><span class="badge warn">슬립 경고</span></td><td>중소형 평균</td><td>Tradeability 재계산</td><td>자동 (승인 불필요)</td></tr>
+                  <tr><td>2026-04-28 09:32</td><td><span class="badge fail">MDD 한도</span></td><td>str_004</td><td>비중 50% 축소</td><td><span class="badge pass">승인됨</span></td></tr>
+                  <tr><td>2026-04-15 16:10</td><td><span class="badge info">Regime</span></td><td>전체</td><td>한도 100% → 50%</td><td>자동</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="spec-block">
+        <div class="spec-label">주요 시나리오</div>
+        <div class="scenario">
+          <div class="scenario-title">S1 · 자동 대응 발동 → 사용자 승인 (정상 흐름)</div>
+          <div class="scenario-steps">1. 09:32 일별 자산곡선 갱신 시 str_004 MDD 한도 도달 감지
+2. LiveBacktestMonitor가 즉시 비중 50% 축소 적용 + 알림 발송 (이메일·앱 푸시)
+3. 사용자가 SCR-13 진입 → 대기 승인 큐 확인
+4. [승인] 클릭 → 영구 적용 + audit 로그
+5. 또는 [롤백] → 원복 + 사유 메모 필수</div>
+        </div>
+        <div class="scenario exception">
+          <div class="scenario-title">EX1 · 보유 청산 트리거 (사용자 승인 필수)</div>
+          <div class="scenario-steps">조건: 자동 대응이 신규 진입 중단을 넘어 보유 청산까지 가는 경우
+정책: 보유 청산은 절대 자동 실행 금지. 반드시 사용자 명시적 승인 필요
+표시: 큐에 큰 빨강 배너 "보유 청산 승인 대기"
+승인 시간 제한: 24시간 내 미승인 시 운용자에게 추가 알림</div>
+        </div>
+        <div class="scenario exception">
+          <div class="scenario-title">EX2 · 자동 대응 비활성 (긴급 정지)</div>
+          <div class="scenario-steps">조건: 사용자가 SCR-05에서 [긴급 정지] 클릭
+처리: 모든 자동 대응 트리거 일시 비활성. 트리거 발생해도 알림만 표시
+재개: SCR-13 우측 [자동 대응 재개] 버튼 → 관리자 권한 + 사유 입력 필수
+의도: 시스템 점검 중 의도치 않은 비중 축소 방지</div>
+        </div>
+      </div>
+    </div>
+
+    <aside class="screen-side">
+      <div class="side-block">
+        <div class="side-label">화면 ID</div>
+        <div style="font-family:var(--font-mono);font-size:13px;color:var(--accent)">SCR-13 · /live-monitor</div>
+      </div>
+      <div class="side-block">
+        <div class="side-label">자동 대응 범위</div>
+        <ul class="side-list">
+          <li>신규 진입 중단 (자동)</li>
+          <li>비중 축소 (자동 + 승인)</li>
+          <li>보유 청산 (승인 필수)</li>
+          <li>재계산 (자동)</li>
+        </ul>
+      </div>
+      <div class="side-block">
+        <div class="side-label">우선순위</div>
+        <span class="badge live">P0 · 사용자 보호</span>
+      </div>
+      <div class="side-block">
+        <div class="side-label">권한</div>
+        <span class="role-pill full">운용자 R/W</span>
+        <span class="role-pill read">연구자 R</span>
+        <span class="role-pill full">관리자 R/W</span>
+        <div style="font-size:11px;color:var(--text-3);margin-top:8px">자동 대응 비활성/재개는 관리자 권한 필수</div>
+      </div>
+    </aside>
+  </div>
+</section>
+
+<!-- ============ SCR-14 Data Quality (v2.6.2 신규) ============ -->
+<section class="screen-section" id="scr-14">
+  <div class="screen-header">
+    <div class="screen-meta">
+      <span class="screen-id">SCR-14</span>
+      <span class="screen-status new" style="background:var(--accent);color:var(--bg-0)">NEW · v2.6.2</span>
+    </div>
+    <h2 class="screen-title">Data Quality</h2>
+    <p class="screen-purpose">DataQualityFilter (v2.6.2 신규)가 거부한 종목과 사유를 본다. 6개 기준(수정주가, 상장폐지, 거래정지/관리종목, 거래대금 하한, 신규상장, ETF/ETN/스팩)별 거부 통계와 거부 비율 추이를 표시한다. 입력 데이터의 신뢰도가 모든 후속 검증의 신뢰도다.</p>
+  </div>
+
+  <div class="screen-body">
+    <div class="screen-main">
+      <div class="spec-block">
+        <div class="spec-label">와이어프레임</div>
+        <div class="wireframe">
+          <div class="wireframe-header">
+            <div class="wireframe-dots"><span></span><span></span><span></span></div>
+            <span class="wireframe-path">maps.local / data-quality</span>
+          </div>
+          <div class="wireframe-body">
+
+            <div class="toolbar">
+              <span class="toolbar-label">모드</span>
+              <button class="toolbar-btn primary">Live</button>
+              <button class="toolbar-btn">Backtest</button>
+              <div class="toolbar-divider"></div>
+              <span class="toolbar-label">기준일</span>
+              <span class="toolbar-value">2026-05-02</span>
+              <div class="toolbar-divider"></div>
+              <span class="toolbar-label">시계열</span>
+              <span class="toolbar-value">최근 90일</span>
+              <button class="toolbar-btn" style="margin-left:auto">유니버스 재구성</button>
+            </div>
+
+            <div class="kpi-grid">
+              <div class="kpi-card"><div class="kpi-label">유니버스 후보</div><div class="kpi-value">350</div><div class="kpi-delta">KOSPI200 + KOSDAQ150</div></div>
+              <div class="kpi-card green"><div class="kpi-label">통과 (kept)</div><div class="kpi-value green">312</div><div class="kpi-delta">89.1%</div></div>
+              <div class="kpi-card red"><div class="kpi-label">거부 (rejected)</div><div class="kpi-value red">38</div><div class="kpi-delta">10.9%</div></div>
+              <div class="kpi-card"><div class="kpi-label">거부율 임계</div><div class="kpi-value">5%</div><div class="kpi-delta">초과 시 알림</div></div>
+            </div>
+
+            <div class="layout-grid cols-2">
+              <div>
+                <div class="spec-label">거부 사유 분포</div>
+                <table class="data-table" style="font-size:11px">
+                  <thead><tr><th>사유 코드</th><th>의미</th><th class="num">건수</th><th class="num">비율</th></tr></thead>
+                  <tbody>
+                    <tr><td class="accent">low_turnover</td><td>거래대금 하한 미달</td><td class="num">14</td><td class="num">36.8%</td></tr>
+                    <tr><td class="accent">recently_listed</td><td>상장 100일 미만</td><td class="num">8</td><td class="num">21.1%</td></tr>
+                    <tr><td class="accent">trading_halted</td><td>거래정지</td><td class="num">6</td><td class="num">15.8%</td></tr>
+                    <tr><td class="accent">managed_stock</td><td>관리종목 지정</td><td class="num">4</td><td class="num">10.5%</td></tr>
+                    <tr><td class="accent">delisted</td><td>상장폐지 (Live 모드)</td><td class="num">3</td><td class="num">7.9%</td></tr>
+                    <tr><td class="accent">excluded_type</td><td>스팩 자동 제외</td><td class="num">2</td><td class="num">5.3%</td></tr>
+                    <tr><td class="accent">unadjusted_price</td><td>수정주가 미반영</td><td class="num">1</td><td class="num">2.6%</td></tr>
+                  </tbody>
+                </table>
+              </div>
+              <div>
+                <div class="spec-label">거부율 추이 (90일)</div>
+                <div class="chart-placeholder" style="height:200px">LINE · daily reject ratio + 5% threshold</div>
+                <p class="prose" style="font-size:11px;color:var(--text-3);margin-top:10px">최근 4월 중순부터 거래대금 하한 거부 증가 — 약세장 진입과 일치. SCR-03 장세 페이지와 교차 점검 필요.</p>
+              </div>
+            </div>
+
+            <div style="margin-top:20px">
+              <div class="spec-label">거부 종목 상세 (38건 중 상위 10)</div>
+              <table class="data-table">
+                <thead><tr>
+                  <th>티커</th><th>종목명</th><th>시장</th><th>거부 사유</th>
+                  <th class="num">거래대금 (20d)</th><th class="num">상장일수</th><th>비고</th>
+                </tr></thead>
+                <tbody>
+                  <tr><td class="accent">123450</td><td>(예시) 소형주-A</td><td>KOSDAQ</td><td><span class="badge warn">low_turnover</span></td><td class="num">2.1억</td><td class="num">1248</td><td>3억 미달</td></tr>
+                  <tr><td class="accent">234561</td><td>(예시) 신규IPO-A</td><td>KOSPI</td><td><span class="badge info">recently_listed</span></td><td class="num">12.4억</td><td class="num">76</td><td>상장 76일</td></tr>
+                  <tr><td class="accent">345672</td><td>(예시) 정지-A</td><td>KOSPI</td><td><span class="badge fail">trading_halted</span></td><td class="num">—</td><td class="num">2103</td><td>회계감사 의견거절</td></tr>
+                  <tr><td class="accent">456783</td><td>(예시) 관리-A</td><td>KOSDAQ</td><td><span class="badge fail">managed_stock</span></td><td class="num">5.8억</td><td class="num">1842</td><td>4년 적자</td></tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div style="margin-top:20px">
+              <div class="spec-label">DataQualityFilter 설정 (관리자 전용)</div>
+              <table class="comp-table" style="font-size:11px">
+                <tbody>
+                  <tr><td>MIN_LISTING_DAYS</td><td>100</td><td>TS insufficient_data와 일치</td></tr>
+                  <tr><td>MIN_TURNOVER (KOSPI)</td><td>5억 KRW</td><td>20일 평균</td></tr>
+                  <tr><td>MIN_TURNOVER (KOSDAQ)</td><td>3억 KRW</td><td>20일 평균</td></tr>
+                  <tr><td>EXCLUDED_TYPES</td><td>['SPAC']</td><td>ETF/ETN은 통과 (CostModel에서 거래세 면제)</td></tr>
+                </tbody>
+              </table>
+            </div>
+
+          </div>
+        </div>
+      </div>
+
+      <div class="spec-block">
+        <div class="spec-label">컴포넌트 사양</div>
+        <table class="comp-table">
+          <thead><tr><th>ID</th><th>타입</th><th>데이터 소스</th><th>액션</th></tr></thead>
+          <tbody>
+            <tr><td>FILTER-MODE</td><td><span class="type">Toggle</span></td><td>—</td><td>Live/Backtest 모드 전환</td></tr>
+            <tr><td>KPI-QUALITY</td><td><span class="type">KPI Card × 4</span></td><td>universe_quality_log</td><td>거부율 ≥ 5% 시 빨강</td></tr>
+            <tr><td>TBL-REASONS</td><td><span class="type">DataTable</span></td><td>rejection_summary (JSON)</td><td>행 클릭 시 해당 사유 종목 상세</td></tr>
+            <tr><td>CHART-TREND-90D</td><td><span class="type">Line + Threshold</span></td><td>일별 kept/total 비율</td><td>5% 임계선 표시</td></tr>
+            <tr><td>TBL-REJECTED</td><td><span class="type">DataTable + Filter</span></td><td>최근 거부 목록</td><td>—</td></tr>
+            <tr><td>SETTINGS-DQ</td><td><span class="type">Read-only Form</span></td><td>RobustnessConstants</td><td>관리자 클릭 시 편집 모달</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="spec-block">
+        <div class="spec-label">주요 시나리오</div>
+        <div class="scenario">
+          <div class="scenario-title">S1 · 일별 데이터 품질 점검 (16:35)</div>
+          <div class="scenario-steps">1. 사용자 SCR-01 진입 → 알림 영역에 INFO "유니버스 312/350"
+2. 클릭 → SCR-14 자동 이동
+3. 거부율 10.9%, 임계 5% 초과지만 사유 분포가 "low_turnover" 위주 → 약세장 정상
+4. 사유 분포 표 확인 후 종료. 추가 액션 불필요</div>
+        </div>
+        <div class="scenario exception">
+          <div class="scenario-title">EX1 · 거부율 급증 (15% 초과)</div>
+          <div class="scenario-steps">조건: 일일 거부율 ≥ 15% (정상 5~12% 범위)
+처리: 사용자에게 푸시 알림 "데이터 품질 점검 필요"
+원인 진단: (a) 시장 전체 약세 (b) DataCollector 갱신 실패 (c) 신규 폐지 다수
+대응: SCR-14에서 사유 분포 확인 → 시장 전체 약세면 정상, 갱신 실패면 DataCollector 재실행</div>
+        </div>
+        <div class="scenario exception">
+          <div class="scenario-title">EX2 · 동일 종목 30일 연속 trading_halted</div>
+          <div class="scenario-steps">조건: 한 종목이 30영업일 이상 거래정지 지속
+처리: 자동 별도 알림 발생 (단순 거부 알림과 분리)
+대응: 보유 중이면 SCR-06 (리스크) 이동 안내. 정지 해제 시까지 평가손익 동결</div>
+        </div>
+        <div class="scenario exception">
+          <div class="scenario-title">EX3 · 백테스트 모드 / Live 모드 차이 검증</div>
+          <div class="scenario-steps">목적: 생존자 편향 차단 확인
+백테스트 모드: 폐지일 이전까지 종목을 유니버스에 포함 → delisted_before_ref 사유 발생 정상
+Live 모드: 폐지 종목 즉시 제외 → delisted 사유 발생 정상
+교차 검증: WFA fold별 ref_date에서 delisted_before_ref 발생 = look-ahead 차단 확인</div>
+        </div>
+      </div>
+    </div>
+
+    <aside class="screen-side">
+      <div class="side-block">
+        <div class="side-label">화면 ID</div>
+        <div style="font-family:var(--font-mono);font-size:13px;color:var(--accent)">SCR-14 · /data-quality</div>
+      </div>
+      <div class="side-block">
+        <div class="side-label">우선순위</div>
+        <span class="badge" style="background:var(--accent);color:var(--bg-0)">P0 · v2.6.2 핵심</span>
+      </div>
+      <div class="side-block">
+        <div class="side-label">왜 P0 인가</div>
+        <div style="font-size:12px;color:var(--text-1)">검증 로직이 아무리 정교해도 입력 데이터에 생존자 편향이 있으면 모든 백테스트가 거짓말을 한다. 모든 후속 검증의 신뢰도가 이 화면에서 결정된다.</div>
+      </div>
+      <div class="side-block">
+        <div class="side-label">갱신 주기</div>
+        <ul class="side-list">
+          <li>Live 모드: 매일 08:35</li>
+          <li>Backtest 모드: 백테스트 실행 시</li>
+          <li>WFA fold별: 자동</li>
+        </ul>
+      </div>
+      <div class="side-block">
+        <div class="side-label">권한</div>
+        <span class="role-pill read">운용자 R</span>
+        <span class="role-pill read">연구자 R</span>
+        <span class="role-pill full">관리자 R/W</span>
+        <div style="font-size:11px;color:var(--text-3);margin-top:8px">DataQualityFilter 설정 변경은 관리자만</div>
+      </div>
+    </aside>
+  </div>
+</section>
+
+<!-- ============ 부록 1: 권한 매트릭스 ============ -->
+<section class="screen-section" id="appendix-roles">
+  <div class="screen-header">
+    <div class="screen-meta">
+      <span class="screen-id">APPENDIX A</span>
+      <span class="screen-status existing">REFERENCE</span>
+    </div>
+    <h2 class="screen-title">권한 매트릭스</h2>
+    <p class="screen-purpose">3개 역할(운용자, 연구자, 관리자)이 14개 화면에서 갖는 권한을 한 표로 정리한다. R = 읽기 전용, R/W = 읽기/쓰기, X = 접근 불가, R/W★ = 일부 액션 추가 권한 필요.</p>
+  </div>
+
+  <div class="screen-body" style="grid-template-columns:1fr">
+    <div class="screen-main">
+      <table class="data-table" style="font-size:12px">
+        <thead><tr>
+          <th>화면</th>
+          <th>운용자</th>
+          <th>연구자</th>
+          <th>관리자</th>
+          <th>특이사항</th>
+        </tr></thead>
+        <tbody>
+          <tr><td><span class="accent">SCR-01</span> 대시보드</td><td>R/W</td><td>R</td><td>R/W</td><td>—</td></tr>
+          <tr><td><span class="accent">SCR-02</span> 전략 관리</td><td>R/W★</td><td>R</td><td>R/W★</td><td>승격 승인 = 운용자/관리자</td></tr>
+          <tr><td><span class="accent">SCR-03</span> 장세/팩터</td><td>R</td><td>R</td><td>R/W</td><td>—</td></tr>
+          <tr><td><span class="accent">SCR-04</span> 종목 후보</td><td>R/W</td><td>R</td><td>R/W</td><td>주문 큐 등록 = 운용자/관리자</td></tr>
+          <tr><td><span class="accent">SCR-05</span> 주문/체결</td><td>R/W★</td><td>X</td><td>R/W★</td><td>긴급 정지 = 운용자/관리자</td></tr>
+          <tr><td><span class="accent">SCR-06</span> 리스크</td><td>R/W</td><td>R</td><td>R/W</td><td>한도 변경 = 관리자</td></tr>
+          <tr><td><span class="accent">SCR-07</span> 백테스트</td><td>R/W</td><td>R/W</td><td>R/W</td><td>—</td></tr>
+          <tr><td><span class="accent">SCR-08</span> Robustness</td><td>R/W★</td><td>R/W</td><td>R/W★</td><td>가중치 프리셋 변경 = 운용자/관리자</td></tr>
+          <tr><td><span class="accent">SCR-09</span> TrendStrength</td><td>R</td><td>R</td><td>R/W</td><td>—</td></tr>
+          <tr><td><span class="accent">SCR-10</span> Research</td><td>R</td><td>R/W</td><td>R/W</td><td>신규 연구 전략 등록 = 연구자/관리자</td></tr>
+          <tr><td><span class="accent">SCR-11</span> WFA</td><td>R</td><td>R</td><td>R</td><td>판정 우회 불가 (모든 권한 동일)</td></tr>
+          <tr><td><span class="accent">SCR-12</span> Cost Sensitivity</td><td>R</td><td>R</td><td>R/W★</td><td>가정값 수정 = 관리자</td></tr>
+          <tr><td><span class="accent">SCR-13</span> Live Monitor</td><td>R/W★</td><td>R</td><td>R/W★</td><td>자동 대응 비활성/재개 = 관리자</td></tr>
+          <tr><td><span class="accent">SCR-14</span> Data Quality</td><td>R</td><td>R</td><td>R/W★</td><td>DQ 설정 변경 = 관리자</td></tr>
+        </tbody>
+      </table>
+
+      <div class="spec-block" style="margin-top:32px">
+        <div class="spec-label">절대 규칙 (모든 권한 공통 적용)</div>
+        <ul class="side-list" style="font-size:13px">
+          <li>WFA 4조건 통과 판정은 어떤 권한으로도 우회할 수 없다.</li>
+          <li>Research 전략의 자동주문은 관리자 권한으로도 실행할 수 없다.</li>
+          <li>보유 청산을 동반하는 자동 대응은 사용자 명시적 승인 없이 실행되지 않는다.</li>
+          <li>Tradeability 승격 임계 (60/75)는 가중치 프리셋과 무관하게 고정이다.</li>
+          <li>모든 설정 변경, 승격 승인, 자동 대응 승인은 audit 로그에 사용자 ID와 함께 기록된다.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 부록 2: 화면 전이 ============ -->
+<section class="screen-section" id="appendix-flow">
+  <div class="screen-header">
+    <div class="screen-meta">
+      <span class="screen-id">APPENDIX B</span>
+      <span class="screen-status existing">REFERENCE</span>
+    </div>
+    <h2 class="screen-title">화면 전이 다이어그램</h2>
+    <p class="screen-purpose">사용자의 주요 워크플로 4가지가 화면을 어떻게 거치는지 정리한다. 모든 워크플로의 시작은 SCR-01 (대시보드)이며, 의사결정 지점은 회색 강조로 표시된다.</p>
+  </div>
+
+  <div class="screen-body" style="grid-template-columns:1fr">
+    <div class="screen-main">
+
+      <div class="spec-block">
+        <div class="spec-label">Workflow A · 일일 운용 (평일 16:35)</div>
+        <div class="tree" style="font-size:13px;background:var(--bg-1);border:1px solid var(--line);border-radius:3px;padding:20px">
+SCR-01 대시보드 (KPI 점검)<br>
+<span class="branch">└─</span> 정상 → 종료<br>
+<span class="branch">└─</span> 알림 발생 →<br>
+<span class="branch" style="margin-left:14px">├─</span> <span class="new">SCR-13 Live Monitor</span> (자동 대응 승인)<br>
+<span class="branch" style="margin-left:14px">├─</span> <span class="new">SCR-14 Data Quality</span> (거부율 점검)<br>
+<span class="branch" style="margin-left:14px">└─</span> SCR-06 Risk (한도 점검)
+        </div>
+      </div>
+
+      <div class="spec-block">
+        <div class="spec-label">Workflow B · 신규 진입 (평일 16:00 ~ 다음날 09:00)</div>
+        <div class="tree" style="font-size:13px;background:var(--bg-1);border:1px solid var(--line);border-radius:3px;padding:20px">
+SCR-01 대시보드<br>
+<span class="branch">└─</span> SCR-03 장세/팩터 (매트릭스 셀 확인)<br>
+<span class="branch" style="margin-left:14px">└─</span> <span class="new">SCR-09 TrendStrength</span> (5단계 분포 확인)<br>
+<span class="branch" style="margin-left:28px">└─</span> SCR-04 종목 후보 (Factor + TS 통과 종목)<br>
+<span class="branch" style="margin-left:42px">└─</span> SCR-06 Risk (한도 점검)<br>
+<span class="branch" style="margin-left:56px">└─</span> SCR-05 주문/체결 (주문 큐 등록)
+        </div>
+      </div>
+
+      <div class="spec-block">
+        <div class="spec-label">Workflow C · 신규 전략 검증 (연구자, 1주~6개월)</div>
+        <div class="tree" style="font-size:13px;background:var(--bg-1);border:1px solid var(--line);border-radius:3px;padding:20px">
+SCR-07 백테스트 콘솔 (단일 백테스트 + 풀 스위트)<br>
+<span class="branch">└─</span> <span class="new">SCR-08 Robustness</span> (Tradeability 점수)<br>
+<span class="branch" style="margin-left:14px">├─</span> <span class="new">SCR-11 WFA</span> (4조건 통과 확인)<br>
+<span class="branch" style="margin-left:14px">└─</span> <span class="new">SCR-12 Cost Sensitivity</span> (±50% 시나리오)<br>
+<span class="branch" style="margin-left:28px">└─</span> SCR-02 전략 관리 (Alert Only 등록)<br>
+<span class="branch" style="margin-left:42px">└─</span> <span class="new">SCR-10 Research</span> (모의 신호 누적, 6개월)<br>
+<span class="branch" style="margin-left:56px">└─</span> SCR-02 (PromotionGate 통과 → Mock → Live Small → Live)
+        </div>
+      </div>
+
+      <div class="spec-block">
+        <div class="spec-label">Workflow D · 위기 대응 (트리거 발생 시)</div>
+        <div class="tree" style="font-size:13px;background:var(--bg-1);border:1px solid var(--line);border-radius:3px;padding:20px">
+알림 푸시 (이메일/앱)<br>
+<span class="branch">└─</span> <span class="new">SCR-13 Live Monitor</span> (트리거 종류 확인)<br>
+<span class="branch" style="margin-left:14px">├─</span> 신규 진입 중단 → 자동, 추가 액션 불필요<br>
+<span class="branch" style="margin-left:14px">├─</span> 비중 50% 축소 → 사용자 승인 (24h 내)<br>
+<span class="branch" style="margin-left:14px">└─</span> 보유 청산 검토 →<br>
+<span class="branch" style="margin-left:28px">├─</span> SCR-06 Risk (전략군 한도 재산정)<br>
+<span class="branch" style="margin-left:28px">├─</span> SCR-05 주문/체결 (긴급 정지 대안)<br>
+<span class="branch" style="margin-left:28px">└─</span> 사용자 명시적 승인 후 청산
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ============ 부록 3: 디자인 시스템 ============ -->
+<section class="screen-section" id="appendix-design">
+  <div class="screen-header">
+    <div class="screen-meta">
+      <span class="screen-id">APPENDIX C</span>
+      <span class="screen-status existing">REFERENCE</span>
+    </div>
+    <h2 class="screen-title">디자인 시스템</h2>
+    <p class="screen-purpose">14개 화면 전체에 일관되게 적용되는 시각 규약. 색상 토큰, 타이포그래피, 데이터 포맷, 상태 배지를 정의한다.</p>
+  </div>
+
+  <div class="screen-body" style="grid-template-columns:1fr">
+    <div class="screen-main">
+
+      <div class="spec-block">
+        <div class="spec-label">의미 색상 토큰</div>
+        <div class="layout-grid cols-4">
+          <div class="kpi-card"><div class="kpi-label">PASS / 양호</div><div class="kpi-value green">#4ade80</div><div class="kpi-delta">검증 통과, 이익</div></div>
+          <div class="kpi-card"><div class="kpi-label">FAIL / 위험</div><div class="kpi-value red">#f87171</div><div class="kpi-delta">검증 실패, 손실</div></div>
+          <div class="kpi-card"><div class="kpi-label">WARN / 주의</div><div class="kpi-value" style="color:var(--amber)">#fbbf24</div><div class="kpi-delta">임계 근접</div></div>
+          <div class="kpi-card"><div class="kpi-label">INFO / 중립</div><div class="kpi-value" style="color:var(--blue)">#60a5fa</div><div class="kpi-delta">정보, 갱신</div></div>
+          <div class="kpi-card"><div class="kpi-label">RESEARCH</div><div class="kpi-value" style="color:var(--purple)">#c084fc</div><div class="kpi-delta">연구 단계</div></div>
+          <div class="kpi-card"><div class="kpi-label">ACCENT</div><div class="kpi-value gold">#d4a85c</div><div class="kpi-delta">핵심 KPI, 활성</div></div>
+        </div>
+      </div>
+
+      <div class="spec-block">
+        <div class="spec-label">상태 배지 8종</div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;padding:14px;background:var(--bg-1);border-radius:3px">
+          <span class="badge live">LIVE</span>
+          <span class="badge mock">MOCK</span>
+          <span class="badge alert">ALERT</span>
+          <span class="badge research">RESEARCH</span>
+          <span class="badge pass">PASS</span>
+          <span class="badge fail">FAIL</span>
+          <span class="badge warn">WARN</span>
+          <span class="badge info">INFO</span>
+        </div>
+      </div>
+
+      <div class="spec-block">
+        <div class="spec-label">타이포그래피</div>
+        <table class="comp-table">
+          <thead><tr><th>용도</th><th>폰트</th><th>샘플</th></tr></thead>
+          <tbody>
+            <tr><td>화면 제목</td><td><span class="type">Fraunces 600 36px</span></td><td style="font-family:'Fraunces',serif;font-weight:600;font-size:24px">Trend Robustness</td></tr>
+            <tr><td>본문</td><td><span class="type">IBM Plex Sans KR 400 14px</span></td><td>5-fold WFA의 fold별 IS/OOS 성과를 모두 보여준다.</td></tr>
+            <tr><td>데이터 / KPI</td><td><span class="type">JetBrains Mono 500 22px</span></td><td><span style="font-family:var(--font-mono);font-weight:500;font-size:18px;color:var(--accent)">+22.4%</span></td></tr>
+            <tr><td>레이블 / 메타</td><td><span class="type">JetBrains Mono 500 10px UPPER 0.18em</span></td><td><span style="font-family:var(--font-mono);font-size:10px;letter-spacing:0.18em;color:var(--text-3);text-transform:uppercase">SHARPE PEAK 0.5</span></td></tr>
+            <tr><td>코드 / 식별자</td><td><span class="type">JetBrains Mono 400 12px</span></td><td><span style="font-family:var(--font-mono);font-size:12px;color:var(--accent)">str_001 / fast=40</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="spec-block">
+        <div class="spec-label">데이터 포맷 규칙</div>
+        <table class="comp-table">
+          <thead><tr><th>유형</th><th>포맷</th><th>예시</th></tr></thead>
+          <tbody>
+            <tr><td>퍼센트</td><td>소수 1자리 + %</td><td>+22.4%, −18.2%</td></tr>
+            <tr><td>가격 (KRW)</td><td>천 단위 콤마 + 통화 기호</td><td>₩142,308,500</td></tr>
+            <tr><td>점수 (0~100)</td><td>정수 또는 소수 1자리</td><td>82, 73.5</td></tr>
+            <tr><td>비율 (0~1)</td><td>소수 2자리</td><td>0.82, 1.17</td></tr>
+            <tr><td>일자</td><td>YYYY-MM-DD</td><td>2026-05-02</td></tr>
+            <tr><td>시각</td><td>HH:mm:ss</td><td>16:31:04</td></tr>
+            <tr><td>거래대금</td><td>억/조 단위 + 1자리</td><td>5.8억, 1.2조</td></tr>
+            <tr><td>티커</td><td>6자리 숫자</td><td>005930, 000660</td></tr>
+            <tr><td>전략 ID</td><td>str_NNN snake_case</td><td>str_001, str_pullback_v3</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="spec-block">
+        <div class="spec-label">레이아웃 그리드</div>
+        <ul class="side-list" style="font-size:13px">
+          <li>최소 뷰포트: 1280px (데스크탑 우선)</li>
+          <li>사이드바: 280px 고정 / 메인: 가변</li>
+          <li>화면별 사이드바(우측): 320px 고정 (화면 메타·권한·연결)</li>
+          <li>섹션 패딩: 32px (상하) × 48px (좌우)</li>
+          <li>카드 그리드: auto-fit minmax(140px, 1fr)</li>
+          <li>1100px 미만: 우측 사이드바 본문 하단으로 이동</li>
+          <li>768px 미만: 좌측 네비게이션도 본문 상단으로 이동</li>
+        </ul>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+</main>
+</div>
+
+<script>
+// 사이드바 네비게이션
+const navItems = document.querySelectorAll('.nav-item, .index-card');
+const sections = document.querySelectorAll('.screen-section');
+
+function showSection(targetId) {
+  sections.forEach(s => s.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  const target = document.getElementById(targetId);
+  if (target) {
+    target.classList.add('active');
+    target.scrollIntoView({ behavior: 'instant', block: 'start' });
+    window.scrollTo(0, 0);
+  }
+  const navItem = document.querySelector(`.nav-item[data-target="${targetId}"]`);
+  if (navItem) navItem.classList.add('active');
+}
+
+navItems.forEach(item => {
+  item.addEventListener('click', e => {
+    e.preventDefault();
+    const target = item.getAttribute('data-target');
+    if (target) showSection(target);
+  });
+});
+
+// 키보드 네비게이션 (← →)
+const order = ['cover', 'scr-01', 'scr-02', 'scr-03', 'scr-04', 'scr-05', 'scr-06', 'scr-07',
+               'scr-08', 'scr-09', 'scr-10', 'scr-11', 'scr-12', 'scr-13', 'scr-14',
+               'appendix-roles', 'appendix-flow', 'appendix-design'];
+document.addEventListener('keydown', e => {
+  const active = document.querySelector('.screen-section.active');
+  if (!active) return;
+  const idx = order.indexOf(active.id);
+  if (e.key === 'ArrowRight' && idx < order.length - 1) {
+    showSection(order[idx + 1]);
+  } else if (e.key === 'ArrowLeft' && idx > 0) {
+    showSection(order[idx - 1]);
+  }
+});
+</script>
+
+<div class="footer">
+MAPS v2.6.2 SCREEN DESIGN · 14 SCREENS + 3 APPENDICES · KEYBOARD: ← → TO NAVIGATE
+</div>
+
+</body>
+</html>

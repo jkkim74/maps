@@ -6,7 +6,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from maps.common.exceptions import KillSwitchError, ResearchStrategyError
+from maps.common.exceptions import BrokerAdapterError, DuplicateOrderError, KillSwitchError, ResearchStrategyError
+from maps.common.models import OrderLog
 from maps.execution.broker_adapter import (
     AccountBalance,
     Order,

@@ -9,7 +9,7 @@ import pandas as pd
 from sqlalchemy.orm import Session
 
 from maps.common.exceptions import DataCollectionError
-from maps.common.models import CollectionLog, SecurityMetadata
+from maps.common.models import CollectionLog, HistoricalOHLCV, SecurityMetadata
 from maps.data.krx_adapter import CollectionResult, KRXAdapterBase, MockKRXAdapter
 
 logger = logging.getLogger(__name__)
@@ -65,8 +65,9 @@ class DataCollector:
                 halts=halts,
                 managed=managed,
             )
-            self._upsert_meta(meta)
-            self._write_log(ref_date, "success", len(ohlcv))
+            self._upsert_meta(meta, {row.ticker: row.has_adjusted for row in ohlcv})
+            saved_rows = self._upsert_ohlcv(ohlcv)
+            self._write_log(ref_date, "success", saved_rows)
             return result
 
         except Exception as exc:
@@ -85,9 +86,49 @@ class DataCollector:
                 logger.warning("수집 실패 (스킵): %s — %s", day, exc)
         return results
 
-    def _upsert_meta(self, meta_list) -> None:
+    def collect_ohlcv_history(self, start: datetime.date, end: datetime.date) -> dict:
+        """기간 OHLCV만 백필한다.
+
+        검증/WFA/MC용 히스토리 적재 경로다. 매일 종목 메타를 다시
+        수집하지 않고 가격 데이터만 upsert한다.
+        """
+        if start > end:
+            raise DataCollectionError(f"백필 시작일이 종료일보다 늦습니다: {start} > {end}")
+
+        requested_days = _business_days(start, end)
+        success_days = 0
+        failed_days = 0
+        total_rows = 0
+        failures: list[dict[str, str]] = []
+
+        for day in requested_days:
+            try:
+                rows = self._krx.get_ohlcv(day)
+                saved_rows = self._upsert_ohlcv(rows)
+                self._write_log(day, "success", saved_rows, source="krx.history")
+                success_days += 1
+                total_rows += saved_rows
+            except Exception as exc:
+                failed_days += 1
+                failures.append({"date": day.isoformat(), "error": str(exc)})
+                self._write_log(day, "failed", 0, str(exc), source="krx.history")
+                logger.warning("OHLCV 백필 실패: %s — %s", day, exc)
+
+        return {
+            "start": start.isoformat(),
+            "end": end.isoformat(),
+            "business_days": len(requested_days),
+            "success_days": success_days,
+            "failed_days": failed_days,
+            "rows": total_rows,
+            "failures": failures[:10],
+        }
+
+    def _upsert_meta(self, meta_list, adjusted_by_ticker: dict[str, bool] | None = None) -> None:
         """종목 메타를 security_metadata 테이블에 upsert한다."""
+        adjusted_by_ticker = adjusted_by_ticker or {}
         for m in meta_list:
+            has_adjusted_price = adjusted_by_ticker.get(m.ticker, False)
             existing = (
                 self._db.query(SecurityMetadata)
                 .filter(SecurityMetadata.ticker == m.ticker)
@@ -99,7 +140,8 @@ class DataCollector:
                 existing.security_type = m.security_type
                 existing.listing_date = m.listing_date
                 existing.delisting_date = m.delisting_date
-                existing.updated_at = datetime.datetime.utcnow()
+                existing.has_adjusted_price = has_adjusted_price
+                existing.updated_at = datetime.datetime.now(datetime.timezone.utc)
             else:
                 self._db.add(
                     SecurityMetadata(
@@ -109,10 +151,61 @@ class DataCollector:
                         security_type=m.security_type,
                         listing_date=m.listing_date,
                         delisting_date=m.delisting_date,
-                        has_adjusted_price=True,
+                        has_adjusted_price=has_adjusted_price,
                     )
                 )
         self._db.commit()
+
+    def _upsert_ohlcv(self, rows) -> int:
+        """일봉 OHLCV를 historical_ohlcv 테이블에 upsert한다."""
+        saved_rows = 0
+        for row in rows:
+            if not self._is_valid_ohlcv(row):
+                continue
+            saved_rows += 1
+            existing = (
+                self._db.query(HistoricalOHLCV)
+                .filter(
+                    HistoricalOHLCV.ticker == row.ticker,
+                    HistoricalOHLCV.date == row.date,
+                )
+                .first()
+            )
+            if existing:
+                existing.open = row.open
+                existing.high = row.high
+                existing.low = row.low
+                existing.close = row.close
+                existing.volume = row.volume
+                existing.adj_close = row.adj_close
+                existing.source = "krx"
+                existing.updated_at = datetime.datetime.now(datetime.timezone.utc)
+            else:
+                self._db.add(
+                    HistoricalOHLCV(
+                        ticker=row.ticker,
+                        date=row.date,
+                        open=row.open,
+                        high=row.high,
+                        low=row.low,
+                        close=row.close,
+                        volume=row.volume,
+                        adj_close=row.adj_close,
+                        source="krx",
+                    )
+                )
+        self._db.commit()
+        return saved_rows
+
+    @staticmethod
+    def _is_valid_ohlcv(row) -> bool:
+        return (
+            row.open is not None and row.open > 0
+            and row.high is not None and row.high > 0
+            and row.low is not None and row.low > 0
+            and row.close is not None and row.close > 0
+            and row.volume is not None and row.volume >= 0
+        )
 
     def _write_log(
         self,
@@ -120,12 +213,13 @@ class DataCollector:
         status: str,
         items: int,
         note: str | None = None,
+        source: str = "krx",
     ) -> None:
         """collection_log 테이블에 감사 로그를 기록한다."""
         self._db.add(
             CollectionLog(
                 ref_date=ref_date,
-                source="krx",
+                source=source,
                 status=status,
                 items=items,
                 note=note,

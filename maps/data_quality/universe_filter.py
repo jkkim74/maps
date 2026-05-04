@@ -30,6 +30,7 @@ MIN_TURNOVER_KRW: dict[str, float] = {
 }
 EXCLUDED_TYPES = {"SPAC"}
 REJECTION_ALERT_THRESHOLD = 0.05  # 거부율 5% 초과 시 알림
+MAX_MISSING_DAYS_20D = 1
 
 
 @dataclass
@@ -107,6 +108,16 @@ class DataQualityFilter:
 
         ref_date 이후 정보는 절대 참조하지 않는다.
         """
+        # 0. 기본 메타데이터/가격 결측
+        if not stock.ticker or not stock.name or not stock.market or not stock.security_type:
+            return "missing_metadata"
+        if not stock.has_live_ohlcv_as_of(ref_date):
+            return "missing_price_data"
+        if not stock.has_required_ohlcv_fields():
+            return "missing_ohlcv_fields"
+        if stock.has_excessive_missing_history(MAX_MISSING_DAYS_20D):
+            return "missing_history"
+
         # 1. 수정주가
         if not stock.has_adjusted_price_as_of(ref_date):
             return "unadjusted_price"

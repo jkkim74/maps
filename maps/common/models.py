@@ -67,6 +67,66 @@ class UniverseQualityLog(Base):
 
 
 # ---------------------------------------------------------------------------
+# 후보 스냅샷
+# ---------------------------------------------------------------------------
+class CandidateSnapshot(Base):
+    """candidate_snapshot — 일별 전략 후보 종목 스냅샷."""
+
+    __tablename__ = "candidate_snapshot"
+    __table_args__ = (
+        UniqueConstraint("ref_date", "strategy_id", "ticker", name="uq_candidate_snapshot_day_strategy_ticker"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ref_date: Mapped[datetime.date] = mapped_column(Date, nullable=False, index=True)
+    strategy_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    ticker: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    market: Mapped[str] = mapped_column(String(16), nullable=False)
+    factor_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    trend_strength: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    ts_bucket: Mapped[str] = mapped_column(String(8), nullable=False, default="S3")
+    final_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    weekly_pass: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    estimated_qty: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc)
+    )
+
+
+# ---------------------------------------------------------------------------
+# OHLCV 히스토리
+# ---------------------------------------------------------------------------
+class HistoricalOHLCV(Base):
+    """historical_ohlcv — 검증/WFA/MC용 일봉 가격 히스토리."""
+
+    __tablename__ = "historical_ohlcv"
+    __table_args__ = (
+        UniqueConstraint("ticker", "date", name="uq_historical_ohlcv_ticker_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ticker: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    date: Mapped[datetime.date] = mapped_column(Date, nullable=False, index=True)
+    open: Mapped[float] = mapped_column(Float, nullable=False)
+    high: Mapped[float] = mapped_column(Float, nullable=False)
+    low: Mapped[float] = mapped_column(Float, nullable=False)
+    close: Mapped[float] = mapped_column(Float, nullable=False)
+    volume: Mapped[int] = mapped_column(Integer, nullable=False)
+    adj_close: Mapped[float | None] = mapped_column(Float, nullable=True)
+    source: Mapped[str] = mapped_column(String(32), nullable=False, default="krx")
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc)
+    )
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+        default=lambda: datetime.datetime.now(datetime.timezone.utc),
+        onupdate=lambda: datetime.datetime.now(datetime.timezone.utc),
+    )
+
+
+# ---------------------------------------------------------------------------
 # 데이터 수집 이력
 # ---------------------------------------------------------------------------
 class CollectionLog(Base):

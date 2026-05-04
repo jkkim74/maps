@@ -1,8 +1,15 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="empty-state">
-  <div class="empty-icon">○</div>
-  <div class="empty-text">리스크 · 모니터</div>
-  <div class="empty-sub">RiskManager 인스턴스 상태 연동 후 활성화됩니다.</div>
+<div id="risk-kpi"><div class="loading"><div class="spinner"></div>로딩 중...</div></div>
+
+<div class="grid-2">
+  <div>
+    <div class="section-header"><span class="section-title">전략별 리스크 게이지</span><hr></div>
+    <div class="card"><div class="card-body" id="risk-gauges"><div class="loading"><div class="spinner"></div></div></div></div>
+  </div>
+  <div>
+    <div class="section-header"><span class="section-title">보유 종목</span><hr></div>
+    <div class="card"><div class="card-body" id="risk-holdings"><div class="loading"><div class="spinner"></div></div></div></div>
+  </div>
 </div>
 {% endblock %}

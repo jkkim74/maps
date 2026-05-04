@@ -35,6 +35,7 @@ htmlcov/
 
 # Logs
 *.log
+logs/.kis_token_cache.json
 
 # OS
 .DS_Store

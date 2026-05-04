@@ -1,29 +1,27 @@
-"""KIS(한국투자증권) 브로커 어댑터 — Phase 5 구현 예정.
+"""Korea Investment & Securities Open API broker adapter.
 
-KIS Developers Open API (REST) 연동:
-  https://apiportal.koreainvestment.com/
-
-필요 환경변수:
-  KIS_APP_KEY       — Open API 앱 키
-  KIS_APP_SECRET    — Open API 앱 시크릿
-  KIS_ACCOUNT_NO    — 계좌번호 (예: "12345678-01")
-  KIS_REAL_TRADING  — "true" 이면 실거래, 기본은 모의투자
-
-주요 엔드포인트 (모의투자):
-  POST /oauth2/tokenP                                          — 토큰 발급
-  POST /uapi/domestic-stock/v1/trading/order-cash             — 주식 주문
-  GET  /uapi/domestic-stock/v1/trading/inquire-balance        — 잔고 조회
-  GET  /uapi/domestic-stock/v1/trading/inquire-psbl-order     — 주문가능금액
-  DELETE /uapi/domestic-stock/v1/trading/order-rvsecncl       — 주문취소
+This adapter implements the domestic stock REST flow used by MAPS:
+token issuance, hashkey issuance, cash order, cancel, balance, positions,
+and open-order lookup.  Keep all KIS endpoint and TR-ID details in this
+module so broker-specific drift is easy to isolate.
 """
 
 from __future__ import annotations
 
-import datetime
+import datetime as dt
+import hashlib
+import json
 import logging
-import os
+import threading
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+import requests
 
 from maps.common.exceptions import BrokerAdapterError
+from maps.common.settings import MapsSettings, get_settings
 from maps.execution.broker_adapter import (
     AccountBalance,
     BrokerAdapter,
@@ -31,106 +29,598 @@ from maps.execution.broker_adapter import (
     OrderResult,
     OrderSide,
     OrderStatus,
+    OrderType,
+    PendingOrder,
     Position,
 )
 
 logger = logging.getLogger(__name__)
 
-_KIS_REAL_BASE = "https://openapi.koreainvestment.com:9443"
-_KIS_PAPER_BASE = "https://openapivts.koreainvestment.com:29443"
+_KST = dt.timezone(dt.timedelta(hours=9))
+_MARKET_OPEN = dt.time(9, 0)
+_MARKET_CLOSE = dt.time(15, 30)
+
+_TOKEN_PATH = "/oauth2/tokenP"
+_HASHKEY_PATH = "/uapi/hashkey"
+_ORDER_PATH = "/uapi/domestic-stock/v1/trading/order-cash"
+_CANCEL_PATH = "/uapi/domestic-stock/v1/trading/order-rvsecncl"
+_BALANCE_PATH = "/uapi/domestic-stock/v1/trading/inquire-balance"
+_DAILY_CCLD_PATH = "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
+
+_TR_IDS = {
+    "paper": {
+        "buy": "VTTC0802U",
+        "sell": "VTTC0801U",
+        "cancel": "VTTC0803U",
+        "balance": "VTTC8434R",
+        "daily_ccld": "VTTC8001R",
+    },
+    "real": {
+        "buy": "TTTC0802U",
+        "sell": "TTTC0801U",
+        "cancel": "TTTC0803U",
+        "balance": "TTTC8434R",
+        "daily_ccld": "TTTC8001R",
+    },
+}
+
+_KIS_ERROR_HINTS = {
+    "APBK0013": "Order quantity or price is invalid.",
+    "APBK0919": "Insufficient orderable cash or quantity.",
+    "APBK0651": "Account product code or account number is invalid.",
+    "EGW00123": "Access token is missing, expired, or invalid.",
+    "EGW00201": "API rate limit was exceeded.",
+    "EGW00202": "Invalid hashkey for POST body.",
+}
+
+
+@dataclass
+class _TokenCacheEntry:
+    access_token: str
+    expires_at: dt.datetime
+
+
+_TOKEN_CACHE: dict[tuple[str, str, str, bool], _TokenCacheEntry] = {}
+_TOKEN_CACHE_LOCK = threading.Lock()
 
 
 class KISAdapter(BrokerAdapter):
-    """KIS Open API 브로커 어댑터 — Phase 5 구현 예정.
+    """KIS domestic-stock REST broker adapter."""
 
-    현재는 자격증명 검증 및 구조만 제공한다.
-    실제 주문 실행은 Phase 5에서 구현한다.
-    """
-
-    def __init__(self) -> None:
-        self._app_key = os.getenv("KIS_APP_KEY", "")
-        self._app_secret = os.getenv("KIS_APP_SECRET", "")
-        self._account_no = os.getenv("KIS_ACCOUNT_NO", "")
-        self._real = os.getenv("KIS_REAL_TRADING", "false").lower() == "true"
+    def __init__(
+        self,
+        settings: MapsSettings | None = None,
+        *,
+        http: requests.Session | None = None,
+        timeout: float = 10.0,
+    ) -> None:
+        self._settings = settings or get_settings()
+        self._app_key = self._settings.kis_app_key
+        self._app_secret = self._settings.kis_app_secret
+        self._account_no = self._settings.kis_account_no
+        self._account_prefix = self._settings.kis_account_prefix
+        self._account_product_code = self._settings.kis_account_product_code
+        self._real = self._settings.kis_real_trading
+        self._base_url = self._settings.kis_base_url.rstrip("/")
+        self._http = http or requests.Session()
+        self._timeout = timeout
+        self._token_cache_key = (self._base_url, self._app_key, self._account_no, self._real)
+        self._token_cache_file = Path(self._settings.maps_log_dir) / ".kis_token_cache.json"
 
         missing = [
-            k for k, v in {
+            name
+            for name, value in {
                 "KIS_APP_KEY": self._app_key,
                 "KIS_APP_SECRET": self._app_secret,
                 "KIS_ACCOUNT_NO": self._account_no,
             }.items()
-            if not v
+            if not value
         ]
         if missing:
-            raise BrokerAdapterError(
-                f"KIS 어댑터: 필수 환경변수 누락 — {', '.join(missing)}"
-            )
+            raise BrokerAdapterError(f"KIS required settings are missing: {', '.join(missing)}")
+        if not self._account_prefix or not self._account_product_code:
+            raise BrokerAdapterError("KIS_ACCOUNT_NO must look like '12345678-01'.")
 
-        self._base_url = _KIS_REAL_BASE if self._real else _KIS_PAPER_BASE
-        self._access_token: str | None = None
-        self._token_expires_at: datetime.datetime | None = None
-        logger.info(
-            "KISAdapter 초기화 [%s]: 계좌=%s",
-            "실거래" if self._real else "모의투자",
-            self._account_no,
-        )
-
-    # ------------------------------------------------------------------
-    # BrokerAdapter 추상 메서드 — Phase 5 구현 예정
-    # ------------------------------------------------------------------
+        mode = "real" if self._real else "paper"
+        logger.info("KISAdapter initialized [%s], account=%s", mode, self._account_no)
 
     def place_order(self, order: Order) -> OrderResult:
-        """KIS REST API로 주식 현금 주문을 제출한다.
+        """Submit a domestic cash stock order through KIS."""
+        tr_id = self._tr_id("buy" if order.side == OrderSide.BUY else "sell")
+        order_price = self._resolve_order_price(order)
+        body = {
+            "CANO": self._account_prefix,
+            "ACNT_PRDT_CD": self._account_product_code,
+            "PDNO": order.ticker,
+            "ORD_DVSN": self._order_division(order),
+            "ORD_QTY": str(order.quantity),
+            "ORD_UNPR": str(order_price),
+        }
+        data = self._request("POST", _ORDER_PATH, tr_id=tr_id, json=body, hash_body=body)
+        output = self._output(data)
+        order_id = str(output.get("ODNO") or output.get("odno") or "")
+        submitted = self._parse_kis_datetime(
+            output.get("ORD_TMD") or output.get("ord_tmd"),
+            fallback=dt.datetime.now(),
+        )
 
-        Phase 5 구현 예정.
-        엔드포인트: POST /uapi/domestic-stock/v1/trading/order-cash
-        """
-        raise NotImplementedError(
-            "KISAdapter.place_order — Phase 5 구현 예정. "
-            "현재는 MockBroker를 사용하세요."
+        return OrderResult(
+            order_id=order_id,
+            strategy_id=order.strategy_id,
+            ticker=order.ticker,
+            side=order.side,
+            status=OrderStatus.PENDING,
+            filled_quantity=0,
+            avg_price=0.0,
+            commission=0.0,
+            submitted_at=submitted,
+            filled_at=None,
         )
 
     def cancel_order(self, order_id: str) -> bool:
-        """KIS REST API로 주문을 취소한다.
+        """Cancel an open KIS domestic-stock order.
 
-        Phase 5 구현 예정.
-        엔드포인트: DELETE /uapi/domestic-stock/v1/trading/order-rvsecncl
+        KIS requires the original order number.  Some accounts also require
+        the exchange-forwarding organization number; " " is accepted by the
+        common domestic stock flow when that value is not supplied.
         """
-        raise NotImplementedError("KISAdapter.cancel_order — Phase 5 구현 예정")
+        body = {
+            "CANO": self._account_prefix,
+            "ACNT_PRDT_CD": self._account_product_code,
+            "KRX_FWDG_ORD_ORGNO": "",
+            "ORGN_ODNO": order_id,
+            "ORD_DVSN": "00",
+            "RVSE_CNCL_DVSN_CD": "02",
+            "ORD_QTY": "0",
+            "ORD_UNPR": "0",
+            "QTY_ALL_ORD_YN": "Y",
+        }
+        self._request("POST", _CANCEL_PATH, tr_id=self._tr_id("cancel"), json=body, hash_body=body)
+        return True
 
     def get_position(self, ticker: str) -> Position | None:
-        """KIS REST API로 보유 포지션을 조회한다.
-
-        Phase 5 구현 예정.
-        엔드포인트: GET /uapi/domestic-stock/v1/trading/inquire-balance
-        """
-        raise NotImplementedError("KISAdapter.get_position — Phase 5 구현 예정")
+        positions, _balance = self._fetch_positions_and_balance()
+        return positions.get(ticker)
 
     def get_account_balance(self) -> AccountBalance:
-        """KIS REST API로 계좌 잔고를 조회한다.
+        _positions, balance = self._fetch_positions_and_balance()
+        return balance
 
-        Phase 5 구현 예정.
-        엔드포인트: GET /uapi/domestic-stock/v1/trading/inquire-psbl-order
-        """
-        raise NotImplementedError("KISAdapter.get_account_balance — Phase 5 구현 예정")
+    def get_open_orders(self) -> list[PendingOrder]:
+        """Return same-day orders with remaining quantity greater than zero."""
+        rows = self._fetch_daily_order_rows()
+        pending: list[PendingOrder] = []
+        for row in rows:
+            order_qty = self._row_order_qty(row)
+            remaining = self._row_remaining_qty(row)
+            if remaining <= 0:
+                continue
+            pending.append(
+                PendingOrder(
+                    order_id=self._row_order_id(row),
+                    ticker=self._row_ticker(row),
+                    side=self._row_side(row),
+                    quantity=order_qty,
+                    remaining_quantity=remaining,
+                    order_price=self._to_float_or_none(row.get("ord_unpr")),
+                    submitted_at=self._parse_kis_datetime(row.get("ord_tmd"), fallback=None),
+                    raw=row,
+                )
+            )
+        return pending
+
+    def get_daily_order_results(self) -> list[OrderResult]:
+        """Return same-day KIS order/fill states, including partial fills."""
+        results: list[OrderResult] = []
+        for row in self._fetch_daily_order_rows():
+            order_qty = self._row_order_qty(row)
+            filled_qty = self._row_filled_qty(row)
+            remaining = self._row_remaining_qty(row)
+            status = self._row_status(row, order_qty=order_qty, filled_qty=filled_qty, remaining=remaining)
+            submitted_at = self._parse_kis_datetime(row.get("ord_tmd"), fallback=dt.datetime.now())
+            results.append(
+                OrderResult(
+                    order_id=self._row_order_id(row),
+                    strategy_id="",
+                    ticker=self._row_ticker(row),
+                    side=self._row_side(row),
+                    status=status,
+                    filled_quantity=filled_qty,
+                    avg_price=(
+                        self._to_float(row.get("avg_prvs") or row.get("avg_pric") or row.get("ccld_avg_prvs"))
+                        if filled_qty > 0 else 0.0
+                    ),
+                    commission=0.0,
+                    submitted_at=submitted_at or dt.datetime.now(),
+                    filled_at=submitted_at if filled_qty > 0 else None,
+                )
+            )
+        return results
+
+    def _fetch_daily_order_rows(self) -> list[dict[str, Any]]:
+        params = {
+            "CANO": self._account_prefix,
+            "ACNT_PRDT_CD": self._account_product_code,
+            "INQR_STRT_DT": dt.datetime.now(_KST).strftime("%Y%m%d"),
+            "INQR_END_DT": dt.datetime.now(_KST).strftime("%Y%m%d"),
+            "SLL_BUY_DVSN_CD": "00",
+            "INQR_DVSN": "00",
+            "PDNO": "",
+            "CCLD_DVSN": "00",
+            "ORD_GNO_BRNO": "",
+            "ODNO": "",
+            "INQR_DVSN_3": "00",
+            "INQR_DVSN_1": "",
+            "CTX_AREA_FK100": "",
+            "CTX_AREA_NK100": "",
+        }
+        data = self._request("GET", _DAILY_CCLD_PATH, tr_id=self._tr_id("daily_ccld"), params=params)
+        return self._as_list(data.get("output1"))
+
+    def get_positions(self) -> dict[str, int]:
+        positions, _balance = self._fetch_positions_and_balance()
+        return {ticker: pos.quantity for ticker, pos in positions.items()}
 
     def is_market_open(self) -> bool:
-        """KST 기준 평일 09:00~15:30 여부를 반환한다."""
-        _KST = datetime.timezone(datetime.timedelta(hours=9))
-        now = datetime.datetime.now(_KST)
+        now = dt.datetime.now(_KST)
         if now.weekday() >= 5:
             return False
-        t = now.time()
-        return datetime.time(9, 0) <= t <= datetime.time(15, 30)
+        return _MARKET_OPEN <= now.time() <= _MARKET_CLOSE
 
-    # ------------------------------------------------------------------
-    # 인증 헬퍼 — Phase 5 구현 예정
-    # ------------------------------------------------------------------
+    def _fetch_positions_and_balance(self) -> tuple[dict[str, Position], AccountBalance]:
+        params = {
+            "CANO": self._account_prefix,
+            "ACNT_PRDT_CD": self._account_product_code,
+            "AFHR_FLPR_YN": "N",
+            "OFL_YN": "",
+            "INQR_DVSN": "02",
+            "UNPR_DVSN": "01",
+            "FUND_STTL_ICLD_YN": "N",
+            "FNCG_AMT_AUTO_RDPT_YN": "N",
+            "PRCS_DVSN": "01",
+            "CTX_AREA_FK100": "",
+            "CTX_AREA_NK100": "",
+        }
+        data = self._request("GET", _BALANCE_PATH, tr_id=self._tr_id("balance"), params=params)
+        positions: dict[str, Position] = {}
+        for row in self._as_list(data.get("output1")):
+            qty = self._to_int(row.get("hldg_qty") or row.get("ord_psbl_qty") or 0)
+            ticker = str(row.get("pdno") or "")
+            if not ticker or qty <= 0:
+                continue
+            positions[ticker] = Position(
+                ticker=ticker,
+                quantity=qty,
+                avg_price=self._to_float(row.get("pchs_avg_pric") or row.get("avg_prvs")),
+            )
+
+        summary = self._first(data.get("output2"))
+        cash = self._to_float(
+            summary.get("dnca_tot_amt")
+            or summary.get("prvs_rcdl_excc_amt")
+            or summary.get("nass_amt")
+        )
+        positions_value = self._to_float(
+            summary.get("scts_evlu_amt")
+            or summary.get("evlu_amt_smtl_amt")
+            or sum(p.market_value for p in positions.values())
+        )
+        return positions, AccountBalance(cash=cash, positions_value=positions_value)
 
     def _ensure_token(self) -> str:
-        """OAuth2 액세스 토큰을 발급/갱신한다.
+        now = dt.datetime.now(dt.timezone.utc)
+        cached = self._get_cached_token(now)
+        if cached:
+            return cached
 
-        Phase 5 구현 예정.
-        엔드포인트: POST /oauth2/tokenP
-        """
-        raise NotImplementedError("KISAdapter._ensure_token — Phase 5 구현 예정")
+        body = {
+            "grant_type": "client_credentials",
+            "appkey": self._app_key,
+            "appsecret": self._app_secret,
+        }
+        response = self._http.post(
+            self._url(_TOKEN_PATH),
+            json=body,
+            headers={"content-type": "application/json; charset=utf-8"},
+            timeout=self._timeout,
+        )
+        payload = self._decode_response(response)
+        token = payload.get("access_token")
+        if not token:
+            self._raise_api_error(payload, "KIS token issuance failed")
+        expires_in = self._to_int(payload.get("expires_in") or 86400)
+        access_token = str(token)
+        expires_at = now + dt.timedelta(seconds=max(expires_in - 60, 60))
+        with _TOKEN_CACHE_LOCK:
+            _TOKEN_CACHE[self._token_cache_key] = _TokenCacheEntry(access_token, expires_at)
+            self._write_file_cached_token(access_token, expires_at)
+        return access_token
+
+    def _get_cached_token(self, now: dt.datetime) -> str | None:
+        with _TOKEN_CACHE_LOCK:
+            entry = _TOKEN_CACHE.get(self._token_cache_key)
+            if entry and now < entry.expires_at:
+                return entry.access_token
+            if entry:
+                _TOKEN_CACHE.pop(self._token_cache_key, None)
+            file_entry = self._read_file_cached_token(now)
+            if file_entry:
+                _TOKEN_CACHE[self._token_cache_key] = file_entry
+                return file_entry.access_token
+        return None
+
+    def _token_file_key(self) -> str:
+        raw = "|".join(map(str, self._token_cache_key))
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+    def _read_file_cached_token(self, now: dt.datetime) -> _TokenCacheEntry | None:
+        try:
+            if not self._token_cache_file.exists():
+                return None
+            payload = json.loads(self._token_cache_file.read_text(encoding="utf-8"))
+            item = payload.get(self._token_file_key()) if isinstance(payload, dict) else None
+            if not isinstance(item, dict):
+                return None
+            token = item.get("access_token")
+            expires_at_text = item.get("expires_at")
+            if not token or not expires_at_text:
+                return None
+            expires_at = dt.datetime.fromisoformat(str(expires_at_text))
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=dt.timezone.utc)
+            if now >= expires_at:
+                return None
+            return _TokenCacheEntry(str(token), expires_at)
+        except Exception as exc:  # pragma: no cover - cache corruption should not block trading ops
+            logger.warning("Ignoring unreadable KIS token cache file: %s", exc)
+            return None
+
+    def _write_file_cached_token(self, access_token: str, expires_at: dt.datetime) -> None:
+        try:
+            self._token_cache_file.parent.mkdir(parents=True, exist_ok=True)
+            payload: dict[str, Any] = {}
+            if self._token_cache_file.exists():
+                existing = json.loads(self._token_cache_file.read_text(encoding="utf-8"))
+                if isinstance(existing, dict):
+                    payload = existing
+            payload[self._token_file_key()] = {
+                "access_token": access_token,
+                "expires_at": expires_at.isoformat(),
+            }
+            self._token_cache_file.write_text(json.dumps(payload), encoding="utf-8")
+        except Exception as exc:  # pragma: no cover - file cache is best-effort
+            logger.warning("Could not write KIS token cache file: %s", exc)
+
+    def _hashkey(self, body: dict[str, Any]) -> str:
+        response = self._http.post(
+            self._url(_HASHKEY_PATH),
+            json=body,
+            headers={
+                "content-type": "application/json; charset=utf-8",
+                "appkey": self._app_key,
+                "appsecret": self._app_secret,
+            },
+            timeout=self._timeout,
+        )
+        payload = self._decode_response(response)
+        hashkey = payload.get("HASH") or payload.get("hash")
+        if not hashkey:
+            self._raise_api_error(payload, "KIS hashkey issuance failed")
+        return str(hashkey)
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        tr_id: str,
+        params: dict[str, Any] | None = None,
+        json: dict[str, Any] | None = None,
+        hash_body: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        headers = {
+            "content-type": "application/json; charset=utf-8",
+            "authorization": f"Bearer {self._ensure_token()}",
+            "appkey": self._app_key,
+            "appsecret": self._app_secret,
+            "tr_id": tr_id,
+            "custtype": "P",
+        }
+        if hash_body is not None:
+            headers["hashkey"] = self._hashkey(hash_body)
+
+        response = self._send_with_retry(method, path, headers=headers, params=params, json=json)
+        payload = self._decode_response(response)
+        rt_cd = str(payload.get("rt_cd", "0"))
+        if rt_cd not in {"0", ""}:
+            self._raise_api_error(payload, f"KIS API failed: {path}")
+        return payload
+
+    def _send_with_retry(
+        self,
+        method: str,
+        path: str,
+        *,
+        headers: dict[str, str],
+        params: dict[str, Any] | None,
+        json: dict[str, Any] | None,
+    ) -> requests.Response:
+        attempts = max(1, self._settings.maps_order_retry_attempts)
+        backoff = self._settings.maps_order_retry_backoff_seconds
+        last_exc: Exception | None = None
+        for attempt in range(1, attempts + 1):
+            try:
+                response = self._http.request(
+                    method,
+                    self._url(path),
+                    headers=headers,
+                    params=params,
+                    json=json,
+                    timeout=self._timeout,
+                )
+                if response.status_code not in {429, 500, 502, 503, 504}:
+                    return response
+                last_exc = BrokerAdapterError(f"KIS transient HTTP {response.status_code}: {path}")
+            except requests.RequestException as exc:
+                last_exc = exc
+            if attempt < attempts:
+                time.sleep(backoff * (2 ** (attempt - 1)))
+        if isinstance(last_exc, BrokerAdapterError):
+            raise last_exc
+        raise BrokerAdapterError(f"KIS request failed after {attempts} attempts: {last_exc}") from last_exc
+
+    def _decode_response(self, response: requests.Response) -> dict[str, Any]:
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise BrokerAdapterError(
+                f"KIS HTTP {response.status_code}: non-JSON response"
+            ) from exc
+        if response.status_code >= 400:
+            self._raise_api_error(payload, f"KIS HTTP {response.status_code}")
+        if not isinstance(payload, dict):
+            raise BrokerAdapterError(f"KIS returned unexpected payload: {type(payload).__name__}")
+        return payload
+
+    def _raise_api_error(self, payload: dict[str, Any], prefix: str) -> None:
+        code = str(payload.get("msg_cd") or payload.get("error_code") or "")
+        message = str(payload.get("msg1") or payload.get("error_description") or payload)
+        hint = _KIS_ERROR_HINTS.get(code)
+        suffix = f" ({hint})" if hint else ""
+        raise BrokerAdapterError(f"{prefix}: {code} {message}{suffix}".strip())
+
+    def _tr_id(self, key: str) -> str:
+        return _TR_IDS["real" if self._real else "paper"][key]
+
+    def _url(self, path: str) -> str:
+        return f"{self._base_url}{path}"
+
+    def _order_division(self, order: Order) -> str:
+        if order.order_type == OrderType.MARKET:
+            return "01"
+        if order.order_type == OrderType.LIMIT:
+            return "00"
+        raise BrokerAdapterError(f"Unsupported KIS order type: {order.order_type}")
+
+    def _resolve_order_price(self, order: Order) -> int:
+        if order.order_type == OrderType.MARKET:
+            return 0
+        price = order.limit_price or order.current_price
+        if price is None or price <= 0:
+            raise BrokerAdapterError("KIS limit orders require limit_price or current_price.")
+        return int(round(price))
+
+    @staticmethod
+    def _row_order_id(row: dict[str, Any]) -> str:
+        return str(row.get("odno") or row.get("ODNO") or "")
+
+    @staticmethod
+    def _row_ticker(row: dict[str, Any]) -> str:
+        return str(row.get("pdno") or row.get("PDNO") or "")
+
+    @classmethod
+    def _row_order_qty(cls, row: dict[str, Any]) -> int:
+        return cls._to_int(row.get("ord_qty") or row.get("qty") or 0)
+
+    @classmethod
+    def _row_filled_qty(cls, row: dict[str, Any]) -> int:
+        filled = cls._to_int(row.get("tot_ccld_qty") or row.get("ccld_qty") or 0)
+        if filled == 0:
+            order_qty = cls._row_order_qty(row)
+            explicit_remaining = cls._to_int(row.get("rmn_qty") or row.get("ord_unprcs_qty"))
+            if order_qty > 0 and explicit_remaining > 0:
+                return max(order_qty - explicit_remaining, 0)
+        return filled
+
+    @classmethod
+    def _row_remaining_qty(cls, row: dict[str, Any]) -> int:
+        order_qty = cls._row_order_qty(row)
+        remaining = cls._to_int(row.get("rmn_qty") or row.get("ord_unprcs_qty"))
+        if remaining == 0 and order_qty > 0:
+            remaining = max(order_qty - cls._row_filled_qty(row), 0)
+        return remaining
+
+    @staticmethod
+    def _row_side(row: dict[str, Any]) -> OrderSide:
+        side_code = str(row.get("sll_buy_dvsn_cd") or row.get("trad_dvsn_name") or "")
+        return OrderSide.SELL if side_code in {"01", "sell", "SELL", "매도"} else OrderSide.BUY
+
+    @staticmethod
+    def _row_status(
+        row: dict[str, Any],
+        *,
+        order_qty: int,
+        filled_qty: int,
+        remaining: int,
+    ) -> OrderStatus:
+        cancel_flag = str(row.get("cncl_yn") or row.get("rvse_cncl_dvsn_name") or "").upper()
+        if cancel_flag in {"Y", "CANCEL", "CANCELLED", "취소"}:
+            return OrderStatus.CANCELLED
+        if filled_qty > 0 and remaining > 0:
+            return OrderStatus.PARTIALLY_FILLED
+        if filled_qty > 0 and remaining == 0:
+            return OrderStatus.FILLED
+        if order_qty > 0 and remaining > 0:
+            return OrderStatus.PENDING
+        return OrderStatus.REJECTED
+
+    @staticmethod
+    def _output(data: dict[str, Any]) -> dict[str, Any]:
+        output = data.get("output")
+        if isinstance(output, dict):
+            return output
+        if isinstance(output, list) and output and isinstance(output[0], dict):
+            return output[0]
+        return {}
+
+    @staticmethod
+    def _first(value: Any) -> dict[str, Any]:
+        if isinstance(value, dict):
+            return value
+        if isinstance(value, list) and value and isinstance(value[0], dict):
+            return value[0]
+        return {}
+
+    @staticmethod
+    def _as_list(value: Any) -> list[dict[str, Any]]:
+        if isinstance(value, list):
+            return [x for x in value if isinstance(x, dict)]
+        if isinstance(value, dict):
+            return [value]
+        return []
+
+    @staticmethod
+    def _to_int(value: Any) -> int:
+        try:
+            return int(float(str(value).replace(",", "").strip() or "0"))
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    def _to_float(value: Any) -> float:
+        try:
+            return float(str(value).replace(",", "").strip() or "0")
+        except (TypeError, ValueError):
+            return 0.0
+
+    @classmethod
+    def _to_float_or_none(cls, value: Any) -> float | None:
+        if value in (None, ""):
+            return None
+        return cls._to_float(value)
+
+    @staticmethod
+    def _parse_kis_datetime(value: Any, *, fallback: dt.datetime | None) -> dt.datetime | None:
+        if not value:
+            return fallback
+        text = str(value).strip()
+        for fmt in ("%H%M%S", "%Y%m%d%H%M%S"):
+            try:
+                parsed = dt.datetime.strptime(text, fmt)
+                if fmt == "%H%M%S":
+                    today = dt.datetime.now(_KST).date()
+                    return dt.datetime.combine(today, parsed.time())
+                return parsed
+            except ValueError:
+                continue
+        return fallback

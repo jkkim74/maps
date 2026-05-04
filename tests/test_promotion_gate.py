@@ -90,11 +90,53 @@ def test_mc_within_limit_pass(gate: PromotionGate) -> None:
             "recovery": 1.0,
             "return": 1.0,
             "mc_mdd_p95": limit - 0.05,  # 한도 이내
+            "mock_months": 3.0,
         },
         PromotionStage.MOCK_CANDIDATE,
     )
     # MC 체크는 통과, 점수 >= 75 여야 MOCK_CANDIDATE 승격
     # 점수=100 >= 75 이므로 통과
+    assert decision.passed
+
+
+def test_mock_to_live_small_requires_three_mock_months_or_replay(gate: PromotionGate) -> None:
+    limit = ALLOWED_MDD["pullback_short"]["mc_p95_limit"]
+
+    decision = gate.evaluate(
+        "pullback_v3",
+        {
+            "robustness": 1.0,
+            "risk": 1.0,
+            "recovery": 1.0,
+            "return": 1.0,
+            "mc_mdd_p95": limit - 0.05,
+            "mock_months": 2.0,
+        },
+        PromotionStage.MOCK_CANDIDATE,
+    )
+
+    assert not decision.passed
+    assert any("Live Small" in r for r in decision.reasons)
+
+
+def test_mock_to_live_small_accepts_equivalent_replay(gate: PromotionGate) -> None:
+    limit = ALLOWED_MDD["pullback_short"]["mc_p95_limit"]
+
+    decision = gate.evaluate(
+        "pullback_v3",
+        {
+            "robustness": 1.0,
+            "risk": 1.0,
+            "recovery": 1.0,
+            "return": 1.0,
+            "mc_mdd_p95": limit - 0.05,
+            "mock_months": 0.0,
+            "replay_equivalent_passed": 1.0,
+            "replay_trading_days": 63,
+        },
+        PromotionStage.MOCK_CANDIDATE,
+    )
+
     assert decision.passed
 
 

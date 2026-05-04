@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block content %}
+<div id="ops-summary">
+  <div class="loading"><div class="spinner"></div>Loading...</div>
+</div>
+
+<div class="section-header"><span class="section-title">External Integration Settings</span><hr></div>
+<div class="card">
+  <div class="card-body" id="ops-config-area">
+    <div class="loading"><div class="spinner"></div>Loading...</div>
+  </div>
+</div>
+
+<div class="section-header"><span class="section-title">Where To Edit</span><hr></div>
+<div class="card">
+  <div class="card-body">
+    <table>
+      <thead><tr><th>File</th><th>Purpose</th><th>Change Timing</th></tr></thead>
+      <tbody>
+        <tr><td class="mono">.env</td><td>Local secrets and runtime switches. Never commit this file.</td><td>Whenever account/API values change</td></tr>
+        <tr><td class="mono">.env.example</td><td>Complete input template with comments.</td><td>When adding a new external setting</td></tr>
+        <tr><td class="mono">docs/OPERATIONS_CONFIG.md</td><td>Human guide for operations setup and rotation.</td><td>When operation process changes</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

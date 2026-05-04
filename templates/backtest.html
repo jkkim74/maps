@@ -1,11 +1,68 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="section-header"><span class="section-title">백테스트 실행 설정</span><hr></div>
+
+<!-- 실행 설정 -->
+<div class="section-header"><span class="section-title">실행 설정</span><hr></div>
 <div class="card"><div class="card-body">
-  <div class="empty-state">
-    <div class="empty-icon">○</div>
-    <div class="empty-text">백테스트 콘솔</div>
-    <div class="empty-sub">BacktestEngine 비동기 실행 큐 연동 후 활성화됩니다.</div>
+  <div class="grid-2" style="align-items:start">
+    <table class="bt-settings-table">
+      <tbody>
+        <tr>
+          <td class="bt-label">전략</td>
+          <td>
+            <select id="bt-strategy" class="topbar-btn">
+              <option value="pullback_v3">pullback_v3</option>
+            </select>
+          </td>
+        </tr>
+        <tr>
+          <td class="bt-label">기간</td>
+          <td class="text-muted mono" style="font-size:12px">2015-01 ~ 2026-04&ensp;(IS 70% / OOS 30%)</td>
+        </tr>
+        <tr>
+          <td class="bt-label">유니버스</td>
+          <td class="text-muted">KOSPI200 + KOSDAQ150</td>
+        </tr>
+        <tr>
+          <td class="bt-label">비용 모델</td>
+          <td class="text-muted">CostModel 2026Q2 기본값</td>
+        </tr>
+        <tr>
+          <td class="bt-label">동반 검증</td>
+          <td>
+            <span class="badge badge-info" style="margin-right:4px">Plateau ✓</span>
+            <span class="badge badge-info" style="margin-right:4px">WFA ✓</span>
+            <span class="badge badge-info" style="margin-right:4px">MC ✓</span>
+            <span class="badge badge-info">Bootstrap ✓</span>
+          </td>
+        </tr>
+        <tr>
+          <td class="bt-label">예상 시간</td>
+          <td class="text-muted">~ 2시간 30분</td>
+        </tr>
+      </tbody>
+    </table>
+    <div style="display:flex;flex-direction:column;align-items:flex-start;gap:12px;padding-top:8px">
+      <button class="bt-run-btn" onclick="runBacktest()">▶ 실행</button>
+      <div class="text-muted" style="font-size:11px">대기 큐에 등록 · 비동기 실행</div>
+    </div>
   </div>
 </div></div>
+
+<!-- 실행 진행률 -->
+<div class="section-header"><span class="section-title">실행 진행률</span><hr></div>
+<div class="card"><div class="card-body" id="bt-progress-section">
+  <div class="loading"><div class="spinner"></div></div>
+</div></div>
+
+<!-- 결과 요약 -->
+<div class="section-header"><span class="section-title">결과 요약</span><hr></div>
+<div id="bt-result-kpi"><div class="loading"><div class="spinner"></div></div></div>
+
+<!-- 최근 실행 목록 -->
+<div class="section-header"><span class="section-title">최근 실행 목록</span><hr></div>
+<div class="card"><div class="card-body" id="bt-runs-area">
+  <div class="loading"><div class="spinner"></div></div>
+</div></div>
+
 {% endblock %}

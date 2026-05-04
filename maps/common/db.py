@@ -5,12 +5,13 @@ MAPS_DB_URL 환경변수가 없으면 sqlite:///./maps.db 를 기본값으로 �
 
 from __future__ import annotations
 
-import os
 from collections.abc import Generator
 
 from dotenv import load_dotenv
 from sqlalchemy import Engine, create_engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+
+from maps.common.settings import get_settings
 
 load_dotenv()
 
@@ -24,7 +25,7 @@ def _make_engine(url: str) -> Engine:
 
 def get_engine(url: str | None = None) -> Engine:
     """엔진을 생성한다. url이 None이면 환경변수 → 기본값 순으로 사용."""
-    resolved = url or os.getenv("MAPS_DB_URL", _DEFAULT_URL)
+    resolved = url or get_settings().maps_db_url or _DEFAULT_URL
     return _make_engine(resolved)
 
 
