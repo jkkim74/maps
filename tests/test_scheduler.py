@@ -7,7 +7,16 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from maps.common.db import Base
-from maps.common.models import CollectionLog, HistoricalOHLCV, UniverseQualityLog
+import datetime as dt
+
+from maps.common.models import (
+    CandidateSnapshot,
+    CollectionLog,
+    HistoricalOHLCV,
+    OrderLog,
+    PromotionHistory,
+    UniverseQualityLog,
+)
 from maps.common.settings import MapsSettings
 from maps.ops.scheduler import MapsOperationalScheduler, OperationalPipeline
 
@@ -72,6 +81,75 @@ def test_order_cycle_is_sync_only_when_live_disabled() -> None:
         row = db.query(CollectionLog).filter(CollectionLog.source == "scheduler.orders").first()
         assert row is not None
         assert row.status == "skipped"
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def test_order_cycle_submits_promoted_candidate_when_live_enabled() -> None:
+    engine, factory = _session_factory()
+    settings = MapsSettings(
+        maps_broker_mode="mock",
+        maps_data_provider="mock",
+        maps_live_trading_enabled=True,
+        max_single_exposure=0.10,
+    )
+    pipeline = OperationalPipeline(settings=settings, session_factory=factory)
+    ref_date = dt.date(2026, 5, 5)
+
+    db = factory()
+    try:
+        db.add(HistoricalOHLCV(
+            ticker="AAAA",
+            date=ref_date,
+            open=10_000,
+            high=10_000,
+            low=10_000,
+            close=10_000,
+            volume=100_000,
+        ))
+        db.add(CandidateSnapshot(
+            ref_date=ref_date,
+            strategy_id="pullback_v3",
+            ticker="AAAA",
+            name="AAAA",
+            market="KOSPI",
+            factor_score=90,
+            trend_strength=80,
+            ts_bucket="S5",
+            final_score=95,
+            weekly_pass=True,
+        ))
+        db.add(PromotionHistory(
+            strategy_id="pullback_v3",
+            from_stage="alert_only",
+            to_stage="mock_candidate",
+            tradeability_score=70,
+            passed=True,
+            evaluated_at=dt.datetime(2026, 5, 5, 8, 0),
+        ))
+        db.commit()
+    finally:
+        db.close()
+
+    run = pipeline.run_order_cycle(ref_date)
+
+    assert run.status == "success"
+    assert run.details["live_trading_enabled"] is True
+    assert run.details["submitted_orders"] == 1
+
+    db = factory()
+    try:
+        order = db.query(OrderLog).one()
+        assert order.strategy_id == "pullback_v3"
+        assert order.ticker == "AAAA"
+        assert order.status == "filled"
+        assert order.fill_qty == 1000
+        row = db.query(CollectionLog).filter(CollectionLog.source == "scheduler.orders").first()
+        assert row is not None
+        assert row.status == "success"
+        assert row.items == 1
     finally:
         db.close()
         Base.metadata.drop_all(engine)

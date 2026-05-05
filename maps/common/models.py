@@ -148,6 +148,31 @@ class CollectionLog(Base):
 # ---------------------------------------------------------------------------
 # 검증 결과
 # ---------------------------------------------------------------------------
+class PortfolioSnapshot(Base):
+    """portfolio_snapshot - daily broker account value history for dashboard metrics."""
+
+    __tablename__ = "portfolio_snapshot"
+    __table_args__ = (
+        UniqueConstraint("ref_date", "source", name="uq_portfolio_snapshot_day_source"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ref_date: Mapped[datetime.date] = mapped_column(Date, nullable=False, index=True)
+    source: Mapped[str] = mapped_column(String(32), nullable=False, default="broker")
+    total_assets: Mapped[float] = mapped_column(Float, nullable=False)
+    cash: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    positions_value: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc)
+    )
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+        default=lambda: datetime.datetime.now(datetime.timezone.utc),
+        onupdate=lambda: datetime.datetime.now(datetime.timezone.utc),
+    )
+
+
 class ParameterPlateauResults(Base):
     """parameter_plateau_results — Plateau 그리드 탐색 결과."""
 
