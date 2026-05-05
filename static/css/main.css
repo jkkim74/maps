@@ -178,6 +178,18 @@ body {
   transition: all 0.15s;
 }
 .topbar-btn:hover { border-color: var(--color-accent); color: var(--color-accent); }
+.topbar-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.topbar-select {
+  font-size: 12px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  cursor: pointer;
+  margin-right: 8px;
+}
 
 .content {
   flex: 1;

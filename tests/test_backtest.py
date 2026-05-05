@@ -9,6 +9,7 @@ import pandas as pd
 import pytest
 
 from maps.backtest.engine import BacktestEngine
+from maps.strategy.multi_asset_trend_v1 import MultiAssetTrendV1Strategy
 from maps.strategy.pullback_v3 import PullbackV3Strategy
 
 
@@ -94,6 +95,13 @@ def test_param_grid():
 
     assert rsi_values == [5, 10, 15]
     assert ma_values == [20, 30, 40]
+
+
+def test_strategy_required_bars_matches_warmup_window():
+    strategy = MultiAssetTrendV1Strategy()
+
+    assert strategy.required_bars(strategy.default_params) == 62
+    assert strategy.required_bars({"ma_fast": 20, "ma_slow": 80}) == 82
 
 
 # ---------------------------------------------------------------------------

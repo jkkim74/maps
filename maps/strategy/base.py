@@ -46,3 +46,12 @@ class BaseStrategy(abc.ABC):
     @abc.abstractmethod
     def default_params(self) -> dict:
         """기본 파라미터."""
+        pass
+
+    def required_bars(self, params: dict) -> int:
+        """Return the minimum OHLCV bars needed to evaluate signals.
+
+        Strategies with warm-up windows should override this so callers can
+        filter history using the same lookback assumptions as generate_signals.
+        """
+        return 1

@@ -90,6 +90,10 @@ class PullbackV3Strategy(BaseStrategy):
             for ml in [20, 30, 40]
         ]
 
+    def required_bars(self, params: dict) -> int:
+        ma_long = int(params.get("ma_long", 20))
+        return ma_long + 1
+
     @property
     def default_params(self) -> dict:
         return {"rsi_threshold": 10, "ma_long": 20}

@@ -97,9 +97,9 @@ def get_orders(db: Session = Depends(get_db)) -> OrdersResponse:
         pending=pending,
         fills_today=fills,
         slippage=SlippageStats(
-            large_cap_actual=actual_slip,
+            large_cap_actual=actual_slip if actual_slip is not None else 0.0005,
             large_cap_assumed=0.0005,
-            mid_small_actual=actual_slip,
+            mid_small_actual=actual_slip if actual_slip is not None else 0.0015,
             mid_small_assumed=0.0015,
         ),
     )

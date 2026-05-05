@@ -32,9 +32,9 @@ def get_market() -> MarketResponse:
         regime=result.regime.value,
         weekly_trend=result.weekly_trend.value,
         limit_ratio=result.entry_limit_ratio,
-        kospi_ts=result.kospi_ts,
+        kospi_ts=result.kospi_ts or 0.0,
         assets=[
-            AssetTrend(name=item.name, direction=item.direction, value=item.value)
+            AssetTrend(name=item.name, direction=item.direction, value=item.value or 0.0)
             for item in result.assets
         ],
         updated_at=result.evaluated_at.isoformat(),
@@ -56,7 +56,13 @@ class _KRXIndexWeeklyProvider:
 
         end = datetime.date.today()
         start = end - datetime.timedelta(days=max(n_weeks * 10, 90))
+        previous_raise_exceptions = logging.raiseExceptions
+        previous_disable_level = logging.root.manager.disable
         try:
+            # pykrx emits malformed root logging calls on some upstream errors.
+            # Suppress handler tracebacks while still catching the real failure.
+            logging.raiseExceptions = False
+            logging.disable(logging.CRITICAL)
             df = stock.get_index_ohlcv_by_date(
                 start.strftime("%Y%m%d"),
                 end.strftime("%Y%m%d"),
@@ -66,6 +72,9 @@ class _KRXIndexWeeklyProvider:
         except Exception as exc:
             logger.warning("KRX index weekly data unavailable [%s]: %s", asset_name, exc)
             return []
+        finally:
+            logging.disable(previous_disable_level)
+            logging.raiseExceptions = previous_raise_exceptions
 
         close_col = "종가" if "종가" in df.columns else "Close" if "Close" in df.columns else None
         if close_col is None:

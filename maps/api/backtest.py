@@ -97,17 +97,18 @@ def run_backtest(req: BacktestRunRequest, db: Session = Depends(get_db)) -> Back
     strategy_cls = RUNNABLE_STRATEGIES[req.strategy_id]
     strategy = strategy_cls()
     params = req.params or strategy.default_params
-    ma_long = int(params.get("ma_long", 20))
+    min_bars = strategy.required_bars(params)
 
     repo = HistoricalOHLCVRepository(db)
-    tickers = repo.list_tickers_with_history(min_bars=ma_long + 30)
+    tickers = repo.list_tickers_with_history(min_bars=min_bars)
 
     if not tickers:
         raise HTTPException(
             status_code=400,
             detail=(
-                "OHLCV 히스토리 데이터가 없습니다. "
-                "데이터 수집(SCR-14) 실행 후 다시 시도해 주세요."
+                f"OHLCV 히스토리 데이터가 부족합니다. "
+                f"{req.strategy_id} 전략은 최소 {min_bars}개 봉이 필요합니다. "
+                "데이터 수집(SCR-14) 또는 OHLCV 백필을 실행한 뒤 다시 시도해 주세요."
             ),
         )
 
@@ -117,7 +118,7 @@ def run_backtest(req: BacktestRunRequest, db: Session = Depends(get_db)) -> Back
 
     for ticker in tickers[:30]:
         df = repo.to_dataframe(ticker)
-        if len(df) < ma_long + 5:
+        if len(df) < min_bars:
             continue
         try:
             r = engine.run(strategy, params, df)

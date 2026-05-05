@@ -405,6 +405,67 @@ async function loadLiveMonitor() {
 }
 
 // ── SCR-14 Data Quality ───────────────────────────────────────────────────────
+async function loadLiveMonitorV2() {
+  loading('live-kpi');
+  loading('live-events');
+  try {
+    const d = await apiFetch('/live-monitor');
+    document.getElementById('live-kpi').innerHTML = `
+      <div class="kpi-grid">
+        <div class="kpi-card ${d.auto_response_active ? 'pass' : 'warn'}">
+          <div class="kpi-label">Auto Response</div>
+          <div class="kpi-value">${d.auto_response_active ? 'ACTIVE' : 'PAUSED'}</div>
+          <div class="kpi-sub">approval ${d.pending_approval_count} / release ${d.pending_release_count}</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Actual MDD</div>
+          <div class="kpi-value">${d.actual_mdd != null ? fmt.pct(d.actual_mdd) : '-'}</div>
+          <div class="kpi-sub">portfolio live monitor</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Large Slip</div>
+          <div class="kpi-value">${d.large_slip_actual != null ? fmt.pct1(d.large_slip_actual) : '-'}</div>
+          <div class="kpi-sub">current assumption</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Mid/Small Slip</div>
+          <div class="kpi-value">${d.mid_small_slip_actual != null ? fmt.pct1(d.mid_small_slip_actual) : '-'}</div>
+          <div class="kpi-sub">current assumption</div>
+        </div>
+      </div>`;
+
+    if (d.recent_events.length === 0) {
+      const failureRows = Object.entries(d.consec_failures || {}).map(([strategyId, count]) => `
+        <tr>
+          <td class="mono">${strategyId}</td>
+          <td>${badge('CLEAR', 'pass')}</td>
+          <td class="mono">${count}</td>
+          <td>No Kill Switch events</td>
+        </tr>`).join('');
+      document.getElementById('live-events').innerHTML = `
+        <table>
+          <thead><tr><th>Strategy</th><th>Status</th><th>Failures</th><th>Note</th></tr></thead>
+          <tbody>${failureRows || '<tr><td colspan="4">No live monitor data</td></tr>'}</tbody>
+        </table>`;
+    } else {
+      const rows = d.recent_events.map(e => `
+        <tr>
+          <td class="mono">${e.strategy_id ?? '-'}</td>
+          <td>${e.event_type === 'trigger' ? badge('TRIGGER', 'fail') : e.event_type === 'approved' ? badge('APPROVED', 'warn') : badge('RELEASED', 'pass')}</td>
+          <td>${e.reason}</td>
+          <td>${e.value ?? '-'}</td>
+          <td>${e.approved_by ?? badge('PENDING', 'warn')}</td>
+          <td class="mono text-muted">${fmt.date(e.created_at)}</td>
+        </tr>`).join('');
+      document.getElementById('live-events').innerHTML =
+        `<table><thead><tr><th>Strategy</th><th>Type</th><th>Reason</th><th>Detail</th><th>Approval</th><th>Time</th></tr></thead><tbody>${rows}</tbody></table>`;
+    }
+  } catch (e) {
+    empty('live-kpi', `Error: ${e.message}`);
+    empty('live-events', '');
+  }
+}
+
 async function loadDataQuality() {
   loading('dq-kpi');
   loading('dq-reasons');
@@ -456,48 +517,119 @@ async function loadDataQuality() {
 }
 
 // ── SCR-11 WFA ────────────────────────────────────────────────────────────────
+function _wfaSelectedStrategy() {
+  const sel = document.getElementById('wfa-strategy');
+  return sel ? sel.value : (new URLSearchParams(location.search).get('strategy') || 'pullback_v3');
+}
+
+function _renderWfaResult(d) {
+  const cv = d.cv;
+  document.getElementById('wfa-kpi').innerHTML = `
+    <div class="kpi-grid">
+      <div class="kpi-card ${d.sharpe_mean > 0 ? 'pass' : d.sharpe_mean != null ? 'fail' : ''}">
+        <div class="kpi-label">Sharpe 평균 > 0</div>
+        <div class="kpi-value">${fmt.num2(d.sharpe_mean)}</div>
+        <div class="kpi-sub">v2.6.2 신규 조건</div>
+      </div>
+      <div class="kpi-card ${cv != null && cv <= 0.5 ? 'pass' : cv != null ? 'fail' : ''}">
+        <div class="kpi-label">변동계수</div>
+        <div class="kpi-value">${fmt.num2(cv)}</div>
+        <div class="kpi-sub">≤ 0.5 통과</div>
+      </div>
+      <div class="kpi-card ${d.negative_folds != null && d.negative_folds <= 1 ? 'pass' : d.negative_folds != null ? 'fail' : ''}">
+        <div class="kpi-label">음수 fold 수</div>
+        <div class="kpi-value">${d.negative_folds ?? '—'}</div>
+        <div class="kpi-sub">≤ 1 통과</div>
+      </div>
+      <div class="kpi-card ${d.mean_g2p >= 0.6 ? 'pass' : d.mean_g2p != null ? 'fail' : ''}">
+        <div class="kpi-label">OOS/IS G2P</div>
+        <div class="kpi-value">${fmt.num2(d.mean_g2p)}</div>
+        <div class="kpi-sub">≥ 0.6 통과</div>
+      </div>
+      <div class="kpi-card ${d.passed ? 'pass' : 'fail'}">
+        <div class="kpi-label">최종 판정</div>
+        <div class="kpi-value">${d.passed ? 'PASS' : 'FAIL'}</div>
+        <div class="kpi-sub">${d.passed ? '4/4 통과' : (d.fail_reasons.length + '건 실패')}</div>
+      </div>
+    </div>
+    ${d.run_date ? `<div class="text-muted" style="font-size:11px;margin-top:8px">분석일: ${fmt.date(d.run_date)}</div>` : ''}
+    ${d.fail_reasons.length ? `<div class="empty-sub" style="margin-top:8px">${d.fail_reasons.join(' / ')}</div>` : ''}`;
+
+  if (d.folds.length === 0) {
+    empty('wfa-folds', 'WFA 실행 후 fold 결과가 표시됩니다');
+    document.getElementById('wfa-bar-chart').innerHTML =
+      '<div class="empty-state" style="padding:32px"><div class="empty-sub">WFA 실행 후 표시됩니다</div></div>';
+    return;
+  }
+
+  // fold 테이블
+  const rows = d.folds.map(f => {
+    const cls = f.oos_sharpe >= 0 ? '' : 'style="color:var(--color-fail)"';
+    return `<tr>
+      <td class="mono">${f.fold_idx + 1}</td>
+      <td class="mono text-muted">${fmt.date(f.is_start)} ~ ${fmt.date(f.is_end)}</td>
+      <td class="mono text-muted">${fmt.date(f.oos_start)} ~ ${fmt.date(f.oos_end)}</td>
+      <td class="mono">${fmt.num2(f.is_sharpe)}</td>
+      <td class="mono" ${cls}>${fmt.num2(f.oos_sharpe)}</td>
+      <td class="mono">${fmt.num2(f.is_g2p)}</td>
+      <td class="mono">${fmt.num2(f.oos_g2p)}</td>
+      <td class="mono">${fmt.num2(f.g2p_ratio)}</td>
+    </tr>`;
+  }).join('');
+  document.getElementById('wfa-folds').innerHTML = `
+    <table><thead><tr>
+      <th>Fold</th><th>IS 기간</th><th>OOS 기간</th>
+      <th>IS Sharpe</th><th>OOS Sharpe</th><th>IS G2P</th><th>OOS G2P</th><th>G2P 비율</th>
+    </tr></thead><tbody>${rows}</tbody></table>`;
+
+  // fold별 OOS Sharpe 바 차트
+  const labels = d.folds.map(f => `Fold ${f.fold_idx + 1}`);
+  const values = d.folds.map(f => f.oos_sharpe);
+  const colors = values.map(v => v >= 0 ? '#22c55e' : '#ef4444');
+  Plotly.newPlot('wfa-bar-chart', [{
+    type: 'bar',
+    x: labels,
+    y: values,
+    marker: { color: colors },
+    text: values.map(v => fmt.num2(v)),
+    textposition: 'auto',
+  }], {
+    ...LAYOUT_BASE,
+    height: 200,
+    yaxis: { ...LAYOUT_BASE.yaxis, title: 'OOS Sharpe', zeroline: true, zerolinecolor: '#525c72' },
+    shapes: [{ type: 'line', x0: -0.5, x1: labels.length - 0.5, y0: 0, y1: 0,
+               line: { color: '#fbbf24', width: 1, dash: 'dot' } }],
+  }, CONFIG);
+}
+
 async function loadWfa() {
   loading('wfa-kpi');
   loading('wfa-folds');
   try {
-    const params = new URLSearchParams(location.search);
-    const sid = params.get('strategy') || 'pullback_v3';
-    const d = await apiFetch(`/wfa?strategy_id=${sid}`);
+    const sid = _wfaSelectedStrategy();
+    const d = await apiFetch(`/wfa?strategy_id=${encodeURIComponent(sid)}`);
+    _renderWfaResult(d);
+  } catch (e) {
+    empty('wfa-kpi', `오류: ${e.message}`);
+    empty('wfa-folds', '');
+  }
+}
 
-    const cv = d.cv;
-    document.getElementById('wfa-kpi').innerHTML = `
-      <div class="kpi-grid">
-        <div class="kpi-card ${d.sharpe_mean > 0 ? 'pass' : d.sharpe_mean != null ? 'fail' : ''}">
-          <div class="kpi-label">Sharpe 평균 > 0</div>
-          <div class="kpi-value">${fmt.num2(d.sharpe_mean)}</div>
-          <div class="kpi-sub">v2.6.2 신규 조건</div>
-        </div>
-        <div class="kpi-card ${cv != null && cv <= 0.5 ? 'pass' : cv != null ? 'fail' : ''}">
-          <div class="kpi-label">변동계수</div>
-          <div class="kpi-value">${fmt.num2(cv)}</div>
-          <div class="kpi-sub">≤ 0.5 통과</div>
-        </div>
-        <div class="kpi-card ${d.negative_folds != null && d.negative_folds <= 1 ? 'pass' : d.negative_folds != null ? 'fail' : ''}">
-          <div class="kpi-label">음수 fold 수</div>
-          <div class="kpi-value">${d.negative_folds ?? '—'}</div>
-          <div class="kpi-sub">≤ 1 통과</div>
-        </div>
-        <div class="kpi-card ${d.mean_g2p >= 0.6 ? 'pass' : d.mean_g2p != null ? 'fail' : ''}">
-          <div class="kpi-label">OOS/IS G2P</div>
-          <div class="kpi-value">${fmt.num2(d.mean_g2p)}</div>
-          <div class="kpi-sub">≥ 0.6 통과</div>
-        </div>
-        <div class="kpi-card ${d.passed ? 'pass' : 'fail'}">
-          <div class="kpi-label">최종 판정</div>
-          <div class="kpi-value">${d.passed ? 'PASS' : 'FAIL'}</div>
-          <div class="kpi-sub">${d.passed ? '4/4 통과' : d.fail_reasons.length + '건 실패'}</div>
-        </div>
-      </div>`;
-
-    if (d.folds.length === 0) {
-      empty('wfa-folds', 'WFA 실행 후 fold 결과가 표시됩니다');
-    }
-  } catch (e) { empty('wfa-kpi', `오류: ${e.message}`); }
+async function runWfa() {
+  const btn = document.querySelector('.wfa-run-btn');
+  const sid = _wfaSelectedStrategy();
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ 실행 중...'; }
+  loading('wfa-kpi');
+  loading('wfa-folds');
+  try {
+    const d = await apiPost(`/wfa/run?strategy_id=${encodeURIComponent(sid)}`, {});
+    _renderWfaResult(d);
+  } catch (e) {
+    empty('wfa-kpi', `WFA 실행 실패: ${e.message}`);
+    empty('wfa-folds', '');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '▶ WFA 실행'; }
+  }
 }
 
 // ── SCR-07 백테스트 콘솔 ──────────────────────────────────────────────────────
@@ -720,16 +852,281 @@ async function loadOpsConfig() {
   }
 }
 
+async function loadTrendStrength() {
+  loading('ts-kpi');
+  loading('ts-buckets');
+  loading('ts-chart');
+  try {
+    const params = new URLSearchParams(location.search);
+    const minBars = params.get('min_bars') || '60';
+    const d = await apiFetch(`/trend-strength?min_bars=${encodeURIComponent(minBars)}`);
+    const scored = Math.max(0, d.universe_count - d.missing_count);
+    const strongest = d.buckets.reduce((best, b) => b.count > best.count ? b : best, d.buckets[0] || { grade: '-', count: 0, ratio: 0 });
+
+    document.getElementById('ts-kpi').innerHTML = `
+      <div class="kpi-grid">
+        <div class="kpi-card"><div class="kpi-label">As Of</div><div class="kpi-value">${fmt.date(d.ref_date)}</div><div class="kpi-sub">${minBars} bars minimum</div></div>
+        <div class="kpi-card info"><div class="kpi-label">Universe</div><div class="kpi-value">${d.universe_count}</div><div class="kpi-sub">${scored} scored</div></div>
+        <div class="kpi-card ${d.missing_count > 0 ? 'warn' : 'pass'}"><div class="kpi-label">Missing</div><div class="kpi-value">${d.missing_count}</div><div class="kpi-sub">${fmt.pct1(d.universe_count ? d.missing_count / d.universe_count : 0)}</div></div>
+        <div class="kpi-card"><div class="kpi-label">Dominant</div><div class="kpi-value">${strongest.grade}</div><div class="kpi-sub">${fmt.pct1(strongest.ratio)}</div></div>
+      </div>`;
+
+    if (!d.buckets.length) {
+      empty('ts-buckets', 'TrendStrength data unavailable');
+      empty('ts-chart', '');
+      return;
+    }
+
+    const rows = d.buckets.map(b => `
+      <tr>
+        <td class="mono">${b.grade}</td>
+        <td>${b.label}</td>
+        <td class="mono">${b.count}</td>
+        <td class="mono">${fmt.pct1(b.ratio)}</td>
+      </tr>`).join('');
+    document.getElementById('ts-buckets').innerHTML =
+      `<table><thead><tr><th>Bucket</th><th>Label</th><th>Count</th><th>Ratio</th></tr></thead><tbody>${rows}</tbody></table>`;
+
+    Plotly.newPlot('ts-chart', [{
+      type: 'bar',
+      x: d.buckets.map(b => b.grade),
+      y: d.buckets.map(b => b.count),
+      marker: { color: ['#ef4444', '#f59e0b', '#60a5fa', '#22c55e', '#14b8a6'] },
+      text: d.buckets.map(b => fmt.pct1(b.ratio)),
+      textposition: 'auto',
+    }], {
+      ...LAYOUT_BASE,
+      yaxis: { ...LAYOUT_BASE.yaxis, title: 'Count' },
+    }, CONFIG);
+  } catch (e) {
+    empty('ts-kpi', `Error: ${e.message}`);
+    empty('ts-buckets', '');
+    empty('ts-chart', '');
+  }
+}
+
+async function loadResearch() {
+  loading('research-kpi');
+  loading('research-area');
+  try {
+    const d = await apiFetch('/research');
+    document.getElementById('research-kpi').innerHTML = `
+      <div class="kpi-grid">
+        <div class="kpi-card"><div class="kpi-label">Research Total</div><div class="kpi-value">${d.total}</div><div class="kpi-sub">registered strategies</div></div>
+        <div class="kpi-card info"><div class="kpi-label">Research</div><div class="kpi-value">${d.mock_count}</div><div class="kpi-sub">pre-gate</div></div>
+        <div class="kpi-card warn"><div class="kpi-label">Alert Only</div><div class="kpi-value">${d.alert_only_count}</div><div class="kpi-sub">signal only</div></div>
+      </div>`;
+
+    if (!d.strategies || d.strategies.length === 0) {
+      empty('research-area', 'Research/Alert Only strategies unavailable');
+      return;
+    }
+
+    const rows = d.strategies.map(s => `
+      <tr>
+        <td class="mono">${s.strategy_id}</td>
+        <td>${s.strategy_type}</td>
+        <td>${stageBadge(s.stage)}</td>
+        <td class="mono">${s.signal_count ?? '—'}</td>
+        <td class="mono">${s.mock_cagr == null ? '—' : fmt.pct(s.mock_cagr)}</td>
+        <td class="mono">${s.mock_mdd == null ? '—' : fmt.pct1(Math.abs(s.mock_mdd))}</td>
+        <td class="mono">${s.observation_months == null ? '—' : fmt.num1(s.observation_months)}</td>
+        <td>${s.next_gate}</td>
+      </tr>`).join('');
+
+    document.getElementById('research-area').innerHTML = `
+      <table>
+        <thead><tr>
+          <th>Strategy</th><th>Type</th><th>Stage</th><th>Signals</th>
+          <th>Mock CAGR</th><th>Mock MDD</th><th>Months</th><th>Next Gate</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+  } catch (e) {
+    empty('research-kpi', `Error: ${e.message}`);
+    empty('research-area', '');
+  }
+}
+
+async function loadCostSensitivity() {
+  loading('cost-kpi');
+  loading('cost-assumption');
+  loading('cost-scenarios');
+  try {
+    const params = new URLSearchParams(location.search);
+    const strategyId = params.get('strategy_id') || 'pullback_v3';
+    const d = await apiFetch(`/cost-sensitivity?strategy_id=${encodeURIComponent(strategyId)}`);
+    const base = d.assumption;
+
+    document.getElementById('cost-kpi').innerHTML = `
+      <div class="kpi-grid">
+        <div class="kpi-card"><div class="kpi-label">Strategy</div><div class="kpi-value">${d.strategy_id}</div><div class="kpi-sub">selected model</div></div>
+        <div class="kpi-card info"><div class="kpi-label">Tax</div><div class="kpi-value">${fmt.pct1(base?.tax_rate)}</div><div class="kpi-sub">sell-side</div></div>
+        <div class="kpi-card"><div class="kpi-label">Fee</div><div class="kpi-value">${fmt.pct1(base?.commission_rate)}</div><div class="kpi-sub">round trip</div></div>
+        <div class="kpi-card"><div class="kpi-label">Large Slip</div><div class="kpi-value">${fmt.pct1(base?.slippage_large)}</div><div class="kpi-sub">base assumption</div></div>
+      </div>`;
+
+    if (!base) {
+      empty('cost-assumption', 'Cost assumptions unavailable');
+    } else {
+      document.getElementById('cost-assumption').innerHTML = `
+        <table>
+          <thead><tr><th>Field</th><th>Value</th></tr></thead>
+          <tbody>
+            <tr><td>Tax Rate</td><td class="mono">${fmt.pct1(base.tax_rate)}</td></tr>
+            <tr><td>Commission</td><td class="mono">${fmt.pct1(base.commission_rate)}</td></tr>
+            <tr><td>Slippage Large</td><td class="mono">${fmt.pct1(base.slippage_large)}</td></tr>
+            <tr><td>Slippage Mid/Small</td><td class="mono">${fmt.pct1(base.slippage_mid_small)}</td></tr>
+            <tr><td>Effective At</td><td class="mono">${fmt.date(base.effective_at)}</td></tr>
+          </tbody>
+        </table>`;
+    }
+
+    if (!d.scenarios || d.scenarios.length === 0) {
+      empty('cost-scenarios', 'Scenario data unavailable');
+      return;
+    }
+    const rows = d.scenarios.map(s => `
+      <tr>
+        <td>${s.label}</td>
+        <td class="mono">${fmt.pct(s.slip_delta_pct)}</td>
+        <td class="mono">${s.net_cagr == null ? '—' : fmt.pct(s.net_cagr)}</td>
+        <td class="mono">${s.net_sharpe == null ? '—' : fmt.num2(s.net_sharpe)}</td>
+        <td class="mono">${s.tradeability == null ? '—' : fmt.score(s.tradeability)}</td>
+        <td>${badge(s.status, s.status === 'baseline' ? 'pass' : 'info')}</td>
+      </tr>`).join('');
+    document.getElementById('cost-scenarios').innerHTML = `
+      <table>
+        <thead><tr><th>Scenario</th><th>Slip Delta</th><th>Net CAGR</th><th>Sharpe</th><th>Tradeability</th><th>Status</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+  } catch (e) {
+    empty('cost-kpi', `Error: ${e.message}`);
+    empty('cost-assumption', '');
+    empty('cost-scenarios', '');
+  }
+}
+
+async function loadOrders() {
+  loading('orders-kpi');
+  loading('orders-pending');
+  loading('orders-fills');
+  try {
+    const d = await apiFetch('/orders');
+    const slip = d.slippage || {};
+    document.getElementById('orders-kpi').innerHTML = `
+      <div class="kpi-grid">
+        <div class="kpi-card ${d.auto_order_active ? 'pass' : 'fail'}"><div class="kpi-label">Auto Orders</div><div class="kpi-value">${d.auto_order_active ? 'ACTIVE' : 'BLOCKED'}</div><div class="kpi-sub">Kill Switch aware</div></div>
+        <div class="kpi-card"><div class="kpi-label">Pending</div><div class="kpi-value">${d.pending.length}</div><div class="kpi-sub">open queue</div></div>
+        <div class="kpi-card info"><div class="kpi-label">Fills Today</div><div class="kpi-value">${d.fills_today.length}</div><div class="kpi-sub">audit log</div></div>
+        <div class="kpi-card"><div class="kpi-label">Slip Assumed</div><div class="kpi-value">${fmt.pct1(slip.mid_small_assumed)}</div><div class="kpi-sub">mid/small cap</div></div>
+      </div>`;
+
+    if (!d.pending.length) {
+      empty('orders-pending', 'No pending orders');
+    } else {
+      const rows = d.pending.map(o => `
+        <tr>
+          <td class="mono">${o.order_id}</td>
+          <td class="mono">${o.strategy_id ?? '-'}</td>
+          <td class="mono">${o.ticker}</td>
+          <td>${badge(o.side, o.side === 'BUY' ? 'pass' : 'warn')}</td>
+          <td class="mono">${o.qty}</td>
+          <td class="mono">${o.order_price == null ? '-' : o.order_price.toLocaleString('ko-KR')}</td>
+          <td>${badge(o.status, 'info')}</td>
+          <td class="mono text-muted">${fmt.date(o.created_at)}</td>
+        </tr>`).join('');
+      document.getElementById('orders-pending').innerHTML =
+        `<table><thead><tr><th>Order</th><th>Strategy</th><th>Ticker</th><th>Side</th><th>Qty</th><th>Price</th><th>Status</th><th>Created</th></tr></thead><tbody>${rows}</tbody></table>`;
+    }
+
+    if (!d.fills_today.length) {
+      empty('orders-fills', 'No fills today');
+    } else {
+      const rows = d.fills_today.map(f => `
+        <tr>
+          <td class="mono">${f.order_id}</td>
+          <td class="mono">${f.ticker}</td>
+          <td>${badge(f.side, f.side === 'BUY' ? 'pass' : 'warn')}</td>
+          <td class="mono">${f.fill_qty}</td>
+          <td class="mono">${f.fill_price == null ? '-' : f.fill_price.toLocaleString('ko-KR')}</td>
+          <td>${badge(f.status, 'info')}</td>
+          <td class="mono text-muted">${fmt.date(f.created_at)}</td>
+        </tr>`).join('');
+      document.getElementById('orders-fills').innerHTML =
+        `<table><thead><tr><th>Order</th><th>Ticker</th><th>Side</th><th>Fill Qty</th><th>Fill Price</th><th>Status</th><th>Created</th></tr></thead><tbody>${rows}</tbody></table>`;
+    }
+  } catch (e) {
+    empty('orders-kpi', `Error: ${e.message}`);
+    empty('orders-pending', '');
+    empty('orders-fills', '');
+  }
+}
+
+async function loadDataQualityV2() {
+  loading('dq-kpi');
+  loading('dq-reasons');
+  loading('dq-chart');
+  try {
+    const params = new URLSearchParams(location.search);
+    const mode = params.get('mode') || 'live';
+    const d = await apiFetch(`/data-quality?mode=${encodeURIComponent(mode)}`);
+    const ratioClass = d.rejection_ratio > 0.15 ? 'fail' : d.rejection_ratio > 0.05 ? 'warn' : 'pass';
+    document.getElementById('dq-kpi').innerHTML = `
+      <div class="kpi-grid">
+        <div class="kpi-card"><div class="kpi-label">Universe</div><div class="kpi-value">${d.total_candidates}</div><div class="kpi-sub">${d.mode} · ${d.ref_date}</div></div>
+        <div class="kpi-card pass"><div class="kpi-label">Kept</div><div class="kpi-value">${d.kept_count}</div><div class="kpi-sub">${fmt.pct1(d.total_candidates ? d.kept_count / d.total_candidates : 0)}</div></div>
+        <div class="kpi-card ${ratioClass}"><div class="kpi-label">Rejected</div><div class="kpi-value">${d.rejected_count}</div><div class="kpi-sub">${fmt.pct1(d.rejection_ratio)}</div></div>
+        <div class="kpi-card ${d.alert_sent ? 'warn' : 'pass'}"><div class="kpi-label">Alert</div><div class="kpi-value">${d.alert_sent ? 'SENT' : 'NORMAL'}</div><div class="kpi-sub">threshold 5%</div></div>
+      </div>`;
+
+    if (!d.rejection_reasons || d.rejection_reasons.length === 0) {
+      empty('dq-reasons', 'No rejection reasons');
+    } else {
+      const rows = d.rejection_reasons.map(r => `
+        <tr>
+          <td class="mono">${r.reason_code}</td>
+          <td>${r.description}</td>
+          <td class="mono">${r.count}</td>
+          <td class="mono">${fmt.pct1(r.ratio)}</td>
+        </tr>`).join('');
+      document.getElementById('dq-reasons').innerHTML =
+        `<table><thead><tr><th>Reason</th><th>Description</th><th>Count</th><th>Ratio</th></tr></thead><tbody>${rows}</tbody></table>`;
+    }
+
+    if (d.history_90d && d.history_90d.length > 0) {
+      const dates = d.history_90d.map(h => h.date);
+      const ratios = d.history_90d.map(h => h.rejection_ratio * 100);
+      Plotly.newPlot('dq-chart', [
+        { x: dates, y: ratios, type: 'scatter', mode: 'lines+markers', name: 'Reject ratio',
+          line: { color: '#60a5fa', width: 2 }, fill: 'tozeroy', fillcolor: 'rgba(96,165,250,.08)' },
+        { x: [dates[0], dates[dates.length - 1]], y: [5, 5], type: 'scatter', mode: 'lines',
+          name: 'Threshold 5%', line: { color: '#fbbf24', width: 1, dash: 'dot' } }
+      ], { ...LAYOUT_BASE, height: 220, yaxis: { ...LAYOUT_BASE.yaxis, ticksuffix: '%' } }, CONFIG);
+    } else {
+      empty('dq-chart', 'No quality history');
+    }
+  } catch (e) {
+    empty('dq-kpi', `Error: ${e.message}`);
+    empty('dq-reasons', '');
+    empty('dq-chart', '');
+  }
+}
+
 const PAGE_LOADERS = {
   dashboard:        loadDashboard,
   strategies:       loadStrategies,
   market:           loadMarket,
   candidates:       loadCandidates,
+  orders:           loadOrders,
   risk:             loadRisk,
   backtest:         loadBacktest,
   robustness:       loadRobustness,
-  'live-monitor':   loadLiveMonitor,
-  'data-quality':   loadDataQuality,
+  'live-monitor':   loadLiveMonitorV2,
+  'data-quality':   loadDataQualityV2,
+  'trend-strength': loadTrendStrength,
+  research:         loadResearch,
+  'cost-sensitivity': loadCostSensitivity,
   wfa:              loadWfa,
   'ops-config':     loadOpsConfig,
 };

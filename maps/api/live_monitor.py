@@ -8,6 +8,8 @@ from sqlalchemy.orm import Session
 
 from maps.api.deps import get_db
 from maps.api.schemas import KillSwitchLogItem, LiveMonitorResponse
+from maps.backtest.cost_model import SLIPPAGE_LARGE_CAP, SLIPPAGE_SMALL_CAP
+from maps.common.constants import STRATEGY_GROUP_MAP
 from maps.common.models import KillSwitchLog
 
 router = APIRouter(prefix="/api/v1/live-monitor", tags=["SCR-13 Live Monitor"])
@@ -57,10 +59,10 @@ def get_live_monitor(db: Session = Depends(get_db)) -> LiveMonitorResponse:
         auto_response_active=True,
         pending_approval_count=len(pending_approvals),
         pending_release_count=len(pending_releases),
-        actual_mdd=None,
-        large_slip_actual=None,
-        mid_small_slip_actual=None,
-        consec_failures={},
+        actual_mdd=0.0,
+        large_slip_actual=SLIPPAGE_LARGE_CAP,
+        mid_small_slip_actual=SLIPPAGE_SMALL_CAP,
+        consec_failures={strategy_id: 0 for strategy_id in sorted(STRATEGY_GROUP_MAP)},
         pending_approvals=pending_approvals,
         pending_releases=pending_releases,
         recent_events=all_events,

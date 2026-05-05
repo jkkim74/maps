@@ -1,14 +1,17 @@
 {% extends "base.html" %}
 {% block topbar_actions %}
-<button class="topbar-btn" style="color:var(--color-fail);border-color:var(--color-fail)" onclick="alert('긴급 정지 — Kill Switch 발동')">⚠ 긴급 정지</button>
+<button class="topbar-btn" style="color:var(--color-fail);border-color:var(--color-fail)" onclick="alert('Emergency stop requires Kill Switch approval workflow.')">Emergency Stop</button>
 {% endblock %}
 {% block content %}
-<div class="section-header"><span class="section-title">주문 큐 / 체결 이력</span><hr></div>
-<div class="card"><div class="card-body">
-  <div class="empty-state">
-    <div class="empty-icon">○</div>
-    <div class="empty-text">주문 · 체결</div>
-    <div class="empty-sub">MockBroker 주문 실행 후 이력이 표시됩니다.</div>
-  </div>
+<div id="orders-kpi"><div class="loading"><div class="spinner"></div></div></div>
+
+<div class="section-header"><span class="section-title">Pending Orders</span><hr></div>
+<div class="card"><div class="card-body" id="orders-pending">
+  <div class="loading"><div class="spinner"></div></div>
+</div></div>
+
+<div class="section-header"><span class="section-title">Fills Today</span><hr></div>
+<div class="card"><div class="card-body" id="orders-fills">
+  <div class="loading"><div class="spinner"></div></div>
 </div></div>
 {% endblock %}

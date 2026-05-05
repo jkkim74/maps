@@ -167,7 +167,7 @@ class ParameterPlateauResults(Base):
 
 
 class WalkForwardResults(Base):
-    """walk_forward_results — WFA fold별 결과."""
+    """walk_forward_results — WFA 요약 결과."""
 
     __tablename__ = "walk_forward_results"
 
@@ -181,6 +181,30 @@ class WalkForwardResults(Base):
     mean_g2p: Mapped[float] = mapped_column(Float, nullable=False)
     passed: Mapped[bool] = mapped_column(Boolean, nullable=False)
     fail_reasons_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc)
+    )
+
+
+class WalkForwardFoldResults(Base):
+    """walk_forward_fold_results — WFA fold별 상세 결과."""
+
+    __tablename__ = "walk_forward_fold_results"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    wfa_run_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    strategy_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    fold_idx: Mapped[int] = mapped_column(Integer, nullable=False)
+    is_start: Mapped[datetime.date] = mapped_column(Date, nullable=False)
+    is_end: Mapped[datetime.date] = mapped_column(Date, nullable=False)
+    oos_start: Mapped[datetime.date] = mapped_column(Date, nullable=False)
+    oos_end: Mapped[datetime.date] = mapped_column(Date, nullable=False)
+    is_sharpe: Mapped[float] = mapped_column(Float, nullable=False)
+    oos_sharpe: Mapped[float] = mapped_column(Float, nullable=False)
+    is_g2p: Mapped[float] = mapped_column(Float, nullable=False)
+    oos_g2p: Mapped[float] = mapped_column(Float, nullable=False)
+    g2p_ratio: Mapped[float] = mapped_column(Float, nullable=False)
+    best_params_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc)
     )

@@ -1,4 +1,17 @@
 {% extends "base.html" %}
+{% block topbar_actions %}
+<select id="wfa-strategy" class="topbar-select" onchange="loadWfa()">
+  <option value="pullback_v3">pullback_v3</option>
+  <option value="pullback_v2">pullback_v2</option>
+  <option value="ath_breakout_v1">ath_breakout_v1</option>
+  <option value="ath_breakout_v2">ath_breakout_v2</option>
+  <option value="multi_asset_trend_v1">multi_asset_trend_v1</option>
+  <option value="donchian_v1">donchian_v1</option>
+  <option value="donchian_v2">donchian_v2</option>
+</select>
+<button class="topbar-btn wfa-run-btn" onclick="runWfa()">▶ WFA 실행</button>
+{% endblock %}
+
 {% block content %}
 <div id="wfa-kpi"><div class="loading"><div class="spinner"></div></div></div>
 

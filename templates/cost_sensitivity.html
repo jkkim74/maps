@@ -1,8 +1,38 @@
 {% extends "base.html" %}
+{% block topbar_actions %}
+<select class="topbar-btn" onchange="changeCostStrategy(this.value)" id="cost-strategy">
+  <option value="pullback_v3">pullback_v3</option>
+  <option value="pullback_v2">pullback_v2</option>
+  <option value="ath_breakout_v1">ath_breakout_v1</option>
+  <option value="ath_breakout_v2">ath_breakout_v2</option>
+  <option value="multi_asset_trend_v1">multi_asset_trend_v1</option>
+  <option value="donchian_v1">donchian_v1</option>
+  <option value="donchian_v2">donchian_v2</option>
+</select>
+{% endblock %}
 {% block content %}
-<div class="empty-state">
-  <div class="empty-icon">○</div>
-  <div class="empty-text">Cost Sensitivity</div>
-  <div class="empty-sub">CostModel 가정값이 등록되면 ±50% 시나리오가 표시됩니다.</div>
-</div>
+<div id="cost-kpi"><div class="loading"><div class="spinner"></div></div></div>
+
+<div class="section-header"><span class="section-title">Cost Assumption</span><hr></div>
+<div class="card"><div class="card-body" id="cost-assumption">
+  <div class="loading"><div class="spinner"></div></div>
+</div></div>
+
+<div class="section-header"><span class="section-title">Slippage Scenarios</span><hr></div>
+<div class="card"><div class="card-body" id="cost-scenarios">
+  <div class="loading"><div class="spinner"></div></div>
+</div></div>
+{% endblock %}
+{% block extra_scripts %}
+<script>
+function changeCostStrategy(strategyId) {
+  const url = new URL(location.href);
+  url.searchParams.set('strategy_id', strategyId);
+  location.href = url.toString();
+}
+document.addEventListener('DOMContentLoaded', () => {
+  const strategyId = new URLSearchParams(location.search).get('strategy_id') || 'pullback_v3';
+  document.getElementById('cost-strategy').value = strategyId;
+});
+</script>
 {% endblock %}

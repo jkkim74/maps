@@ -25,6 +25,7 @@ env/
 # IDE
 .vscode/
 .idea/
+.claude/
 *.iml
 
 # Testing

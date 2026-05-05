@@ -79,7 +79,7 @@ def get_candidates(
                 ts_bucket=row.ts_bucket,
                 final_score=row.final_score,
                 weekly_pass=row.weekly_pass,
-                estimated_qty=row.estimated_qty,
+                estimated_qty=row.estimated_qty or 0,
             )
             for row in rows
         ],

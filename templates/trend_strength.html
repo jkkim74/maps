@@ -1,8 +1,37 @@
 {% extends "base.html" %}
+{% block topbar_actions %}
+<select class="topbar-btn" onchange="changeTrendMinBars(this.value)" id="ts-min-bars">
+  <option value="60">60 bars</option>
+  <option value="100">100 bars</option>
+  <option value="250">250 bars</option>
+</select>
+{% endblock %}
 {% block content %}
-<div class="empty-state">
-  <div class="empty-icon">○</div>
-  <div class="empty-text">TrendStrength Monitor</div>
-  <div class="empty-sub">TrendStrengthCalculator + KRX 데이터 연동 후 활성화됩니다.</div>
+<div id="ts-kpi"><div class="loading"><div class="spinner"></div></div></div>
+
+<div class="section-header"><span class="section-title">TrendStrength Buckets</span><hr></div>
+<div class="card"><div class="card-body" id="ts-buckets">
+  <div class="loading"><div class="spinner"></div></div>
+</div></div>
+
+<div class="section-header"><span class="section-title">Distribution</span><hr></div>
+<div class="chart-container">
+  <div class="chart-title">S1 to S5 bucket ratio</div>
+  <div id="ts-chart" style="min-height:260px">
+    <div class="loading"><div class="spinner"></div></div>
+  </div>
 </div>
+{% endblock %}
+{% block extra_scripts %}
+<script>
+function changeTrendMinBars(v) {
+  const url = new URL(location.href);
+  url.searchParams.set('min_bars', v);
+  location.href = url.toString();
+}
+document.addEventListener('DOMContentLoaded', () => {
+  const minBars = new URLSearchParams(location.search).get('min_bars') || '60';
+  document.getElementById('ts-min-bars').value = minBars;
+});
+</script>
 {% endblock %}

@@ -77,6 +77,10 @@ class MultiAssetTrendV1Strategy(BaseStrategy):
             for s in [40, 60, 80]
         ]
 
+    def required_bars(self, params: dict) -> int:
+        ma_slow = int(params.get("ma_slow", 60))
+        return ma_slow + 2
+
     @property
     def default_params(self) -> dict:
         return {"ma_fast": 15, "ma_slow": 60}
