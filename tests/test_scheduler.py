@@ -8,14 +8,18 @@ from sqlalchemy.pool import StaticPool
 
 from maps.common.db import Base
 import datetime as dt
+import math
 
 from maps.common.models import (
     CandidateSnapshot,
     CollectionLog,
     HistoricalOHLCV,
+    MonteCarloSequenceResults,
     OrderLog,
+    ParameterPlateauResults,
     PromotionHistory,
     UniverseQualityLog,
+    WalkForwardResults,
 )
 from maps.common.settings import MapsSettings
 from maps.ops.scheduler import MapsOperationalScheduler, OperationalPipeline
@@ -150,6 +154,145 @@ def test_order_cycle_submits_promoted_candidate_when_live_enabled() -> None:
         assert row is not None
         assert row.status == "success"
         assert row.items == 1
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def test_validation_creates_promotion_history_from_latest_metrics() -> None:
+    engine, factory = _session_factory()
+    settings = MapsSettings(
+        maps_broker_mode="mock",
+        maps_data_provider="mock",
+        maps_live_trading_enabled=False,
+    )
+    pipeline = OperationalPipeline(settings=settings, session_factory=factory)
+    ref_date = dt.date(2026, 5, 5)
+
+    db = factory()
+    try:
+        db.add(CandidateSnapshot(
+            ref_date=ref_date,
+            strategy_id="pullback_v3",
+            ticker="AAAA",
+            name="AAAA",
+            market="KOSPI",
+            factor_score=90,
+            trend_strength=80,
+            ts_bucket="S5",
+            final_score=95,
+            weekly_pass=True,
+        ))
+        db.add(ParameterPlateauResults(
+            strategy_id="pullback_v3",
+            run_date=ref_date,
+            total_combinations=10,
+            positive_combinations=8,
+            positive_ratio=0.8,
+            grade="A",
+        ))
+        db.add(MonteCarloSequenceResults(
+            strategy_id="pullback_v3",
+            strategy_group="pullback_short",
+            run_date=ref_date,
+            n_simulations=100,
+            mdd_p95=0.09,
+            mdd_limit=0.18,
+            mc_within_limit=True,
+        ))
+        db.add(WalkForwardResults(
+            strategy_id="pullback_v3",
+            run_date=ref_date,
+            n_folds=3,
+            sharpe_mean=1.2,
+            sharpe_std=0.25,
+            negative_folds=0,
+            mean_g2p=1.0,
+            passed=True,
+        ))
+        db.commit()
+    finally:
+        db.close()
+
+    run = pipeline.run_validation(ref_date)
+
+    assert run.status == "success"
+    assert run.details["status"] == "success"
+    assert run.details["evaluated"] == 1
+    assert run.details["passed"] == 1
+
+    db = factory()
+    try:
+        promotion = db.query(PromotionHistory).one()
+        assert promotion.strategy_id == "pullback_v3"
+        assert promotion.from_stage == "research"
+        assert promotion.to_stage == "mock_candidate"
+        assert promotion.passed is True
+        row = db.query(CollectionLog).filter(CollectionLog.source == "scheduler.validation").one()
+        assert row.status == "success"
+        assert row.items == 1
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def test_validation_generates_missing_metric_rows(monkeypatch) -> None:
+    engine, factory = _session_factory()
+    settings = MapsSettings(
+        maps_broker_mode="mock",
+        maps_data_provider="mock",
+        maps_live_trading_enabled=False,
+    )
+    pipeline = OperationalPipeline(settings=settings, session_factory=factory)
+    monkeypatch.setattr(OperationalPipeline, "_wfa_required_bars", staticmethod(lambda: 80))
+    ref_date = dt.date(2026, 5, 5)
+
+    db = factory()
+    try:
+        db.add(CandidateSnapshot(
+            ref_date=ref_date,
+            strategy_id="pullback_v3",
+            ticker="AAAA",
+            name="AAAA",
+            market="KOSPI",
+            factor_score=90,
+            trend_strength=80,
+            ts_bucket="S5",
+            final_score=95,
+            weekly_pass=True,
+        ))
+        start = dt.date(2025, 12, 15)
+        for idx in range(100):
+            day = start + dt.timedelta(days=idx)
+            price = 10_000 + (idx * 10) + (math.sin(idx / 3) * 100)
+            db.add(HistoricalOHLCV(
+                ticker="AAAA",
+                date=day,
+                open=price * 0.99,
+                high=price * 1.02,
+                low=price * 0.98,
+                close=price,
+                volume=100_000,
+            ))
+        db.commit()
+    finally:
+        db.close()
+
+    run = pipeline.run_validation(ref_date)
+
+    assert run.status == "success"
+    assert run.details["generated"]["plateau"] == 1
+    assert run.details["generated"]["mc"] == 1
+    assert run.details["generated"]["wfa"] == 1
+
+    db = factory()
+    try:
+        assert db.query(ParameterPlateauResults).count() == 1
+        assert db.query(MonteCarloSequenceResults).count() == 1
+        assert db.query(WalkForwardResults).count() == 1
+        assert db.query(PromotionHistory).count() == 1
     finally:
         db.close()
         Base.metadata.drop_all(engine)

@@ -13,31 +13,64 @@ import logging
 from dataclasses import dataclass, field
 from typing import Callable
 
+import pandas as pd
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
+from maps.common.constants import STRATEGY_GROUP_MAP
 from maps.common.db import SessionLocal
 from maps.common.models import (
     CandidateSnapshot,
     CollectionLog,
     HistoricalOHLCV,
+    MonteCarloSequenceResults,
+    ParameterPlateauResults,
     PortfolioSnapshot,
     PromotionHistory,
+    WalkForwardFoldResults,
+    WalkForwardResults,
 )
 from maps.common.settings import MapsSettings, get_settings
+from maps.backtest.engine import BacktestEngine, BacktestResult
+from maps.common.exceptions import BacktestError, ValidationError
 from maps.data.collector import DataCollector
+from maps.data.ohlcv_repo import HistoricalOHLCVRepository
 from maps.data.krx_adapter import CollectionResult, KRXAdapter, MockKRXAdapter, SecurityMeta
 from maps.data.security_repo import HaltPeriod, ManagedPeriod, Security
 from maps.data_quality.universe_filter import DataQualityFilter, UniverseResult
 from maps.execution.broker_adapter import Order, OrderSide, OrderType, get_broker
 from maps.execution.order_manager import OrderManager
 from maps.ops.notifications import SlackNotifier
+from maps.promotion.gate import PromotionGate, PromotionStage
 from maps.risk.manager import RiskManager
+from maps.strategy.ath_breakout_v1 import ATHBreakoutV1Strategy
+from maps.strategy.ath_breakout_v2 import ATHBreakoutV2Strategy
+from maps.strategy.base import BaseStrategy
+from maps.strategy.donchian_v1 import DonchianV1Strategy
+from maps.strategy.donchian_v2 import DonchianV2Strategy
+from maps.strategy.multi_asset_trend_v1 import MultiAssetTrendV1Strategy
+from maps.strategy.pullback_v2 import PullbackV2Strategy
+from maps.strategy.pullback_v3 import PullbackV3Strategy
+from maps.validation.monte_carlo import MonteCarloValidator
+from maps.validation.plateau import ParameterPlateauTester
+from maps.validation.walk_forward import WalkForwardAnalyzer
 
 logger = logging.getLogger(__name__)
+
+_RUNNABLE_STRATEGIES: dict[str, type[BaseStrategy]] = {
+    "pullback_v3": PullbackV3Strategy,
+    "pullback_v2": PullbackV2Strategy,
+    "ath_breakout_v1": ATHBreakoutV1Strategy,
+    "ath_breakout_v2": ATHBreakoutV2Strategy,
+    "multi_asset_trend_v1": MultiAssetTrendV1Strategy,
+    "donchian_v1": DonchianV1Strategy,
+    "donchian_v2": DonchianV2Strategy,
+}
+
+_VALIDATION_SAMPLE_TICKERS = 5
 
 
 @dataclass
@@ -127,21 +160,45 @@ class OperationalPipeline:
         ref_date = ref_date or dt.date.today()
 
         def _run(db: Session) -> dict:
-            # Full WFA/MC requires persisted OHLCV history.  Until that table
-            # exists, this job records readiness and lets existing validation
-            # result APIs expose the latest stored runs.
+            generated = self._generate_validation_metrics(db, ref_date)
+            promotion = self._evaluate_promotions(db, ref_date)
+            if promotion["evaluated"] > 0:
+                self._write_log(
+                    db,
+                    ref_date=ref_date,
+                    source="scheduler.validation",
+                    status="success",
+                    items=int(promotion["evaluated"]),
+                    note=(
+                        f"Promotion evaluation complete: passed={promotion['passed']}, "
+                        f"failed={promotion['failed']}."
+                    ),
+                )
+                return {
+                    "ref_date": ref_date.isoformat(),
+                    "status": "success",
+                    "reason": "promotion_evaluation_completed",
+                    "generated": generated,
+                    **promotion,
+                }
+
+            # Full WFA/MC requires persisted OHLCV history. If no validation or
+            # candidate data is available yet, record readiness without creating
+            # synthetic promotion decisions.
             self._write_log(
                 db,
                 ref_date=ref_date,
                 source="scheduler.validation",
                 status="skipped",
                 items=0,
-                note="Historical OHLCV store is not implemented yet.",
+                note="No candidate or validation metrics available for promotion evaluation.",
             )
             return {
                 "ref_date": ref_date.isoformat(),
                 "status": "skipped",
-                "reason": "historical_ohlcv_store_missing",
+                "reason": "promotion_inputs_missing",
+                "generated": generated,
+                **promotion,
             }
 
         return self._job("validation", _run)
@@ -269,6 +326,308 @@ class OperationalPipeline:
         if self._settings.maps_data_provider == "mock":
             return MockKRXAdapter()
         return KRXAdapter()
+
+    def _generate_validation_metrics(self, db: Session, ref_date: dt.date) -> dict[str, int | list[dict[str, str]]]:
+        strategy_ids = self._candidate_strategy_ids(db, ref_date)
+        generated = {"wfa": 0, "plateau": 0, "mc": 0, "skipped": []}
+        if not strategy_ids:
+            return generated
+
+        repo = HistoricalOHLCVRepository(db)
+        for strategy_id in strategy_ids:
+            strategy_cls = _RUNNABLE_STRATEGIES.get(strategy_id)
+            if strategy_cls is None:
+                generated["skipped"].append({"strategy_id": strategy_id, "reason": "strategy_not_runnable"})
+                continue
+
+            strategy = strategy_cls()
+            min_bars = self._wfa_required_bars()
+            tickers = repo.list_tickers_with_history(end=ref_date, min_bars=min_bars)
+            if not tickers:
+                generated["skipped"].append({
+                    "strategy_id": strategy_id,
+                    "reason": f"insufficient_history: need {min_bars} bars",
+                })
+                continue
+
+            sample_tickers = tickers[:_VALIDATION_SAMPLE_TICKERS]
+            backtests = self._run_backtest_grid(db, repo, strategy, sample_tickers, ref_date)
+            if not backtests:
+                generated["skipped"].append({"strategy_id": strategy_id, "reason": "no_backtest_results"})
+                continue
+
+            if self._save_plateau_result(db, strategy, ref_date, backtests):
+                generated["plateau"] += 1
+            if self._save_mc_result(db, strategy, ref_date, backtests):
+                generated["mc"] += 1
+            if self._save_wfa_result(db, repo, strategy, tickers[0], ref_date):
+                generated["wfa"] += 1
+
+        return generated
+
+    @staticmethod
+    def _wfa_required_bars() -> int:
+        analyzer = WalkForwardAnalyzer()
+        return (36 + (5 * 12)) * 21
+
+    @staticmethod
+    def _candidate_strategy_ids(db: Session, ref_date: dt.date) -> list[str]:
+        rows = (
+            db.query(CandidateSnapshot.strategy_id)
+            .filter(CandidateSnapshot.ref_date <= ref_date)
+            .distinct()
+            .order_by(CandidateSnapshot.strategy_id.asc())
+            .all()
+        )
+        return [row.strategy_id for row in rows]
+
+    def _run_backtest_grid(
+        self,
+        db: Session,
+        repo: HistoricalOHLCVRepository,
+        strategy: BaseStrategy,
+        tickers: list[str],
+        ref_date: dt.date,
+    ) -> list[dict]:
+        engine = BacktestEngine()
+        rows: list[dict] = []
+        for params in strategy.param_grid():
+            results: list[BacktestResult] = []
+            min_bars = max(strategy.required_bars(params), 30)
+            for ticker in tickers:
+                df = repo.to_dataframe(ticker, end=ref_date)
+                if len(df) < min_bars:
+                    continue
+                df.index.name = ticker
+                try:
+                    results.append(engine.run(strategy, params, df))
+                except BacktestError as exc:
+                    logger.debug("Validation backtest skipped [%s %s]: %s", strategy.strategy_id, ticker, exc)
+            if not results:
+                continue
+            row = dict(params)
+            row["sharpe"] = sum(r.sharpe for r in results) / len(results)
+            row["mdd"] = min(r.mdd for r in results)
+            row["daily_returns"] = self._average_daily_returns(results)
+            rows.append(row)
+        return rows
+
+    @staticmethod
+    def _average_daily_returns(results: list[BacktestResult]) -> list[float]:
+        series = [pd.Series(r.daily_returns, dtype=float) for r in results if len(r.daily_returns) >= 30]
+        if not series:
+            return []
+        frame = pd.concat(series, axis=1).fillna(0.0)
+        return frame.mean(axis=1).tolist()
+
+    @staticmethod
+    def _save_plateau_result(db: Session, strategy: BaseStrategy, ref_date: dt.date, rows: list[dict]) -> bool:
+        try:
+            result = ParameterPlateauTester().run(rows, param_keys=list(strategy.default_params))
+        except ValueError as exc:
+            logger.warning("Plateau validation skipped [%s]: %s", strategy.strategy_id, exc)
+            return False
+
+        grade_map = {"robust": "A", "moderate": "C", "fragile": "F"}
+        db.add(ParameterPlateauResults(
+            strategy_id=strategy.strategy_id,
+            run_date=ref_date,
+            total_combinations=len(rows),
+            positive_combinations=result.passing_neighbors,
+            positive_ratio=result.score / 100.0,
+            grade=grade_map.get(result.grade, "F"),
+            best_params_json=json.dumps(result.best_combo, ensure_ascii=False),
+        ))
+        db.commit()
+        return True
+
+    @staticmethod
+    def _save_mc_result(db: Session, strategy: BaseStrategy, ref_date: dt.date, rows: list[dict]) -> bool:
+        best = max(rows, key=lambda row: float(row.get("sharpe", 0.0)))
+        daily_returns = list(best.get("daily_returns") or [])
+        if len(daily_returns) < 30:
+            logger.warning("Monte Carlo validation skipped [%s]: fewer than 30 returns", strategy.strategy_id)
+            return False
+
+        try:
+            result = MonteCarloValidator(n_simulations=1000).validate(
+                strategy.strategy_id,
+                strategy.strategy_group,
+                daily_returns,
+            )
+        except ValidationError as exc:
+            logger.warning("Monte Carlo validation skipped [%s]: %s", strategy.strategy_id, exc)
+            return False
+
+        db.add(MonteCarloSequenceResults(
+            strategy_id=result.strategy_id,
+            strategy_group=result.strategy_group,
+            run_date=ref_date,
+            n_simulations=result.n_simulations,
+            mdd_p95=result.mdd_p95,
+            mdd_limit=result.mdd_limit,
+            mc_within_limit=result.passed,
+        ))
+        db.commit()
+        return True
+
+    @staticmethod
+    def _save_wfa_result(
+        db: Session,
+        repo: HistoricalOHLCVRepository,
+        strategy: BaseStrategy,
+        ticker: str,
+        ref_date: dt.date,
+    ) -> bool:
+        df = repo.to_dataframe(ticker, end=ref_date)
+        df.index.name = ticker
+        result = WalkForwardAnalyzer().run(strategy, df, strategy.param_grid())
+        summary = WalkForwardResults(
+            strategy_id=strategy.strategy_id,
+            run_date=ref_date,
+            n_folds=len(result.folds),
+            sharpe_mean=result.sharpe_mean,
+            sharpe_std=result.sharpe_std,
+            negative_folds=result.negative_folds,
+            mean_g2p=result.mean_g2p,
+            passed=result.passed,
+            fail_reasons_json=json.dumps(result.fail_reasons, ensure_ascii=False) if result.fail_reasons else None,
+        )
+        db.add(summary)
+        db.flush()
+        for fold in result.folds:
+            db.add(WalkForwardFoldResults(
+                wfa_run_id=summary.id,
+                strategy_id=strategy.strategy_id,
+                fold_idx=fold.fold_idx,
+                is_start=fold.is_start,
+                is_end=fold.is_end,
+                oos_start=fold.oos_start,
+                oos_end=fold.oos_end,
+                is_sharpe=fold.is_sharpe,
+                oos_sharpe=fold.oos_sharpe,
+                is_g2p=fold.is_g2p,
+                oos_g2p=fold.oos_g2p,
+                g2p_ratio=fold.g2p_ratio,
+                best_params_json=None,
+            ))
+        db.commit()
+        return True
+
+    def _evaluate_promotions(self, db: Session, ref_date: dt.date) -> dict[str, int | list[str]]:
+        latest_candidates = (
+            db.query(CandidateSnapshot.strategy_id)
+            .filter(CandidateSnapshot.ref_date <= ref_date)
+            .distinct()
+            .all()
+        )
+        latest_plateau = self._latest_rows_by_strategy(
+            db.query(ParameterPlateauResults)
+            .filter(ParameterPlateauResults.run_date <= ref_date)
+            .order_by(ParameterPlateauResults.run_date.desc(), ParameterPlateauResults.id.desc())
+            .all()
+        )
+        latest_mc = self._latest_rows_by_strategy(
+            db.query(MonteCarloSequenceResults)
+            .filter(MonteCarloSequenceResults.run_date <= ref_date)
+            .order_by(MonteCarloSequenceResults.run_date.desc(), MonteCarloSequenceResults.id.desc())
+            .all()
+        )
+        latest_wfa = self._latest_rows_by_strategy(
+            db.query(WalkForwardResults)
+            .filter(WalkForwardResults.run_date <= ref_date)
+            .order_by(WalkForwardResults.run_date.desc(), WalkForwardResults.id.desc())
+            .all()
+        )
+        latest_promotions = self._latest_promotion_rows(db)
+
+        strategy_ids = sorted(
+            {row.strategy_id for row in latest_candidates}
+            | set(latest_plateau)
+            | set(latest_mc)
+            | set(latest_wfa)
+        )
+        if not strategy_ids:
+            return {"evaluated": 0, "passed": 0, "failed": 0, "strategies": []}
+
+        gate = PromotionGate(db=db)
+        passed = 0
+        failed = 0
+        evaluated_strategies: list[str] = []
+        for strategy_id in strategy_ids:
+            current_stage = self._promotion_stage(latest_promotions.get(strategy_id))
+            metrics = self._promotion_metrics(
+                latest_plateau.get(strategy_id),
+                latest_mc.get(strategy_id),
+                latest_wfa.get(strategy_id),
+            )
+            decision = gate.evaluate(
+                strategy_id,
+                metrics,
+                current_stage,
+                strategy_group=STRATEGY_GROUP_MAP.get(strategy_id),
+            )
+            evaluated_strategies.append(strategy_id)
+            if decision.passed:
+                passed += 1
+            else:
+                failed += 1
+
+        return {
+            "evaluated": len(evaluated_strategies),
+            "passed": passed,
+            "failed": failed,
+            "strategies": evaluated_strategies,
+        }
+
+    @staticmethod
+    def _latest_rows_by_strategy(rows) -> dict[str, object]:
+        latest: dict[str, object] = {}
+        for row in rows:
+            if row.strategy_id not in latest:
+                latest[row.strategy_id] = row
+        return latest
+
+    @staticmethod
+    def _latest_promotion_rows(db: Session) -> dict[str, PromotionHistory]:
+        rows = (
+            db.query(PromotionHistory)
+            .order_by(PromotionHistory.evaluated_at.desc(), PromotionHistory.id.desc())
+            .all()
+        )
+        latest: dict[str, PromotionHistory] = {}
+        for row in rows:
+            if row.strategy_id not in latest:
+                latest[row.strategy_id] = row
+        return latest
+
+    @staticmethod
+    def _promotion_stage(row: PromotionHistory | None) -> PromotionStage:
+        if row is None or row.to_stage == PromotionStage.REJECTED.value:
+            return PromotionStage.RESEARCH
+        try:
+            return PromotionStage(row.to_stage)
+        except ValueError:
+            return PromotionStage.RESEARCH
+
+    @staticmethod
+    def _promotion_metrics(
+        plateau: ParameterPlateauResults | None,
+        mc: MonteCarloSequenceResults | None,
+        wfa: WalkForwardResults | None,
+    ) -> dict[str, float]:
+        metrics: dict[str, float] = {}
+        if plateau is not None:
+            metrics["robustness"] = max(0.0, min(float(plateau.positive_ratio), 1.0))
+        if mc is not None:
+            ratio = abs(float(mc.mdd_p95)) / float(mc.mdd_limit) if mc.mdd_limit else 1.0
+            metrics["risk"] = max(0.0, min(1.0 - ratio, 1.0))
+            metrics["mc_mdd_p95"] = float(mc.mdd_p95)
+        if wfa is not None:
+            if wfa.passed:
+                metrics["recovery"] = max(0.0, min(float(wfa.mean_g2p) / 2.0, 1.0))
+                metrics["return"] = max(0.0, min(float(wfa.sharpe_mean) / 2.0, 1.0))
+        return metrics
 
     def _to_securities(
         self,

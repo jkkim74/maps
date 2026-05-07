@@ -27,7 +27,7 @@ def run_scheduler_job(job_name: str) -> dict:
 
 @router.post("/backfill/ohlcv")
 def backfill_ohlcv(
-    days: int = Query(default=90, ge=1, le=756),
+    days: int = Query(default=90, ge=1, le=3650),
     start: str = Query(default=""),
     end: str = Query(default=""),
 ) -> dict:

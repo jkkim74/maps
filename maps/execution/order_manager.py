@@ -100,12 +100,24 @@ class OrderManager:
     def sync_broker_state(self) -> dict[str, float | int]:
         """Sync same-day broker fills/open orders into order_log."""
         balance = self._broker.get_account_balance()
-        open_orders = self._broker.get_open_orders()
+        sync_errors = 0
+        try:
+            open_orders = self._broker.get_open_orders()
+        except NotImplementedError:
+            open_orders = []
+        except BrokerAdapterError as exc:
+            sync_errors += 1
+            open_orders = []
+            logger.warning("Broker open-order sync unavailable: %s", exc)
         updated = 0
         try:
             broker_results = self._broker.get_daily_order_results()
         except NotImplementedError:
             broker_results = []
+        except BrokerAdapterError as exc:
+            sync_errors += 1
+            broker_results = []
+            logger.warning("Broker daily fill sync unavailable: %s", exc)
 
         for result in broker_results:
             if not result.order_id:
@@ -135,6 +147,7 @@ class OrderManager:
             "positions_value": balance.positions_value,
             "open_orders": len(open_orders),
             "updated_orders": updated,
+            "sync_errors": sync_errors,
         }
 
     def block_strategy(self, strategy_id: str) -> None:

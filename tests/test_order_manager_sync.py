@@ -78,6 +78,23 @@ def test_sync_broker_state_updates_fill_status(db) -> None:
     assert row.fill_price == 10_100
 
 
+def test_sync_broker_state_tolerates_daily_fill_lookup_error(db) -> None:
+    broker = MagicMock()
+    broker.get_account_balance.return_value = AccountBalance(cash=1_000_000, positions_value=500_000)
+    broker.get_open_orders.return_value = []
+    broker.get_daily_order_results.side_effect = BrokerAdapterError("KIS request failed after 3 attempts")
+    risk = RiskManager(broker=broker, db=db, config=RiskConfig())
+    manager = OrderManager(broker=broker, risk=risk, db=db)
+
+    result = manager.sync_broker_state()
+
+    assert result["cash"] == 1_000_000
+    assert result["positions_value"] == 500_000
+    assert result["open_orders"] == 0
+    assert result["updated_orders"] == 0
+    assert result["sync_errors"] == 1
+
+
 def test_transient_broker_error_is_retried(db) -> None:
     broker = MagicMock()
     broker.get_account_balance.return_value = AccountBalance(cash=10_000_000, positions_value=0)
