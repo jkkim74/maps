@@ -79,21 +79,23 @@ def test_wfa_4_conditions_and() -> None:
     """4가지 조건은 AND — 1개만 깨져도 전체 실패."""
     analyzer = WalkForwardAnalyzer()
 
-    # 조건 2만 위반: sharpe_mean > 0이지만 변동성 과대
+    # 조건 2만 위반: CV > 2.0
+    # folds = [8.0, 0.1, 0.1, 0.1, -1.5]
+    #   sharpe_mean=1.36 > 0         → 조건1 통과
+    #   std=3.38, CV=2.48 > 2.0      → 조건2 실패 ★
+    #   neg_folds=1 ≤ 1              → 조건3 통과
+    #   mean_g2p=(4.0+0.05*3-0.75)/5=0.68 ≥ 0.6 → 조건4 통과
     folds_high_cv = [
-        _fold(3.0, 1.5),   # g2p_ratio=2.0
-        _fold(0.01, 1.5),  # 극단 차이로 cv 폭등
-        _fold(3.0, 1.5),
-        _fold(0.01, 1.5),
+        _fold(8.0, 2.0),
+        _fold(0.1, 2.0),
+        _fold(0.1, 2.0),
+        _fold(0.1, 2.0),
+        _fold(-1.5, 2.0),
     ]
     result = _make_result(folds_high_cv)
     passed, reasons = analyzer._evaluate(result)
-    # sharpe_mean > 0 이나 cv가 크면 실패
-    if not passed:
-        assert len(reasons) >= 1
-    # 이 조합이 통과하거나 실패 모두 가능하지만, 특정 조건 위반 → fail
-    # 여기서는 "g2p < 0.6"으로도 실패할 수 있으므로 assert not passed
     assert not passed
+    assert any("std/|mean|" in r for r in reasons)
 
     # 조건 4만 위반: g2p 낮음 (OOS sharpe << IS sharpe)
     folds_low_g2p = [

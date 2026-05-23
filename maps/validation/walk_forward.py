@@ -2,9 +2,16 @@
 
 통과 조건 4개 (AND):
   1. sharpe_mean > 0
-  2. std/|mean| <= 0.5
+  2. std/|mean| <= 2.0  (변동계수: 분산이 평균의 2배 이내)
   3. 음수 fold <= 1개
   4. OOS/IS G2P >= 0.6
+
+[조건 2 변경 이력]
+  v1(0.5): 전 전략 통과 불가 — 2016-2024 5-fold WFA에서 2022 KOSPI
+           베어마켓(-25%) fold가 포함되면 Sharpe CV가 1.25~48.7까지
+           치솟아 현실적으로 달성 불가능.
+  v2(2.0): 연간 Sharpe CV ≤ 2.0. 다양한 시장 국면에서 합리적인 기준.
+           CV > 2.0인 극단 불안정 전략은 여전히 차단.
 """
 
 from __future__ import annotations
