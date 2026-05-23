@@ -50,6 +50,7 @@ class MapsSettings(BaseSettings):
     maps_broker_sync_interval_seconds: int = Field(default=60, ge=10)
     maps_order_retry_attempts: int = Field(default=3, ge=1)
     maps_order_retry_backoff_seconds: float = Field(default=0.5, ge=0.0)
+    maps_kis_timeout: float = Field(default=30.0, ge=1.0)  # KIS API read timeout (초). 모의서버 지연 대응
 
     kis_app_key: str = ""
     kis_app_secret: str = ""

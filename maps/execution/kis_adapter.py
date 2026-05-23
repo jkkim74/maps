@@ -71,7 +71,11 @@ _KIS_ERROR_HINTS = {
     "EGW00123": "Access token is missing, expired, or invalid.",
     "EGW00201": "API rate limit was exceeded.",
     "EGW00202": "Invalid hashkey for POST body.",
+    "90020000": "KIS session expired — token will be refreshed automatically.",
 }
+
+# 토큰 만료로 인한 서버측 세션 오류 코드 (자동 재발급 대상)
+_TOKEN_EXPIRED_CODES: frozenset[str] = frozenset({"90020000", "EGW00123"})
 
 
 @dataclass
@@ -92,7 +96,7 @@ class KISAdapter(BrokerAdapter):
         settings: MapsSettings | None = None,
         *,
         http: requests.Session | None = None,
-        timeout: float = 10.0,
+        timeout: float | None = None,
     ) -> None:
         self._settings = settings or get_settings()
         self._app_key = self._settings.kis_app_key
@@ -103,7 +107,9 @@ class KISAdapter(BrokerAdapter):
         self._real = self._settings.kis_real_trading
         self._base_url = self._settings.kis_base_url.rstrip("/")
         self._http = http or requests.Session()
-        self._timeout = timeout
+        # timeout: 인자 > .env MAPS_KIS_TIMEOUT > 기본값 30s
+        # (기존 기본값 10s는 KIS 모의서버 지연 시 자주 timeout 유발)
+        self._timeout = timeout if timeout is not None else self._settings.maps_kis_timeout
         self._token_cache_key = (self._base_url, self._app_key, self._account_no, self._real)
         self._token_cache_file = Path(self._settings.maps_log_dir) / ".kis_token_cache.json"
 
@@ -433,8 +439,35 @@ class KISAdapter(BrokerAdapter):
         payload = self._decode_response(response)
         rt_cd = str(payload.get("rt_cd", "0"))
         if rt_cd not in {"0", ""}:
+            code = str(payload.get("msg_cd") or payload.get("error_code") or "")
+            # 토큰 만료(90020000 / EGW00123): 캐시 무효화 후 새 토큰으로 1회 재시도
+            if code in _TOKEN_EXPIRED_CODES:
+                logger.warning("KIS token expired (%s) — invalidating cache and retrying: %s", code, path)
+                self._invalidate_token_cache()
+                headers["authorization"] = f"Bearer {self._ensure_token()}"
+                response = self._send_with_retry(method, path, headers=headers, params=params, json=json)
+                payload = self._decode_response(response)
+                rt_cd = str(payload.get("rt_cd", "0"))
+                if rt_cd not in {"0", ""}:
+                    self._raise_api_error(payload, f"KIS API failed after token refresh: {path}")
+                return payload
             self._raise_api_error(payload, f"KIS API failed: {path}")
         return payload
+
+    def _invalidate_token_cache(self) -> None:
+        """인메모리 및 파일 토큰 캐시를 즉시 무효화한다."""
+        with _TOKEN_CACHE_LOCK:
+            _TOKEN_CACHE.pop(self._token_cache_key, None)
+            try:
+                if self._token_cache_file.exists():
+                    payload = json.loads(self._token_cache_file.read_text(encoding="utf-8"))
+                    if isinstance(payload, dict):
+                        payload.pop(self._token_file_key(), None)
+                        self._token_cache_file.write_text(
+                            json.dumps(payload), encoding="utf-8"
+                        )
+            except Exception as exc:
+                logger.warning("토큰 캐시 파일 무효화 실패 (무시): %s", exc)
 
     def _send_with_retry(
         self,

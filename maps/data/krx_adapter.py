@@ -117,6 +117,20 @@ class KRXAdapter(KRXAdapterBase):
                 "pykrx 라이브러리가 필요합니다: pip install pykrx"
             ) from e
 
+    # pykrx 버전에 따라 컬럼명이 한글 또는 영문으로 반환될 수 있음 — 영문→한글 매핑
+    _OHLCV_COL_MAP: dict[str, str] = {
+        "Open":   "시가",
+        "High":   "고가",
+        "Low":    "저가",
+        "Close":  "종가",
+        "Volume": "거래량",
+        "open":   "시가",
+        "high":   "고가",
+        "low":    "저가",
+        "close":  "종가",
+        "volume": "거래량",
+    }
+
     def get_ohlcv(self, ref_date: datetime.date) -> list[OHLCVData]:
         """ref_date 기준 KOSPI + KOSDAQ 전 종목 OHLCV를 반환한다."""
         try:
@@ -129,9 +143,20 @@ class KRXAdapter(KRXAdapterBase):
         for market in ("KOSPI", "KOSDAQ"):
             try:
                 df = _krx.get_market_ohlcv(date_str, market=market)
-                if df is not None and not df.empty:
-                    df["_market"] = market
-                    frames.append(df)
+                if df is None or df.empty:
+                    continue
+                # pykrx 버전·날짜에 따라 영문 컬럼이 반환되는 경우 한글로 통일
+                df = df.rename(columns=self._OHLCV_COL_MAP)
+                # 필수 컬럼 중 하나라도 없으면 경고 후 스킵
+                missing_cols = [c for c in ("시가", "고가", "저가", "종가", "거래량") if c not in df.columns]
+                if missing_cols:
+                    logger.warning(
+                        "KRX OHLCV 컬럼 누락 [%s %s] — %s (실제 컬럼: %s)",
+                        market, date_str, missing_cols, list(df.columns),
+                    )
+                    continue
+                df["_market"] = market
+                frames.append(df)
             except Exception as exc:
                 logger.warning("KRX OHLCV 수집 실패 [%s %s]: %s", market, date_str, exc)
 

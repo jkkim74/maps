@@ -19,8 +19,23 @@ _DEFAULT_URL = "sqlite:///./maps.db"
 
 
 def _make_engine(url: str) -> Engine:
-    connect_args = {"check_same_thread": False} if url.startswith("sqlite") else {}
-    return create_engine(url, connect_args=connect_args)
+    is_sqlite = url.startswith("sqlite")
+    connect_args = {"check_same_thread": False} if is_sqlite else {}
+
+    if is_sqlite:
+        return create_engine(url, connect_args=connect_args)
+
+    # PostgreSQL / 외부 DB: 유휴 연결 헬스체크 + 주기적 재활용으로
+    # "SSL connection has been closed unexpectedly" 방지
+    return create_engine(
+        url,
+        connect_args=connect_args,
+        pool_pre_ping=True,       # 사용 전 연결 유효성 확인 (끊긴 연결 자동 재연결)
+        pool_recycle=1800,        # 30분마다 연결 재활용 (DB 서버 idle-timeout 대응)
+        pool_size=5,              # 기본 커넥션 풀 크기
+        max_overflow=10,          # 최대 추가 연결 수
+        pool_timeout=30,          # 연결 획득 대기 최대 30초
+    )
 
 
 def get_engine(url: str | None = None) -> Engine:

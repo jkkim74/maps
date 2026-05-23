@@ -961,6 +961,9 @@ class MapsOperationalScheduler:
             replace_existing=True,
             coalesce=True,
             max_instances=1,
+            # KIS 모의서버 timeout(30s) × 재시도(3회) = 최대 ~90s 소요 가능.
+            # misfire_grace_time을 동일하게 설정해 정상 지연 시 missed 처리 방지.
+            misfire_grace_time=self._settings.maps_broker_sync_interval_seconds * 2,
         )
         self._add_weekday_job("eod_cleanup", self._settings.maps_eod_time)
 
