@@ -473,8 +473,17 @@ class OperationalPipeline:
 
     @staticmethod
     def _save_plateau_result(db: Session, strategy: BaseStrategy, ref_date: dt.date, rows: list[dict]) -> bool:
+        # param_keys: default_params 키 중 실제 row 에 존재하는 것만 사용한다.
+        # param_grid() 에 포함되지 않은 파라미터(예: vol_period)가 default_params 에만
+        # 있을 경우 KeyError 가 발생하므로 교집합으로 제한한다.
+        _non_param = {"sharpe", "mdd", "daily_returns"}
+        actual_param_keys = [k for k in (rows[0] if rows else {}) if k not in _non_param]
+        param_keys = [k for k in strategy.default_params if k in set(actual_param_keys)]
+        if not param_keys:
+            logger.warning("Plateau validation skipped [%s]: no overlapping param keys", strategy.strategy_id)
+            return False
         try:
-            result = ParameterPlateauTester().run(rows, param_keys=list(strategy.default_params))
+            result = ParameterPlateauTester().run(rows, param_keys=param_keys)
         except ValueError as exc:
             logger.warning("Plateau validation skipped [%s]: %s", strategy.strategy_id, exc)
             return False
