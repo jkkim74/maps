@@ -20,8 +20,10 @@ def get_research(db: Session = Depends(get_db)) -> ResearchResponse:
     """Return strategies that are still in research or alert-only stages."""
     research_stages = {"research", "alert_only"}
 
+    # passed=True 레코드만 읽어 현재 단계를 결정한다.
     promotions = (
         db.query(PromotionHistory)
+        .filter(PromotionHistory.passed.is_(True))
         .order_by(PromotionHistory.evaluated_at.desc(), PromotionHistory.id.desc())
         .all()
     )

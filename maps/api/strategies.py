@@ -23,8 +23,11 @@ router = APIRouter(prefix="/api/v1/strategies", tags=["SCR-02 Strategies"])
 @router.get("", response_model=StrategiesResponse)
 def get_strategies(db: Session = Depends(get_db)) -> StrategiesResponse:
     """전략 목록과 최신 승격 상태를 반환한다."""
+    # passed=True 레코드만 읽어 현재 단계를 결정한다.
+    # 실패한 평가(passed=False)는 표시 단계에 영향을 주지 않는다.
     promotions = (
         db.query(PromotionHistory)
+        .filter(PromotionHistory.passed.is_(True))
         .order_by(PromotionHistory.evaluated_at.desc())
         .all()
     )

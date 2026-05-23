@@ -71,7 +71,16 @@ def get_dashboard(db: Session = Depends(get_db)) -> DashboardResponse:
 
 
 def _latest_promotions(db: Session) -> dict[str, PromotionHistory]:
-    rows = db.query(PromotionHistory).order_by(PromotionHistory.evaluated_at.desc(), PromotionHistory.id.desc()).all()
+    """전략별 마지막 성공 승격 이력을 반환한다 (passed=True 만 읽음).
+
+    실패 평가(passed=False)가 이전 성공 단계를 덮어쓰지 않도록 한다.
+    """
+    rows = (
+        db.query(PromotionHistory)
+        .filter(PromotionHistory.passed.is_(True))
+        .order_by(PromotionHistory.evaluated_at.desc(), PromotionHistory.id.desc())
+        .all()
+    )
     latest: dict[str, PromotionHistory] = {}
     for row in rows:
         if row.strategy_id not in latest:
