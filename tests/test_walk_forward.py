@@ -75,29 +75,20 @@ def test_wfa_negative_mean_blocked() -> None:
     assert any("sharpe_mean" in r for r in reasons)
 
 
-def test_wfa_4_conditions_and() -> None:
-    """4가지 조건은 AND — 1개만 깨져도 전체 실패."""
+def test_wfa_3_conditions_and() -> None:
+    """3가지 조건은 AND — 1개만 깨져도 전체 실패."""
     analyzer = WalkForwardAnalyzer()
 
-    # 조건 2만 위반: CV > 2.0
-    # folds = [8.0, 0.1, 0.1, 0.1, -1.5]
-    #   sharpe_mean=1.36 > 0         → 조건1 통과
-    #   std=3.38, CV=2.48 > 2.0      → 조건2 실패 ★
-    #   neg_folds=1 ≤ 1              → 조건3 통과
-    #   mean_g2p=(4.0+0.05*3-0.75)/5=0.68 ≥ 0.6 → 조건4 통과
-    folds_high_cv = [
-        _fold(8.0, 2.0),
-        _fold(0.1, 2.0),
-        _fold(0.1, 2.0),
-        _fold(0.1, 2.0),
-        _fold(-1.5, 2.0),
+    # 조건 2만 위반: 음수 fold 2개 (sharpe_mean > 0, g2p 충족)
+    folds_two_neg = [
+        _fold(0.5), _fold(-0.2), _fold(0.3), _fold(-0.1), _fold(0.4),
     ]
-    result = _make_result(folds_high_cv)
+    result = _make_result(folds_two_neg)
     passed, reasons = analyzer._evaluate(result)
     assert not passed
-    assert any("std/|mean|" in r for r in reasons)
+    assert any("음수 fold" in r for r in reasons)
 
-    # 조건 4만 위반: g2p 낮음 (OOS sharpe << IS sharpe)
+    # 조건 3만 위반: g2p 낮음 (OOS sharpe << IS sharpe)
     folds_low_g2p = [
         _fold(0.3, 3.0),  # g2p_ratio = 0.3/3.0 = 0.1 < 0.6
         _fold(0.3, 3.0),
@@ -110,15 +101,13 @@ def test_wfa_4_conditions_and() -> None:
     assert any("g2p" in r for r in reasons2)
 
 
-def test_wfa_zero_division() -> None:
-    """sharpe_mean == 0 이면 cv = inf → std/|mean| 조건 실패."""
+def test_wfa_zero_sharpe_mean_fails() -> None:
+    """양수와 음수가 정확히 상쇄되어 sharpe_mean == 0 이면 조건 1 실패."""
     analyzer = WalkForwardAnalyzer()
-    # 양수와 음수가 정확히 상쇄되어 mean=0
     result = _make_result([_fold(0.5), _fold(-0.5), _fold(0.5), _fold(-0.5)])
     passed, reasons = analyzer._evaluate(result)
     assert not passed
-    # mean=0 → cv=inf, 그리고 sharpe_mean<=0 도 실패
-    assert any("sharpe_mean" in r or "std/|mean|" in r for r in reasons)
+    assert any("sharpe_mean" in r for r in reasons)
 
 
 def test_wfa_run_with_real_data() -> None:

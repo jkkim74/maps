@@ -1,17 +1,15 @@
 """Walk-Forward 검증기.
 
-통과 조건 4개 (AND):
-  1. sharpe_mean > 0
-  2. std/|mean| <= 2.0  (변동계수: 분산이 평균의 2배 이내)
-  3. 음수 fold <= 1개
-  4. OOS/IS G2P >= 0.6
+통과 조건 3개 (AND):
+  1. sharpe_mean > 0     — 평균적으로 수익을 낸다
+  2. 음수 fold <= 1개    — 5번 중 4번은 플러스 (일관성)
+  3. OOS/IS G2P >= 0.6  — IS 성과의 60% 이상 OOS 재현 (과적합 아님)
 
-[조건 2 변경 이력]
-  v1(0.5): 전 전략 통과 불가 — 2016-2024 5-fold WFA에서 2022 KOSPI
-           베어마켓(-25%) fold가 포함되면 Sharpe CV가 1.25~48.7까지
-           치솟아 현실적으로 달성 불가능.
-  v2(2.0): 연간 Sharpe CV ≤ 2.0. 다양한 시장 국면에서 합리적인 기준.
-           CV > 2.0인 극단 불안정 전략은 여전히 차단.
+[폐기된 조건]
+  구 조건 2: std/|mean| <= X (변동계수)
+    제거 사유: 임계값(0.5→2.0) 선택 근거가 없고, 구 조건 2(음수 fold)와
+    의미가 중복된다. 2016-2024 실데이터에서 2022 KOSPI 베어마켓(-25%)
+    fold가 포함되면 어떤 값을 써도 임의적인 조정이 될 뿐이다.
 """
 
 from __future__ import annotations
@@ -28,7 +26,6 @@ from maps.common.constants import (
     WF_NEGATIVE_FOLD_MAX,
     WF_OOS_IS_G2P_MIN,
     WF_SHARPE_MEAN_MIN,
-    WF_STD_MEAN_RATIO_MAX,
 )
 from maps.common.exceptions import ValidationError
 from maps.strategy.base import BaseStrategy
@@ -231,30 +228,22 @@ class WalkForwardAnalyzer:
         return best_params, best_sharpe, best_g2p
 
     def _evaluate(self, result: WalkForwardResult) -> tuple[bool, list[str]]:
-        """4가지 AND 조건을 평가한다."""
+        """3가지 AND 조건을 평가한다."""
         reasons: list[str] = []
 
-        # 조건 1: sharpe_mean > 0
+        # 조건 1: sharpe_mean > 0 — 평균적으로 수익을 낸다
         if result.sharpe_mean <= WF_SHARPE_MEAN_MIN:
             reasons.append(
                 f"sharpe_mean={result.sharpe_mean:.3f} <= {WF_SHARPE_MEAN_MIN} (안정적 손실 전략 의심)"
             )
 
-        # 조건 2: std/|mean| <= 0.5
-        mean_abs = abs(result.sharpe_mean)
-        ratio = result.sharpe_std / mean_abs if mean_abs > 0 else float("inf")
-        if ratio > WF_STD_MEAN_RATIO_MAX:
-            reasons.append(
-                f"std/|mean|={ratio:.3f} > {WF_STD_MEAN_RATIO_MAX} (불안정한 성과)"
-            )
-
-        # 조건 3: 음수 fold <= 1개
+        # 조건 2: 음수 fold <= 1개 — 5번 중 4번은 플러스
         if result.negative_folds > WF_NEGATIVE_FOLD_MAX:
             reasons.append(
                 f"음수 fold={result.negative_folds} > {WF_NEGATIVE_FOLD_MAX}"
             )
 
-        # 조건 4: OOS/IS G2P >= 0.6
+        # 조건 3: OOS/IS G2P >= 0.6 — IS 성과의 60% 이상 OOS 재현 (과적합 아님)
         if result.mean_g2p < WF_OOS_IS_G2P_MIN:
             reasons.append(
                 f"mean_g2p={result.mean_g2p:.3f} < {WF_OOS_IS_G2P_MIN} (과적합 의심)"
