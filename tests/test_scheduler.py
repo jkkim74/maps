@@ -345,3 +345,94 @@ def test_scheduler_backfill_ohlcv() -> None:
         db.close()
         Base.metadata.drop_all(engine)
         engine.dispose()
+
+
+def test_latest_promotion_rows_ignores_failed_evaluations() -> None:
+    """_latest_promotion_rows 는 passed=True 레코드만 반환해야 한다.
+
+    회귀 테스트:
+      pullback_v3 가 mock_candidate 로 승격(passed=True)된 뒤
+      다음 평가에서 live_candidate 승격 실패(passed=False)가 기록되더라도
+      현재 단계는 여전히 mock_candidate 여야 한다.
+      이전 버그: _latest_promotion_rows 가 passed=False 레코드도 읽어
+      전략을 RESEARCH 단계로 강제 강등시켰다.
+    """
+    engine, factory = _session_factory()
+
+    db = factory()
+    try:
+        # 1차 평가: research → mock_candidate 승격 (passed=True)
+        db.add(PromotionHistory(
+            strategy_id="pullback_v3",
+            from_stage="research",
+            to_stage="mock_candidate",
+            tradeability_score=71.8,
+            passed=True,
+            evaluated_at=dt.datetime(2026, 5, 20, 16, 40),
+        ))
+        # 2차 평가: live_candidate 시도 실패 (passed=False)
+        # 점수 71.8 < 임계값 75 — 승격 불가이지만 강등도 안 돼야 함
+        db.add(PromotionHistory(
+            strategy_id="pullback_v3",
+            from_stage="mock_candidate",
+            to_stage="rejected",  # gate 가 to_stage=REJECTED 로 기록하는 현재 구조
+            tradeability_score=71.8,
+            passed=False,
+            evaluated_at=dt.datetime(2026, 5, 21, 16, 40),
+        ))
+        db.commit()
+    finally:
+        db.close()
+
+    db = factory()
+    try:
+        latest = OperationalPipeline._latest_promotion_rows(db)
+        # passed=True 레코드만 봐야 하므로 mock_candidate 여야 한다
+        assert "pullback_v3" in latest
+        assert latest["pullback_v3"].to_stage == "mock_candidate"
+        assert latest["pullback_v3"].passed is True
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def test_latest_promotions_ignores_failed_evaluations() -> None:
+    """_latest_promotions (주문 주기용) 도 passed=True 만 봐야 한다.
+
+    회귀 테스트:
+      mock_candidate 승격 후 실패 평가가 기록되더라도
+      주문 자격(eligible_stages)은 유지돼야 한다.
+    """
+    engine, factory = _session_factory()
+
+    db = factory()
+    try:
+        db.add(PromotionHistory(
+            strategy_id="pullback_v3",
+            from_stage="research",
+            to_stage="mock_candidate",
+            tradeability_score=71.8,
+            passed=True,
+            evaluated_at=dt.datetime(2026, 5, 20, 16, 40),
+        ))
+        db.add(PromotionHistory(
+            strategy_id="pullback_v3",
+            from_stage="mock_candidate",
+            to_stage="rejected",
+            tradeability_score=71.8,
+            passed=False,
+            evaluated_at=dt.datetime(2026, 5, 21, 16, 40),
+        ))
+        db.commit()
+    finally:
+        db.close()
+
+    db = factory()
+    try:
+        latest = OperationalPipeline._latest_promotions(db)
+        assert latest.get("pullback_v3") == "mock_candidate"
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()

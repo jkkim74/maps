@@ -93,8 +93,9 @@ def test_param_grid():
     rsi_values = sorted({p["rsi_threshold"] for p in grid})
     ma_values = sorted({p["ma_long"] for p in grid})
 
-    assert rsi_values == [5, 10, 15]
-    assert ma_values == [20, 30, 40]
+    # v3.2: IS 과적합 방지를 위해 좁은 범위로 수정 (v3.0: [5,10,15]×[20,30,40])
+    assert rsi_values == [8, 10, 12]
+    assert ma_values == [18, 20, 22]
 
 
 def test_strategy_required_bars_matches_warmup_window():

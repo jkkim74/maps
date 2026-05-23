@@ -650,8 +650,20 @@ class OperationalPipeline:
 
     @staticmethod
     def _latest_promotion_rows(db: Session) -> dict[str, PromotionHistory]:
+        """전략별 마지막 '성공' 승격 이력을 반환한다.
+
+        passed=True 레코드만 읽는다.  실패한 평가(passed=False)는 현재 단계에
+        영향을 주지 않는다 — 실패한 평가가 이전에 승격된 단계를 덮어쓰는
+        '강제 강등' 버그를 방지하기 위해서다.
+
+        예) pullback_v3 가 mock_candidate 로 승격된 후, 다음 평가 주기에서
+        "점수 71.8 < 임계값 75 (live_candidate)" 로 실패하면 passed=False 레코드가
+        추가되는데, 이 레코드를 읽으면 stage=RESEARCH 로 되돌아간다.
+        passed=True 만 읽으면 마지막 성공 기록(mock_candidate)이 유지된다.
+        """
         rows = (
             db.query(PromotionHistory)
+            .filter(PromotionHistory.passed.is_(True))
             .order_by(PromotionHistory.evaluated_at.desc(), PromotionHistory.id.desc())
             .all()
         )
@@ -890,8 +902,14 @@ class OperationalPipeline:
 
     @staticmethod
     def _latest_promotions(db: Session) -> dict[str, str]:
+        """주문 주기에서 참조할 전략별 현재 단계를 반환한다.
+
+        passed=True 레코드만 읽는다.  실패 평가가 주문 자격(eligible_stages)을
+        잘못 차단하는 것을 방지한다.
+        """
         rows = (
             db.query(PromotionHistory)
+            .filter(PromotionHistory.passed.is_(True))
             .order_by(PromotionHistory.evaluated_at.desc(), PromotionHistory.id.desc())
             .all()
         )
