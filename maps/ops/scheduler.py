@@ -150,7 +150,15 @@ class OperationalPipeline:
 
             candidates = self._to_securities(collection.meta, collection, ref_date)
             result = DataQualityFilter(db=db, mode="live").generate(ref_date, candidates)
-            saved_count = self._save_candidate_snapshot(db, ref_date, "pullback_v3", result.universe)
+            # 등록된 모든 전략에 동일한 유니버스 스냅샷을 저장한다.
+            # DataQualityFilter 유니버스는 유동성·데이터 품질 기반 공통 후보군이므로
+            # 전략별로 별도 필터링 없이 공유할 수 있다.
+            # 각 전략의 진입 신호는 order_cycle 에서 generate_signals() 로 별도 계산된다.
+            saved_count = 0
+            for strategy_id in _RUNNABLE_STRATEGIES:
+                saved_count += self._save_candidate_snapshot(
+                    db, ref_date, strategy_id, result.universe
+                )
             self._last_universe = result
             return {
                 "ref_date": ref_date.isoformat(),
@@ -159,6 +167,7 @@ class OperationalPipeline:
                 "rejected_count": len(result.rejected),
                 "rejection_ratio": round(result.rejection_ratio, 4),
                 "saved_count": saved_count,
+                "strategies_updated": list(_RUNNABLE_STRATEGIES.keys()),
             }
 
         return self._job("candidate_generation", _run)
