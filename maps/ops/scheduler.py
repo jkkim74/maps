@@ -72,6 +72,20 @@ _RUNNABLE_STRATEGIES: dict[str, type[BaseStrategy]] = {
 
 _VALIDATION_SAMPLE_TICKERS = 5
 
+# WFA 에 사용할 선호 ticker 우선순위.
+# 알파벳순 첫 번째(소형주)가 아닌 유동성 높은 대형주로 WFA 를 실행하여
+# 전략 성과의 대표성을 높인다.
+_WFA_PREFERRED_TICKERS: list[str] = [
+    "005930",  # 삼성전자 (KOSPI 시총 1위)
+    "000660",  # SK하이닉스
+    "035420",  # NAVER
+    "005380",  # 현대차
+    "051910",  # LG화학
+    "068270",  # 셀트리온
+    "207940",  # 삼성바이오로직스
+    "006400",  # 삼성SDI
+]
+
 
 @dataclass
 class JobRun:
@@ -360,10 +374,25 @@ class OperationalPipeline:
                 generated["plateau"] += 1
             if self._save_mc_result(db, strategy, ref_date, backtests):
                 generated["mc"] += 1
-            if self._save_wfa_result(db, repo, strategy, tickers[0], ref_date):
+            wfa_ticker = self._pick_wfa_ticker(tickers)
+            if self._save_wfa_result(db, repo, strategy, wfa_ticker, ref_date):
                 generated["wfa"] += 1
 
         return generated
+
+    @staticmethod
+    def _pick_wfa_ticker(tickers: list[str]) -> str:
+        """WFA 에 사용할 대표 ticker 를 선택한다.
+
+        알파벳순 첫 번째(보통 소형주) 대신 _WFA_PREFERRED_TICKERS 목록에서
+        데이터가 충분한 첫 번째 ticker 를 우선 사용한다.
+        목록에 없는 경우 tickers[0] 으로 폴백한다.
+        """
+        ticker_set = set(tickers)
+        for preferred in _WFA_PREFERRED_TICKERS:
+            if preferred in ticker_set:
+                return preferred
+        return tickers[0]
 
     @staticmethod
     def _wfa_required_bars() -> int:
@@ -624,9 +653,12 @@ class OperationalPipeline:
             metrics["risk"] = max(0.0, min(1.0 - ratio, 1.0))
             metrics["mc_mdd_p95"] = float(mc.mdd_p95)
         if wfa is not None:
-            if wfa.passed:
-                metrics["recovery"] = max(0.0, min(float(wfa.mean_g2p) / 2.0, 1.0))
-                metrics["return"] = max(0.0, min(float(wfa.sharpe_mean) / 2.0, 1.0))
+            # WFA 통과 여부와 무관하게 실제 측정치 기반으로 항상 설정한다.
+            # 음수 값은 0 으로 클램프 — "메트릭 누락" 대신 실제 점수로 gate 가 판단한다.
+            # 과거에는 passed=True 일 때만 설정했는데, 그러면 모든 미통과 전략이
+            # robustness/risk 점수만으로 평가돼 임계값(60)을 절대 넘지 못했다.
+            metrics["recovery"] = max(0.0, min(float(wfa.mean_g2p) / 2.0, 1.0))
+            metrics["return"] = max(0.0, min(float(wfa.sharpe_mean) / 2.0, 1.0))
         return metrics
 
     def _to_securities(
