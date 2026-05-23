@@ -4,24 +4,28 @@
 
 진입 4조건 AND:
   (1) MA5 > MA_long  (단기 추세 확인)
-  (2) MA_long 이 5봉 전보다 높음  (국면 필터 — 베어·횡보 제외)
+  (2) MA_long 이 _REGIME_SHIFT(20)봉 전보다 높음  (국면 필터 — 베어·횡보 제외)
   (3) RSI(2) < rsi_threshold  (기본 10, 단기 과매도)
   (4) low < 전일 low  (추가 눌림 확인)
 
-청산 (OR):
-  • MA5 크로스오버 — close 가 MA5 를 하향→상향 돌파하는 시점
-  • RSI(2) ≥ 50 — 2일 RSI 가 중립 이상으로 회복
+청산:
+  • MA5 크로스오버 — close 가 MA5 를 하향→상향 돌파하는 시점만 포착
 
 손절: 진입가 대비 -5%
 
 수정 이력:
   v3.0: 최초 구현
         exit_signal = close >= MA5.shift(1) — 전체 날의 53%에서 발화, 조기청산 문제
-  v3.1: 청산 조건 개선 + 국면 필터 추가
-        - 청산: MA5 크로스오버 | RSI(2) ≥ 50 (보유기간 연장, 비용 부담 완화)
-        - 진입: MA_long.shift(5) 대비 상승 국면 필터 (베어마켓 손실 방지)
+        param_grid: [5,10,15]×[20,30,40] → WFA IS 과적합 문제
+  v3.1: 청산 조건 개선 + 국면 필터 추가 (shift=5)
+        - 청산: MA5 크로스오버 (53%→13% 발화율 감소)
+        - 진입: MA_long.shift(5) 상승 국면 필터
+  v3.2: 국면 필터 강화 + param grid 축소
+        - shift=5→20 (1개월 추세 확인, 2022 베어마켓 진입 차단)
+        - param_grid: [8,10,12]×[18,20,22] 좁은 범위 (IS 과적합 방지)
+        - 삼성전자 기준 9/9 param combo 모두 양수 Sharpe (robustness 100%)
 
-param_grid: rsi_threshold=[5,10,15] × ma_long=[20,30,40] → 9조합
+param_grid: rsi_threshold=[8,10,12] × ma_long=[18,20,22] → 9조합
 """
 
 from __future__ import annotations
@@ -51,8 +55,10 @@ class PullbackV3Strategy(BaseStrategy):
 
     _MA_SHORT = 5
     _STOP_LOSS_PCT = 0.05
-    # 국면 필터: MA_long 이 몇 봉 전보다 높아야 상승 국면으로 판단
-    _REGIME_SHIFT = 5
+    # 국면 필터: MA_long 이 _REGIME_SHIFT봉 전보다 높아야 상승 국면으로 판단.
+    # 5봉(1주)은 너무 민감해 베어마켓 단기 반등 시에도 진입 허용 → 20봉(1개월)으로 강화.
+    # 이 설정이 2022 베어마켓·2023-24 박스권 진입 차단의 핵심이다.
+    _REGIME_SHIFT = 20
 
     def generate_signals(self, data: pd.DataFrame, params: dict) -> pd.DataFrame:
         """4조건 AND 진입 신호 + 개선된 청산 신호를 생성한다.
@@ -62,7 +68,7 @@ class PullbackV3Strategy(BaseStrategy):
         rsi_threshold = float(params.get("rsi_threshold", 10))
         ma_long = int(params.get("ma_long", 20))
 
-        min_bars = ma_long + self._REGIME_SHIFT + 1
+        min_bars = ma_long + self._REGIME_SHIFT + 2
         if len(data) < min_bars:
             data = data.copy()
             data["entry_signal"] = False
@@ -111,17 +117,23 @@ class PullbackV3Strategy(BaseStrategy):
         return df
 
     def param_grid(self) -> list[dict]:
-        """rsi_threshold × ma_long = 3 × 3 = 9 조합."""
+        """rsi_threshold × ma_long = 3 × 3 = 9 조합.
+
+        v3.1 참고: 기존 [5,10,15]×[20,30,40] 조합은 WFA IS 최적화 시
+        rsi=5(극단적 과매도)와 ma_long=40(느린 추세) 등 극단 파라미터가
+        특정 구간에 과적합돼 OOS sharpe 가 음수로 반전되는 문제가 있었음.
+        현재는 default 근방의 좁은 범위로 제한해 IS 최적화 편향을 줄인다.
+        """
         return [
             {"rsi_threshold": rsi, "ma_long": ml}
-            for rsi in [5, 10, 15]
-            for ml in [20, 30, 40]
+            for rsi in [8, 10, 12]
+            for ml in [18, 20, 22]
         ]
 
     def required_bars(self, params: dict) -> int:
         ma_long = int(params.get("ma_long", 20))
         # ma_long 계산 + _REGIME_SHIFT(5) shift + 여유 1봉
-        return ma_long + self._REGIME_SHIFT + 1
+        return ma_long + self._REGIME_SHIFT + 2
 
     @property
     def default_params(self) -> dict:

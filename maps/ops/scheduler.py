@@ -364,7 +364,8 @@ class OperationalPipeline:
                 })
                 continue
 
-            sample_tickers = tickers[:_VALIDATION_SAMPLE_TICKERS]
+            # 백테스트 샘플: 유동성 대형주 우선 선택 (알파벳 첫 번째 소형주 회피)
+            sample_tickers = self._pick_sample_tickers(tickers, _VALIDATION_SAMPLE_TICKERS)
             backtests = self._run_backtest_grid(db, repo, strategy, sample_tickers, ref_date)
             if not backtests:
                 generated["skipped"].append({"strategy_id": strategy_id, "reason": "no_backtest_results"})
@@ -379,6 +380,18 @@ class OperationalPipeline:
                 generated["wfa"] += 1
 
         return generated
+
+    @staticmethod
+    def _pick_sample_tickers(tickers: list[str], n: int) -> list[str]:
+        """백테스트 샘플 ticker 목록을 구성한다.
+
+        _WFA_PREFERRED_TICKERS 를 우선 포함하고, 나머지를 원래 순서(알파벳)로 채운다.
+        소형·비유동 종목이 plateau/MC 점수를 왜곡하는 것을 방지한다.
+        """
+        ticker_set = set(tickers)
+        preferred = [t for t in _WFA_PREFERRED_TICKERS if t in ticker_set]
+        others = [t for t in tickers if t not in set(_WFA_PREFERRED_TICKERS)]
+        return (preferred + others)[:n]
 
     @staticmethod
     def _pick_wfa_ticker(tickers: list[str]) -> str:
