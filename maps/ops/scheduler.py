@@ -60,6 +60,41 @@ from maps.validation.walk_forward import WalkForwardAnalyzer
 
 logger = logging.getLogger(__name__)
 
+# ── KRX 거래일 캐시 ────────────────────────────────────────────────────────────
+_krx_market_day_cache: dict[dt.date, bool] = {}
+
+
+def _is_krx_market_day(date: dt.date | None = None) -> bool:
+    """주어진 날짜가 KRX 거래일인지 확인한다.
+
+    1. 토/일 → 즉시 False (빠른 경로)
+    2. 평일 → pykrx로 한국 공휴일 여부 확인
+    3. pykrx 조회 실패 시 True 반환(폴백)으로 스케쥴러가 멈추지 않도록 한다.
+    결과는 날짜 단위로 캐싱해 interval 잡의 반복 호출 비용을 낮춘다.
+    """
+    target = date or dt.date.today()
+    if target in _krx_market_day_cache:
+        return _krx_market_day_cache[target]
+
+    # 주말 체크 (토=5, 일=6)
+    if target.weekday() >= 5:
+        _krx_market_day_cache[target] = False
+        return False
+
+    # pykrx로 한국 공휴일 체크
+    date_str = target.strftime("%Y%m%d")
+    try:
+        from pykrx import stock as _pykrx_stock  # noqa: PLC0415 — lazy import
+        df = _pykrx_stock.get_index_ohlcv(date_str, date_str, "1001")  # KOSPI
+        result = len(df) > 0
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("KRX 거래일 확인 실패, 거래일로 간주합니다: %s", exc)
+        result = True
+
+    _krx_market_day_cache[target] = result
+    return result
+
+
 _RUNNABLE_STRATEGIES: dict[str, type[BaseStrategy]] = {
     "pullback_v3": PullbackV3Strategy,
     "pullback_v2": PullbackV2Strategy,
@@ -1029,13 +1064,26 @@ class MapsOperationalScheduler:
     def backfill_ohlcv(self, start: dt.date, end: dt.date) -> JobRun:
         return self._record("ohlcv_backfill", lambda: self._pipeline.backfill_ohlcv(start, end))
 
+    def _make_krx_job(self, name: str) -> Callable:
+        """KRX 거래일에만 실행되는 잡 콜러블을 반환한다.
+
+        비거래일(주말·한국 공휴일)에 트리거되면 실행을 건너뛰고
+        로그만 남긴다.
+        """
+        def _job() -> None:
+            if not _is_krx_market_day():
+                logger.info("Scheduler job [%s] skipped: KRX 비거래일", name)
+                return
+            self.run_once(name)
+        return _job
+
     def _register_jobs(self) -> None:
-        self._add_daily_job("data_collection", self._settings.maps_data_collection_time)
-        self._add_daily_job("candidate_generation", self._settings.maps_candidate_time)
-        self._add_daily_job("validation", self._settings.maps_validation_time)
+        self._add_weekday_job("data_collection", self._settings.maps_data_collection_time)
+        self._add_weekday_job("candidate_generation", self._settings.maps_candidate_time)
+        self._add_weekday_job("validation", self._settings.maps_validation_time)
         self._add_weekday_job("order_cycle", self._settings.maps_order_time)
         self._scheduler.add_job(
-            lambda: self.run_once("broker_sync"),
+            self._make_krx_job("broker_sync"),
             IntervalTrigger(seconds=self._settings.maps_broker_sync_interval_seconds),
             id="broker_sync",
             name="broker_sync",
@@ -1048,22 +1096,11 @@ class MapsOperationalScheduler:
         )
         self._add_weekday_job("eod_cleanup", self._settings.maps_eod_time)
 
-    def _add_daily_job(self, name: str, hhmm: str) -> None:
-        hour, minute = _parse_hhmm(hhmm)
-        self._scheduler.add_job(
-            lambda n=name: self.run_once(n),
-            CronTrigger(hour=hour, minute=minute),
-            id=name,
-            name=name,
-            replace_existing=True,
-            coalesce=True,
-            max_instances=1,
-        )
-
     def _add_weekday_job(self, name: str, hhmm: str) -> None:
+        """월~금 KRX 거래일(공휴일 제외)에만 실행되는 잡을 등록한다."""
         hour, minute = _parse_hhmm(hhmm)
         self._scheduler.add_job(
-            lambda n=name: self.run_once(n),
+            self._make_krx_job(name),
             CronTrigger(day_of_week="mon-fri", hour=hour, minute=minute),
             id=name,
             name=name,
