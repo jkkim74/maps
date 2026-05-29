@@ -1011,6 +1011,7 @@ async function loadOrders() {
   loading('orders-kpi');
   loading('orders-pending');
   loading('orders-fills');
+  loading('orders-expired');
   try {
     const d = await apiFetch('/orders');
     const slip = d.slippage || {};
@@ -1066,10 +1067,29 @@ async function loadOrders() {
       document.getElementById('orders-fills').innerHTML =
         `<table><thead><tr><th>Order</th><th>Ticker</th><th>종목명</th><th>Side</th><th>Fill Qty</th><th>Fill Price</th><th>Status</th><th>Created</th></tr></thead><tbody>${rows}</tbody></table>`;
     }
+    if (!d.expired || !d.expired.length) {
+      empty('orders-expired', 'No expired orders');
+    } else {
+      const rows = d.expired.map(o => `
+        <tr>
+          <td class="mono">${o.order_id}</td>
+          <td class="mono">${o.strategy_id ?? '-'}</td>
+          <td class="mono">${o.ticker}</td>
+          <td>${o.name || '-'}</td>
+          <td>${badge(o.side, o.side === 'BUY' ? 'pass' : 'warn')}</td>
+          <td class="mono">${o.qty}</td>
+          <td class="mono">${o.order_price == null ? '-' : o.order_price.toLocaleString('ko-KR')}</td>
+          <td>${badge(o.status, 'fail')}</td>
+          <td class="mono text-muted">${fmt.date(o.created_at)}</td>
+        </tr>`).join('');
+      document.getElementById('orders-expired').innerHTML =
+        `<table><thead><tr><th>Order</th><th>Strategy</th><th>Ticker</th><th>종목명</th><th>Side</th><th>Qty</th><th>Price</th><th>Status</th><th>Created</th></tr></thead><tbody>${rows}</tbody></table>`;
+    }
   } catch (e) {
     empty('orders-kpi', `Error: ${e.message}`);
     empty('orders-pending', '');
     empty('orders-fills', '');
+    empty('orders-expired', '');
   }
 }
 

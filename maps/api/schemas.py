@@ -149,6 +149,7 @@ class OrdersResponse(BaseModel):
     auto_order_active: bool
     pending: list[OrderQueueItem]
     fills_today: list[FillItem]
+    expired: list[OrderQueueItem]
     slippage: SlippageStats
 
 

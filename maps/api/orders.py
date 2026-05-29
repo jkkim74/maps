@@ -79,6 +79,21 @@ def get_orders(db: Session = Depends(get_db)) -> OrdersResponse:
         for r in rows
         if r.status in ("filled", "FILLED", "partially_filled", "PARTIAL")
     ]
+    expired_orders = [
+        OrderQueueItem(
+            order_id=r.order_id,
+            strategy_id=r.strategy_id,
+            ticker=r.ticker,
+            name=name_map.get(r.ticker, ""),
+            side=r.side,
+            qty=r.qty,
+            order_price=r.order_price,
+            status=r.status,
+            created_at=r.created_at.isoformat() if r.created_at else "",
+        )
+        for r in rows
+        if r.status in ("expired", "EXPIRED")
+    ]
 
     # 활성 Kill Switch(trigger/approved)가 하나라도 있으면 자동 주문 비활성
     ks_recent = (
@@ -115,6 +130,7 @@ def get_orders(db: Session = Depends(get_db)) -> OrdersResponse:
         auto_order_active=auto_order_active,
         pending=pending,
         fills_today=fills,
+        expired=expired_orders,
         slippage=SlippageStats(
             large_cap_actual=actual_slip if actual_slip is not None else 0.0005,
             large_cap_assumed=0.0005,
