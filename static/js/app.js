@@ -586,7 +586,9 @@ function _renderWfaResult(d) {
   const labels = d.folds.map(f => `Fold ${f.fold_idx + 1}`);
   const values = d.folds.map(f => f.oos_sharpe);
   const colors = values.map(v => v >= 0 ? '#22c55e' : '#ef4444');
-  Plotly.newPlot('wfa-bar-chart', [{
+  const wfaChartEl = document.getElementById('wfa-bar-chart');
+  wfaChartEl.innerHTML = '';
+  Plotly.newPlot(wfaChartEl, [{
     type: 'bar',
     x: labels,
     y: values,
@@ -887,7 +889,9 @@ async function loadTrendStrength() {
     document.getElementById('ts-buckets').innerHTML =
       `<table><thead><tr><th>Bucket</th><th>Label</th><th>Count</th><th>Ratio</th></tr></thead><tbody>${rows}</tbody></table>`;
 
-    Plotly.newPlot('ts-chart', [{
+    const tsChartEl = document.getElementById('ts-chart');
+    tsChartEl.innerHTML = '';
+    Plotly.newPlot(tsChartEl, [{
       type: 'bar',
       x: d.buckets.map(b => b.grade),
       y: d.buckets.map(b => b.count),
