@@ -55,7 +55,8 @@ class _KRXIndexWeeklyProvider:
             return []
 
         end = datetime.date.today()
-        start = end - datetime.timedelta(days=max(n_weeks * 10, 90))
+        # 주봉 n_weeks 확보를 위해 충분히 넓은 기간으로 일봉 조회
+        start = end - datetime.timedelta(days=max(n_weeks * 10, 120))
         previous_raise_exceptions = logging.raiseExceptions
         previous_disable_level = logging.root.manager.disable
         try:
@@ -63,21 +64,30 @@ class _KRXIndexWeeklyProvider:
             # Suppress handler tracebacks while still catching the real failure.
             logging.raiseExceptions = False
             logging.disable(logging.CRITICAL)
+            # pykrx 1.2.8은 freq='w' 미지원 — 일봉으로 받아 주봉 리샘플링
             df = stock.get_index_ohlcv_by_date(
                 start.strftime("%Y%m%d"),
                 end.strftime("%Y%m%d"),
                 ticker,
-                freq="w",
+                freq="d",
             )
         except Exception as exc:
-            logger.warning("KRX index weekly data unavailable [%s]: %s", asset_name, exc)
+            logger.warning("KRX index daily data unavailable [%s]: %s", asset_name, exc)
             return []
         finally:
             logging.disable(previous_disable_level)
             logging.raiseExceptions = previous_raise_exceptions
 
+        if df is None or df.empty:
+            logger.warning("KRX index returned empty dataframe [%s]", asset_name)
+            return []
+
         close_col = "종가" if "종가" in df.columns else "Close" if "Close" in df.columns else None
         if close_col is None:
             logger.warning("KRX index close column missing [%s]: %s", asset_name, list(df.columns))
             return []
-        return [float(value) for value in df[close_col].dropna().tail(n_weeks).tolist()]
+
+        # 일봉 → 주봉: 매주 마지막 거래일 종가
+        import pandas as pd
+        weekly = df[close_col].resample("W").last().dropna()
+        return [float(v) for v in weekly.tail(n_weeks).tolist()]
