@@ -26,6 +26,8 @@ async function apiPost(path, body) {
 const fmt = {
   pct:    v => v == null ? '—' : (v >= 0 ? '+' : '') + (v * 100).toFixed(1) + '%',
   pct1:   v => v == null ? '—' : (v * 100).toFixed(1) + '%',
+  // 소수점 3자리 — 수수료·슬리피지처럼 0.05% 수준의 소액 값에 사용
+  pct3:   v => v == null ? '—' : (v * 100).toFixed(3).replace(/\.?0+$/, '') + '%',
   num1:   v => v == null ? '—' : v.toFixed(1),
   num2:   v => v == null ? '—' : v.toFixed(2),
   krw:    v => v == null ? '—' : '₩' + v.toLocaleString('ko-KR'),
@@ -1004,9 +1006,9 @@ async function loadCostSensitivity() {
     document.getElementById('cost-kpi').innerHTML = `
       <div class="kpi-grid">
         <div class="kpi-card"><div class="kpi-label">Strategy</div><div class="kpi-value">${d.strategy_id}</div><div class="kpi-sub">selected model</div></div>
-        <div class="kpi-card info"><div class="kpi-label">Tax</div><div class="kpi-value">${fmt.pct1(base?.tax_rate)}</div><div class="kpi-sub">sell-side</div></div>
-        <div class="kpi-card"><div class="kpi-label">Fee</div><div class="kpi-value">${fmt.pct1(base?.commission_rate)}</div><div class="kpi-sub">round trip</div></div>
-        <div class="kpi-card"><div class="kpi-label">Large Slip</div><div class="kpi-value">${fmt.pct1(base?.slippage_large)}</div><div class="kpi-sub">base assumption</div></div>
+        <div class="kpi-card info"><div class="kpi-label">Tax</div><div class="kpi-value">${fmt.pct3(base?.tax_rate)}</div><div class="kpi-sub">sell-side</div></div>
+        <div class="kpi-card"><div class="kpi-label">Fee</div><div class="kpi-value">${fmt.pct3(base?.commission_rate)}</div><div class="kpi-sub">round trip</div></div>
+        <div class="kpi-card"><div class="kpi-label">Large Slip</div><div class="kpi-value">${fmt.pct3(base?.slippage_large)}</div><div class="kpi-sub">base assumption</div></div>
       </div>`;
 
     if (!base) {
@@ -1016,10 +1018,10 @@ async function loadCostSensitivity() {
         <table>
           <thead><tr><th>Field</th><th>Value</th></tr></thead>
           <tbody>
-            <tr><td>Tax Rate</td><td class="mono">${fmt.pct1(base.tax_rate)}</td></tr>
-            <tr><td>Commission</td><td class="mono">${fmt.pct1(base.commission_rate)}</td></tr>
-            <tr><td>Slippage Large</td><td class="mono">${fmt.pct1(base.slippage_large)}</td></tr>
-            <tr><td>Slippage Mid/Small</td><td class="mono">${fmt.pct1(base.slippage_mid_small)}</td></tr>
+            <tr><td>Tax Rate</td><td class="mono">${fmt.pct3(base.tax_rate)}</td></tr>
+            <tr><td>Commission</td><td class="mono">${fmt.pct3(base.commission_rate)}</td></tr>
+            <tr><td>Slippage Large</td><td class="mono">${fmt.pct3(base.slippage_large)}</td></tr>
+            <tr><td>Slippage Mid/Small</td><td class="mono">${fmt.pct3(base.slippage_mid_small)}</td></tr>
             <tr><td>Effective At</td><td class="mono">${fmt.date(base.effective_at)}</td></tr>
           </tbody>
         </table>`;
@@ -1033,14 +1035,14 @@ async function loadCostSensitivity() {
       <tr>
         <td>${s.label}</td>
         <td class="mono">${fmt.pct(s.slip_delta_pct)}</td>
-        <td class="mono">${s.net_cagr == null ? '—' : fmt.pct(s.net_cagr)}</td>
-        <td class="mono">${s.net_sharpe == null ? '—' : fmt.num2(s.net_sharpe)}</td>
+        <td class="mono text-muted">—</td>
+        <td class="mono ${s.net_sharpe != null && s.net_sharpe > 0 ? 'text-pass' : s.net_sharpe != null && s.net_sharpe < 0 ? 'text-fail' : ''}">${s.net_sharpe == null ? '—' : fmt.num2(s.net_sharpe)}</td>
         <td class="mono">${s.tradeability == null ? '—' : fmt.score(s.tradeability)}</td>
         <td>${badge(s.status, s.status === 'baseline' ? 'pass' : 'info')}</td>
       </tr>`).join('');
     document.getElementById('cost-scenarios').innerHTML = `
       <table>
-        <thead><tr><th>Scenario</th><th>Slip Delta</th><th>Net CAGR</th><th>Sharpe</th><th>Tradeability</th><th>Status</th></tr></thead>
+        <thead><tr><th>Scenario</th><th>Slip Delta</th><th>Net CAGR</th><th>Sharpe (WFA)</th><th>Tradeability</th><th>Status</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>`;
   } catch (e) {

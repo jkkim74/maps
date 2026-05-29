@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import math
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
@@ -10,7 +11,13 @@ from sqlalchemy.orm import Session
 from maps.api.deps import get_db
 from maps.api.schemas import CostAssumption, CostScenarioItem, CostSensitivityResponse
 from maps.backtest.cost_model import BROKER_FEE_ROUNDTRIP, SLIPPAGE_LARGE_CAP, SLIPPAGE_SMALL_CAP, TRANSACTION_TAX_SELL
-from maps.common.models import CostModelAssumptions, WalkForwardResults
+from maps.common.constants import ALLOWED_MDD, STRATEGY_GROUP_MAP, WEIGHT_PRESETS
+from maps.common.models import (
+    CostModelAssumptions,
+    MonteCarloSequenceResults,
+    ParameterPlateauResults,
+    WalkForwardResults,
+)
 
 router = APIRouter(prefix="/api/v1/cost-sensitivity", tags=["SCR-12 Cost Sensitivity"])
 
@@ -23,6 +30,12 @@ _SCENARIOS = [
 ]
 
 
+def _safe(v: float | None) -> float | None:
+    if v is None or math.isinf(v) or math.isnan(v):
+        return None
+    return v
+
+
 @router.get("", response_model=CostSensitivityResponse)
 def get_cost_sensitivity(
     strategy_id: str = Query(default="pullback_v3"),
@@ -30,24 +43,54 @@ def get_cost_sensitivity(
 ) -> CostSensitivityResponse:
     """Return base cost assumptions and slippage sensitivity scenarios."""
     assumption = _cost_assumption(db)
+
     latest_wfa = (
         db.query(WalkForwardResults)
         .filter(WalkForwardResults.strategy_id == strategy_id)
         .order_by(WalkForwardResults.run_date.desc(), WalkForwardResults.id.desc())
         .first()
     )
+    latest_mc = (
+        db.query(MonteCarloSequenceResults)
+        .filter(MonteCarloSequenceResults.strategy_id == strategy_id)
+        .order_by(MonteCarloSequenceResults.run_date.desc())
+        .first()
+    )
+    latest_plateau = (
+        db.query(ParameterPlateauResults)
+        .filter(ParameterPlateauResults.strategy_id == strategy_id)
+        .order_by(ParameterPlateauResults.run_date.desc())
+        .first()
+    )
+
+    # 기준 시나리오 Tradeability 계산 (robustness.py 동일 로직)
+    base_tradeability: float | None = None
+    base_sharpe: float | None = _safe(latest_wfa.sharpe_mean if latest_wfa else None)
+    if latest_plateau and latest_mc and latest_wfa:
+        weights = WEIGHT_PRESETS["balanced"]
+        r = latest_plateau.positive_ratio * 100
+        ri = (1.0 - min(abs(latest_mc.mdd_p95) / latest_mc.mdd_limit, 1.0)) * 100
+        rec = min(_safe(latest_wfa.mean_g2p) / 2.0, 1.0) * 100 if _safe(latest_wfa.mean_g2p) else 0.0
+        ret = min(max(_safe(latest_wfa.sharpe_mean) / 2.0, 0.0), 1.0) * 100 if _safe(latest_wfa.sharpe_mean) else 0.0
+        base_tradeability = round(
+            weights["robustness"] * r + weights["risk"] * ri
+            + weights["recovery"] * rec + weights["return"] * ret, 1
+        )
 
     scenarios = []
     for label, delta in _SCENARIOS:
-        multiplier = 1.0 + delta
-        status = "baseline" if delta == 0 else "scenario"
+        is_base = delta == 0
+        status = "baseline" if is_base else "scenario"
+        # net_cagr: 백테스트 CAGR 데이터 미보유 → None
+        # net_sharpe: 기준 시나리오만 WFA 실측값, 나머지는 미계산
+        # tradeability: 기준 시나리오만 계산값, 나머지는 미계산
         scenarios.append(
             CostScenarioItem(
                 label=label,
                 slip_delta_pct=delta,
-                net_cagr=0.0,
-                net_sharpe=latest_wfa.sharpe_mean if latest_wfa and delta == 0 else 0.0,
-                tradeability=0.0,
+                net_cagr=None,
+                net_sharpe=base_sharpe if is_base else None,
+                tradeability=base_tradeability if is_base else None,
                 status=status,
             )
         )
