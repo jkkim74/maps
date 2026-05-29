@@ -149,11 +149,117 @@ def test_order_cycle_submits_promoted_candidate_when_live_enabled() -> None:
         assert order.strategy_id == "pullback_v3"
         assert order.ticker == "AAAA"
         assert order.status == "filled"
-        assert order.fill_qty == 1000
+        assert order.fill_qty == 990  # limit_price = close(10_000)*1.01 = 10_100 → 10_000_000//10_100
         row = db.query(CollectionLog).filter(CollectionLog.source == "scheduler.orders").first()
         assert row is not None
         assert row.status == "success"
         assert row.items == 1
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def test_order_cycle_skips_candidate_when_gap_exceeds_limit() -> None:
+    """신호 이후 MAX_GAP 초과 상승 시 주문이 스킵되는지 검증."""
+    engine, factory = _session_factory()
+    settings = MapsSettings(
+        maps_broker_mode="mock",
+        maps_data_provider="mock",
+        maps_live_trading_enabled=True,
+        max_single_exposure=0.10,
+        maps_order_max_gap_pct=0.02,   # 2% 갭 상한
+        maps_order_slippage_pct=0.01,
+    )
+    pipeline = OperationalPipeline(settings=settings, session_factory=factory)
+    signal_date = dt.date(2026, 5, 5)
+    order_date  = dt.date(2026, 5, 8)   # 3일 후 — 3% 갭업
+
+    db = factory()
+    try:
+        # 신호 발생일 종가 10,000
+        db.add(HistoricalOHLCV(
+            ticker="AAAA", date=signal_date,
+            open=10_000, high=10_000, low=10_000, close=10_000, volume=100_000,
+        ))
+        # 주문일 직전 최신 종가 10,300 (갭 +3% → MAX_GAP 2% 초과)
+        db.add(HistoricalOHLCV(
+            ticker="AAAA", date=order_date - dt.timedelta(days=1),
+            open=10_300, high=10_300, low=10_300, close=10_300, volume=100_000,
+        ))
+        db.add(CandidateSnapshot(
+            ref_date=signal_date, strategy_id="pullback_v3", ticker="AAAA",
+            name="AAAA", market="KOSPI", factor_score=90, trend_strength=80,
+            ts_bucket="S5", final_score=95, weekly_pass=True,
+        ))
+        db.add(PromotionHistory(
+            strategy_id="pullback_v3", from_stage="alert_only",
+            to_stage="mock_candidate", tradeability_score=70, passed=True,
+            evaluated_at=dt.datetime(2026, 5, 5, 8, 0),
+        ))
+        db.commit()
+    finally:
+        db.close()
+
+    run = pipeline.run_order_cycle(order_date)
+
+    assert run.status == "success"
+    assert run.details["submitted_orders"] == 0   # 갭 초과로 스킵
+    assert run.details["skipped_orders"] >= 1
+
+    db = factory()
+    try:
+        assert db.query(OrderLog).count() == 0     # 주문 기록 없음
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def test_order_cycle_applies_slippage_to_limit_price() -> None:
+    """slippage 1% 적용 시 지정가가 최신종가×1.01로 설정되는지 검증."""
+    engine, factory = _session_factory()
+    settings = MapsSettings(
+        maps_broker_mode="mock",
+        maps_data_provider="mock",
+        maps_live_trading_enabled=True,
+        max_single_exposure=0.10,
+        maps_order_max_gap_pct=0.05,   # 5%로 넉넉히 — 갭 스킵 방지
+        maps_order_slippage_pct=0.01,
+    )
+    pipeline = OperationalPipeline(settings=settings, session_factory=factory)
+    ref_date = dt.date(2026, 5, 5)
+
+    db = factory()
+    try:
+        db.add(HistoricalOHLCV(
+            ticker="AAAA", date=ref_date,
+            open=10_000, high=10_000, low=10_000, close=10_000, volume=100_000,
+        ))
+        db.add(CandidateSnapshot(
+            ref_date=ref_date, strategy_id="pullback_v3", ticker="AAAA",
+            name="AAAA", market="KOSPI", factor_score=90, trend_strength=80,
+            ts_bucket="S5", final_score=95, weekly_pass=True,
+        ))
+        db.add(PromotionHistory(
+            strategy_id="pullback_v3", from_stage="alert_only",
+            to_stage="mock_candidate", tradeability_score=70, passed=True,
+            evaluated_at=dt.datetime(2026, 5, 5, 8, 0),
+        ))
+        db.commit()
+    finally:
+        db.close()
+
+    run = pipeline.run_order_cycle(ref_date)
+
+    assert run.status == "success"
+    assert run.details["submitted_orders"] == 1
+
+    db = factory()
+    try:
+        order = db.query(OrderLog).one()
+        # limit_price = int(10_000 * 1.01) = 10_100
+        assert order.order_price == 10_100
     finally:
         db.close()
         Base.metadata.drop_all(engine)

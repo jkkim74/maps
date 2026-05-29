@@ -875,6 +875,9 @@ class OperationalPipeline:
         skipped = 0
         max_orders = 3
 
+        slippage_pct = self._settings.maps_order_slippage_pct
+        max_gap_pct = self._settings.maps_order_max_gap_pct
+
         for candidate in candidates:
             if submitted >= max_orders:
                 skipped += 1
@@ -882,13 +885,34 @@ class OperationalPipeline:
             if positions.get(candidate.ticker, 0) > 0:
                 skipped += 1
                 continue
-            price = self._latest_close(db, candidate.ticker, candidate.ref_date)
-            if price <= 0:
+
+            # 신호 발생 시점 종가 (전략이 신호를 생성한 날 기준)
+            signal_close = self._latest_close(db, candidate.ticker, candidate.ref_date)
+            if signal_close <= 0:
                 skipped += 1
                 continue
 
+            # 주문 시점 기준 DB 최신 종가 (당일 포함, 장 마감 후 수집된 전일 종가)
+            current_close = self._latest_close(db, candidate.ticker, ref_date)
+            if current_close <= 0:
+                current_close = signal_close
+
+            # 갭 체크: 신호 이후 시장이 MAX_GAP 이상 상승 → 신호 무효, 스킵
+            gap_pct = (current_close - signal_close) / signal_close
+            if gap_pct > max_gap_pct:
+                logger.info(
+                    "Order skipped [%s %s]: gap +%.1f%% since signal exceeds limit +%.1f%%",
+                    candidate.strategy_id, candidate.ticker,
+                    gap_pct * 100, max_gap_pct * 100,
+                )
+                skipped += 1
+                continue
+
+            # 지정가 = 최신 종가 × (1 + slippage) — 당일 소폭 상승 흡수
+            limit_price = int(current_close * (1 + slippage_pct))
+
             remaining_slots = max(max_orders - submitted, 1)
-            qty = self._order_qty(candidate, account.total_value, remaining_cash, price, remaining_slots)
+            qty = self._order_qty(candidate, account.total_value, remaining_cash, limit_price, remaining_slots)
             if qty <= 0:
                 skipped += 1
                 continue
@@ -899,13 +923,16 @@ class OperationalPipeline:
                 side=OrderSide.BUY,
                 order_type=OrderType.LIMIT,
                 quantity=qty,
-                limit_price=price,
-                current_price=price,
-                memo=f"candidate_snapshot:{candidate.ref_date.isoformat()}",
+                limit_price=limit_price,
+                current_price=current_close,
+                memo=(
+                    f"candidate_snapshot:{candidate.ref_date.isoformat()} "
+                    f"signal={signal_close:.0f} gap={gap_pct:+.3f}"
+                ),
             )
             manager.submit(order)
             submitted += 1
-            remaining_cash = max(remaining_cash - qty * price, 0.0)
+            remaining_cash = max(remaining_cash - qty * limit_price, 0.0)
             positions[candidate.ticker] = positions.get(candidate.ticker, 0) + qty
 
         return submitted, skipped

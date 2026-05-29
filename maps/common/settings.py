@@ -51,6 +51,8 @@ class MapsSettings(BaseSettings):
     maps_order_retry_attempts: int = Field(default=3, ge=1)
     maps_order_retry_backoff_seconds: float = Field(default=0.5, ge=0.0)
     maps_kis_timeout: float = Field(default=30.0, ge=1.0)  # KIS API read timeout (초). 모의서버 지연 대응
+    maps_order_slippage_pct: float = Field(default=0.01, ge=0.0)   # 지정가 = 최신종가 * (1 + slippage)
+    maps_order_max_gap_pct: float = Field(default=0.02, ge=0.0)    # 신호 이후 갭 상승 허용 상한 (초과 시 주문 스킵)
 
     kis_app_key: str = ""
     kis_app_secret: str = ""
