@@ -133,18 +133,18 @@ def test_low_turnover_kospi_excluded():
 
 
 # ---------------------------------------------------------------------------
-# 6. 거부율 5% 초과 시 알림 함수 호출
+# 6. 거부율 40% 초과 시 알림 함수 호출 (한국 시장 특성 반영, 임계치 변경 2026-05-29)
 # ---------------------------------------------------------------------------
 def test_rejection_alert_called_when_ratio_exceeds_threshold():
-    """거부율 >= 5% 이면 alert_fn 이 호출된다."""
+    """거부율 >= 40% 이면 alert_fn 이 호출된다."""
     alerts: list[str] = []
 
-    # 100명 중 6명 탈락 → 6% > 5%
-    candidates = [_stock(str(i)) for i in range(94)]
-    # 상장일을 미래로 설정해 6명 제외
+    # 100개 중 41개 탈락 → 41% > 40%
+    candidates = [_stock(str(i)) for i in range(59)]
+    # 상장일을 미래로 설정해 41개 제외
     excluded = [
         _stock(str(100 + i), listing_date=REF_DATE + datetime.timedelta(days=1))
-        for i in range(6)
+        for i in range(41)
     ]
 
     flt = DataQualityFilter(

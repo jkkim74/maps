@@ -29,7 +29,7 @@ MIN_TURNOVER_KRW: dict[str, float] = {
     "KOSDAQ": 3e8,
 }
 EXCLUDED_TYPES = {"SPAC"}
-REJECTION_ALERT_THRESHOLD = 0.05  # 거부율 5% 초과 시 알림
+REJECTION_ALERT_THRESHOLD = 0.40  # 거부율 40% 초과 시 알림 (한국 시장 특성상 소형주·SPAC 제외로 30~40% 거부 정상)
 MAX_MISSING_DAYS_20D = 1
 
 

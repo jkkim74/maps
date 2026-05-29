@@ -514,13 +514,13 @@ async function loadDataQuality() {
   try {
     const d = await apiFetch('/data-quality');
 
-    const ratioClass = d.rejection_ratio > 0.15 ? 'fail' : d.rejection_ratio > 0.05 ? 'warn' : 'pass';
+    const ratioClass = d.rejection_ratio > 0.40 ? 'fail' : d.rejection_ratio > 0.30 ? 'warn' : 'pass';
     document.getElementById('dq-kpi').innerHTML = `
       <div class="kpi-grid">
         <div class="kpi-card"><div class="kpi-label">유니버스 후보</div><div class="kpi-value">${d.total_candidates}</div><div class="kpi-sub">KOSPI200 + KOSDAQ150</div></div>
         <div class="kpi-card pass"><div class="kpi-label">통과 (kept)</div><div class="kpi-value">${d.kept_count}</div><div class="kpi-sub">${fmt.pct1(d.kept_count / (d.total_candidates || 1))}</div></div>
-        <div class="kpi-card ${ratioClass}"><div class="kpi-label">거부율</div><div class="kpi-value">${fmt.pct1(d.rejection_ratio)}</div><div class="kpi-sub">임계 5%</div></div>
-        <div class="kpi-card ${d.alert_sent ? 'warn' : 'pass'}"><div class="kpi-label">알림</div><div class="kpi-value">${d.alert_sent ? '발송됨' : '정상'}</div><div class="kpi-sub">거부율 5% 초과 시</div></div>
+        <div class="kpi-card ${ratioClass}"><div class="kpi-label">거부율</div><div class="kpi-value">${fmt.pct1(d.rejection_ratio)}</div><div class="kpi-sub">임계 40%</div></div>
+        <div class="kpi-card ${d.alert_sent ? 'warn' : 'pass'}"><div class="kpi-label">알림</div><div class="kpi-value">${d.alert_sent ? '발송됨' : '정상'}</div><div class="kpi-sub">거부율 40% 초과 시</div></div>
       </div>`;
 
     if (d.rejection_reasons.length === 0) {
@@ -544,8 +544,8 @@ async function loadDataQuality() {
       Plotly.newPlot('dq-chart', [
         { x: dates, y: ratios, type: 'scatter', mode: 'lines', name: '거부율',
           line: { color: '#60a5fa', width: 2 }, fill: 'tozeroy', fillcolor: 'rgba(96,165,250,.08)' },
-        { x: [dates[0], dates[dates.length - 1]], y: [5, 5], type: 'scatter', mode: 'lines',
-          name: '임계 5%', line: { color: '#fbbf24', width: 1, dash: 'dot' } }
+        { x: [dates[0], dates[dates.length - 1]], y: [40, 40], type: 'scatter', mode: 'lines',
+          name: '임계 40%', line: { color: '#fbbf24', width: 1, dash: 'dot' } }
       ], { ...LAYOUT_BASE, height: 200, yaxis: { ...LAYOUT_BASE.yaxis, ticksuffix: '%' } }, CONFIG);
     } else {
       empty('dq-chart', '이력 데이터 없음 (수집 후 자동 표시)');
@@ -1146,13 +1146,13 @@ async function loadDataQualityV2() {
     const params = new URLSearchParams(location.search);
     const mode = params.get('mode') || 'live';
     const d = await apiFetch(`/data-quality?mode=${encodeURIComponent(mode)}`);
-    const ratioClass = d.rejection_ratio > 0.15 ? 'fail' : d.rejection_ratio > 0.05 ? 'warn' : 'pass';
+    const ratioClass = d.rejection_ratio > 0.40 ? 'fail' : d.rejection_ratio > 0.30 ? 'warn' : 'pass';
     document.getElementById('dq-kpi').innerHTML = `
       <div class="kpi-grid">
         <div class="kpi-card"><div class="kpi-label">Universe</div><div class="kpi-value">${d.total_candidates}</div><div class="kpi-sub">${d.mode} · ${d.ref_date}</div></div>
         <div class="kpi-card pass"><div class="kpi-label">Kept</div><div class="kpi-value">${d.kept_count}</div><div class="kpi-sub">${fmt.pct1(d.total_candidates ? d.kept_count / d.total_candidates : 0)}</div></div>
         <div class="kpi-card ${ratioClass}"><div class="kpi-label">Rejected</div><div class="kpi-value">${d.rejected_count}</div><div class="kpi-sub">${fmt.pct1(d.rejection_ratio)}</div></div>
-        <div class="kpi-card ${d.alert_sent ? 'warn' : 'pass'}"><div class="kpi-label">Alert</div><div class="kpi-value">${d.alert_sent ? 'SENT' : 'NORMAL'}</div><div class="kpi-sub">threshold 5%</div></div>
+        <div class="kpi-card ${d.alert_sent ? 'warn' : 'pass'}"><div class="kpi-label">Alert</div><div class="kpi-value">${d.alert_sent ? 'SENT' : 'NORMAL'}</div><div class="kpi-sub">threshold 40%</div></div>
       </div>`;
 
     if (!d.rejection_reasons || d.rejection_reasons.length === 0) {
@@ -1177,8 +1177,8 @@ async function loadDataQualityV2() {
       Plotly.newPlot(chartEl, [
         { x: dates, y: ratios, type: 'scatter', mode: 'lines+markers', name: 'Reject ratio',
           line: { color: '#60a5fa', width: 2 }, fill: 'tozeroy', fillcolor: 'rgba(96,165,250,.08)' },
-        { x: [dates[0], dates[dates.length - 1]], y: [5, 5], type: 'scatter', mode: 'lines',
-          name: 'Threshold 5%', line: { color: '#fbbf24', width: 1, dash: 'dot' } }
+        { x: [dates[0], dates[dates.length - 1]], y: [40, 40], type: 'scatter', mode: 'lines',
+          name: 'Threshold 40%', line: { color: '#fbbf24', width: 1, dash: 'dot' } }
       ], { ...LAYOUT_BASE, height: 220, yaxis: { ...LAYOUT_BASE.yaxis, ticksuffix: '%' } }, CONFIG);
     } else {
       empty('dq-chart', 'No quality history');
