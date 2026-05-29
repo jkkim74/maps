@@ -307,6 +307,8 @@ async function loadRobustness() {
   const preset = params.get('preset') || 'balanced';
   loading('robustness-kpi');
   loading('breakdown-area');
+  loading('plateau-area');
+  loading('mc-area');
   try {
     const d = await apiFetch(`/robustness?strategy_id=${sid}&weight_preset=${preset}`);
 
@@ -334,21 +336,58 @@ async function loadRobustness() {
         </div>
       </div>`;
 
+    // ── 서브스코어 분해 (실제 가중치 사용)
     const bd = d.breakdown;
     if (bd) {
+      const w = bd.weights || {};
+      const pct = v => v != null ? `×${(v).toFixed(2)}` : '×—';
       document.getElementById('breakdown-area').innerHTML = `
         <div class="kpi-grid">
-          <div class="kpi-card"><div class="kpi-label">Robustness (×${bd.weight_preset === 'balanced' ? '0.30' : '?'})</div><div class="kpi-value">${fmt.score(bd.robustness)}</div></div>
-          <div class="kpi-card"><div class="kpi-label">Risk (×0.30)</div><div class="kpi-value">${fmt.score(bd.risk)}</div></div>
-          <div class="kpi-card"><div class="kpi-label">Recovery (×0.20)</div><div class="kpi-value">${fmt.score(bd.recovery)}</div></div>
-          <div class="kpi-card"><div class="kpi-label">Return (×0.20)</div><div class="kpi-value">${fmt.score(bd.ret)}</div></div>
+          <div class="kpi-card"><div class="kpi-label">Robustness (${pct(w.robustness)})</div><div class="kpi-value">${fmt.score(bd.robustness)}</div></div>
+          <div class="kpi-card"><div class="kpi-label">Risk (${pct(w.risk)})</div><div class="kpi-value">${fmt.score(bd.risk)}</div></div>
+          <div class="kpi-card"><div class="kpi-label">Recovery (${pct(w.recovery)})</div><div class="kpi-value">${fmt.score(bd.recovery)}</div></div>
+          <div class="kpi-card"><div class="kpi-label">Return (${pct(w.return ?? w.ret)})</div><div class="kpi-value">${fmt.score(bd.ret)}</div></div>
         </div>`;
     } else {
       empty('breakdown-area', '백테스트 실행 후 확인 가능합니다');
     }
+
+    // ── Parameter Plateau 상세
+    if (d.plateau_total != null) {
+      const passRatio = d.plateau_total > 0 ? (d.plateau_positive / d.plateau_total * 100).toFixed(1) : '0.0';
+      const paramsHtml = d.plateau_best_params
+        ? Object.entries(d.plateau_best_params).map(([k, v]) => `<span class="mono">${k} = ${v}</span>`).join(' &nbsp;·&nbsp; ')
+        : '—';
+      document.getElementById('plateau-area').innerHTML = `
+        <table><thead><tr><th>항목</th><th>값</th></tr></thead><tbody>
+          <tr><td>총 파라미터 조합</td><td class="mono">${d.plateau_total}</td></tr>
+          <tr><td>양(+) 수익 조합</td><td class="mono">${d.plateau_positive}</td></tr>
+          <tr><td>양(+) 비율</td><td class="mono ${parseFloat(passRatio) >= 50 ? 'text-pass' : 'text-warn'}">${passRatio}%</td></tr>
+          <tr><td>등급</td><td>${badge(d.plateau_grade ?? '—', d.plateau_grade === 'A' ? 'pass' : d.plateau_grade === 'B' ? 'info' : 'warn')}</td></tr>
+          <tr><td>최적 파라미터</td><td>${paramsHtml}</td></tr>
+        </tbody></table>`;
+    } else {
+      empty('plateau-area', '파라미터 검증 데이터 없음');
+    }
+
+    // ── MC MDD 분포 요약
+    if (d.mc_mdd_p95 != null) {
+      const mcPass = Math.abs(d.mc_mdd_p95) <= (d.mc_mdd_limit ?? 1);
+      document.getElementById('mc-area').innerHTML = `
+        <table><thead><tr><th>항목</th><th>값</th></tr></thead><tbody>
+          <tr><td>MC MDD p95</td><td class="mono ${mcPass ? 'text-pass' : 'text-fail'}">${fmt.pct1(Math.abs(d.mc_mdd_p95))}</td></tr>
+          <tr><td>허용 한도</td><td class="mono">${fmt.pct1(d.mc_mdd_limit)}</td></tr>
+          <tr><td>한도 여유율</td><td class="mono">${fmt.pct1(1 - Math.abs(d.mc_mdd_p95) / d.mc_mdd_limit)} 여유</td></tr>
+          <tr><td>통과 여부</td><td>${badge(mcPass ? 'PASS' : 'FAIL', mcPass ? 'pass' : 'fail')}</td></tr>
+        </tbody></table>`;
+    } else {
+      empty('mc-area', 'Monte Carlo 데이터 없음');
+    }
   } catch (e) {
     empty('robustness-kpi', `오류: ${e.message}`);
     empty('breakdown-area', '');
+    empty('plateau-area', '');
+    empty('mc-area', '');
   }
 }
 

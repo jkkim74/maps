@@ -12,21 +12,15 @@
 <div class="section-header"><span class="section-title">Tradeability 서브스코어 분해</span><hr></div>
 <div id="breakdown-area"><div class="loading"><div class="spinner"></div></div></div>
 
-<div class="section-header"><span class="section-title">Parameter Plateau Heatmap</span><hr></div>
-<div class="chart-container">
-  <div class="chart-title">HEATMAP · fast (X) × slow (Y) · color=Gain-to-Pain</div>
-  <div class="empty-state" style="padding:32px">
-    <div class="empty-sub">백테스트 실행 후 파라미터 결과가 표시됩니다</div>
-  </div>
-</div>
+<div class="section-header"><span class="section-title">Parameter Plateau</span><hr></div>
+<div class="card"><div class="card-body" id="plateau-area">
+  <div class="loading"><div class="spinner"></div></div>
+</div></div>
 
-<div class="section-header"><span class="section-title">MC vs Block Bootstrap MDD 분포</span><hr></div>
-<div class="chart-container">
-  <div class="chart-title">HISTOGRAM × 2 overlay · 1000 simulations</div>
-  <div class="empty-state" style="padding:32px">
-    <div class="empty-sub">Monte Carlo 실행 후 분포가 표시됩니다</div>
-  </div>
-</div>
+<div class="section-header"><span class="section-title">MC MDD 분포</span><hr></div>
+<div class="card"><div class="card-body" id="mc-area">
+  <div class="loading"><div class="spinner"></div></div>
+</div></div>
 {% endblock %}
 {% block extra_scripts %}
 <script>

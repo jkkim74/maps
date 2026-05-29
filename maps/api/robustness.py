@@ -62,6 +62,7 @@ def get_robustness(
             recovery=recovery_score,
             ret=return_score,
             weight_preset=weight_preset,
+            weights=weights,
         )
         tradeability = (
             weights["robustness"] * robustness_score
@@ -76,10 +77,19 @@ def get_robustness(
             recovery=0.0,
             ret=0.0,
             weight_preset=weight_preset,
+            weights=weights,
         )
 
+    import json as _json
     group = STRATEGY_GROUP_MAP.get(strategy_id, "portfolio_total")
     default_mdd_limit = ALLOWED_MDD.get(group, ALLOWED_MDD["portfolio_total"])["mc_p95_limit"]
+
+    best_params: dict | None = None
+    if plateau and plateau.best_params_json:
+        try:
+            best_params = _json.loads(plateau.best_params_json)
+        except (ValueError, TypeError):
+            best_params = None
 
     return RobustnessResponse(
         strategy_id=strategy_id,
@@ -92,5 +102,8 @@ def get_robustness(
         cross_market_score=0.0,
         breakdown=breakdown,
         plateau_grade=plateau.grade if plateau else "N/A",
+        plateau_total=plateau.total_combinations if plateau else None,
+        plateau_positive=plateau.positive_combinations if plateau else None,
+        plateau_best_params=best_params,
         run_date=plateau.run_date.isoformat() if plateau else datetime.date.today().isoformat(),
     )

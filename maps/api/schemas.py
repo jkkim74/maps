@@ -215,6 +215,7 @@ class TradeabilityBreakdown(BaseModel):
     recovery: float | None
     ret: float | None
     weight_preset: str
+    weights: dict[str, float]   # 프리셋별 실제 가중치
 
 
 class RobustnessResponse(BaseModel):
@@ -228,6 +229,9 @@ class RobustnessResponse(BaseModel):
     cross_market_score: float | None
     breakdown: TradeabilityBreakdown | None
     plateau_grade: str | None
+    plateau_total: int | None
+    plateau_positive: int | None
+    plateau_best_params: dict | None
     run_date: str | None
 
 
