@@ -1127,7 +1127,9 @@ async function loadDataQualityV2() {
     if (d.history_90d && d.history_90d.length > 0) {
       const dates = d.history_90d.map(h => h.date);
       const ratios = d.history_90d.map(h => h.rejection_ratio * 100);
-      Plotly.newPlot('dq-chart', [
+      const chartEl = document.getElementById('dq-chart');
+      chartEl.innerHTML = '';  // Plotly.newPlot(responsive:true)는 기존 내용을 제거하지 않으므로 명시 초기화
+      Plotly.newPlot(chartEl, [
         { x: dates, y: ratios, type: 'scatter', mode: 'lines+markers', name: 'Reject ratio',
           line: { color: '#60a5fa', width: 2 }, fill: 'tozeroy', fillcolor: 'rgba(96,165,250,.08)' },
         { x: [dates[0], dates[dates.length - 1]], y: [5, 5], type: 'scatter', mode: 'lines',
