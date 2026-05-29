@@ -119,6 +119,7 @@ class OrderQueueItem(BaseModel):
     order_id: str
     strategy_id: str | None
     ticker: str
+    name: str
     side: str
     qty: int
     order_price: float | None
@@ -129,6 +130,7 @@ class OrderQueueItem(BaseModel):
 class FillItem(BaseModel):
     order_id: str
     ticker: str
+    name: str
     side: str
     fill_price: float | None
     fill_qty: int

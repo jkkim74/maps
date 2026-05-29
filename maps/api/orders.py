@@ -12,7 +12,7 @@ from maps.api.schemas import (
     OrdersResponse,
     SlippageStats,
 )
-from maps.common.models import KillSwitchLog, OrderLog
+from maps.common.models import KillSwitchLog, OrderLog, SecurityMetadata
 
 router = APIRouter(prefix="/api/v1/orders", tags=["SCR-05 Orders"])
 
@@ -23,7 +23,15 @@ def get_orders(db: Session = Depends(get_db)) -> OrdersResponse:
     import datetime
 
     today = datetime.date.today()
+    today_start = datetime.datetime.combine(today, datetime.time.min)
     week_start = datetime.datetime.combine(today - datetime.timedelta(days=7), datetime.time.min)
+
+    # 전날까지 PENDING 상태로 남은 주문은 당일 장 마감으로 자동 취소된 것으로 처리
+    db.query(OrderLog).filter(
+        OrderLog.status.in_(["pending", "PENDING"]),
+        OrderLog.created_at < today_start,
+    ).update({"status": "expired"}, synchronize_session=False)
+    db.commit()
 
     rows = (
         db.query(OrderLog)
@@ -33,11 +41,21 @@ def get_orders(db: Session = Depends(get_db)) -> OrdersResponse:
         .all()
     )
 
+    # 종목명 일괄 조회
+    tickers = {r.ticker for r in rows}
+    name_map: dict[str, str] = {}
+    if tickers:
+        name_map = {
+            m.ticker: m.name
+            for m in db.query(SecurityMetadata).filter(SecurityMetadata.ticker.in_(tickers)).all()
+        }
+
     pending = [
         OrderQueueItem(
             order_id=r.order_id,
             strategy_id=r.strategy_id,
             ticker=r.ticker,
+            name=name_map.get(r.ticker, ""),
             side=r.side,
             qty=r.qty,
             order_price=r.order_price,
@@ -51,6 +69,7 @@ def get_orders(db: Session = Depends(get_db)) -> OrdersResponse:
         FillItem(
             order_id=r.order_id,
             ticker=r.ticker,
+            name=name_map.get(r.ticker, ""),
             side=r.side,
             fill_price=r.fill_price,
             fill_qty=r.fill_qty,

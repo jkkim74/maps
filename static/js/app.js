@@ -1025,36 +1025,46 @@ async function loadOrders() {
     if (!d.pending.length) {
       empty('orders-pending', 'No pending orders');
     } else {
-      const rows = d.pending.map(o => `
+      const rows = d.pending.map(o => {
+        const statusCls = ['expired','EXPIRED'].includes(o.status) ? 'fail'
+                        : ['filled','FILLED'].includes(o.status) ? 'pass' : 'info';
+        return `
         <tr>
           <td class="mono">${o.order_id}</td>
           <td class="mono">${o.strategy_id ?? '-'}</td>
           <td class="mono">${o.ticker}</td>
+          <td>${o.name || '-'}</td>
           <td>${badge(o.side, o.side === 'BUY' ? 'pass' : 'warn')}</td>
           <td class="mono">${o.qty}</td>
           <td class="mono">${o.order_price == null ? '-' : o.order_price.toLocaleString('ko-KR')}</td>
-          <td>${badge(o.status, 'info')}</td>
+          <td>${badge(o.status, statusCls)}</td>
           <td class="mono text-muted">${fmt.date(o.created_at)}</td>
-        </tr>`).join('');
+        </tr>`;
+      }).join('');
       document.getElementById('orders-pending').innerHTML =
-        `<table><thead><tr><th>Order</th><th>Strategy</th><th>Ticker</th><th>Side</th><th>Qty</th><th>Price</th><th>Status</th><th>Created</th></tr></thead><tbody>${rows}</tbody></table>`;
+        `<table><thead><tr><th>Order</th><th>Strategy</th><th>Ticker</th><th>종목명</th><th>Side</th><th>Qty</th><th>Price</th><th>Status</th><th>Created</th></tr></thead><tbody>${rows}</tbody></table>`;
     }
 
     if (!d.fills_today.length) {
       empty('orders-fills', 'No fills today');
     } else {
-      const rows = d.fills_today.map(f => `
+      const rows = d.fills_today.map(f => {
+        const statusCls = ['filled','FILLED'].includes(f.status) ? 'pass'
+                        : ['partially_filled','PARTIAL'].includes(f.status) ? 'warn' : 'info';
+        return `
         <tr>
           <td class="mono">${f.order_id}</td>
           <td class="mono">${f.ticker}</td>
+          <td>${f.name || '-'}</td>
           <td>${badge(f.side, f.side === 'BUY' ? 'pass' : 'warn')}</td>
           <td class="mono">${f.fill_qty}</td>
           <td class="mono">${f.fill_price == null ? '-' : f.fill_price.toLocaleString('ko-KR')}</td>
-          <td>${badge(f.status, 'info')}</td>
+          <td>${badge(f.status, statusCls)}</td>
           <td class="mono text-muted">${fmt.date(f.created_at)}</td>
-        </tr>`).join('');
+        </tr>`;
+      }).join('');
       document.getElementById('orders-fills').innerHTML =
-        `<table><thead><tr><th>Order</th><th>Ticker</th><th>Side</th><th>Fill Qty</th><th>Fill Price</th><th>Status</th><th>Created</th></tr></thead><tbody>${rows}</tbody></table>`;
+        `<table><thead><tr><th>Order</th><th>Ticker</th><th>종목명</th><th>Side</th><th>Fill Qty</th><th>Fill Price</th><th>Status</th><th>Created</th></tr></thead><tbody>${rows}</tbody></table>`;
     }
   } catch (e) {
     empty('orders-kpi', `Error: ${e.message}`);
