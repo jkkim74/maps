@@ -12,7 +12,7 @@ def test_market_api_uses_weekly_index_provider(monkeypatch) -> None:
         return []
 
     monkeypatch.setattr(
-        market._KRXIndexWeeklyProvider,
+        market._CombinedWeeklyProvider,
         "get_weekly_closes",
         fake_weekly_closes,
     )
@@ -32,7 +32,7 @@ def test_market_api_uses_weekly_index_provider(monkeypatch) -> None:
 
 def test_market_api_treats_missing_index_data_as_unavailable(monkeypatch) -> None:
     monkeypatch.setattr(
-        market._KRXIndexWeeklyProvider,
+        market._CombinedWeeklyProvider,
         "get_weekly_closes",
         lambda self, asset_name, n_weeks: [],
     )
