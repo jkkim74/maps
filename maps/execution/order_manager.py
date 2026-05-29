@@ -128,6 +128,23 @@ class OrderManager:
                 .first()
             )
             if row is None:
+                # MAPS 외부(MTS 등)에서 제출된 주문 — DB에 삽입하여 화면에 표시
+                self._db.add(
+                    OrderLog(
+                        order_id=result.order_id,
+                        strategy_id="external_mts",
+                        ticker=result.ticker,
+                        side=result.side.value,
+                        qty=result.filled_quantity or 0,
+                        order_price=None,
+                        fill_price=result.avg_price if result.avg_price else None,
+                        fill_qty=result.filled_quantity,
+                        status=result.status.value,
+                        broker=get_settings().maps_broker_mode,
+                        mode="live" if get_settings().maps_live_trading_enabled else "mock",
+                    )
+                )
+                updated += 1
                 continue
             changed = False
             if row.status != result.status.value:

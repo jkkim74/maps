@@ -252,7 +252,7 @@ class KISAdapter(BrokerAdapter):
             "SLL_BUY_DVSN_CD": "00",
             "INQR_DVSN": "00",
             "PDNO": "",
-            "CCLD_DVSN": "00",
+            "CCLD_DVSN": "02",
             "ORD_GNO_BRNO": "",
             "ODNO": "",
             "INQR_DVSN_3": "00",

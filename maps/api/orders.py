@@ -23,11 +23,11 @@ def get_orders(db: Session = Depends(get_db)) -> OrdersResponse:
     import datetime
 
     today = datetime.date.today()
-    today_start = datetime.datetime.combine(today, datetime.time.min)
+    week_start = datetime.datetime.combine(today - datetime.timedelta(days=7), datetime.time.min)
 
     rows = (
         db.query(OrderLog)
-        .filter(OrderLog.created_at >= today_start)
+        .filter(OrderLog.created_at >= week_start)
         .order_by(OrderLog.created_at.desc())
         .limit(100)
         .all()
