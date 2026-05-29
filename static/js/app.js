@@ -970,18 +970,18 @@ async function loadResearch() {
         <td class="mono">${s.strategy_id}</td>
         <td>${s.strategy_type}</td>
         <td>${stageBadge(s.stage)}</td>
-        <td class="mono">${s.signal_count ?? '—'}</td>
-        <td class="mono">${s.mock_cagr == null ? '—' : fmt.pct(s.mock_cagr)}</td>
+        <td class="mono">${s.signal_count != null ? s.signal_count : '—'}</td>
+        <td class="mono ${s.mock_cagr > 0 ? 'text-pass' : s.mock_cagr < 0 ? 'text-fail' : ''}">${s.mock_cagr == null ? '—' : fmt.num2(s.mock_cagr)}</td>
         <td class="mono">${s.mock_mdd == null ? '—' : fmt.pct1(Math.abs(s.mock_mdd))}</td>
-        <td class="mono">${s.observation_months == null ? '—' : fmt.num1(s.observation_months)}</td>
+        <td class="mono">${s.observation_months == null || s.observation_months === 0 ? '—' : fmt.num1(s.observation_months) + 'mo'}</td>
         <td>${s.next_gate}</td>
       </tr>`).join('');
 
     document.getElementById('research-area').innerHTML = `
       <table>
         <thead><tr>
-          <th>Strategy</th><th>Type</th><th>Stage</th><th>Signals</th>
-          <th>Mock CAGR</th><th>Mock MDD</th><th>Months</th><th>Next Gate</th>
+          <th>Strategy</th><th>Type</th><th>Stage</th><th>후보 수</th>
+          <th>Mock Sharpe</th><th>Mock MDD</th><th>관측 기간</th><th>Next Gate</th>
         </tr></thead>
         <tbody>${rows}</tbody>
       </table>`;
