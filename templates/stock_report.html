@@ -58,6 +58,13 @@ async function triggerReport(reportType) {
   }
 }
 
+function toKST(isoStr) {
+  if (!isoStr) return '—';
+  // DB가 UTC로 저장하므로 Z를 붙여 UTC로 파싱 후 KST(Asia/Seoul)로 변환
+  const s = isoStr.includes('Z') || isoStr.includes('+') ? isoStr : isoStr + 'Z';
+  return new Date(s).toLocaleString('sv-SE', { timeZone: 'Asia/Seoul' }).slice(0, 19).replace('T', ' ');
+}
+
 function startPolling() {
   if (_pollTimer) return;
   _pollTimer = setInterval(async () => {
@@ -110,7 +117,7 @@ async function loadRuns() {
         <div class="kpi-card">
           <div class="kpi-label">최근 완료</div>
           <div class="kpi-value" style="font-size:1rem">${lastCompleted ? lastCompleted.report_name : '—'}</div>
-          <div class="kpi-sub">${lastCompleted ? lastCompleted.trade_date : '—'}</div>
+          <div class="kpi-sub">${lastCompleted ? (lastCompleted.trade_date || '') + ' · ' + toKST(lastCompleted.completed_at).slice(0,16) + ' KST' : '—'}</div>
         </div>
         <div class="kpi-card info">
           <div class="kpi-label">총 이력</div>
@@ -138,8 +145,8 @@ async function loadRuns() {
         <td>${r.report_name}</td>
         <td>${statusBadge(r.status)}</td>
         <td class="mono">${r.trade_date || '—'}</td>
-        <td class="mono text-muted">${r.created_at ? r.created_at.slice(0,19).replace('T',' ') : '—'}</td>
-        <td class="mono text-muted">${r.completed_at ? r.completed_at.slice(0,19).replace('T',' ') : '—'}</td>
+        <td class="mono text-muted">${toKST(r.created_at)}</td>
+        <td class="mono text-muted">${toKST(r.completed_at)}</td>
         <td>
           ${r.status === 'completed' && r.has_html
             ? `<button class="topbar-btn" style="font-size:0.75rem" onclick="openReport(${r.id}, '${r.report_name} (${r.trade_date})')">📄 열기</button>`
