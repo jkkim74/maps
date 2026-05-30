@@ -157,12 +157,23 @@ async function loadStrategies() {
 }
 
 // ── SCR-03 장세 · 팩터 ───────────────────────────────────────────────────────
+function kospiTsLabel(ts) {
+  if (ts == null) return { text: '—', cls: '' };
+  if (ts >= 80) return { text: '강한 상승', cls: 'pass' };
+  if (ts >= 60) return { text: '약한 상승', cls: 'pass' };
+  if (ts >= 40) return { text: '중립',     cls: 'info' };
+  if (ts >= 20) return { text: '약한 하락', cls: 'warn' };
+  return              { text: '강한 하락', cls: 'fail' };
+}
+
 async function loadMarket() {
   loading('market-kpi');
   loading('market-assets');
   try {
     const d = await apiFetch('/market');
     const regimeClass = d.weekly_trend === 'fail' ? 'fail' : d.regime === 'strong' ? 'pass' : d.regime === 'weak' ? 'warn' : 'info';
+    const ts = d.kospi_ts;
+    const tsInfo = kospiTsLabel(ts);
     document.getElementById('market-kpi').innerHTML = `
       <div class="kpi-grid">
         <div class="kpi-card ${regimeClass}">
@@ -175,10 +186,10 @@ async function loadMarket() {
           <div class="kpi-value">${fmt.pct1(d.limit_ratio)}</div>
           <div class="kpi-sub">장세 × 주봉 필터</div>
         </div>
-        <div class="kpi-card">
+        <div class="kpi-card ${tsInfo.cls}">
           <div class="kpi-label">KOSPI TS</div>
-          <div class="kpi-value">${fmt.score(d.kospi_ts)}</div>
-          <div class="kpi-sub">추세 강도</div>
+          <div class="kpi-value">${ts != null ? fmt.score(ts) : '—'}</div>
+          <div class="kpi-sub">${tsInfo.text}</div>
         </div>
         <div class="kpi-card">
           <div class="kpi-label">Updated</div>
