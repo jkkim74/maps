@@ -106,6 +106,7 @@ class MarketRegimeAnalyzer:
         assets: list[AssetTrendInfo] = []
         up_count = 0
         total = 0
+        kospi_ts: float | None = None
 
         for name in self._ASSETS:
             closes = self._provider.get_weekly_closes(name, self._MA5W + 1)
@@ -118,6 +119,12 @@ class MarketRegimeAnalyzer:
             last = float(closes[-1])
             above = last > ma5
             direction = "up" if above else "down"
+
+            # KOSPI TS: 현재가 vs 5주 MA 괴리율 → 0~100 정규화
+            # ±20% 범위를 0~100으로 선형 매핑 (0% 괴리=50점)
+            if name == "KOSPI" and ma5 > 0:
+                deviation = (last - ma5) / ma5
+                kospi_ts = round(max(0.0, min(100.0, 50.0 + deviation * 250)), 1)
 
             assets.append(AssetTrendInfo(name=name, direction=direction, value=last, above_ma5w=above))
             if direction == "up":
@@ -141,7 +148,7 @@ class MarketRegimeAnalyzer:
             regime=regime,
             weekly_trend=weekly_trend,
             limit_ratio=0.0,
-            kospi_ts=None,
+            kospi_ts=kospi_ts,
             assets=assets,
         )
 
