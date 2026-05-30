@@ -1292,6 +1292,7 @@ const PAGE_LOADERS = {
   'cost-sensitivity': loadCostSensitivity,
   wfa:              loadWfa,
   'ops-config':     loadOpsConfig,
+  'stock-report':   () => {},  // stock_report.html 인라인 스크립트로 처리
 };
 
 document.addEventListener('DOMContentLoaded', () => {

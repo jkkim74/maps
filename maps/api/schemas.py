@@ -446,3 +446,23 @@ class OpsConfigResponse(BaseModel):
     missing_required: list[str]
     warnings: list[str]
     sections: list[OpsConfigSection]
+
+
+# ── Stock Report ──────────────────────────────────────────────────────────────
+
+class StockReportRunItem(BaseModel):
+    id: int
+    report_type: str
+    report_name: str
+    status: str          # running | completed | failed
+    trade_date: str
+    has_html: bool
+    error_message: str | None
+    created_at: str
+    completed_at: str | None
+
+
+class StockReportRunsResponse(BaseModel):
+    runs: list[StockReportRunItem]
+    running_count: int
+    total: int

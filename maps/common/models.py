@@ -316,6 +316,29 @@ class OrderLog(Base):
 
 
 # ---------------------------------------------------------------------------
+# Stock Report 실행 이력
+# ---------------------------------------------------------------------------
+class StockReportRun(Base):
+    """stock_report_runs — Stock Report 생성 이력 및 HTML 저장."""
+
+    __tablename__ = "stock_report_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    report_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    # premium | updown | summary | supply
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="running")
+    # running | completed | failed
+    trade_date: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    html_content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    meta_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc)
+    )
+    completed_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+# ---------------------------------------------------------------------------
 # Kill Switch 감사 로그
 # ---------------------------------------------------------------------------
 class KillSwitchLog(Base):

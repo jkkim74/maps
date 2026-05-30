@@ -33,6 +33,7 @@ from maps.api.live_monitor import router as live_monitor_router
 from maps.api.data_quality import router as data_quality_router
 from maps.api.ops_config import router as ops_config_router
 from maps.api.scheduler import router as scheduler_router
+from maps.api.stock_report import router as stock_report_router
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +92,7 @@ app.include_router(live_monitor_router)
 app.include_router(data_quality_router)
 app.include_router(ops_config_router)
 app.include_router(scheduler_router)
+app.include_router(stock_report_router)
 
 
 # ── 헬스체크 ──────────────────────────────────────────────────────────────────
@@ -210,3 +212,8 @@ async def scr14(request: Request) -> HTMLResponse:
 @app.get("/ops-config", response_class=HTMLResponse)
 async def scr15(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "ops_config.html", _ctx(request, "ops-config"))
+
+
+@app.get("/stock-report", response_class=HTMLResponse)
+async def stock_report_page(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(request, "stock_report.html", _ctx(request, "stock-report"))

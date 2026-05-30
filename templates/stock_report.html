@@ -1,0 +1,171 @@
+{% extends "base.html" %}
+{% block topbar_actions %}
+<button class="topbar-btn" id="btn-run-all" onclick="triggerReport(null)">▶ 전체 실행</button>
+{% endblock %}
+{% block content %}
+
+<div id="sr-kpi"><div class="loading"><div class="spinner"></div></div></div>
+
+<div class="section-header"><span class="section-title">리포트 실행 이력</span><hr></div>
+<div class="card"><div class="card-body" id="sr-runs">
+  <div class="loading"><div class="spinner"></div></div>
+</div></div>
+
+<div id="sr-report-view" style="display:none">
+  <div class="section-header">
+    <span class="section-title" id="sr-report-title">리포트 내용</span>
+    <button class="topbar-btn" onclick="closeReport()" style="margin-left:12px">✕ 닫기</button>
+    <hr>
+  </div>
+  <div class="card">
+    <div class="card-body" style="padding:0">
+      <iframe id="sr-report-iframe" style="width:100%;height:80vh;border:none;border-radius:8px"></iframe>
+    </div>
+  </div>
+</div>
+
+{% endblock %}
+{% block extra_scripts %}
+<script>
+const REPORT_TYPES = [
+  { type: 'premium', name: '프리미엄 주식' },
+  { type: 'updown',  name: 'Gap Up/Down' },
+  { type: 'summary', name: 'Market Summary' },
+  { type: 'supply',  name: 'Market Supply' },
+];
+
+let _pollTimer = null;
+
+async function triggerReport(reportType) {
+  const label = reportType ? REPORT_TYPES.find(r => r.type === reportType)?.name : '전체';
+  const btn = document.getElementById('btn-run-all');
+  if (btn) { btn.disabled = true; btn.textContent = '실행 중...'; }
+  try {
+    const url = reportType
+      ? `/api/v1/stock-report/run?report_type=${encodeURIComponent(reportType)}`
+      : '/api/v1/stock-report/run';
+    const res = await fetch(url, { method: 'POST' });
+    const data = await res.json();
+    if (data.status === 'already_running') {
+      alert('이미 실행 중인 리포트가 있습니다.');
+    } else {
+      startPolling();
+    }
+  } catch(e) {
+    alert('실행 오류: ' + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '▶ 전체 실행'; }
+  }
+}
+
+function startPolling() {
+  if (_pollTimer) return;
+  _pollTimer = setInterval(async () => {
+    await loadRuns();
+    const running = document.querySelectorAll('.sr-status-running').length;
+    if (running === 0) {
+      clearInterval(_pollTimer);
+      _pollTimer = null;
+    }
+  }, 5000);
+}
+
+async function openReport(runId, title) {
+  const res = await fetch(`/api/v1/stock-report/runs/${runId}/html`);
+  if (!res.ok) { alert('리포트 로드 실패'); return; }
+  const data = await res.json();
+  document.getElementById('sr-report-title').textContent = title;
+  const iframe = document.getElementById('sr-report-iframe');
+  const blob = new Blob([data.html], { type: 'text/html;charset=utf-8' });
+  iframe.src = URL.createObjectURL(blob);
+  document.getElementById('sr-report-view').style.display = 'block';
+  iframe.scrollIntoView({ behavior: 'smooth' });
+}
+
+function closeReport() {
+  document.getElementById('sr-report-view').style.display = 'none';
+  document.getElementById('sr-report-iframe').src = '';
+}
+
+function statusBadge(status) {
+  const map = { running: ['실행중', 'warn'], completed: ['완료', 'pass'], failed: ['실패', 'fail'] };
+  const [label, cls] = map[status] || [status, 'info'];
+  return `<span class="badge badge-${cls} sr-status-${status}">${label}</span>`;
+}
+
+async function loadRuns() {
+  try {
+    const d = await fetch('/api/v1/stock-report/runs').then(r => r.json());
+    const runningCount = d.running_count || 0;
+
+    // KPI
+    const lastCompleted = d.runs.find(r => r.status === 'completed');
+    document.getElementById('sr-kpi').innerHTML = `
+      <div class="kpi-grid">
+        <div class="kpi-card ${runningCount > 0 ? 'warn' : 'pass'}">
+          <div class="kpi-label">실행 상태</div>
+          <div class="kpi-value">${runningCount > 0 ? '생성 중' : '대기'}</div>
+          <div class="kpi-sub">${runningCount > 0 ? `${runningCount}건 실행 중 (5초마다 갱신)` : '실행 대기 중'}</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">최근 완료</div>
+          <div class="kpi-value" style="font-size:1rem">${lastCompleted ? lastCompleted.report_name : '—'}</div>
+          <div class="kpi-sub">${lastCompleted ? lastCompleted.trade_date : '—'}</div>
+        </div>
+        <div class="kpi-card info">
+          <div class="kpi-label">총 이력</div>
+          <div class="kpi-value">${d.total}</div>
+          <div class="kpi-sub">최근 20건 표시</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">개별 실행</div>
+          <div class="kpi-value" style="font-size:0.75rem">
+            ${REPORT_TYPES.map(r => `<button class="topbar-btn" style="margin:2px;font-size:0.7rem" onclick="triggerReport('${r.type}')">${r.name}</button>`).join('')}
+          </div>
+          <div class="kpi-sub">개별 리포트 실행</div>
+        </div>
+      </div>`;
+
+    if (!d.runs || d.runs.length === 0) {
+      document.getElementById('sr-runs').innerHTML =
+        '<div class="empty-state"><div class="empty-icon">○</div><div class="empty-text">실행 이력 없음 — ▶ 전체 실행 버튼을 클릭하세요</div></div>';
+      return;
+    }
+
+    const rows = d.runs.map(r => `
+      <tr>
+        <td class="mono">${r.id}</td>
+        <td>${r.report_name}</td>
+        <td>${statusBadge(r.status)}</td>
+        <td class="mono">${r.trade_date || '—'}</td>
+        <td class="mono text-muted">${r.created_at ? r.created_at.slice(0,19).replace('T',' ') : '—'}</td>
+        <td class="mono text-muted">${r.completed_at ? r.completed_at.slice(0,19).replace('T',' ') : '—'}</td>
+        <td>
+          ${r.status === 'completed' && r.has_html
+            ? `<button class="topbar-btn" style="font-size:0.75rem" onclick="openReport(${r.id}, '${r.report_name} (${r.trade_date})')">📄 열기</button>`
+            : r.status === 'failed'
+            ? `<span class="text-fail" style="font-size:0.75rem" title="${r.error_message || ''}">오류</span>`
+            : '—'}
+        </td>
+      </tr>`).join('');
+
+    document.getElementById('sr-runs').innerHTML = `
+      <table>
+        <thead><tr>
+          <th>ID</th><th>리포트</th><th>상태</th><th>기준일</th>
+          <th>시작</th><th>완료</th><th>보기</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+
+    if (runningCount > 0 && !_pollTimer) {
+      startPolling();
+    }
+  } catch(e) {
+    document.getElementById('sr-runs').innerHTML = `<div class="empty-state"><div class="empty-text">오류: ${e.message}</div></div>`;
+  }
+}
+
+document.addEventListener('DOMContentLoaded', loadRuns);
+</script>
+{% endblock %}
