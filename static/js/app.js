@@ -1063,13 +1063,86 @@ async function loadCostSensitivity() {
   }
 }
 
+function _renderOrderPreview(p) {
+  if (!p || !p.data_available) {
+    empty('orders-preview-kpi', '');
+    empty('orders-preview-table', '후보 스냅샷 없음 — 데이터 수집 후 다시 확인하세요');
+    return;
+  }
+  const validItems = (p.items || []).filter(i => !i.skipped);
+  const totalAmt = validItems.reduce((s, i) => s + i.estimated_amount, 0);
+  const eligible = (p.eligible_strategies || []).join(', ') || '없음';
+
+  document.getElementById('orders-preview-kpi').innerHTML = `
+    <div class="kpi-grid">
+      <div class="kpi-card info">
+        <div class="kpi-label">다음 거래일</div>
+        <div class="kpi-value">${p.next_trading_day}</div>
+        <div class="kpi-sub">기준일 ${p.as_of_date}</div>
+      </div>
+      <div class="kpi-card ${validItems.length > 0 ? 'pass' : 'warn'}">
+        <div class="kpi-label">예정 주문 수</div>
+        <div class="kpi-value">${validItems.length} / ${p.max_orders}</div>
+        <div class="kpi-sub">슬리피지 ${fmt.pct1(p.slippage_pct)} · GAP한도 ${fmt.pct1(p.max_gap_pct)}</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">예상 투입 금액</div>
+        <div class="kpi-value">${fmt.krw(totalAmt)}</div>
+        <div class="kpi-sub">가용 현금 ${fmt.krw(p.assumed_cash)}</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">주문 가능 전략</div>
+        <div class="kpi-value" style="font-size:0.9rem">${eligible}</div>
+        <div class="kpi-sub">mock/live candidate 이상</div>
+      </div>
+    </div>`;
+
+  if (!p.items || p.items.length === 0) {
+    empty('orders-preview-table', '예정 주문 없음');
+    return;
+  }
+  const rows = p.items.map((item, idx) => {
+    const gapCls = item.gap_exceeded ? 'text-fail' : item.gap_pct > 0.01 ? 'text-warn' : '';
+    const statusBadge = item.skipped
+      ? badge(item.skip_reason === 'gap_exceeded' ? 'GAP초과' : '수량부족', 'fail')
+      : badge('예정', 'pass');
+    return `
+      <tr class="${item.skipped ? 'text-muted' : ''}">
+        <td class="mono">${idx + 1}</td>
+        <td class="mono">${item.strategy_id}</td>
+        <td class="mono">${item.ticker}</td>
+        <td>${item.name || '-'}</td>
+        <td class="mono text-muted">${fmt.date(item.signal_date)}</td>
+        <td class="mono">${item.signal_close.toLocaleString('ko-KR')}</td>
+        <td class="mono">${item.current_close.toLocaleString('ko-KR')}</td>
+        <td class="mono ${gapCls}">${fmt.pct(item.gap_pct)}</td>
+        <td class="mono">${item.limit_price.toLocaleString('ko-KR')}</td>
+        <td class="mono">${item.estimated_qty}</td>
+        <td class="mono">${fmt.krw(item.estimated_amount)}</td>
+        <td>${statusBadge}</td>
+      </tr>`;
+  }).join('');
+  document.getElementById('orders-preview-table').innerHTML =
+    `<table><thead><tr>
+      <th>#</th><th>전략</th><th>티커</th><th>종목명</th>
+      <th>신호일</th><th>신호종가</th><th>현재종가</th><th>GAP</th>
+      <th>예상주문가</th><th>예상수량</th><th>예상금액</th><th>상태</th>
+    </tr></thead><tbody>${rows}</tbody></table>`;
+}
+
 async function loadOrders() {
   loading('orders-kpi');
   loading('orders-pending');
   loading('orders-fills');
   loading('orders-expired');
+  loading('orders-preview-kpi');
+  loading('orders-preview-table');
   try {
-    const d = await apiFetch('/orders');
+    const [d, preview] = await Promise.all([
+      apiFetch('/orders'),
+      apiFetch('/orders/preview'),
+    ]);
+    _renderOrderPreview(preview);
     const slip = d.slippage || {};
     document.getElementById('orders-kpi').innerHTML = `
       <div class="kpi-grid">
@@ -1146,6 +1219,8 @@ async function loadOrders() {
     empty('orders-pending', '');
     empty('orders-fills', '');
     empty('orders-expired', '');
+    empty('orders-preview-kpi', '');
+    empty('orders-preview-table', `Error: ${e.message}`);
   }
 }
 

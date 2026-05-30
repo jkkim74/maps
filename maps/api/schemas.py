@@ -153,6 +153,35 @@ class OrdersResponse(BaseModel):
     slippage: SlippageStats
 
 
+class PreviewOrderItem(BaseModel):
+    ticker: str
+    name: str
+    strategy_id: str
+    signal_date: str
+    signal_close: float
+    current_close: float
+    gap_pct: float
+    gap_exceeded: bool
+    limit_price: int
+    estimated_qty: int
+    estimated_amount: int
+    skipped: bool
+    skip_reason: str | None
+
+
+class OrderPreviewResponse(BaseModel):
+    next_trading_day: str
+    as_of_date: str
+    assumed_total_value: float
+    assumed_cash: float
+    max_orders: int
+    slippage_pct: float
+    max_gap_pct: float
+    items: list[PreviewOrderItem]
+    eligible_strategies: list[str]
+    data_available: bool
+
+
 # ── SCR-06 Risk ───────────────────────────────────────────────────────────────
 
 class RiskGaugeItem(BaseModel):

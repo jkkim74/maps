@@ -8,11 +8,14 @@ from sqlalchemy.orm import Session
 from maps.api.deps import get_db
 from maps.api.schemas import (
     FillItem,
+    OrderPreviewResponse,
     OrderQueueItem,
     OrdersResponse,
     SlippageStats,
 )
 from maps.common.models import KillSwitchLog, OrderLog, SecurityMetadata
+from maps.common.settings import get_settings
+from maps.ops.order_preview import build_order_preview
 
 router = APIRouter(prefix="/api/v1/orders", tags=["SCR-05 Orders"])
 
@@ -138,3 +141,13 @@ def get_orders(db: Session = Depends(get_db)) -> OrdersResponse:
             mid_small_assumed=0.0015,
         ),
     )
+
+
+@router.get("/preview", response_model=OrderPreviewResponse)
+def get_order_preview(db: Session = Depends(get_db)) -> OrderPreviewResponse:
+    """다음 거래일 예정 주문 미리보기를 반환한다.
+
+    실제 브로커 호출 없이 DB CandidateSnapshot + PortfolioSnapshot + settings 기반으로
+    스케줄러와 동일한 로직을 시뮬레이션한다.
+    """
+    return build_order_preview(db, get_settings())

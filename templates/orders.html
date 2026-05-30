@@ -3,6 +3,13 @@
 <button class="topbar-btn" style="color:var(--color-fail);border-color:var(--color-fail)" onclick="alert('Emergency stop requires Kill Switch approval workflow.')">Emergency Stop</button>
 {% endblock %}
 {% block content %}
+
+<div class="section-header"><span class="section-title">다음 거래일 예정 주문 미리보기</span><hr></div>
+<div id="orders-preview-kpi"></div>
+<div class="card"><div class="card-body" id="orders-preview-table">
+  <div class="loading"><div class="spinner"></div></div>
+</div></div>
+
 <div id="orders-kpi"><div class="loading"><div class="spinner"></div></div></div>
 
 <div class="section-header"><span class="section-title">Pending Orders</span><hr></div>
