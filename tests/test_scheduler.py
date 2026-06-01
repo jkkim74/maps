@@ -9,6 +9,7 @@ from sqlalchemy.pool import StaticPool
 from maps.common.db import Base
 import datetime as dt
 import math
+from types import SimpleNamespace
 
 from maps.common.models import (
     CandidateSnapshot,
@@ -23,7 +24,11 @@ from maps.common.models import (
     WalkForwardResults,
 )
 from maps.common.settings import MapsSettings
+from maps.execution.broker_adapter import Order, OrderSide, OrderType
+from maps.execution.mock_broker import MockBroker
+from maps.execution.order_manager import OrderManager
 from maps.ops.scheduler import MapsOperationalScheduler, OperationalPipeline
+from maps.risk.manager import RiskManager
 
 import maps.common.models  # noqa: F401
 
@@ -45,6 +50,14 @@ def _session_factory():
     )
     Base.metadata.create_all(engine)
     return engine, sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+
+def _force_entry_signal(monkeypatch) -> None:
+    monkeypatch.setattr(
+        OperationalPipeline,
+        "_latest_strategy_signal",
+        staticmethod(lambda *args, **kwargs: SimpleNamespace(entry_signal=True, exit_signal=False)),
+    )
 
 
 def test_pipeline_collect_and_candidate_generation_with_mock_provider() -> None:
@@ -101,7 +114,7 @@ def test_order_cycle_is_sync_only_when_live_disabled() -> None:
         engine.dispose()
 
 
-def test_order_cycle_submits_promoted_candidate_when_live_enabled() -> None:
+def test_order_cycle_submits_promoted_candidate_when_live_enabled(monkeypatch) -> None:
     engine, factory = _session_factory()
     settings = MapsSettings(
         maps_broker_mode="mock",
@@ -110,6 +123,7 @@ def test_order_cycle_submits_promoted_candidate_when_live_enabled() -> None:
         max_single_exposure=0.10,
     )
     pipeline = OperationalPipeline(settings=settings, session_factory=factory)
+    _force_entry_signal(monkeypatch)
     ref_date = dt.date(2026, 5, 5)
 
     db = factory()
@@ -174,7 +188,7 @@ def test_order_cycle_submits_promoted_candidate_when_live_enabled() -> None:
         engine.dispose()
 
 
-def test_order_cycle_skips_candidate_when_gap_exceeds_limit() -> None:
+def test_order_cycle_skips_candidate_when_gap_exceeds_limit(monkeypatch) -> None:
     """신호 이후 MAX_GAP 초과 상승 시 주문이 스킵되는지 검증."""
     engine, factory = _session_factory()
     settings = MapsSettings(
@@ -186,6 +200,7 @@ def test_order_cycle_skips_candidate_when_gap_exceeds_limit() -> None:
         maps_order_slippage_pct=0.01,
     )
     pipeline = OperationalPipeline(settings=settings, session_factory=factory)
+    _force_entry_signal(monkeypatch)
     signal_date = dt.date(2026, 5, 5)
     order_date  = dt.date(2026, 5, 8)   # 3일 후 — 3% 갭업
 
@@ -230,7 +245,7 @@ def test_order_cycle_skips_candidate_when_gap_exceeds_limit() -> None:
         engine.dispose()
 
 
-def test_order_cycle_applies_slippage_to_limit_price() -> None:
+def test_order_cycle_applies_slippage_to_limit_price(monkeypatch) -> None:
     """slippage 1% 적용 시 지정가가 최신종가×1.01로 설정되는지 검증."""
     engine, factory = _session_factory()
     settings = MapsSettings(
@@ -242,6 +257,7 @@ def test_order_cycle_applies_slippage_to_limit_price() -> None:
         maps_order_slippage_pct=0.01,
     )
     pipeline = OperationalPipeline(settings=settings, session_factory=factory)
+    _force_entry_signal(monkeypatch)
     ref_date = dt.date(2026, 5, 5)
 
     db = factory()
@@ -274,6 +290,110 @@ def test_order_cycle_applies_slippage_to_limit_price() -> None:
         order = db.query(OrderLog).one()
         # limit_price = int(10_000 * 1.01) = 10_100
         assert order.order_price == 10_100
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def test_order_cycle_skips_candidate_without_strategy_entry_signal() -> None:
+    engine, factory = _session_factory()
+    settings = MapsSettings(
+        maps_broker_mode="mock",
+        maps_data_provider="mock",
+        maps_live_trading_enabled=True,
+    )
+    pipeline = OperationalPipeline(settings=settings, session_factory=factory)
+    ref_date = dt.date(2026, 5, 5)
+
+    db = factory()
+    try:
+        db.add(HistoricalOHLCV(
+            ticker="AAAA", date=ref_date,
+            open=10_000, high=10_000, low=10_000, close=10_000, volume=100_000,
+        ))
+        db.add(CandidateSnapshot(
+            ref_date=ref_date, strategy_id="pullback_v3", ticker="AAAA",
+            name="AAAA", market="KOSPI", factor_score=90, trend_strength=80,
+            ts_bucket="S5", final_score=95, weekly_pass=True,
+        ))
+        db.add(PromotionHistory(
+            strategy_id="pullback_v3", from_stage="alert_only",
+            to_stage="mock_candidate", tradeability_score=70, passed=True,
+            evaluated_at=dt.datetime(2026, 5, 5, 8, 0),
+        ))
+        db.commit()
+    finally:
+        db.close()
+
+    run = pipeline.run_order_cycle(ref_date)
+
+    assert run.status == "success"
+    assert run.details["submitted_buy_orders"] == 0
+    assert run.details["skipped_buy_orders"] == 1
+
+    db = factory()
+    try:
+        assert db.query(OrderLog).count() == 0
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def test_submit_exit_orders_sells_position_when_stop_loss_is_reached() -> None:
+    engine, factory = _session_factory()
+    settings = MapsSettings(
+        maps_broker_mode="mock",
+        maps_data_provider="mock",
+        maps_live_trading_enabled=True,
+    )
+    pipeline = OperationalPipeline(settings=settings, session_factory=factory)
+    broker = MockBroker(initial_cash=1_000_000, price_feed={"AAAA": 10_000})
+    broker.place_order(Order(
+        strategy_id="pullback_v3",
+        ticker="AAAA",
+        side=OrderSide.BUY,
+        order_type=OrderType.MARKET,
+        quantity=10,
+    ))
+    broker.set_price("AAAA", 9_400)
+    ref_date = dt.date(2026, 5, 5)
+
+    db = factory()
+    try:
+        db.add(OrderLog(
+            order_id="entry-AAAA",
+            strategy_id="pullback_v3",
+            ticker="AAAA",
+            side="buy",
+            qty=10,
+            order_price=10_000,
+            fill_price=10_000,
+            fill_qty=10,
+            status="filled",
+        ))
+        db.add(HistoricalOHLCV(
+            ticker="AAAA", date=ref_date,
+            open=9_400, high=9_400, low=9_400, close=9_400, volume=100_000,
+        ))
+        db.commit()
+        manager = OrderManager(broker=broker, risk=RiskManager(broker=broker, db=db), db=db)
+
+        submitted, skipped, exit_tickers = pipeline._submit_exit_orders(
+            db=db,
+            broker=broker,
+            manager=manager,
+            ref_date=ref_date,
+        )
+
+        assert submitted == 1
+        assert skipped == 0
+        assert exit_tickers == {"AAAA"}
+        sell = db.query(OrderLog).filter(OrderLog.side == "sell").one()
+        assert sell.status == "filled"
+        assert sell.fill_qty == 10
+        assert broker.get_position("AAAA") is None
     finally:
         db.close()
         Base.metadata.drop_all(engine)

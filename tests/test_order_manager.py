@@ -133,3 +133,23 @@ def test_failure_increments_risk_counter(
 
     # 실패 카운터가 1 이상이어야 함
     assert risk._failure_counts.get("s2", 0) >= 1
+
+
+def test_submit_exit_bypasses_new_entry_kill_switch(
+    manager: OrderManager,
+    broker: MockBroker,
+    risk: RiskManager,
+) -> None:
+    manager.submit(_buy())
+    risk.check_and_trigger("live_strat", daily_pnl=-0.05, current_mdd=0.0)
+
+    result = manager.submit_exit(Order(
+        strategy_id="live_strat",
+        ticker="AAAA",
+        side=OrderSide.SELL,
+        order_type=OrderType.MARKET,
+        quantity=10,
+        current_price=10_000,
+    ))
+
+    assert result.status == OrderStatus.FILLED

@@ -69,12 +69,32 @@ class OrderManager:
             KillSwitchError: Kill Switch 발동 또는 일일 손실 한도 초과.
             ExposureCapError: 단일 종목 노출 한도 초과.
         """
+        return self._submit(order, daily_pnl=daily_pnl, check_entry_risk=True)
+
+    def submit_exit(self, order: Order) -> OrderResult:
+        """Submit a strategy exit without applying new-entry exposure checks.
+
+        This is only for a normal strategy exit or stop-loss. Kill Switch
+        liquidation remains a separate, explicitly approved workflow.
+        """
+        if order.side != OrderSide.SELL:
+            raise ValueError("submit_exit only accepts sell orders")
+        return self._submit(order, daily_pnl=0.0, check_entry_risk=False)
+
+    def _submit(
+        self,
+        order: Order,
+        *,
+        daily_pnl: float,
+        check_entry_risk: bool,
+    ) -> OrderResult:
         if order.strategy_id in self._research:
             raise ResearchStrategyError(order.strategy_id, "research")
         self._raise_if_duplicate_active_order(order)
 
-        account = self._broker.get_account_balance()
-        self._risk.check_before_order(order, account, daily_pnl)
+        if check_entry_risk:
+            account = self._broker.get_account_balance()
+            self._risk.check_before_order(order, account, daily_pnl)
 
         try:
             result = self._place_with_retry(order)

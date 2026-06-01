@@ -14,6 +14,7 @@ from maps.common.exceptions import BrokerAdapterError
 from maps.common.models import KillSwitchLog, MonteCarloSequenceResults, OrderLog, SecurityMetadata
 from maps.common.settings import get_settings
 from maps.execution.broker_adapter import get_broker
+from maps.strategy.live_rules import stop_loss_price
 
 router = APIRouter(prefix="/api/v1/risk", tags=["SCR-06 Risk"])
 logger = logging.getLogger(__name__)
@@ -113,6 +114,7 @@ def _broker_holdings(db: Session) -> tuple[list[HoldingItem], float, int]:
             for row in db.query(SecurityMetadata).filter(SecurityMetadata.ticker.in_(tickers)).all()
         } if tickers else {}
         strategy_map: dict[str, str] = {}
+        entry_price_map: dict[str, float] = {}
         if tickers:
             rows = (
                 db.query(OrderLog)
@@ -125,6 +127,7 @@ def _broker_holdings(db: Session) -> tuple[list[HoldingItem], float, int]:
             for row in rows:
                 if row.strategy_id and row.ticker not in strategy_map:
                     strategy_map[row.ticker] = row.strategy_id
+                    entry_price_map[row.ticker] = row.fill_price or row.order_price or 0.0
         for ticker, position in position_map.items():
             if position is None:
                 continue
@@ -148,7 +151,10 @@ def _broker_holdings(db: Session) -> tuple[list[HoldingItem], float, int]:
                         else None
                     ),
                     exposure_pct=exposure,
-                    stop_price=None,
+                    stop_price=stop_loss_price(
+                        strategy_map.get(ticker),
+                        entry_price_map.get(ticker),
+                    ),
                 )
             )
         max_exposure = max((item.exposure_pct for item in holdings), default=0.0)

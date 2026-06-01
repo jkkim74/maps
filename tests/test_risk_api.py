@@ -92,7 +92,7 @@ def test_risk_returns_default_strategy_gauges_and_broker_holdings(ctx) -> None:
             "current_price": 52000.0,
             "pnl_pct": 0.040000000000000036,
             "exposure_pct": 0.104,
-            "stop_price": None,
+            "stop_price": 47500.0,
         }
     ]
     assert data["max_exposure_pct"] == 0.104

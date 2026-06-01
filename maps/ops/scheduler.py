@@ -30,6 +30,7 @@ from maps.common.models import (
     ParameterPlateauResults,
     PortfolioSnapshot,
     PromotionHistory,
+    OrderLog,
     WalkForwardFoldResults,
     WalkForwardResults,
 )
@@ -41,7 +42,7 @@ from maps.data.ohlcv_repo import HistoricalOHLCVRepository
 from maps.data.krx_adapter import CollectionResult, KRXAdapter, MockKRXAdapter, SecurityMeta
 from maps.data.security_repo import HaltPeriod, ManagedPeriod, Security
 from maps.data_quality.universe_filter import DataQualityFilter, UniverseResult
-from maps.execution.broker_adapter import Order, OrderSide, OrderType, get_broker
+from maps.execution.broker_adapter import Order, OrderSide, OrderType, Position, get_broker
 from maps.execution.order_manager import OrderManager
 from maps.market.trading_rules import is_krx_closed_date, round_up_krx_price
 from maps.ops.notifications import SlackNotifier
@@ -56,6 +57,7 @@ from maps.strategy.donchian_v2 import DonchianV2Strategy
 from maps.strategy.multi_asset_trend_v1 import MultiAssetTrendV1Strategy
 from maps.strategy.pullback_v2 import PullbackV2Strategy
 from maps.strategy.pullback_v3 import PullbackV3Strategy
+from maps.strategy.live_rules import stop_loss_price
 from maps.stock_report.runner import run_all_reports_if_idle
 from maps.validation.monte_carlo import MonteCarloValidator
 from maps.validation.plateau import ParameterPlateauTester
@@ -138,6 +140,15 @@ class JobRun:
     finished_at: dt.datetime | None = None
     message: str = ""
     details: dict = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class StrategySignal:
+    """Latest live decision produced by a strategy."""
+
+    entry_signal: bool
+    exit_signal: bool
+    close: float
 
 
 class OperationalPipeline:
@@ -280,15 +291,28 @@ class OperationalPipeline:
             live_enabled = self._settings.maps_live_trading_enabled
             submitted_orders = 0
             skipped_orders = 0
+            submitted_buy_orders = 0
+            submitted_sell_orders = 0
+            skipped_buy_orders = 0
+            skipped_sell_orders = 0
             note = None
 
             if live_enabled:
-                submitted_orders, skipped_orders = self._submit_candidate_orders(
+                submitted_sell_orders, skipped_sell_orders, exit_tickers = self._submit_exit_orders(
                     db=db,
                     broker=broker,
                     manager=manager,
                     ref_date=ref_date,
                 )
+                submitted_buy_orders, skipped_buy_orders = self._submit_candidate_orders(
+                    db=db,
+                    broker=broker,
+                    manager=manager,
+                    ref_date=ref_date,
+                    blocked_tickers=exit_tickers,
+                )
+                submitted_orders = submitted_sell_orders + submitted_buy_orders
+                skipped_orders = skipped_sell_orders + skipped_buy_orders
                 final_balance = broker.get_account_balance()
                 self._save_portfolio_snapshot(db, ref_date, {
                     "cash": final_balance.cash,
@@ -316,6 +340,10 @@ class OperationalPipeline:
                 "updated_orders": sync["updated_orders"],
                 "submitted_orders": submitted_orders,
                 "skipped_orders": skipped_orders,
+                "submitted_buy_orders": submitted_buy_orders,
+                "submitted_sell_orders": submitted_sell_orders,
+                "skipped_buy_orders": skipped_buy_orders,
+                "skipped_sell_orders": skipped_sell_orders,
             }
 
         return self._job("order_cycle", _run)
@@ -879,6 +907,7 @@ class OperationalPipeline:
         broker,
         manager: OrderManager,
         ref_date: dt.date,
+        blocked_tickers: set[str] | None = None,
     ) -> tuple[int, int]:
         account = broker.get_account_balance()
         remaining_cash = account.cash
@@ -887,6 +916,7 @@ class OperationalPipeline:
         submitted = 0
         skipped = 0
         max_orders = 3
+        blocked_tickers = blocked_tickers or set()
 
         slippage_pct = self._settings.maps_order_slippage_pct
         max_gap_pct = self._settings.maps_order_max_gap_pct
@@ -895,7 +925,25 @@ class OperationalPipeline:
             if submitted >= max_orders:
                 skipped += 1
                 continue
+            if candidate.ticker in blocked_tickers:
+                skipped += 1
+                continue
             if positions.get(candidate.ticker, 0) > 0:
+                skipped += 1
+                continue
+
+            signal = self._latest_strategy_signal(
+                db,
+                ticker=candidate.ticker,
+                strategy_id=candidate.strategy_id,
+                ref_date=candidate.ref_date,
+            )
+            if signal is None or not signal.entry_signal:
+                logger.info(
+                    "Order skipped [%s %s]: strategy entry signal is not active",
+                    candidate.strategy_id,
+                    candidate.ticker,
+                )
                 skipped += 1
                 continue
 
@@ -962,6 +1010,99 @@ class OperationalPipeline:
 
         return submitted, skipped
 
+    def _submit_exit_orders(
+        self,
+        *,
+        db: Session,
+        broker,
+        manager: OrderManager,
+        ref_date: dt.date,
+    ) -> tuple[int, int, set[str]]:
+        positions = self._broker_position_details(broker)
+        if not positions:
+            return 0, 0, set()
+
+        rows = (
+            db.query(OrderLog)
+            .filter(OrderLog.ticker.in_(set(positions)))
+            .filter(OrderLog.side == OrderSide.BUY.value)
+            .filter(OrderLog.status.in_(["filled", "partially_filled"]))
+            .order_by(OrderLog.created_at.desc(), OrderLog.id.desc())
+            .all()
+        )
+        entries: dict[str, OrderLog] = {}
+        for row in rows:
+            if row.ticker not in entries:
+                entries[row.ticker] = row
+
+        submitted = 0
+        skipped = 0
+        exit_tickers: set[str] = set()
+        for ticker, position in positions.items():
+            entry = entries.get(ticker)
+            if entry is None or not entry.strategy_id:
+                skipped += 1
+                continue
+
+            signal = self._latest_strategy_signal(
+                db,
+                ticker=ticker,
+                strategy_id=entry.strategy_id,
+                ref_date=ref_date,
+            )
+            current_price = (
+                position.current_price
+                if position.current_price is not None and position.current_price > 0
+                else self._latest_close(db, ticker, ref_date)
+            )
+            entry_price = entry.fill_price or entry.order_price or position.avg_price
+            stop_price = stop_loss_price(entry.strategy_id, entry_price)
+            stop_triggered = (
+                stop_price is not None
+                and current_price > 0
+                and current_price <= stop_price
+            )
+            strategy_exit = bool(signal and signal.exit_signal)
+            if not stop_triggered and not strategy_exit:
+                continue
+
+            reason = "stop_loss" if stop_triggered else "strategy_exit"
+            order = Order(
+                strategy_id=entry.strategy_id,
+                ticker=ticker,
+                side=OrderSide.SELL,
+                order_type=OrderType.MARKET,
+                quantity=position.quantity,
+                current_price=current_price,
+                memo=(
+                    f"{reason} entry={entry_price:.0f} "
+                    f"current={current_price:.0f} stop={stop_price or 0:.0f}"
+                ),
+            )
+            try:
+                manager.submit_exit(order)
+            except DuplicateOrderError:
+                logger.info(
+                    "Exit skipped [%s %s]: already submitted",
+                    entry.strategy_id,
+                    ticker,
+                )
+                skipped += 1
+                exit_tickers.add(ticker)
+                continue
+            submitted += 1
+            exit_tickers.add(ticker)
+            logger.info(
+                "Exit submitted [%s %s]: %s current=%.0f stop=%s",
+                entry.strategy_id,
+                ticker,
+                reason,
+                current_price,
+                f"{stop_price:.0f}" if stop_price is not None else "n/a",
+            )
+
+        return submitted, skipped, exit_tickers
+
     def _order_candidates(self, db: Session, ref_date: dt.date) -> list[CandidateSnapshot]:
         latest_date = (
             db.query(CandidateSnapshot.ref_date)
@@ -1018,6 +1159,48 @@ class OperationalPipeline:
         )
         return float(row.close) if row and row.close > 0 else 0.0
 
+    @staticmethod
+    def _latest_strategy_signal(
+        db: Session,
+        *,
+        ticker: str,
+        strategy_id: str,
+        ref_date: dt.date,
+    ) -> StrategySignal | None:
+        strategy_cls = _RUNNABLE_STRATEGIES.get(strategy_id)
+        if strategy_cls is None:
+            return None
+        rows = (
+            db.query(HistoricalOHLCV)
+            .filter(HistoricalOHLCV.ticker == ticker, HistoricalOHLCV.date <= ref_date)
+            .order_by(HistoricalOHLCV.date.desc())
+            .limit(400)
+            .all()
+        )
+        if not rows:
+            return None
+        frame = pd.DataFrame([
+            {
+                "date": row.date,
+                "open": row.open,
+                "high": row.high,
+                "low": row.low,
+                "close": row.close,
+                "volume": row.volume,
+            }
+            for row in reversed(rows)
+        ]).set_index("date")
+        strategy = strategy_cls()
+        signals = strategy.generate_signals(frame, strategy.default_params)
+        if signals.empty:
+            return None
+        latest = signals.iloc[-1]
+        return StrategySignal(
+            entry_signal=bool(latest.get("entry_signal", False)),
+            exit_signal=bool(latest.get("exit_signal", False)),
+            close=float(latest.get("close", 0.0)),
+        )
+
     def _order_qty(
         self,
         candidate: CandidateSnapshot,
@@ -1040,6 +1223,18 @@ class OperationalPipeline:
             return broker.get_positions()
         except NotImplementedError:
             return {}
+
+    @staticmethod
+    def _broker_position_details(broker) -> dict[str, Position]:
+        fetch_positions = getattr(broker, "_fetch_positions_and_balance", None)
+        if callable(fetch_positions):
+            positions, _balance = fetch_positions()
+            return positions
+        return {
+            ticker: position
+            for ticker, qty in OperationalPipeline._broker_positions(broker).items()
+            if qty > 0 and (position := broker.get_position(ticker)) is not None
+        }
 
     @staticmethod
     def _write_log(
