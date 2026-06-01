@@ -11,6 +11,7 @@ from sqlalchemy.pool import StaticPool
 import maps.common.models  # noqa: F401
 from maps.api import risk
 from maps.common.db import Base
+from maps.common.models import OrderLog
 from maps.execution.broker_adapter import AccountBalance, Position
 
 
@@ -26,6 +27,20 @@ def ctx(monkeypatch):
     )
     Base.metadata.create_all(engine)
     factory = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    db = factory()
+    db.add(OrderLog(
+        order_id="filled-005930",
+        strategy_id="pullback_v3",
+        ticker="005930",
+        side="buy",
+        qty=2,
+        order_price=50_000,
+        fill_price=50_000,
+        fill_qty=2,
+        status="filled",
+    ))
+    db.commit()
+    db.close()
 
     class FakeBroker:
         def get_account_balance(self):
@@ -72,7 +87,7 @@ def test_risk_returns_default_strategy_gauges_and_broker_holdings(ctx) -> None:
         {
             "ticker": "005930",
             "name": "삼성전자",
-            "strategy_id": "broker",
+            "strategy_id": "pullback_v3",
             "entry_price": 50000.0,
             "current_price": 52000.0,
             "pnl_pct": 0.040000000000000036,

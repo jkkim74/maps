@@ -11,7 +11,7 @@ from maps.api.deps import get_db
 from maps.api.schemas import HoldingItem, RiskGaugeItem, RiskResponse
 from maps.common.constants import ALLOWED_MDD, STRATEGY_GROUP_MAP
 from maps.common.exceptions import BrokerAdapterError
-from maps.common.models import KillSwitchLog, MonteCarloSequenceResults, SecurityMetadata
+from maps.common.models import KillSwitchLog, MonteCarloSequenceResults, OrderLog, SecurityMetadata
 from maps.common.settings import get_settings
 from maps.execution.broker_adapter import get_broker
 
@@ -112,6 +112,19 @@ def _broker_holdings(db: Session) -> tuple[list[HoldingItem], float, int]:
             row.ticker: row.name
             for row in db.query(SecurityMetadata).filter(SecurityMetadata.ticker.in_(tickers)).all()
         } if tickers else {}
+        strategy_map: dict[str, str] = {}
+        if tickers:
+            rows = (
+                db.query(OrderLog)
+                .filter(OrderLog.ticker.in_(tickers))
+                .filter(OrderLog.side == "buy")
+                .filter(OrderLog.status.in_(["filled", "partially_filled"]))
+                .order_by(OrderLog.created_at.desc(), OrderLog.id.desc())
+                .all()
+            )
+            for row in rows:
+                if row.strategy_id and row.ticker not in strategy_map:
+                    strategy_map[row.ticker] = row.strategy_id
         for ticker, position in position_map.items():
             if position is None:
                 continue
@@ -126,7 +139,7 @@ def _broker_holdings(db: Session) -> tuple[list[HoldingItem], float, int]:
                 HoldingItem(
                     ticker=ticker,
                     name=position.name or name_map.get(ticker, ""),
-                    strategy_id="broker",
+                    strategy_id=strategy_map.get(ticker, "broker"),
                     entry_price=position.avg_price,
                     current_price=current_price,
                     pnl_pct=(
