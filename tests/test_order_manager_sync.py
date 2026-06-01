@@ -96,7 +96,7 @@ def test_sync_broker_state_tolerates_daily_fill_lookup_error(db) -> None:
     assert result["sync_errors"] == 1
 
 
-def test_sync_broker_state_reconciles_missing_fill_from_position(db) -> None:
+def test_sync_broker_state_does_not_infer_fill_from_position(db) -> None:
     broker = MagicMock()
     broker.get_account_balance.return_value = AccountBalance(cash=1_000_000, positions_value=100_000)
     broker.get_open_orders.return_value = []
@@ -124,9 +124,9 @@ def test_sync_broker_state_reconciles_missing_fill_from_position(db) -> None:
     result = manager.sync_broker_state()
 
     row = db.query(OrderLog).filter(OrderLog.order_id == "o-position").one()
-    assert result["updated_orders"] == 1
-    assert row.status == OrderStatus.FILLED.value
-    assert row.fill_qty == 10
+    assert result["updated_orders"] == 0
+    assert row.status == OrderStatus.PENDING.value
+    assert row.fill_qty == 0
 
 
 def test_transient_broker_error_is_retried(db) -> None:
