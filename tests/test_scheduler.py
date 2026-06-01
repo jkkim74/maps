@@ -440,6 +440,27 @@ def test_scheduler_status_and_run_once() -> None:
     engine.dispose()
 
 
+def test_scheduler_registers_daily_stock_report_job() -> None:
+    engine, factory = _session_factory()
+    settings = MapsSettings(
+        maps_broker_mode="mock",
+        maps_data_provider="mock",
+        maps_scheduler_enabled=False,
+        maps_stock_report_time="15:00",
+    )
+    pipeline = OperationalPipeline(settings=settings, session_factory=factory)
+    scheduler = MapsOperationalScheduler(settings=settings, pipeline=pipeline)
+
+    scheduler._register_jobs()
+
+    job = scheduler._scheduler.get_job("stock_report")
+    assert job is not None
+    assert str(job.trigger) == "cron[hour='15', minute='0']"
+
+    Base.metadata.drop_all(engine)
+    engine.dispose()
+
+
 def test_scheduler_backfill_ohlcv() -> None:
     import datetime as dt
 

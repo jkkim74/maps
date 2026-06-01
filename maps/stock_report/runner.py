@@ -134,3 +134,16 @@ def run_all_reports(db: Session) -> list[int]:
         except Exception as exc:
             logger.error("[stock-report] %s 건너뜀: %s", report_type, exc)
     return run_ids
+
+
+def run_all_reports_if_idle(db: Session) -> list[int]:
+    """Generate all reports unless a previous report run is still active."""
+    running = (
+        db.query(StockReportRun)
+        .filter(StockReportRun.status == "running")
+        .first()
+    )
+    if running:
+        logger.info("[stock-report] 실행 중인 작업이 있어 자동 생성을 건너뜀: run_id=%d", running.id)
+        return []
+    return run_all_reports(db)

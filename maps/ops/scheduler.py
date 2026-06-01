@@ -56,6 +56,7 @@ from maps.strategy.donchian_v2 import DonchianV2Strategy
 from maps.strategy.multi_asset_trend_v1 import MultiAssetTrendV1Strategy
 from maps.strategy.pullback_v2 import PullbackV2Strategy
 from maps.strategy.pullback_v3 import PullbackV3Strategy
+from maps.stock_report.runner import run_all_reports_if_idle
 from maps.validation.monte_carlo import MonteCarloValidator
 from maps.validation.plateau import ParameterPlateauTester
 from maps.validation.walk_forward import WalkForwardAnalyzer
@@ -1146,6 +1147,26 @@ class MapsOperationalScheduler:
             misfire_grace_time=self._settings.maps_broker_sync_interval_seconds * 2,
         )
         self._add_weekday_job("eod_cleanup", self._settings.maps_eod_time)
+        hour, minute = _parse_hhmm(self._settings.maps_stock_report_time)
+        self._scheduler.add_job(
+            self._run_stock_report,
+            CronTrigger(hour=hour, minute=minute),
+            id="stock_report",
+            name="stock_report",
+            replace_existing=True,
+            coalesce=True,
+            max_instances=1,
+        )
+
+    @staticmethod
+    def _run_stock_report() -> None:
+        """Generate all stock reports once per day, including weekends."""
+        db = SessionLocal()
+        try:
+            run_ids = run_all_reports_if_idle(db)
+            logger.info("Scheduler job stock_report: generated run_ids=%s", run_ids)
+        finally:
+            db.close()
 
     def _add_weekday_job(self, name: str, hhmm: str) -> None:
         """월~금 KRX 거래일(공휴일 제외)에만 실행되는 잡을 등록한다."""

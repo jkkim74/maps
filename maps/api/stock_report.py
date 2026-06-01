@@ -9,7 +9,7 @@ from maps.api.deps import get_db
 from maps.api.schemas import StockReportRunItem, StockReportRunsResponse
 from maps.common.db import SessionLocal
 from maps.common.models import StockReportRun
-from maps.stock_report.runner import REPORT_TYPES, run_all_reports, run_report
+from maps.stock_report.runner import REPORT_TYPES, run_all_reports_if_idle, run_report
 
 router = APIRouter(prefix="/api/v1/stock-report", tags=["Stock Report"])
 
@@ -35,7 +35,7 @@ def _run_in_background(report_type: str | None) -> None:
         if report_type:
             run_report(db, report_type)
         else:
-            run_all_reports(db)
+            run_all_reports_if_idle(db)
     finally:
         db.close()
 
