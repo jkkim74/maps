@@ -16,18 +16,14 @@ _CLAIMED_CANDIDATE_STATUSES = frozenset({
 })
 
 
-def claimed_candidate_keys(db: Session, *, since: dt.date) -> set[tuple[str, str]]:
-    """Return strategy/ticker pairs already claimed by buy orders since a snapshot date."""
+def claimed_candidate_tickers(db: Session, *, since: dt.date) -> set[str]:
+    """Return tickers already claimed by buy orders since a snapshot date."""
     cutoff = dt.datetime.combine(since, dt.time.min)
     rows = (
-        db.query(OrderLog.strategy_id, OrderLog.ticker)
+        db.query(OrderLog.ticker)
         .filter(OrderLog.created_at >= cutoff)
         .filter(OrderLog.side == OrderSide.BUY.value)
         .filter(OrderLog.status.in_(_CLAIMED_CANDIDATE_STATUSES))
         .all()
     )
-    return {
-        (strategy_id, ticker)
-        for strategy_id, ticker in rows
-        if strategy_id
-    }
+    return {ticker for ticker, in rows}

@@ -21,7 +21,7 @@ def _seed_candidate(db, *, ref_date: dt.date) -> None:
     ))
     db.add(CandidateSnapshot(
         ref_date=ref_date,
-        strategy_id="pullback_v3",
+        strategy_id="donchian_v2",
         ticker="AAAA",
         name="AAAA",
         market="KOSPI",
@@ -32,7 +32,7 @@ def _seed_candidate(db, *, ref_date: dt.date) -> None:
         weekly_pass=True,
     ))
     db.add(PromotionHistory(
-        strategy_id="pullback_v3",
+        strategy_id="donchian_v2",
         from_stage="research",
         to_stage="mock_candidate",
         tradeability_score=70,

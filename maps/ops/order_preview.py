@@ -12,7 +12,7 @@ from maps.api.schemas import OrderPreviewResponse, PreviewOrderItem
 from maps.common.models import CandidateSnapshot, HistoricalOHLCV, PortfolioSnapshot, PromotionHistory
 from maps.common.settings import MapsSettings
 from maps.market.trading_rules import round_up_krx_price
-from maps.ops.order_state import claimed_candidate_keys
+from maps.ops.order_state import claimed_candidate_tickers
 from maps.ops.scheduler import _is_krx_market_day
 
 logger = logging.getLogger(__name__)
@@ -69,11 +69,11 @@ def _get_order_candidates(db: Session) -> list[CandidateSnapshot]:
         .order_by(CandidateSnapshot.final_score.desc(), CandidateSnapshot.trend_strength.desc())
         .all()
     )
-    claimed = claimed_candidate_keys(db, since=latest_date)
+    claimed = claimed_candidate_tickers(db, since=latest_date)
     return [
         row for row in rows
         if promotions.get(row.strategy_id) in _ELIGIBLE_STAGES
-        and (row.strategy_id, row.ticker) not in claimed
+        and row.ticker not in claimed
     ]
 
 

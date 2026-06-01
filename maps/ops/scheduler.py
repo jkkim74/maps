@@ -45,7 +45,7 @@ from maps.execution.broker_adapter import Order, OrderSide, OrderType, get_broke
 from maps.execution.order_manager import OrderManager
 from maps.market.trading_rules import is_krx_closed_date, round_up_krx_price
 from maps.ops.notifications import SlackNotifier
-from maps.ops.order_state import claimed_candidate_keys
+from maps.ops.order_state import claimed_candidate_tickers
 from maps.promotion.gate import PromotionGate, PromotionStage
 from maps.risk.manager import RiskManager
 from maps.strategy.ath_breakout_v1 import ATHBreakoutV1Strategy
@@ -979,11 +979,11 @@ class OperationalPipeline:
             .order_by(CandidateSnapshot.final_score.desc(), CandidateSnapshot.trend_strength.desc())
             .all()
         )
-        claimed = claimed_candidate_keys(db, since=latest_date)
+        claimed = claimed_candidate_tickers(db, since=latest_date)
         return [
             row for row in rows
             if latest_promotions.get(row.strategy_id) in eligible_stages
-            and (row.strategy_id, row.ticker) not in claimed
+            and row.ticker not in claimed
         ]
 
     @staticmethod
