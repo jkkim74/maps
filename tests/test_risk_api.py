@@ -32,7 +32,16 @@ def ctx(monkeypatch):
             return AccountBalance(cash=900_000, positions_value=100_000)
 
         def _fetch_positions_and_balance(self):
-            return {"005930": Position("005930", 2, 50_000)}, self.get_account_balance()
+            return {
+                "005930": Position(
+                    "005930",
+                    2,
+                    50_000,
+                    name="삼성전자",
+                    current_price=52_000,
+                    evaluation_value=104_000,
+                )
+            }, self.get_account_balance()
 
     monkeypatch.setattr(risk, "get_broker", lambda: FakeBroker())
 
@@ -62,13 +71,14 @@ def test_risk_returns_default_strategy_gauges_and_broker_holdings(ctx) -> None:
     assert data["holdings"] == [
         {
             "ticker": "005930",
+            "name": "삼성전자",
             "strategy_id": "broker",
             "entry_price": 50000.0,
-            "current_price": 50000.0,
-            "pnl_pct": 0.0,
-            "exposure_pct": 0.1,
+            "current_price": 52000.0,
+            "pnl_pct": 0.040000000000000036,
+            "exposure_pct": 0.104,
             "stop_price": None,
         }
     ]
-    assert data["max_exposure_pct"] == 0.1
+    assert data["max_exposure_pct"] == 0.104
     assert data["position_count"] == 1

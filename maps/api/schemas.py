@@ -193,6 +193,7 @@ class RiskGaugeItem(BaseModel):
 
 class HoldingItem(BaseModel):
     ticker: str
+    name: str
     strategy_id: str
     entry_price: float
     current_price: float | None

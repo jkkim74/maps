@@ -296,6 +296,7 @@ async function loadRisk() {
       const rows = d.holdings.map(h => `
         <tr>
           <td class="mono">${h.ticker}</td>
+          <td>${h.name || '—'}</td>
           <td>${h.strategy_id}</td>
           <td class="mono">${h.entry_price.toLocaleString('ko-KR')}</td>
           <td class="mono">${h.current_price == null ? '—' : h.current_price.toLocaleString('ko-KR')}</td>
@@ -304,7 +305,7 @@ async function loadRisk() {
           <td class="mono">${h.stop_price == null ? '—' : h.stop_price.toLocaleString('ko-KR')}</td>
         </tr>`).join('');
       document.getElementById('risk-holdings').innerHTML =
-        `<table><thead><tr><th>티커</th><th>전략</th><th>진입가</th><th>현재가</th><th>PnL</th><th>비중</th><th>손절</th></tr></thead><tbody>${rows}</tbody></table>`;
+        `<table><thead><tr><th>티커</th><th>종목명</th><th>전략</th><th>진입가</th><th>현재가</th><th>PnL</th><th>비중</th><th>손절</th></tr></thead><tbody>${rows}</tbody></table>`;
     }
   } catch (e) {
     empty('risk-kpi', `오류: ${e.message}`);

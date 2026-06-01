@@ -11,7 +11,7 @@ from maps.api.deps import get_db
 from maps.api.schemas import HoldingItem, RiskGaugeItem, RiskResponse
 from maps.common.constants import ALLOWED_MDD, STRATEGY_GROUP_MAP
 from maps.common.exceptions import BrokerAdapterError
-from maps.common.models import KillSwitchLog, MonteCarloSequenceResults
+from maps.common.models import KillSwitchLog, MonteCarloSequenceResults, SecurityMetadata
 from maps.common.settings import get_settings
 from maps.execution.broker_adapter import get_broker
 
@@ -62,7 +62,7 @@ def get_risk(db: Session = Depends(get_db)) -> RiskResponse:
 
     # long_term_risk: 전략 중 가장 높은 MDD p95/limit 비율
     max_ratio = max((g.ratio for g in gauges), default=0.0)
-    holdings, max_exposure_pct, broker_position_count = _broker_holdings()
+    holdings, max_exposure_pct, broker_position_count = _broker_holdings(db)
 
     return RiskResponse(
         short_term_risk=0.0,        # 당일 PnL은 실시간 계좌 연동 필요 (Phase 5)
@@ -92,7 +92,7 @@ def _default_strategy_gauges() -> list[RiskGaugeItem]:
     return gauges
 
 
-def _broker_holdings() -> tuple[list[HoldingItem], float, int]:
+def _broker_holdings(db: Session) -> tuple[list[HoldingItem], float, int]:
     try:
         broker = get_broker()
         balance = broker.get_account_balance()
@@ -107,18 +107,33 @@ def _broker_holdings() -> tuple[list[HoldingItem], float, int]:
                 if qty > 0
             }
         holdings: list[HoldingItem] = []
+        tickers = set(position_map)
+        name_map = {
+            row.ticker: row.name
+            for row in db.query(SecurityMetadata).filter(SecurityMetadata.ticker.in_(tickers)).all()
+        } if tickers else {}
         for ticker, position in position_map.items():
             if position is None:
                 continue
             market_value = position.market_value
             exposure = market_value / total_value if total_value > 0 else 0.0
+            current_price = (
+                position.current_price
+                if position.current_price is not None
+                else position.avg_price
+            )
             holdings.append(
                 HoldingItem(
                     ticker=ticker,
+                    name=position.name or name_map.get(ticker, ""),
                     strategy_id="broker",
                     entry_price=position.avg_price,
-                    current_price=position.avg_price,
-                    pnl_pct=0.0,
+                    current_price=current_price,
+                    pnl_pct=(
+                        current_price / position.avg_price - 1.0
+                        if position.avg_price > 0
+                        else None
+                    ),
                     exposure_pct=exposure,
                     stop_price=None,
                 )

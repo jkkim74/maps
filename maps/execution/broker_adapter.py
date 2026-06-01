@@ -69,10 +69,17 @@ class Position:
     ticker: str
     quantity: int
     avg_price: float
+    name: str = ""
+    current_price: float | None = None
+    evaluation_value: float | None = None
 
     @property
     def market_value(self) -> float:
-        return self.quantity * self.avg_price
+        if self.evaluation_value is not None:
+            return self.evaluation_value
+        return self.quantity * (
+            self.current_price if self.current_price is not None else self.avg_price
+        )
 
 
 @dataclass

@@ -306,6 +306,9 @@ class KISAdapter(BrokerAdapter):
                 ticker=ticker,
                 quantity=qty,
                 avg_price=self._to_float(row.get("pchs_avg_pric") or row.get("avg_prvs")),
+                name=str(row.get("prdt_name") or ""),
+                current_price=self._to_float(row.get("prpr") or row.get("stck_prpr")),
+                evaluation_value=self._to_float(row.get("evlu_amt")) or None,
             )
 
         summary = self._first(data.get("output2"))

@@ -29,7 +29,15 @@ class FakeSession:
         self.order_payload = {"rt_cd": "0", "output": {"ODNO": "12345", "ORD_TMD": "091501"}}
         self.balance_payload = {
             "rt_cd": "0",
-            "output1": [{"pdno": "005930", "hldg_qty": "10", "thdt_buyqty": "10", "pchs_avg_pric": "70000"}],
+            "output1": [{
+                "pdno": "005930",
+                "prdt_name": "삼성전자",
+                "hldg_qty": "10",
+                "thdt_buyqty": "10",
+                "pchs_avg_pric": "70000",
+                "prpr": "71000",
+                "evlu_amt": "710000",
+            }],
             "output2": [{
                 "dnca_tot_amt": "1000000",
                 "prvs_rcdl_excc_amt": "300000",
@@ -165,6 +173,9 @@ def test_get_account_balance_and_position(settings: MapsSettings) -> None:
     assert position is not None
     assert position.quantity == 10
     assert position.avg_price == 70_000
+    assert position.name == "삼성전자"
+    assert position.current_price == 71_000
+    assert position.market_value == 710_000
 
 
 def test_get_open_orders(settings: MapsSettings) -> None:
