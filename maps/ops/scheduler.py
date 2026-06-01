@@ -1122,11 +1122,16 @@ class MapsOperationalScheduler:
         비거래일(주말·한국 공휴일)에 트리거되면 실행을 건너뛰고
         로그만 남긴다.
         """
+        return self._make_krx_task(name, lambda: self.run_once(name))
+
+    @staticmethod
+    def _make_krx_task(name: str, fn: Callable[[], None]) -> Callable[[], None]:
+        """Wrap an arbitrary scheduler callback with the KRX market-day gate."""
         def _job() -> None:
             if not _is_krx_market_day():
                 logger.info("Scheduler job [%s] skipped: KRX 비거래일", name)
                 return
-            self.run_once(name)
+            fn()
         return _job
 
     def _register_jobs(self) -> None:
@@ -1149,8 +1154,8 @@ class MapsOperationalScheduler:
         self._add_weekday_job("eod_cleanup", self._settings.maps_eod_time)
         hour, minute = _parse_hhmm(self._settings.maps_stock_report_time)
         self._scheduler.add_job(
-            self._run_stock_report,
-            CronTrigger(hour=hour, minute=minute),
+            self._make_krx_task("stock_report", self._run_stock_report),
+            CronTrigger(day_of_week="mon-fri", hour=hour, minute=minute),
             id="stock_report",
             name="stock_report",
             replace_existing=True,
@@ -1160,7 +1165,7 @@ class MapsOperationalScheduler:
 
     @staticmethod
     def _run_stock_report() -> None:
-        """Generate all stock reports once per day, including weekends."""
+        """Generate all stock reports once per KRX market day."""
         db = SessionLocal()
         try:
             run_ids = run_all_reports_if_idle(db)

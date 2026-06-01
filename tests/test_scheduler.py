@@ -455,10 +455,26 @@ def test_scheduler_registers_daily_stock_report_job() -> None:
 
     job = scheduler._scheduler.get_job("stock_report")
     assert job is not None
-    assert str(job.trigger) == "cron[hour='15', minute='0']"
+    assert str(job.trigger) == "cron[day_of_week='mon-fri', hour='15', minute='0']"
 
     Base.metadata.drop_all(engine)
     engine.dispose()
+
+
+def test_stock_report_job_skips_krx_closed_day(monkeypatch) -> None:
+    import maps.ops.scheduler as scheduler_module
+
+    called = False
+
+    def _run() -> None:
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(scheduler_module, "_is_krx_market_day", lambda: False)
+
+    scheduler_module.MapsOperationalScheduler._make_krx_task("stock_report", _run)()
+
+    assert called is False
 
 
 def test_scheduler_backfill_ohlcv() -> None:
