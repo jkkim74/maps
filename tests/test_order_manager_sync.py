@@ -9,7 +9,7 @@ import pytest
 
 from maps.common.exceptions import BrokerAdapterError, DuplicateOrderError
 from maps.common.models import OrderLog
-from maps.execution.broker_adapter import AccountBalance, Order, OrderResult, OrderSide, OrderStatus, OrderType
+from maps.execution.broker_adapter import AccountBalance, Order, OrderResult, OrderSide, OrderStatus, OrderType, SameDayBuy
 from maps.execution.mock_broker import MockBroker
 from maps.execution.order_manager import OrderManager
 from maps.risk.manager import RiskConfig, RiskManager
@@ -127,6 +127,42 @@ def test_sync_broker_state_does_not_infer_fill_from_position(db) -> None:
     assert result["updated_orders"] == 0
     assert row.status == OrderStatus.PENDING.value
     assert row.fill_qty == 0
+
+
+def test_sync_broker_state_reconciles_explicit_same_day_buy(db) -> None:
+    broker = MagicMock()
+    broker.get_account_balance.return_value = AccountBalance(cash=1_000_000, positions_value=100_000)
+    broker.get_open_orders.return_value = []
+    broker.get_daily_order_results.return_value = []
+    broker.get_same_day_buys.return_value = {
+        "AAAA": SameDayBuy(ticker="AAAA", quantity=10, avg_price=9_900),
+    }
+    risk = RiskManager(broker=broker, db=db, config=RiskConfig())
+    manager = OrderManager(broker=broker, risk=risk, db=db)
+    db.add(
+        OrderLog(
+            order_id="o-same-day-buy",
+            strategy_id="s1",
+            ticker="AAAA",
+            side=OrderSide.BUY.value,
+            qty=10,
+            order_price=10_000,
+            fill_qty=0,
+            status=OrderStatus.PENDING.value,
+            broker="kis",
+            mode="mock",
+            created_at=dt.datetime.now(),
+        )
+    )
+    db.commit()
+
+    result = manager.sync_broker_state()
+
+    row = db.query(OrderLog).filter(OrderLog.order_id == "o-same-day-buy").one()
+    assert result["updated_orders"] == 1
+    assert row.status == OrderStatus.FILLED.value
+    assert row.fill_qty == 10
+    assert row.fill_price == 9_900
 
 
 def test_transient_broker_error_is_retried(db) -> None:

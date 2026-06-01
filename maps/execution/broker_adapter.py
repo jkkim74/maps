@@ -101,6 +101,15 @@ class PendingOrder:
     raw: dict | None = None
 
 
+@dataclass
+class SameDayBuy:
+    """Same-day buy quantity reported by a broker balance endpoint."""
+
+    ticker: str
+    quantity: int
+    avg_price: float | None = None
+
+
 class BrokerAdapter(abc.ABC):
     """브로커 추상 인터페이스.
 
@@ -170,6 +179,10 @@ class BrokerAdapter(abc.ABC):
 
     def get_daily_order_results(self) -> list[OrderResult]:
         """Return same-day broker order/fill states when supported."""
+        raise NotImplementedError
+
+    def get_same_day_buys(self) -> dict[str, SameDayBuy]:
+        """Return broker-reported same-day buy quantities when supported."""
         raise NotImplementedError
 
 

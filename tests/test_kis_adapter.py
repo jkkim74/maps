@@ -29,7 +29,7 @@ class FakeSession:
         self.order_payload = {"rt_cd": "0", "output": {"ODNO": "12345", "ORD_TMD": "091501"}}
         self.balance_payload = {
             "rt_cd": "0",
-            "output1": [{"pdno": "005930", "hldg_qty": "10", "pchs_avg_pric": "70000"}],
+            "output1": [{"pdno": "005930", "hldg_qty": "10", "thdt_buyqty": "10", "pchs_avg_pric": "70000"}],
             "output2": [{"dnca_tot_amt": "1000000", "scts_evlu_amt": "700000"}],
         }
         self.open_orders_payload = {
@@ -171,6 +171,16 @@ def test_get_open_orders(settings: MapsSettings) -> None:
     assert orders[0].order_id == "12345"
     assert orders[0].ticker == "005930"
     assert orders[0].remaining_quantity == 4
+
+
+def test_get_same_day_buys(settings: MapsSettings) -> None:
+    http = FakeSession()
+    broker = KISAdapter(settings, http=http)
+
+    buys = broker.get_same_day_buys()
+
+    assert buys["005930"].quantity == 10
+    assert buys["005930"].avg_price == 70_000
 
 
 def test_get_daily_order_results_maps_partial_fill(settings: MapsSettings) -> None:

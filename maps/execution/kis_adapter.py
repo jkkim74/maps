@@ -32,6 +32,7 @@ from maps.execution.broker_adapter import (
     OrderType,
     PendingOrder,
     Position,
+    SameDayBuy,
 )
 
 logger = logging.getLogger(__name__)
@@ -267,6 +268,26 @@ class KISAdapter(BrokerAdapter):
         positions, _balance = self._fetch_positions_and_balance()
         return {ticker: pos.quantity for ticker, pos in positions.items()}
 
+    def get_same_day_buys(self) -> dict[str, SameDayBuy]:
+        """Return quantities bought today from the KIS balance response."""
+        data = self._fetch_balance_data()
+        buys: dict[str, SameDayBuy] = {}
+        for row in self._as_list(data.get("output1")):
+            ticker = str(row.get("pdno") or "")
+            quantity = self._to_int(row.get("thdt_buyqty") or 0)
+            if not ticker or quantity <= 0:
+                continue
+            holding_qty = self._to_int(row.get("hldg_qty") or 0)
+            buys[ticker] = SameDayBuy(
+                ticker=ticker,
+                quantity=quantity,
+                avg_price=(
+                    self._to_float(row.get("pchs_avg_pric") or row.get("avg_prvs"))
+                    if holding_qty == quantity else None
+                ),
+            )
+        return buys
+
     def is_market_open(self) -> bool:
         now = dt.datetime.now(_KST)
         if now.weekday() >= 5:
@@ -274,20 +295,7 @@ class KISAdapter(BrokerAdapter):
         return _MARKET_OPEN <= now.time() <= _MARKET_CLOSE
 
     def _fetch_positions_and_balance(self) -> tuple[dict[str, Position], AccountBalance]:
-        params = {
-            "CANO": self._account_prefix,
-            "ACNT_PRDT_CD": self._account_product_code,
-            "AFHR_FLPR_YN": "N",
-            "OFL_YN": "",
-            "INQR_DVSN": "02",
-            "UNPR_DVSN": "01",
-            "FUND_STTL_ICLD_YN": "N",
-            "FNCG_AMT_AUTO_RDPT_YN": "N",
-            "PRCS_DVSN": "01",
-            "CTX_AREA_FK100": "",
-            "CTX_AREA_NK100": "",
-        }
-        data = self._request("GET", _BALANCE_PATH, tr_id=self._tr_id("balance"), params=params)
+        data = self._fetch_balance_data()
         positions: dict[str, Position] = {}
         for row in self._as_list(data.get("output1")):
             qty = self._to_int(row.get("hldg_qty") or row.get("ord_psbl_qty") or 0)
@@ -312,6 +320,22 @@ class KISAdapter(BrokerAdapter):
             or sum(p.market_value for p in positions.values())
         )
         return positions, AccountBalance(cash=cash, positions_value=positions_value)
+
+    def _fetch_balance_data(self) -> dict[str, Any]:
+        params = {
+            "CANO": self._account_prefix,
+            "ACNT_PRDT_CD": self._account_product_code,
+            "AFHR_FLPR_YN": "N",
+            "OFL_YN": "",
+            "INQR_DVSN": "02",
+            "UNPR_DVSN": "01",
+            "FUND_STTL_ICLD_YN": "N",
+            "FNCG_AMT_AUTO_RDPT_YN": "N",
+            "PRCS_DVSN": "01",
+            "CTX_AREA_FK100": "",
+            "CTX_AREA_NK100": "",
+        }
+        return self._request("GET", _BALANCE_PATH, tr_id=self._tr_id("balance"), params=params)
 
     def _ensure_token(self) -> str:
         now = dt.datetime.now(dt.timezone.utc)

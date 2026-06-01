@@ -160,6 +160,7 @@ class OrderManager:
                 changed = True
             if changed:
                 updated += 1
+        updated += self._reconcile_same_day_buys({result.order_id for result in broker_results})
         self._db.commit()
         return {
             "cash": balance.cash,
@@ -169,6 +170,51 @@ class OrderManager:
             "expired_orders": expired,
             "sync_errors": sync_errors,
         }
+
+    def _reconcile_same_day_buys(self, returned_order_ids: set[str]) -> int:
+        """Use explicit same-day buy quantities when a broker omits order rows."""
+        try:
+            buys = self._broker.get_same_day_buys()
+        except (BrokerAdapterError, NotImplementedError):
+            return 0
+        if not isinstance(buys, dict):
+            return 0
+
+        today_start = datetime.combine(date.today(), dt_time.min)
+        rows = (
+            self._db.query(OrderLog)
+            .filter(OrderLog.created_at >= today_start)
+            .filter(OrderLog.side == OrderSide.BUY.value)
+            .filter(OrderLog.status.in_([
+                OrderStatus.PENDING.value,
+                OrderStatus.PARTIALLY_FILLED.value,
+            ]))
+            .all()
+        )
+        rows_by_ticker: dict[str, list[OrderLog]] = {}
+        for row in rows:
+            if row.order_id not in returned_order_ids:
+                rows_by_ticker.setdefault(row.ticker, []).append(row)
+
+        updated = 0
+        for ticker, ticker_rows in rows_by_ticker.items():
+            evidence = buys.get(ticker)
+            if evidence is None or evidence.quantity <= 0 or len(ticker_rows) != 1:
+                continue
+            row = ticker_rows[0]
+            fill_qty = min(evidence.quantity, row.qty)
+            status = (
+                OrderStatus.FILLED.value
+                if fill_qty >= row.qty
+                else OrderStatus.PARTIALLY_FILLED.value
+            )
+            if row.status != status or row.fill_qty != fill_qty:
+                row.status = status
+                row.fill_qty = fill_qty
+                if evidence.avg_price:
+                    row.fill_price = evidence.avg_price
+                updated += 1
+        return updated
 
     def expire_pending_orders(self, *, before: datetime | None = None) -> int:
         """Expire unresolved orders during scheduler-driven cleanup."""
