@@ -293,6 +293,7 @@ class OperationalPipeline:
                 self._save_portfolio_snapshot(db, ref_date, {
                     "cash": final_balance.cash,
                     "positions_value": final_balance.positions_value,
+                    "total_assets": final_balance.total_value,
                 })
             else:
                 note = "Order submission disabled by MAPS_LIVE_TRADING_ENABLED=false."
@@ -848,6 +849,7 @@ class OperationalPipeline:
     def _save_portfolio_snapshot(db: Session, ref_date: dt.date, sync: dict[str, float | int]) -> None:
         cash = float(sync.get("cash", 0.0))
         positions_value = float(sync.get("positions_value", 0.0))
+        total_assets = float(sync.get("total_assets", cash + positions_value))
         row = (
             db.query(PortfolioSnapshot)
             .filter(PortfolioSnapshot.ref_date == ref_date, PortfolioSnapshot.source == "broker")
@@ -858,13 +860,13 @@ class OperationalPipeline:
                 PortfolioSnapshot(
                     ref_date=ref_date,
                     source="broker",
-                    total_assets=cash + positions_value,
+                    total_assets=total_assets,
                     cash=cash,
                     positions_value=positions_value,
                 )
             )
         else:
-            row.total_assets = cash + positions_value
+            row.total_assets = total_assets
             row.cash = cash
             row.positions_value = positions_value
             row.updated_at = dt.datetime.now(dt.timezone.utc)

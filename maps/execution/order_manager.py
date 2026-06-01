@@ -165,6 +165,7 @@ class OrderManager:
         return {
             "cash": balance.cash,
             "positions_value": balance.positions_value,
+            "total_assets": balance.total_value,
             "open_orders": len(open_orders),
             "updated_orders": updated,
             "expired_orders": expired,

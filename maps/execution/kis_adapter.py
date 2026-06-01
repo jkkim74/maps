@@ -310,8 +310,8 @@ class KISAdapter(BrokerAdapter):
 
         summary = self._first(data.get("output2"))
         cash = self._to_float(
-            summary.get("dnca_tot_amt")
-            or summary.get("prvs_rcdl_excc_amt")
+            summary.get("prvs_rcdl_excc_amt")
+            or summary.get("dnca_tot_amt")
             or summary.get("nass_amt")
         )
         positions_value = self._to_float(
@@ -319,7 +319,16 @@ class KISAdapter(BrokerAdapter):
             or summary.get("evlu_amt_smtl_amt")
             or sum(p.market_value for p in positions.values())
         )
-        return positions, AccountBalance(cash=cash, positions_value=positions_value)
+        total_assets = self._to_float(
+            summary.get("tot_evlu_amt")
+            or summary.get("nass_amt")
+            or cash + positions_value
+        )
+        return positions, AccountBalance(
+            cash=cash,
+            positions_value=positions_value,
+            total_assets=total_assets,
+        )
 
     def _fetch_balance_data(self) -> dict[str, Any]:
         params = {

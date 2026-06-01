@@ -81,10 +81,11 @@ class AccountBalance:
 
     cash: float
     positions_value: float
+    total_assets: float | None = None
 
     @property
     def total_value(self) -> float:
-        return self.cash + self.positions_value
+        return self.total_assets if self.total_assets is not None else self.cash + self.positions_value
 
 
 @dataclass

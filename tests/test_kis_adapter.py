@@ -30,7 +30,12 @@ class FakeSession:
         self.balance_payload = {
             "rt_cd": "0",
             "output1": [{"pdno": "005930", "hldg_qty": "10", "thdt_buyqty": "10", "pchs_avg_pric": "70000"}],
-            "output2": [{"dnca_tot_amt": "1000000", "scts_evlu_amt": "700000"}],
+            "output2": [{
+                "dnca_tot_amt": "1000000",
+                "prvs_rcdl_excc_amt": "300000",
+                "scts_evlu_amt": "700000",
+                "tot_evlu_amt": "1000000",
+            }],
         }
         self.open_orders_payload = {
             "rt_cd": "0",
@@ -154,8 +159,9 @@ def test_get_account_balance_and_position(settings: MapsSettings) -> None:
     balance = broker.get_account_balance()
     position = broker.get_position("005930")
 
-    assert balance.cash == 1_000_000
+    assert balance.cash == 300_000
     assert balance.positions_value == 700_000
+    assert balance.total_value == 1_000_000
     assert position is not None
     assert position.quantity == 10
     assert position.avg_price == 70_000
@@ -203,7 +209,7 @@ def test_request_retries_transient_http(settings: MapsSettings) -> None:
 
     balance = broker.get_account_balance()
 
-    assert balance.cash == 1_000_000
+    assert balance.cash == 300_000
     balance_calls = [call for call in http.calls if call["url"].endswith("/inquire-balance")]
     assert len(balance_calls) == 2
 

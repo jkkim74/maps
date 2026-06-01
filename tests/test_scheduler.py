@@ -17,6 +17,7 @@ from maps.common.models import (
     MonteCarloSequenceResults,
     OrderLog,
     ParameterPlateauResults,
+    PortfolioSnapshot,
     PromotionHistory,
     UniverseQualityLog,
     WalkForwardResults,
@@ -438,6 +439,30 @@ def test_scheduler_status_and_run_once() -> None:
 
     Base.metadata.drop_all(engine)
     engine.dispose()
+
+
+def test_save_portfolio_snapshot_uses_broker_total_assets() -> None:
+    engine, factory = _session_factory()
+    db = factory()
+    try:
+        OperationalPipeline._save_portfolio_snapshot(
+            db,
+            dt.date(2026, 6, 1),
+            {
+                "cash": 82_301_500,
+                "positions_value": 17_566_000,
+                "total_assets": 99_867_500,
+            },
+        )
+
+        row = db.query(PortfolioSnapshot).one()
+        assert row.cash == 82_301_500
+        assert row.positions_value == 17_566_000
+        assert row.total_assets == 99_867_500
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
 
 
 def test_scheduler_registers_daily_stock_report_job() -> None:
