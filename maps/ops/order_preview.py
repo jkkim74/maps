@@ -11,6 +11,8 @@ from sqlalchemy.orm import Session
 from maps.api.schemas import OrderPreviewResponse, PreviewOrderItem
 from maps.common.models import CandidateSnapshot, HistoricalOHLCV, PortfolioSnapshot, PromotionHistory
 from maps.common.settings import MapsSettings
+from maps.market.trading_rules import round_up_krx_price
+from maps.ops.order_state import claimed_candidate_keys
 from maps.ops.scheduler import _is_krx_market_day
 
 logger = logging.getLogger(__name__)
@@ -67,7 +69,16 @@ def _get_order_candidates(db: Session) -> list[CandidateSnapshot]:
         .order_by(CandidateSnapshot.final_score.desc(), CandidateSnapshot.trend_strength.desc())
         .all()
     )
-    return [r for r in rows if promotions.get(r.strategy_id) in _ELIGIBLE_STAGES]
+    claimed = claimed_candidate_keys(db, since=latest_date)
+    return [
+        row for row in rows
+        if promotions.get(row.strategy_id) in _ELIGIBLE_STAGES
+        and (row.strategy_id, row.ticker) not in claimed
+    ]
+
+
+def _has_candidate_snapshot(db: Session) -> bool:
+    return db.query(CandidateSnapshot.id).limit(1).scalar() is not None
 
 
 def _latest_close(db: Session, ticker: str, ref_date: dt.date) -> float:
@@ -118,7 +129,7 @@ def build_order_preview(db: Session, settings: MapsSettings) -> OrderPreviewResp
     next_day = next_trading_day(today)
 
     candidates = _get_order_candidates(db)
-    data_available = len(candidates) > 0
+    data_available = _has_candidate_snapshot(db)
 
     ref_date = candidates[0].ref_date if candidates else today
 
@@ -156,7 +167,10 @@ def build_order_preview(db: Session, settings: MapsSettings) -> OrderPreviewResp
         gap_pct = (current_close - signal_close) / signal_close
         gap_exceeded = gap_pct > max_gap
 
-        limit_price = int(current_close * (1 + slippage))
+        limit_price = round_up_krx_price(
+            current_close * (1 + slippage),
+            market=candidate.market,
+        )
         remaining_slots = max(_MAX_ORDERS - submitted, 1)
 
         if gap_exceeded:

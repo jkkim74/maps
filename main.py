@@ -34,6 +34,7 @@ from maps.api.data_quality import router as data_quality_router
 from maps.api.ops_config import router as ops_config_router
 from maps.api.scheduler import router as scheduler_router
 from maps.api.stock_report import router as stock_report_router
+from maps.api.mobile import router as mobile_router
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +94,7 @@ app.include_router(data_quality_router)
 app.include_router(ops_config_router)
 app.include_router(scheduler_router)
 app.include_router(stock_report_router)
+app.include_router(mobile_router)
 
 
 # ── 헬스체크 ──────────────────────────────────────────────────────────────────

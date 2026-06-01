@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 from unittest.mock import MagicMock
 
 import pytest
@@ -93,6 +94,39 @@ def test_sync_broker_state_tolerates_daily_fill_lookup_error(db) -> None:
     assert result["open_orders"] == 0
     assert result["updated_orders"] == 0
     assert result["sync_errors"] == 1
+
+
+def test_sync_broker_state_reconciles_missing_fill_from_position(db) -> None:
+    broker = MagicMock()
+    broker.get_account_balance.return_value = AccountBalance(cash=1_000_000, positions_value=100_000)
+    broker.get_open_orders.return_value = []
+    broker.get_daily_order_results.return_value = []
+    broker.get_positions.return_value = {"AAAA": 10}
+    risk = RiskManager(broker=broker, db=db, config=RiskConfig())
+    manager = OrderManager(broker=broker, risk=risk, db=db)
+    db.add(
+        OrderLog(
+            order_id="o-position",
+            strategy_id="s1",
+            ticker="AAAA",
+            side=OrderSide.BUY.value,
+            qty=10,
+            order_price=10_000,
+            fill_qty=0,
+            status=OrderStatus.PENDING.value,
+            broker="kis",
+            mode="mock",
+            created_at=dt.datetime.now(),
+        )
+    )
+    db.commit()
+
+    result = manager.sync_broker_state()
+
+    row = db.query(OrderLog).filter(OrderLog.order_id == "o-position").one()
+    assert result["updated_orders"] == 1
+    assert row.status == OrderStatus.FILLED.value
+    assert row.fill_qty == 10
 
 
 def test_transient_broker_error_is_retried(db) -> None:

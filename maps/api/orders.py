@@ -26,15 +26,7 @@ def get_orders(db: Session = Depends(get_db)) -> OrdersResponse:
     import datetime
 
     today = datetime.date.today()
-    today_start = datetime.datetime.combine(today, datetime.time.min)
     week_start = datetime.datetime.combine(today - datetime.timedelta(days=7), datetime.time.min)
-
-    # 전날까지 PENDING 상태로 남은 주문은 당일 장 마감으로 자동 취소된 것으로 처리
-    db.query(OrderLog).filter(
-        OrderLog.status.in_(["pending", "PENDING"]),
-        OrderLog.created_at < today_start,
-    ).update({"status": "expired"}, synchronize_session=False)
-    db.commit()
 
     rows = (
         db.query(OrderLog)

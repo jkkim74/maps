@@ -1,0 +1,70 @@
+:root {
+  font-family: Inter, "Noto Sans KR", system-ui, sans-serif;
+  color: #e8edf0;
+  background: #101418;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 320px; min-height: 100vh; background: #101418; }
+button { font: inherit; }
+
+.app-shell { min-height: 100vh; padding-bottom: calc(72px + env(safe-area-inset-bottom)); }
+header {
+  position: sticky; top: 0; z-index: 2; display: flex; align-items: center; justify-content: space-between;
+  padding: calc(18px + env(safe-area-inset-top)) 20px 14px; background: rgba(16, 20, 24, .96); border-bottom: 1px solid #263038;
+}
+.brand { color: #e3b85f; font-family: Georgia, serif; font-size: 22px; font-weight: 700; }
+header p { margin: 3px 0 0; color: #84929a; font-size: 11px; letter-spacing: 0; text-transform: uppercase; }
+.icon-btn { width: 40px; height: 40px; display: grid; place-items: center; color: #dce5e9; background: #1b2329; border: 1px solid #303c43; border-radius: 8px; }
+
+main { max-width: 760px; margin: auto; padding: 18px 16px; }
+section { margin-bottom: 24px; }
+h2 { margin: 0 0 12px; color: #b9c4c9; font-size: 13px; font-weight: 700; text-transform: uppercase; }
+
+.status-banner { display: flex; gap: 12px; align-items: center; padding: 14px; border-radius: 8px; border: 1px solid; margin-bottom: 16px; }
+.status-banner.ok { color: #66d19e; background: #14251f; border-color: #275743; }
+.status-banner.danger { color: #ff8d87; background: #2b191a; border-color: #673638; }
+.status-banner strong, .status-banner span { display: block; }
+.status-banner span { margin-top: 3px; color: #aab7bc; font-size: 12px; }
+
+.kpi-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.kpi { min-height: 84px; padding: 14px; border: 1px solid #2a353c; border-radius: 8px; background: #192126; }
+.kpi span, .row span { display: block; color: #839098; font-size: 11px; }
+.kpi strong { display: block; margin-top: 10px; color: #e3b85f; font-size: 18px; overflow-wrap: anywhere; }
+.kpi.good strong { color: #66d19e; }
+.kpi.info strong { color: #70b8ee; }
+.kpi.danger strong, .text-danger { color: #ff8d87; }
+
+.metric-list, .rows, .alerts { border: 1px solid #29343b; border-radius: 8px; overflow: hidden; background: #192126; }
+.metric-list div { display: flex; justify-content: space-between; padding: 14px; border-bottom: 1px solid #29343b; color: #afbbc0; font-size: 13px; }
+.metric-list div:last-child, .row:last-child, .alert:last-child { border-bottom: 0; }
+.metric-list b { color: #eef3f5; }
+.row { display: flex; justify-content: space-between; gap: 12px; padding: 14px; border-bottom: 1px solid #29343b; }
+.row strong { display: block; color: #e8edf0; font-size: 14px; }
+.row span { margin-top: 4px; }
+.row-end { text-align: right; }
+.row-end b { color: #dce5e9; font-size: 13px; }
+.pill { display: inline-block !important; margin-top: 5px; padding: 2px 6px; border-radius: 999px; background: #28343b; color: #aebbc1 !important; font-size: 10px !important; }
+.pill.filled { background: #1c3a30; color: #66d19e !important; }
+
+.alert { display: flex; gap: 10px; padding: 13px; border-bottom: 1px solid #29343b; color: #edb866; }
+.alert div { flex: 1; min-width: 0; }
+.alert strong { display: block; font-size: 11px; }
+.alert p { margin: 4px 0 0; color: #bcc7cb; font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
+.alert time { color: #74828a; font-size: 10px; }
+.empty, .loading, .error { padding: 20px; color: #8b999f; text-align: center; font-size: 13px; }
+.loading, .error { display: flex; gap: 10px; align-items: center; justify-content: center; min-height: 140px; }
+.error { flex-wrap: wrap; color: #ff8d87; }
+.error button { padding: 6px 10px; border: 1px solid #673638; border-radius: 6px; color: #ffb4ae; background: #2b191a; }
+
+.bottom-nav {
+  position: fixed; right: 0; bottom: 0; left: 0; z-index: 3; display: grid; grid-template-columns: repeat(4, 1fr);
+  padding-bottom: env(safe-area-inset-bottom); background: #151b1f; border-top: 1px solid #2b373e;
+}
+.bottom-nav button { height: 64px; display: grid; place-content: center; justify-items: center; gap: 4px; color: #7d8b92; background: transparent; border: 0; }
+.bottom-nav button.active { color: #e3b85f; }
+.bottom-nav span { font-size: 10px; }
+.spin { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }

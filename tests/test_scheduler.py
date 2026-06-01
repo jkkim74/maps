@@ -27,6 +27,15 @@ from maps.ops.scheduler import MapsOperationalScheduler, OperationalPipeline
 import maps.common.models  # noqa: F401
 
 
+def test_current_weekday_market_day_does_not_require_live_ohlcv(monkeypatch) -> None:
+    import maps.ops.scheduler as scheduler_module
+
+    scheduler_module._krx_market_day_cache.clear()
+    monkeypatch.setattr(scheduler_module, "is_krx_closed_date", lambda *args, **kwargs: False)
+
+    assert scheduler_module._is_krx_market_day(dt.date.today()) is True
+
+
 def _session_factory():
     engine = create_engine(
         "sqlite:///:memory:",
@@ -142,6 +151,10 @@ def test_order_cycle_submits_promoted_candidate_when_live_enabled() -> None:
     assert run.status == "success"
     assert run.details["live_trading_enabled"] is True
     assert run.details["submitted_orders"] == 1
+
+    rerun = pipeline.run_order_cycle(ref_date)
+    assert rerun.status == "success"
+    assert rerun.details["submitted_orders"] == 0
 
     db = factory()
     try:

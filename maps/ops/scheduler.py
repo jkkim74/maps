@@ -35,7 +35,7 @@ from maps.common.models import (
 )
 from maps.common.settings import MapsSettings, get_settings
 from maps.backtest.engine import BacktestEngine, BacktestResult
-from maps.common.exceptions import BacktestError, ValidationError
+from maps.common.exceptions import BacktestError, DuplicateOrderError, ValidationError
 from maps.data.collector import DataCollector
 from maps.data.ohlcv_repo import HistoricalOHLCVRepository
 from maps.data.krx_adapter import CollectionResult, KRXAdapter, MockKRXAdapter, SecurityMeta
@@ -43,7 +43,9 @@ from maps.data.security_repo import HaltPeriod, ManagedPeriod, Security
 from maps.data_quality.universe_filter import DataQualityFilter, UniverseResult
 from maps.execution.broker_adapter import Order, OrderSide, OrderType, get_broker
 from maps.execution.order_manager import OrderManager
+from maps.market.trading_rules import is_krx_closed_date, round_up_krx_price
 from maps.ops.notifications import SlackNotifier
+from maps.ops.order_state import claimed_candidate_keys
 from maps.promotion.gate import PromotionGate, PromotionStage
 from maps.risk.manager import RiskManager
 from maps.strategy.ath_breakout_v1 import ATHBreakoutV1Strategy
@@ -77,11 +79,16 @@ def _is_krx_market_day(date: dt.date | None = None) -> bool:
         return _krx_market_day_cache[target]
 
     # 주말 체크 (토=5, 일=6)
-    if target.weekday() >= 5:
+    if is_krx_closed_date(target, extra_closed_dates=get_settings().krx_closed_dates):
         _krx_market_day_cache[target] = False
         return False
 
     # pykrx로 한국 공휴일 체크
+    # Live OHLCV does not exist before the session opens. Weekdays that are
+    # not known closure dates must remain runnable for pre-open order jobs.
+    if target >= dt.date.today():
+        return True
+
     date_str = target.strftime("%Y%m%d")
     try:
         from pykrx import stock as _pykrx_stock  # noqa: PLC0415 — lazy import
@@ -335,6 +342,7 @@ class OperationalPipeline:
 
         def _run(db: Session) -> dict:
             broker = get_broker(self._settings.maps_broker_mode)
+            manager = OrderManager(broker=broker, risk=RiskManager(broker=broker, db=db), db=db)
             cancelled = 0
             try:
                 open_orders = broker.get_open_orders()
@@ -345,6 +353,7 @@ class OperationalPipeline:
                     cancelled += 1
             if hasattr(broker, "eod_cleanup"):
                 broker.eod_cleanup()  # type: ignore[attr-defined]
+            expired = manager.expire_pending_orders()
             self._write_log(
                 db,
                 ref_date=ref_date,
@@ -357,6 +366,7 @@ class OperationalPipeline:
                 "ref_date": ref_date.isoformat(),
                 "open_orders_seen": len(open_orders),
                 "cancelled_orders": cancelled,
+                "expired_orders": expired,
             }
 
         return self._job("eod_cleanup", _run)
@@ -909,7 +919,10 @@ class OperationalPipeline:
                 continue
 
             # 지정가 = 최신 종가 × (1 + slippage) — 당일 소폭 상승 흡수
-            limit_price = int(current_close * (1 + slippage_pct))
+            limit_price = round_up_krx_price(
+                current_close * (1 + slippage_pct),
+                market=candidate.market,
+            )
 
             remaining_slots = max(max_orders - submitted, 1)
             qty = self._order_qty(candidate, account.total_value, remaining_cash, limit_price, remaining_slots)
@@ -930,7 +943,16 @@ class OperationalPipeline:
                     f"signal={signal_close:.0f} gap={gap_pct:+.3f}"
                 ),
             )
-            manager.submit(order)
+            try:
+                manager.submit(order)
+            except DuplicateOrderError:
+                logger.info(
+                    "Order skipped [%s %s]: already submitted",
+                    candidate.strategy_id,
+                    candidate.ticker,
+                )
+                skipped += 1
+                continue
             submitted += 1
             remaining_cash = max(remaining_cash - qty * limit_price, 0.0)
             positions[candidate.ticker] = positions.get(candidate.ticker, 0) + qty
@@ -957,9 +979,11 @@ class OperationalPipeline:
             .order_by(CandidateSnapshot.final_score.desc(), CandidateSnapshot.trend_strength.desc())
             .all()
         )
+        claimed = claimed_candidate_keys(db, since=latest_date)
         return [
             row for row in rows
             if latest_promotions.get(row.strategy_id) in eligible_stages
+            and (row.strategy_id, row.ticker) not in claimed
         ]
 
     @staticmethod

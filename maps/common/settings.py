@@ -55,6 +55,8 @@ class MapsSettings(BaseSettings):
     maps_order_max_gap_pct: float = Field(default=0.02, ge=0.0)    # 신호 이후 갭 상승 허용 상한 (초과 시 주문 스킵)
     maps_stock_report_path: str = "/opt/stock_report"              # stock-report 소스 경로
 
+    maps_krx_closed_dates: str = ""
+
     kis_app_key: str = ""
     kis_app_secret: str = ""
     kis_account_no: str = ""
@@ -90,6 +92,13 @@ class MapsSettings(BaseSettings):
     def kis_base_url(self) -> str:
         """KIS base URL selected by paper/live trading mode."""
         return self.kis_real_base_url if self.kis_real_trading else self.kis_paper_base_url
+
+    @property
+    def krx_closed_dates(self):
+        """Return explicitly configured KRX closure dates."""
+        from maps.market.trading_rules import parse_closed_dates
+
+        return parse_closed_dates(self.maps_krx_closed_dates)
 
 
 @dataclass(frozen=True)
@@ -176,6 +185,7 @@ def get_config_status(settings: MapsSettings | None = None) -> list[ConfigSectio
                 _field(s, "maps_scheduler_enabled", "MAPS_SCHEDULER_ENABLED", "Enable APScheduler jobs inside the API process"),
                 _field(s, "maps_scheduler_timezone", "MAPS_SCHEDULER_TIMEZONE", "Scheduler timezone", required=True),
                 _field(s, "maps_broker_sync_interval_seconds", "MAPS_BROKER_SYNC_INTERVAL_SECONDS", "Broker balance/fill sync interval seconds"),
+                _field(s, "maps_krx_closed_dates", "MAPS_KRX_CLOSED_DATES", "Additional comma-separated KRX closure dates"),
             ],
         ),
         _section(

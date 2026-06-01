@@ -16,6 +16,7 @@ env/
 # Environment variables
 .env
 .env.*
+!apps/mobile/.env.example
 
 # Database
 *.db
@@ -37,6 +38,13 @@ htmlcov/
 # Logs
 *.log
 logs/.kis_token_cache.json
+
+# Node / hybrid mobile app
+node_modules/
+apps/mobile/dist/
+apps/mobile/android/
+apps/mobile/ios/
+*.tsbuildinfo
 
 # OS
 .DS_Store

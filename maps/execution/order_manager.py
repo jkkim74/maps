@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from maps.common.exceptions import BrokerAdapterError, DuplicateOrderError, ResearchStrategyError
 from maps.common.models import OrderLog
 from maps.common.settings import get_settings
-from maps.execution.broker_adapter import BrokerAdapter, Order, OrderResult, OrderStatus
+from maps.execution.broker_adapter import BrokerAdapter, Order, OrderResult, OrderSide, OrderStatus
 from maps.ops.notifications import SlackNotifier
 from maps.risk.manager import RiskManager
 
@@ -99,6 +99,8 @@ class OrderManager:
 
     def sync_broker_state(self) -> dict[str, float | int]:
         """Sync same-day broker fills/open orders into order_log."""
+        today_start = datetime.combine(date.today(), dt_time.min)
+        expired = self.expire_pending_orders(before=today_start)
         balance = self._broker.get_account_balance()
         sync_errors = 0
         try:
@@ -119,9 +121,11 @@ class OrderManager:
             broker_results = []
             logger.warning("Broker daily fill sync unavailable: %s", exc)
 
+        returned_order_ids: set[str] = set()
         for result in broker_results:
             if not result.order_id:
                 continue
+            returned_order_ids.add(result.order_id)
             row = (
                 self._db.query(OrderLog)
                 .filter(OrderLog.order_id == result.order_id)
@@ -158,14 +162,67 @@ class OrderManager:
                 changed = True
             if changed:
                 updated += 1
+        updated += self._reconcile_buy_positions(returned_order_ids)
         self._db.commit()
         return {
             "cash": balance.cash,
             "positions_value": balance.positions_value,
             "open_orders": len(open_orders),
             "updated_orders": updated,
+            "expired_orders": expired,
             "sync_errors": sync_errors,
         }
+
+    def expire_pending_orders(self, *, before: datetime | None = None) -> int:
+        """Expire unresolved orders during scheduler-driven cleanup."""
+        query = self._db.query(OrderLog).filter(OrderLog.status.in_([
+            OrderStatus.PENDING.value,
+            OrderStatus.PARTIALLY_FILLED.value,
+        ]))
+        if before is not None:
+            query = query.filter(OrderLog.created_at < before)
+        count = query.update({"status": "expired"}, synchronize_session=False)
+        self._db.commit()
+        return count
+
+    def _reconcile_buy_positions(self, returned_order_ids: set[str]) -> int:
+        """Use holdings as a conservative fallback when a broker omits order rows."""
+        try:
+            positions = self._broker.get_positions()
+        except (BrokerAdapterError, NotImplementedError):
+            return 0
+        if not isinstance(positions, dict):
+            return 0
+
+        today_start = datetime.combine(date.today(), dt_time.min)
+        rows = (
+            self._db.query(OrderLog)
+            .filter(OrderLog.created_at >= today_start)
+            .filter(OrderLog.side == OrderSide.BUY.value)
+            .filter(OrderLog.status.in_([
+                OrderStatus.PENDING.value,
+                OrderStatus.PARTIALLY_FILLED.value,
+            ]))
+            .all()
+        )
+        updated = 0
+        for row in rows:
+            if row.order_id in returned_order_ids:
+                continue
+            held_qty = int(positions.get(row.ticker, 0) or 0)
+            if held_qty <= 0:
+                continue
+            fill_qty = min(held_qty, row.qty)
+            status = (
+                OrderStatus.FILLED.value
+                if fill_qty >= row.qty
+                else OrderStatus.PARTIALLY_FILLED.value
+            )
+            if row.status != status or row.fill_qty != fill_qty:
+                row.status = status
+                row.fill_qty = fill_qty
+                updated += 1
+        return updated
 
     def block_strategy(self, strategy_id: str) -> None:
         """전략을 Research 단계로 차단한다."""
