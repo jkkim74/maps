@@ -33,10 +33,10 @@ def get_trend_strength(
         as_of = latest_date or dt.date.today()
 
     repo = HistoricalOHLCVRepository(db)
-    tickers = repo.list_tickers_with_history(end=as_of, min_bars=1)
-    tickers = tickers[:limit]
+    ticker_counts = repo.list_tickers_with_counts(end=as_of, limit=limit)
+    tickers = [ticker for ticker, _count in ticker_counts]
 
-    ohlcv_map = {ticker: repo.to_dataframe(ticker, end=as_of) for ticker in tickers}
+    ohlcv_map = repo.recent_dataframes(tickers, end=as_of, bars=min_bars)
     result = TrendStrengthCalculator(min_bars=min_bars).score_universe(ohlcv_map, as_of)
     scored_count = len(result.scores)
 
