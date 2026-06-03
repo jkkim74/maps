@@ -36,7 +36,13 @@ def get_trend_strength(
     ticker_counts = repo.list_tickers_with_counts(end=as_of, limit=limit)
     tickers = [ticker for ticker, _count in ticker_counts]
 
-    ohlcv_map = repo.recent_dataframes(tickers, end=as_of, bars=min_bars)
+    lookback_start = as_of - dt.timedelta(days=min_bars * 3)
+    ohlcv_map = repo.recent_dataframes(
+        tickers,
+        start=lookback_start,
+        end=as_of,
+        bars=min_bars,
+    )
     result = TrendStrengthCalculator(min_bars=min_bars).score_universe(ohlcv_map, as_of)
     scored_count = len(result.scores)
 

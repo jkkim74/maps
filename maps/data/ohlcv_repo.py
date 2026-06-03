@@ -62,6 +62,7 @@ class HistoricalOHLCVRepository:
         self,
         tickers: list[str],
         *,
+        start: dt.date | None = None,
         end: dt.date | None = None,
         bars: int,
     ) -> dict[str, pd.DataFrame]:
@@ -85,6 +86,8 @@ class HistoricalOHLCVRepository:
             )
             .label("rn"),
         ).filter(HistoricalOHLCV.ticker.in_(tickers))
+        if start is not None:
+            base_query = base_query.filter(HistoricalOHLCV.date >= start)
         if end is not None:
             base_query = base_query.filter(HistoricalOHLCV.date <= end)
 
