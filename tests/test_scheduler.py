@@ -400,6 +400,134 @@ def test_submit_exit_orders_sells_position_when_stop_loss_is_reached() -> None:
         engine.dispose()
 
 
+def test_broker_sync_submits_stop_loss_exit_during_market_hours(monkeypatch) -> None:
+    import maps.ops.scheduler as scheduler_module
+
+    engine, factory = _session_factory()
+    settings = MapsSettings(
+        maps_broker_mode="mock",
+        maps_data_provider="mock",
+        maps_live_trading_enabled=True,
+    )
+    pipeline = OperationalPipeline(settings=settings, session_factory=factory)
+    broker = MockBroker(initial_cash=1_000_000, price_feed={"AAAA": 10_000})
+    broker.place_order(Order(
+        strategy_id="pullback_v3",
+        ticker="AAAA",
+        side=OrderSide.BUY,
+        order_type=OrderType.MARKET,
+        quantity=10,
+    ))
+    broker._filled.clear()
+    broker.set_price("AAAA", 9_400)
+    monkeypatch.setattr(broker, "is_market_open", lambda: True)
+    monkeypatch.setattr(scheduler_module, "get_broker", lambda _mode: broker)
+    ref_date = dt.date(2026, 5, 5)
+
+    db = factory()
+    try:
+        db.add(OrderLog(
+            order_id="entry-AAAA",
+            strategy_id="pullback_v3",
+            ticker="AAAA",
+            side="buy",
+            qty=10,
+            order_price=10_000,
+            fill_price=10_000,
+            fill_qty=10,
+            status="filled",
+        ))
+        db.add(HistoricalOHLCV(
+            ticker="AAAA", date=ref_date,
+            open=9_400, high=9_400, low=9_400, close=9_400, volume=100_000,
+        ))
+        db.commit()
+    finally:
+        db.close()
+
+    run = pipeline.sync_broker_state(ref_date)
+
+    assert run.status == "success"
+    assert run.details["exit_monitor_active"] is True
+    assert run.details["submitted_sell_orders"] == 1
+    assert run.details["exit_tickers"] == ["AAAA"]
+
+    db = factory()
+    try:
+        sell = db.query(OrderLog).filter(OrderLog.side == "sell").one()
+        assert sell.status == "filled"
+        assert sell.fill_qty == 10
+        row = db.query(CollectionLog).filter(CollectionLog.source == "scheduler.broker_sync").one()
+        assert row.items == 1
+        assert "exit_monitor=on" in (row.note or "")
+        assert broker.get_position("AAAA") is None
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def test_broker_sync_does_not_submit_exit_when_market_is_closed(monkeypatch) -> None:
+    import maps.ops.scheduler as scheduler_module
+
+    engine, factory = _session_factory()
+    settings = MapsSettings(
+        maps_broker_mode="mock",
+        maps_data_provider="mock",
+        maps_live_trading_enabled=True,
+    )
+    pipeline = OperationalPipeline(settings=settings, session_factory=factory)
+    broker = MockBroker(initial_cash=1_000_000, price_feed={"AAAA": 10_000})
+    broker.place_order(Order(
+        strategy_id="pullback_v3",
+        ticker="AAAA",
+        side=OrderSide.BUY,
+        order_type=OrderType.MARKET,
+        quantity=10,
+    ))
+    broker._filled.clear()
+    broker.set_price("AAAA", 9_400)
+    monkeypatch.setattr(broker, "is_market_open", lambda: False)
+    monkeypatch.setattr(scheduler_module, "get_broker", lambda _mode: broker)
+    ref_date = dt.date(2026, 5, 5)
+
+    db = factory()
+    try:
+        db.add(OrderLog(
+            order_id="entry-AAAA",
+            strategy_id="pullback_v3",
+            ticker="AAAA",
+            side="buy",
+            qty=10,
+            order_price=10_000,
+            fill_price=10_000,
+            fill_qty=10,
+            status="filled",
+        ))
+        db.add(HistoricalOHLCV(
+            ticker="AAAA", date=ref_date,
+            open=9_400, high=9_400, low=9_400, close=9_400, volume=100_000,
+        ))
+        db.commit()
+    finally:
+        db.close()
+
+    run = pipeline.sync_broker_state(ref_date)
+
+    assert run.status == "success"
+    assert run.details["exit_monitor_active"] is False
+    assert run.details["submitted_sell_orders"] == 0
+
+    db = factory()
+    try:
+        assert db.query(OrderLog).filter(OrderLog.side == "sell").count() == 0
+        assert broker.get_position("AAAA") is not None
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
 def test_validation_creates_promotion_history_from_latest_metrics() -> None:
     engine, factory = _session_factory()
     settings = MapsSettings(

@@ -353,17 +353,61 @@ class OperationalPipeline:
 
         def _run(db: Session) -> dict:
             broker = get_broker(self._settings.maps_broker_mode)
-            sync = OrderManager(broker=broker, risk=RiskManager(broker=broker, db=db), db=db).sync_broker_state()
+            manager = OrderManager(broker=broker, risk=RiskManager(broker=broker, db=db), db=db)
+            sync = manager.sync_broker_state()
             self._save_portfolio_snapshot(db, ref_date, sync)
+            live_enabled = self._settings.maps_live_trading_enabled
+            market_open = False
+            submitted_sell_orders = 0
+            skipped_sell_orders = 0
+            exit_tickers: set[str] = set()
+
+            if live_enabled:
+                try:
+                    market_open = bool(broker.is_market_open())
+                except NotImplementedError:
+                    market_open = False
+
+            exit_monitor_active = live_enabled and market_open
+            if exit_monitor_active:
+                submitted_sell_orders, skipped_sell_orders, exit_tickers = self._submit_exit_orders(
+                    db=db,
+                    broker=broker,
+                    manager=manager,
+                    ref_date=ref_date,
+                )
+                if submitted_sell_orders:
+                    final_balance = broker.get_account_balance()
+                    sync = {
+                        **sync,
+                        "cash": final_balance.cash,
+                        "positions_value": final_balance.positions_value,
+                        "total_assets": final_balance.total_value,
+                    }
+                    self._save_portfolio_snapshot(db, ref_date, sync)
+
             self._write_log(
                 db,
                 ref_date=ref_date,
                 source="scheduler.broker_sync",
                 status="success",
-                items=int(sync["updated_orders"]),
-                note=f"open_orders={sync['open_orders']}",
+                items=int(sync["updated_orders"]) + submitted_sell_orders,
+                note=(
+                    f"open_orders={sync['open_orders']} "
+                    f"exit_monitor={'on' if exit_monitor_active else 'off'} "
+                    f"submitted_sell_orders={submitted_sell_orders}"
+                ),
             )
-            return {"ref_date": ref_date.isoformat(), **sync}
+            return {
+                "ref_date": ref_date.isoformat(),
+                **sync,
+                "live_trading_enabled": live_enabled,
+                "market_open": market_open,
+                "exit_monitor_active": exit_monitor_active,
+                "submitted_sell_orders": submitted_sell_orders,
+                "skipped_sell_orders": skipped_sell_orders,
+                "exit_tickers": sorted(exit_tickers),
+            }
 
         return self._job("broker_sync", _run)
 
