@@ -33,8 +33,7 @@ def get_trend_strength(
         as_of = latest_date or dt.date.today()
 
     repo = HistoricalOHLCVRepository(db)
-    ticker_counts = repo.list_tickers_with_counts(end=as_of, limit=limit)
-    tickers = [ticker for ticker, _count in ticker_counts]
+    tickers = repo.list_tickers_on_date(as_of, limit=limit)
 
     lookback_start = as_of - dt.timedelta(days=min_bars * 3)
     ohlcv_map = repo.recent_dataframes(

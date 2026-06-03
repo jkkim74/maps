@@ -58,6 +58,22 @@ class HistoricalOHLCVRepository:
             query = query.limit(limit)
         return [(row[0], int(row[1])) for row in query.all()]
 
+    def list_tickers_on_date(
+        self,
+        ref_date: dt.date,
+        *,
+        limit: int | None = None,
+    ) -> list[str]:
+        """Return tickers that have OHLCV on ``ref_date``."""
+        query = (
+            self._db.query(HistoricalOHLCV.ticker)
+            .filter(HistoricalOHLCV.date == ref_date)
+            .order_by(HistoricalOHLCV.ticker.asc())
+        )
+        if limit is not None:
+            query = query.limit(limit)
+        return [row[0] for row in query.all()]
+
     def recent_dataframes(
         self,
         tickers: list[str],

@@ -42,13 +42,14 @@ def ctx():
     engine.dispose()
 
 
-def _add_ohlcv_series(db, ticker: str, bars: int) -> None:
+def _add_ohlcv_series(db, ticker: str, bars: int, *, start_offset: int = 0) -> None:
     start = dt.date(2026, 1, 1)
     for offset in range(bars):
+        series_offset = start_offset + offset
         close = 100.0 + offset
         db.add(HistoricalOHLCV(
             ticker=ticker,
-            date=start + dt.timedelta(days=offset),
+            date=start + dt.timedelta(days=series_offset),
             open=close - 1,
             high=close + 1,
             low=close - 2,
@@ -63,7 +64,7 @@ def test_trend_strength_endpoint_scores_batch_history(ctx) -> None:
     db = factory()
     try:
         _add_ohlcv_series(db, "000001", 65)
-        _add_ohlcv_series(db, "000002", 10)
+        _add_ohlcv_series(db, "000002", 10, start_offset=55)
         db.commit()
     finally:
         db.close()

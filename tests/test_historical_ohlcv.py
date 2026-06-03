@@ -109,6 +109,53 @@ def test_historical_ohlcv_repository_returns_recent_dataframes_in_batch() -> Non
         engine.dispose()
 
 
+def test_historical_ohlcv_repository_lists_tickers_on_date() -> None:
+    engine, factory = _factory()
+    db = factory()
+    try:
+        ref_date = dt.date(2026, 5, 4)
+        db.add(HistoricalOHLCV(
+            ticker="000002",
+            date=ref_date,
+            open=20,
+            high=21,
+            low=19,
+            close=20,
+            volume=200,
+            adj_close=20,
+        ))
+        db.add(HistoricalOHLCV(
+            ticker="000001",
+            date=ref_date,
+            open=10,
+            high=11,
+            low=9,
+            close=10,
+            volume=100,
+            adj_close=10,
+        ))
+        db.add(HistoricalOHLCV(
+            ticker="000003",
+            date=ref_date - dt.timedelta(days=1),
+            open=30,
+            high=31,
+            low=29,
+            close=30,
+            volume=300,
+            adj_close=30,
+        ))
+        db.commit()
+
+        repo = HistoricalOHLCVRepository(db)
+
+        assert repo.list_tickers_on_date(ref_date) == ["000001", "000002"]
+        assert repo.list_tickers_on_date(ref_date, limit=1) == ["000001"]
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
 def test_collect_ohlcv_history_backfills_business_days() -> None:
     engine, factory = _factory()
     db = factory()
