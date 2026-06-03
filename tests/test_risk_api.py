@@ -97,3 +97,81 @@ def test_risk_returns_default_strategy_gauges_and_broker_holdings(ctx) -> None:
     ]
     assert data["max_exposure_pct"] == 0.104
     assert data["position_count"] == 1
+
+
+def test_broker_holdings_infers_strategy_from_matching_buy_order(db, monkeypatch) -> None:
+    db.add(OrderLog(
+        order_id="expired-005930",
+        strategy_id="donchian_v2",
+        ticker="005930",
+        side="buy",
+        qty=28,
+        order_price=352_500,
+        fill_price=None,
+        fill_qty=0,
+        status="expired",
+    ))
+    db.commit()
+
+    class FakeBroker:
+        def get_account_balance(self):
+            return AccountBalance(cash=900_000, positions_value=10_094_000)
+
+        def _fetch_positions_and_balance(self):
+            return {
+                "005930": Position(
+                    "005930",
+                    28,
+                    352_500,
+                    name="삼성전자",
+                    current_price=360_500,
+                    evaluation_value=10_094_000,
+                )
+            }, self.get_account_balance()
+
+    monkeypatch.setattr(risk, "get_broker", lambda: FakeBroker())
+
+    holdings, _max_exposure, count = risk._broker_holdings(db)
+
+    assert count == 1
+    assert holdings[0].strategy_id == "donchian_v2"
+    assert holdings[0].stop_price == 317_250.0
+
+
+def test_broker_holdings_excludes_stop_triggered_position(db, monkeypatch) -> None:
+    db.add(OrderLog(
+        order_id="filled-009150",
+        strategy_id="donchian_v2",
+        ticker="009150",
+        side="buy",
+        qty=4,
+        order_price=2_149_000,
+        fill_price=2_067_000,
+        fill_qty=4,
+        status="filled",
+    ))
+    db.commit()
+
+    class FakeBroker:
+        def get_account_balance(self):
+            return AccountBalance(cash=900_000, positions_value=7_252_000)
+
+        def _fetch_positions_and_balance(self):
+            return {
+                "009150": Position(
+                    "009150",
+                    4,
+                    2_067_000,
+                    name="삼성전기",
+                    current_price=1_813_000,
+                    evaluation_value=7_252_000,
+                )
+            }, self.get_account_balance()
+
+    monkeypatch.setattr(risk, "get_broker", lambda: FakeBroker())
+
+    holdings, max_exposure, count = risk._broker_holdings(db)
+
+    assert holdings == []
+    assert max_exposure == 0.0
+    assert count == 0
