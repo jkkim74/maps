@@ -138,7 +138,7 @@ def test_broker_holdings_infers_strategy_from_matching_buy_order(db, monkeypatch
     assert holdings[0].stop_price == 317_250.0
 
 
-def test_broker_holdings_excludes_stop_triggered_position(db, monkeypatch) -> None:
+def test_broker_holdings_includes_stop_triggered_position_when_still_held(db, monkeypatch) -> None:
     db.add(OrderLog(
         order_id="filled-009150",
         strategy_id="donchian_v2",
@@ -172,6 +172,8 @@ def test_broker_holdings_excludes_stop_triggered_position(db, monkeypatch) -> No
 
     holdings, max_exposure, count = risk._broker_holdings(db)
 
-    assert holdings == []
-    assert max_exposure == 0.0
-    assert count == 0
+    assert count == 1
+    assert max_exposure == 7_252_000 / 8_152_000
+    assert holdings[0].ticker == "009150"
+    assert holdings[0].strategy_id == "donchian_v2"
+    assert holdings[0].stop_price == 1_860_300.0

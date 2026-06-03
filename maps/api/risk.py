@@ -158,8 +158,6 @@ def _broker_holdings(db: Session) -> tuple[list[HoldingItem], float, int]:
                 strategy_map.get(ticker),
                 entry_price_map.get(ticker),
             )
-            if stop_price is not None and current_price <= stop_price:
-                continue
             holdings.append(
                 HoldingItem(
                     ticker=ticker,
