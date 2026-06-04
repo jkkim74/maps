@@ -138,9 +138,10 @@ def _broker_holdings(db: Session) -> tuple[list[HoldingItem], float, int]:
                     and row.ticker not in strategy_map
                     and position is not None
                     and row.qty == position.quantity
+                    and row.status in ("pending", "partially_filled")
                 ):
                     strategy_map[row.ticker] = row.strategy_id
-                    entry_price_map[row.ticker] = row.order_price or position.avg_price
+                    entry_price_map[row.ticker] = row.fill_price or row.order_price or position.avg_price
         for ticker, position in position_map.items():
             if position is None:
                 continue
@@ -154,24 +155,23 @@ def _broker_holdings(db: Session) -> tuple[list[HoldingItem], float, int]:
                 else position.avg_price
             )
             strategy_id = strategy_map.get(ticker, "broker")
-            stop_price = stop_loss_price(
-                strategy_map.get(ticker),
-                entry_price_map.get(ticker),
-            )
+            entry_price = round(entry_price_map.get(ticker) or position.avg_price)
+            raw_stop = stop_loss_price(strategy_map.get(ticker), entry_price)
+            stop_price = round(raw_stop) if raw_stop is not None else None
             holdings.append(
                 HoldingItem(
                     ticker=ticker,
                     name=position.name or name_map.get(ticker, ""),
                     strategy_id=strategy_id,
-                    entry_price=position.avg_price,
+                    entry_price=float(entry_price),
                     current_price=current_price,
                     pnl_pct=(
-                        current_price / position.avg_price - 1.0
-                        if position.avg_price > 0
+                        current_price / entry_price - 1.0
+                        if entry_price > 0
                         else None
                     ),
                     exposure_pct=exposure,
-                    stop_price=stop_price,
+                    stop_price=float(stop_price) if stop_price is not None else None,
                 )
             )
         max_exposure = max((item.exposure_pct for item in holdings), default=0.0)
