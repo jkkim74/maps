@@ -13,7 +13,7 @@ from maps.common.models import CandidateSnapshot, HistoricalOHLCV, PortfolioSnap
 from maps.common.settings import MapsSettings
 from maps.market.trading_rules import round_up_krx_price
 from maps.ops.order_state import claimed_candidate_tickers
-from maps.ops.scheduler import _is_krx_market_day
+from maps.ops.scheduler import OperationalPipeline, _is_krx_market_day
 
 logger = logging.getLogger(__name__)
 
@@ -187,6 +187,28 @@ def build_order_preview(db: Session, settings: MapsSettings) -> OrderPreviewResp
             market=candidate.market,
         )
         remaining_slots = max(_MAX_ORDERS - submitted, 1)
+
+        # entry_signal 체크: 전략이 현재 날짜 기준 진입 신호를 발생시키지 않으면 스킵
+        sig = OperationalPipeline._latest_strategy_signal(
+            db, ticker=candidate.ticker, strategy_id=candidate.strategy_id, ref_date=today
+        )
+        if sig is None or not sig.entry_signal:
+            items.append(PreviewOrderItem(
+                ticker=candidate.ticker,
+                name=candidate.name,
+                strategy_id=candidate.strategy_id,
+                signal_date=ref_date.isoformat(),
+                signal_close=signal_close,
+                current_close=current_close,
+                gap_pct=round(gap_pct, 4),
+                gap_exceeded=gap_exceeded,
+                limit_price=limit_price,
+                estimated_qty=0,
+                estimated_amount=0,
+                skipped=True,
+                skip_reason="no_entry_signal",
+            ))
+            continue
 
         if gap_exceeded:
             items.append(PreviewOrderItem(
