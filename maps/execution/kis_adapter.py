@@ -571,13 +571,31 @@ class KISAdapter(BrokerAdapter):
             return "00"
         raise BrokerAdapterError(f"Unsupported KIS order type: {order.order_type}")
 
+    @staticmethod
+    def _tick_size(price: float) -> int:
+        """KIS 국내주식 호가단위 (유가증권/코스닥 동일 기준)."""
+        if price < 1_000:
+            return 1
+        if price < 5_000:
+            return 5
+        if price < 10_000:
+            return 10
+        if price < 50_000:
+            return 50
+        if price < 100_000:
+            return 100
+        if price < 500_000:
+            return 500
+        return 1_000
+
     def _resolve_order_price(self, order: Order) -> int:
         if order.order_type == OrderType.MARKET:
             return 0
         price = order.limit_price or order.current_price
         if price is None or price <= 0:
             raise BrokerAdapterError("KIS limit orders require limit_price or current_price.")
-        return int(round(price))
+        tick = self._tick_size(price)
+        return int(round(price / tick) * tick)
 
     @staticmethod
     def _row_order_id(row: dict[str, Any]) -> str:

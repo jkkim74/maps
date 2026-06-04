@@ -6,6 +6,7 @@ import logging
 import time
 from datetime import date, datetime, time as dt_time
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from maps.common.exceptions import BrokerAdapterError, DuplicateOrderError, ResearchStrategyError
@@ -269,22 +270,29 @@ class OrderManager:
             result.filled_quantity,
             result.status.value,
         )
-        self._db.add(
-            OrderLog(
-                order_id=result.order_id,
-                strategy_id=result.strategy_id,
-                ticker=result.ticker,
-                side=result.side.value,
-                qty=order.quantity,
-                order_price=order.limit_price,
-                fill_price=result.avg_price if result.avg_price else None,
-                fill_qty=result.filled_quantity,
-                status=result.status.value,
-                broker=get_settings().maps_broker_mode,
-                mode="live" if get_settings().maps_live_trading_enabled else "mock",
+        try:
+            self._db.add(
+                OrderLog(
+                    order_id=result.order_id,
+                    strategy_id=result.strategy_id,
+                    ticker=result.ticker,
+                    side=result.side.value,
+                    qty=order.quantity,
+                    order_price=order.limit_price,
+                    fill_price=result.avg_price if result.avg_price else None,
+                    fill_qty=result.filled_quantity,
+                    status=result.status.value,
+                    broker=get_settings().maps_broker_mode,
+                    mode="live" if get_settings().maps_live_trading_enabled else "mock",
+                )
             )
-        )
-        self._db.commit()
+            self._db.commit()
+        except IntegrityError:
+            self._db.rollback()
+            logger.warning(
+                "order_log duplicate order_id=%s (%s %s %s) — skipping DB insert",
+                result.order_id, result.strategy_id, result.side.value, result.ticker,
+            )
 
     def _place_with_retry(self, order: Order) -> OrderResult:
         settings = get_settings()
