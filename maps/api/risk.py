@@ -120,29 +120,49 @@ def _broker_holdings(db: Session) -> tuple[list[HoldingItem], float, int]:
                 db.query(OrderLog)
                 .filter(OrderLog.ticker.in_(tickers))
                 .filter(OrderLog.side == "buy")
-                .filter(OrderLog.status.in_(["filled", "partially_filled"]))
                 .order_by(OrderLog.created_at.desc(), OrderLog.id.desc())
                 .all()
             )
             for row in rows:
-                if row.strategy_id and row.ticker not in strategy_map:
+                if (
+                    row.strategy_id
+                    and row.status in ("filled", "partially_filled")
+                    and row.ticker not in strategy_map
+                ):
                     strategy_map[row.ticker] = row.strategy_id
                     entry_price_map[row.ticker] = row.fill_price or row.order_price or 0.0
+            for row in rows:
+                position = position_map.get(row.ticker)
+                if (
+                    row.strategy_id
+                    and row.ticker not in strategy_map
+                    and position is not None
+                    and row.qty == position.quantity
+                ):
+                    strategy_map[row.ticker] = row.strategy_id
+                    entry_price_map[row.ticker] = row.order_price or position.avg_price
         for ticker, position in position_map.items():
             if position is None:
                 continue
             market_value = position.market_value
+            if position.quantity <= 0 or market_value <= 0:
+                continue
             exposure = market_value / total_value if total_value > 0 else 0.0
             current_price = (
                 position.current_price
                 if position.current_price is not None
                 else position.avg_price
             )
+            strategy_id = strategy_map.get(ticker, "broker")
+            stop_price = stop_loss_price(
+                strategy_map.get(ticker),
+                entry_price_map.get(ticker),
+            )
             holdings.append(
                 HoldingItem(
                     ticker=ticker,
                     name=position.name or name_map.get(ticker, ""),
-                    strategy_id=strategy_map.get(ticker, "broker"),
+                    strategy_id=strategy_id,
                     entry_price=position.avg_price,
                     current_price=current_price,
                     pnl_pct=(
@@ -151,10 +171,7 @@ def _broker_holdings(db: Session) -> tuple[list[HoldingItem], float, int]:
                         else None
                     ),
                     exposure_pct=exposure,
-                    stop_price=stop_loss_price(
-                        strategy_map.get(ticker),
-                        entry_price_map.get(ticker),
-                    ),
+                    stop_price=stop_price,
                 )
             )
         max_exposure = max((item.exposure_pct for item in holdings), default=0.0)
