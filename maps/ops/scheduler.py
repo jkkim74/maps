@@ -1170,21 +1170,31 @@ class OperationalPipeline:
         if latest_date is None:
             return []
 
+        min_score = self._settings.maps_candidate_min_score
         eligible_stages = {"mock_candidate", "live_candidate", "live"}
         latest_promotions = self._latest_promotions(db)
         rows = (
             db.query(CandidateSnapshot)
             .filter(CandidateSnapshot.ref_date == latest_date)
             .filter(CandidateSnapshot.weekly_pass.is_(True))
+            .filter(CandidateSnapshot.final_score >= min_score)
             .order_by(CandidateSnapshot.final_score.desc(), CandidateSnapshot.trend_strength.desc())
             .all()
         )
         claimed = claimed_candidate_tickers(db, since=latest_date)
-        return [
-            row for row in rows
-            if latest_promotions.get(row.strategy_id) in eligible_stages
-            and row.ticker not in claimed
-        ]
+        # ticker당 최고 score 전략 1개만 사용 (동일 종목 중복 제거)
+        seen_tickers: set[str] = set()
+        result: list[CandidateSnapshot] = []
+        for row in rows:
+            if latest_promotions.get(row.strategy_id) not in eligible_stages:
+                continue
+            if row.ticker in claimed:
+                continue
+            if row.ticker in seen_tickers:
+                continue
+            seen_tickers.add(row.ticker)
+            result.append(row)
+        return result
 
     @staticmethod
     def _latest_promotions(db: Session) -> dict[str, str]:

@@ -50,7 +50,7 @@ def _latest_promotions(db: Session) -> dict[str, str]:
     return latest
 
 
-def _get_order_candidates(db: Session) -> list[CandidateSnapshot]:
+def _get_order_candidates(db: Session, min_score: float = 0.0) -> list[CandidateSnapshot]:
     """주문 가능 전략의 최신 후보 종목을 final_score 내림차순으로 반환한다."""
     latest_date = (
         db.query(CandidateSnapshot.ref_date)
@@ -66,17 +66,25 @@ def _get_order_candidates(db: Session) -> list[CandidateSnapshot]:
         db.query(CandidateSnapshot)
         .filter(CandidateSnapshot.ref_date == latest_date)
         .filter(CandidateSnapshot.weekly_pass.is_(True))
+        .filter(CandidateSnapshot.final_score >= min_score)
         .order_by(CandidateSnapshot.final_score.desc(), CandidateSnapshot.trend_strength.desc())
         .all()
     )
     claimed = claimed_candidate_tickers(db, since=latest_date)
     held = _held_tickers(db)
-    return [
-        row for row in rows
-        if promotions.get(row.strategy_id) in _ELIGIBLE_STAGES
-        and row.ticker not in claimed
-        and row.ticker not in held
-    ]
+    # ticker당 최고 score 전략 1개만 사용 (동일 종목 중복 표시 제거)
+    seen_tickers: set[str] = set()
+    result: list[CandidateSnapshot] = []
+    for row in rows:
+        if promotions.get(row.strategy_id) not in _ELIGIBLE_STAGES:
+            continue
+        if row.ticker in claimed or row.ticker in held:
+            continue
+        if row.ticker in seen_tickers:
+            continue
+        seen_tickers.add(row.ticker)
+        result.append(row)
+    return result
 
 
 def _has_candidate_snapshot(db: Session) -> bool:
@@ -143,7 +151,7 @@ def build_order_preview(db: Session, settings: MapsSettings) -> OrderPreviewResp
     today = dt.date.today()
     next_day = next_trading_day(today)
 
-    candidates = _get_order_candidates(db)
+    candidates = _get_order_candidates(db, min_score=settings.maps_candidate_min_score)
     data_available = _has_candidate_snapshot(db)
 
     ref_date = candidates[0].ref_date if candidates else today
