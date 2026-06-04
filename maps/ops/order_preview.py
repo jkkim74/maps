@@ -70,10 +70,12 @@ def _get_order_candidates(db: Session) -> list[CandidateSnapshot]:
         .all()
     )
     claimed = claimed_candidate_tickers(db, since=latest_date)
+    held = _held_tickers(db)
     return [
         row for row in rows
         if promotions.get(row.strategy_id) in _ELIGIBLE_STAGES
         and row.ticker not in claimed
+        and row.ticker not in held
     ]
 
 
@@ -118,6 +120,19 @@ def _get_assumed_balance(db: Session) -> tuple[float, float]:
     if row and row.total_assets and row.total_assets > 0:
         return float(row.total_assets), float(row.cash)
     return 100_000_000.0, 100_000_000.0  # 기본 1억원
+
+
+def _held_tickers(db: Session) -> set[str]:
+    """broker_sync가 저장한 최신 보유 종목 집합을 반환한다."""
+    row = (
+        db.query(PortfolioSnapshot)
+        .filter(PortfolioSnapshot.source == "broker")
+        .order_by(PortfolioSnapshot.ref_date.desc())
+        .first()
+    )
+    if row and row.holdings:
+        return {t for t, qty in row.holdings.items() if qty > 0}
+    return set()
 
 
 # ── 최상위 조립 함수 ──────────────────────────────────────────────────────────

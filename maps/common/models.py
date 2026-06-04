@@ -14,6 +14,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     Integer,
+    JSON,
     String,
     Text,
     UniqueConstraint,
@@ -162,6 +163,7 @@ class PortfolioSnapshot(Base):
     total_assets: Mapped[float] = mapped_column(Float, nullable=False)
     cash: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     positions_value: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    holdings: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc)
     )

@@ -287,7 +287,8 @@ class OperationalPipeline:
             broker = get_broker(self._settings.maps_broker_mode)
             manager = OrderManager(broker=broker, risk=RiskManager(broker=broker, db=db), db=db)
             sync = manager.sync_broker_state()
-            self._save_portfolio_snapshot(db, ref_date, sync)
+            holdings = self._broker_positions(broker) or None
+            self._save_portfolio_snapshot(db, ref_date, sync, holdings=holdings)
             live_enabled = self._settings.maps_live_trading_enabled
             submitted_orders = 0
             skipped_orders = 0
@@ -314,11 +315,12 @@ class OperationalPipeline:
                 submitted_orders = submitted_sell_orders + submitted_buy_orders
                 skipped_orders = skipped_sell_orders + skipped_buy_orders
                 final_balance = broker.get_account_balance()
+                holdings = self._broker_positions(broker) or None
                 self._save_portfolio_snapshot(db, ref_date, {
                     "cash": final_balance.cash,
                     "positions_value": final_balance.positions_value,
                     "total_assets": final_balance.total_value,
-                })
+                }, holdings=holdings)
             else:
                 note = "Order submission disabled by MAPS_LIVE_TRADING_ENABLED=false."
 
@@ -355,7 +357,8 @@ class OperationalPipeline:
             broker = get_broker(self._settings.maps_broker_mode)
             manager = OrderManager(broker=broker, risk=RiskManager(broker=broker, db=db), db=db)
             sync = manager.sync_broker_state()
-            self._save_portfolio_snapshot(db, ref_date, sync)
+            holdings = self._broker_positions(broker) or None
+            self._save_portfolio_snapshot(db, ref_date, sync, holdings=holdings)
             live_enabled = self._settings.maps_live_trading_enabled
             market_open = False
             submitted_sell_orders = 0
@@ -384,7 +387,8 @@ class OperationalPipeline:
                         "positions_value": final_balance.positions_value,
                         "total_assets": final_balance.total_value,
                     }
-                    self._save_portfolio_snapshot(db, ref_date, sync)
+                    holdings = self._broker_positions(broker) or None
+                    self._save_portfolio_snapshot(db, ref_date, sync, holdings=holdings)
 
             self._write_log(
                 db,
@@ -918,7 +922,12 @@ class OperationalPipeline:
         return len(ranked)
 
     @staticmethod
-    def _save_portfolio_snapshot(db: Session, ref_date: dt.date, sync: dict[str, float | int]) -> None:
+    def _save_portfolio_snapshot(
+        db: Session,
+        ref_date: dt.date,
+        sync: dict[str, float | int],
+        holdings: dict[str, int] | None = None,
+    ) -> None:
         cash = float(sync.get("cash", 0.0))
         positions_value = float(sync.get("positions_value", 0.0))
         total_assets = float(sync.get("total_assets", cash + positions_value))
@@ -935,12 +944,15 @@ class OperationalPipeline:
                     total_assets=total_assets,
                     cash=cash,
                     positions_value=positions_value,
+                    holdings=holdings,
                 )
             )
         else:
             row.total_assets = total_assets
             row.cash = cash
             row.positions_value = positions_value
+            if holdings is not None:
+                row.holdings = holdings
             row.updated_at = dt.datetime.now(dt.timezone.utc)
         db.commit()
 
