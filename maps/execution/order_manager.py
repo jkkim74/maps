@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import date, datetime, time as dt_time
+import zoneinfo
+from datetime import date, datetime, time as dt_time, timedelta
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -120,7 +121,10 @@ class OrderManager:
 
     def sync_broker_state(self) -> dict[str, float | int]:
         """Sync same-day broker fills/open orders into order_log."""
-        today_start = datetime.combine(date.today(), dt_time.min)
+        # 주문 시각(8:55 KST = 23:55 UTC)이 UTC 날짜 경계를 넘지 않도록 KST 자정 기준으로 만료
+        _KST = zoneinfo.ZoneInfo("Asia/Seoul")
+        today_kst = datetime.now(_KST).date()
+        today_start = datetime.combine(today_kst, dt_time.min) - timedelta(hours=9)
         expired = self.expire_pending_orders(before=today_start)
         balance = self._broker.get_account_balance()
         sync_errors = 0
