@@ -25,8 +25,12 @@ def get_orders(db: Session = Depends(get_db)) -> OrdersResponse:
     """주문 큐 및 금일 체결 이력을 반환한다."""
     import datetime
 
-    today = datetime.date.today()
-    week_start = datetime.datetime.combine(today - datetime.timedelta(days=7), datetime.time.min)
+    import zoneinfo
+    _KST = zoneinfo.ZoneInfo("Asia/Seoul")
+    today_kst = datetime.datetime.now(_KST).date()
+    # KST 자정 기준으로 "오늘" 산정 (8:55 KST 주문 = 23:55 UTC 전날 포함)
+    kst_today_start = datetime.datetime.combine(today_kst, datetime.time.min) - datetime.timedelta(hours=9)
+    week_start = kst_today_start - datetime.timedelta(days=7)
 
     rows = (
         db.query(OrderLog)
@@ -73,6 +77,8 @@ def get_orders(db: Session = Depends(get_db)) -> OrdersResponse:
         )
         for r in rows
         if r.status in ("filled", "FILLED", "partially_filled", "PARTIAL")
+        and r.created_at is not None
+        and r.created_at >= kst_today_start
     ]
     expired_orders = [
         OrderQueueItem(
