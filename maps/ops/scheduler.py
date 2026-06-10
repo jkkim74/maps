@@ -36,7 +36,7 @@ from maps.common.models import (
 )
 from maps.common.settings import MapsSettings, get_settings
 from maps.backtest.engine import BacktestEngine, BacktestResult
-from maps.common.exceptions import BacktestError, DuplicateOrderError, ValidationError
+from maps.common.exceptions import BacktestError, DuplicateOrderError, KillSwitchError, ValidationError
 from maps.data.collector import DataCollector
 from maps.data.ohlcv_repo import HistoricalOHLCVRepository
 from maps.data.krx_adapter import CollectionResult, KRXAdapter, MockKRXAdapter, SecurityMeta
@@ -44,11 +44,12 @@ from maps.data.security_repo import HaltPeriod, ManagedPeriod, Security
 from maps.data_quality.universe_filter import DataQualityFilter, UniverseResult
 from maps.execution.broker_adapter import Order, OrderSide, OrderType, Position, get_broker
 from maps.execution.order_manager import OrderManager
+from maps.market.regime import RegimeResult, WeeklyTrendLabel, create_regime_analyzer
 from maps.market.trading_rules import is_krx_closed_date, round_up_krx_price
 from maps.ops.notifications import SlackNotifier
 from maps.ops.order_state import claimed_candidate_tickers
 from maps.promotion.gate import PromotionGate, PromotionStage
-from maps.risk.manager import RiskManager
+from maps.risk.manager import RiskConfig, RiskManager
 from maps.strategy.ath_breakout_v1 import ATHBreakoutV1Strategy
 from maps.strategy.ath_breakout_v2 import ATHBreakoutV2Strategy
 from maps.strategy.base import BaseStrategy
@@ -58,6 +59,7 @@ from maps.strategy.multi_asset_trend_v1 import MultiAssetTrendV1Strategy
 from maps.strategy.pullback_v2 import PullbackV2Strategy
 from maps.strategy.pullback_v3 import PullbackV3Strategy
 from maps.strategy.live_rules import stop_loss_price
+from maps.indicator.trend_strength import TrendStrengthCalculator
 from maps.stock_report.runner import run_all_reports_if_idle
 from maps.validation.monte_carlo import MonteCarloValidator
 from maps.validation.plateau import ParameterPlateauTester
@@ -208,10 +210,21 @@ class OperationalPipeline:
             # DataQualityFilter 유니버스는 유동성·데이터 품질 기반 공통 후보군이므로
             # 전략별로 별도 필터링 없이 공유할 수 있다.
             # 각 전략의 진입 신호는 order_cycle 에서 generate_signals() 로 별도 계산된다.
+            # 시황 분석 → weekly_pass 결정
+            regime = self._analyze_regime()
+            weekly_pass = (regime.weekly_trend == WeeklyTrendLabel.PASS)
+            logger.info(
+                "시황 분석: regime=%s trend=%s entry_limit=%.2f → weekly_pass=%s",
+                regime.regime.value,
+                regime.weekly_trend.value,
+                regime.entry_limit_ratio,
+                weekly_pass,
+            )
+
             saved_count = 0
             for strategy_id in _RUNNABLE_STRATEGIES:
                 saved_count += self._save_candidate_snapshot(
-                    db, ref_date, strategy_id, result.universe
+                    db, ref_date, strategy_id, result.universe, weekly_pass=weekly_pass
                 )
             self._last_universe = result
             return {
@@ -285,7 +298,7 @@ class OperationalPipeline:
 
         def _run(db: Session) -> dict:
             broker = get_broker(self._settings.maps_broker_mode)
-            manager = OrderManager(broker=broker, risk=RiskManager(broker=broker, db=db), db=db)
+            manager = OrderManager(broker=broker, risk=self._make_risk_manager(broker, db), db=db)
             sync = manager.sync_broker_state()
             holdings = self._broker_positions(broker) or None
             self._save_portfolio_snapshot(db, ref_date, sync, holdings=holdings)
@@ -305,13 +318,25 @@ class OperationalPipeline:
                     manager=manager,
                     ref_date=ref_date,
                 )
-                submitted_buy_orders, skipped_buy_orders = self._submit_candidate_orders(
-                    db=db,
-                    broker=broker,
-                    manager=manager,
-                    ref_date=ref_date,
-                    blocked_tickers=exit_tickers,
-                )
+                # H-3: OHLCV 데이터 신선도 검증 — 5일 이상 오래된 데이터면 매수 스킵
+                data_fresh, latest_ohlcv_date, expected_ohlcv_date = self._is_data_fresh(db, ref_date)
+                if data_fresh:
+                    submitted_buy_orders, skipped_buy_orders = self._submit_candidate_orders(
+                        db=db,
+                        broker=broker,
+                        manager=manager,
+                        ref_date=ref_date,
+                        blocked_tickers=exit_tickers,
+                    )
+                else:
+                    logger.warning(
+                        "OHLCV 데이터 오래됨 (ref_date=%s) — 매수 주문 전량 스킵", ref_date
+                    )
+                    submitted_buy_orders, skipped_buy_orders = 0, 0
+                    note = (
+                        "stale_data: buy orders skipped "
+                        f"latest={latest_ohlcv_date} expected>={expected_ohlcv_date}"
+                    )
                 submitted_orders = submitted_sell_orders + submitted_buy_orders
                 skipped_orders = skipped_sell_orders + skipped_buy_orders
                 final_balance = broker.get_account_balance()
@@ -355,7 +380,7 @@ class OperationalPipeline:
 
         def _run(db: Session) -> dict:
             broker = get_broker(self._settings.maps_broker_mode)
-            manager = OrderManager(broker=broker, risk=RiskManager(broker=broker, db=db), db=db)
+            manager = OrderManager(broker=broker, risk=self._make_risk_manager(broker, db), db=db)
             sync = manager.sync_broker_state()
             holdings = self._broker_positions(broker) or None
             self._save_portfolio_snapshot(db, ref_date, sync, holdings=holdings)
@@ -373,6 +398,13 @@ class OperationalPipeline:
 
             exit_monitor_active = live_enabled and market_open
             if exit_monitor_active:
+                # H-2: 손절 정확도 향상 — 장중 현재가로 price_feed 갱신
+                held_tickers = list(self._broker_position_details(broker).keys())
+                if held_tickers and hasattr(broker, "update_prices"):
+                    intraday = self._fetch_intraday_prices(held_tickers)
+                    if intraday:
+                        broker.update_prices(intraday)
+                        logger.info("장중 현재가 갱신: %d종목", len(intraday))
                 submitted_sell_orders, skipped_sell_orders, exit_tickers = self._submit_exit_orders(
                     db=db,
                     broker=broker,
@@ -420,7 +452,7 @@ class OperationalPipeline:
 
         def _run(db: Session) -> dict:
             broker = get_broker(self._settings.maps_broker_mode)
-            manager = OrderManager(broker=broker, risk=RiskManager(broker=broker, db=db), db=db)
+            manager = OrderManager(broker=broker, risk=self._make_risk_manager(broker, db), db=db)
             cancelled = 0
             try:
                 open_orders = broker.get_open_orders()
@@ -887,6 +919,8 @@ class OperationalPipeline:
         ref_date: dt.date,
         strategy_id: str,
         universe: list[Security],
+        *,
+        weekly_pass: bool = True,
     ) -> int:
         db.execute(
             delete(CandidateSnapshot).where(
@@ -900,9 +934,29 @@ class OperationalPipeline:
             reverse=True,
         )
         max_turnover = max((stock.avg_turnover_20d_as_of(ref_date) for stock in ranked), default=0.0)
+
+        repo = HistoricalOHLCVRepository(db)
+        ts_calc = TrendStrengthCalculator()
+
         for stock in ranked:
             turnover = stock.avg_turnover_20d_as_of(ref_date)
-            score = (turnover / max_turnover * 100.0) if max_turnover > 0 else 0.0
+            factor_score = (turnover / max_turnover * 100.0) if max_turnover > 0 else 0.0
+
+            # 실제 추세강도 계산 (데이터 부족 시 중립값 50.0 / "S3" 사용)
+            trend_strength = 50.0
+            ts_bucket = "S3"
+            try:
+                ohlcv_df = repo.to_dataframe(stock.ticker, end=ref_date)
+                ts_score = ts_calc.score_one(stock.ticker, ohlcv_df, ref_date)
+                if ts_score is not None:
+                    trend_strength = ts_score.score
+                    ts_bucket = ts_score.bucket
+            except Exception:  # noqa: BLE001
+                pass  # OHLCV 없으면 중립값 유지
+
+            # final_score: 유동성(거래대금) 60% + 추세강도 40%
+            final_score = round(0.6 * factor_score + 0.4 * trend_strength, 2)
+
             db.add(
                 CandidateSnapshot(
                     ref_date=ref_date,
@@ -910,11 +964,11 @@ class OperationalPipeline:
                     ticker=stock.ticker,
                     name=stock.name,
                     market=stock.market,
-                    factor_score=round(score, 2),
-                    trend_strength=50.0,
-                    ts_bucket="S3",
-                    final_score=round(score, 2),
-                    weekly_pass=True,
+                    factor_score=round(factor_score, 2),
+                    trend_strength=round(trend_strength, 2),
+                    ts_bucket=ts_bucket,
+                    final_score=final_score,
+                    weekly_pass=weekly_pass,
                     estimated_qty=None,
                 )
             )
@@ -965,13 +1019,30 @@ class OperationalPipeline:
         ref_date: dt.date,
         blocked_tickers: set[str] | None = None,
     ) -> tuple[int, int]:
+        # ── C-2/C-3: 시황 분석 → 진입 한도 비율 적용 ─────────────────────────
+        regime = self._analyze_regime()
+        limit_ratio = regime.entry_limit_ratio
+        candidates = self._order_candidates(db, ref_date)
+        if limit_ratio == 0.0:
+            logger.warning(
+                "시황 진입 한도 0.0 (regime=%s trend=%s) — 매수 주문 전량 스킵",
+                regime.regime.value,
+                regime.weekly_trend.value,
+            )
+            return 0, len(candidates)
+
+        # ── C-1: 당일 포트폴리오 손익률 계산 → Kill Switch 연동 ───────────────
+        daily_pnl = self._calc_daily_pnl(db, ref_date)
+        if daily_pnl != 0.0:
+            logger.info("당일 손익률: %.2f%%", daily_pnl * 100)
+
         account = broker.get_account_balance()
         remaining_cash = account.cash
         positions = self._broker_positions(broker)
-        candidates = self._order_candidates(db, ref_date)
         submitted = 0
         skipped = 0
-        max_orders = 3
+        # STRONG(1.0)→3건, MIXED(0.5)→2건, WEAK(0.25)→1건
+        max_orders = max(1, round(3 * limit_ratio))
         blocked_tickers = blocked_tickers or set()
 
         slippage_pct = self._settings.maps_order_slippage_pct
@@ -1051,7 +1122,17 @@ class OperationalPipeline:
                 ),
             )
             try:
-                manager.submit(order)
+                manager.submit(order, daily_pnl=daily_pnl)
+            except KillSwitchError as exc:
+                # Kill Switch 발동: 당일 추가 매수 전량 중단 (포지션 청산은 별도 승인 필요)
+                logger.warning(
+                    "Kill Switch 발동으로 매수 중단 [%s %s]: %s",
+                    candidate.strategy_id,
+                    candidate.ticker,
+                    exc,
+                )
+                skipped += 1
+                break
             except DuplicateOrderError:
                 logger.info(
                     "Order skipped [%s %s]: already submitted",
@@ -1205,14 +1286,13 @@ class OperationalPipeline:
         """
         rows = (
             db.query(PromotionHistory)
-            .filter(PromotionHistory.passed.is_(True))
             .order_by(PromotionHistory.evaluated_at.desc(), PromotionHistory.id.desc())
             .all()
         )
         latest: dict[str, str] = {}
         for row in rows:
             if row.strategy_id not in latest:
-                latest[row.strategy_id] = row.to_stage
+                latest[row.strategy_id] = row.to_stage if row.passed else PromotionStage.REJECTED.value
         return latest
 
     @staticmethod
@@ -1282,6 +1362,116 @@ class OperationalPipeline:
         if candidate.estimated_qty and candidate.estimated_qty > 0:
             return min(int(candidate.estimated_qty), max_qty)
         return max_qty
+
+    def _analyze_regime(self) -> RegimeResult:
+        """현재 시황을 분석한다. 실패 시 혼조(mixed)+통과(pass) 기본값을 반환한다."""
+        try:
+            return create_regime_analyzer(self._settings).analyze()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("시황 분석 실패, 기본값(MIXED+PASS) 사용: %s", exc)
+            from maps.market.regime import RegimeLabel  # noqa: PLC0415
+            return RegimeResult(
+                regime=RegimeLabel.WEAK,
+                weekly_trend=WeeklyTrendLabel.FAIL,
+                limit_ratio=0.0,
+                kospi_ts=None,
+            )
+
+    def _make_risk_manager(self, broker, db: Session) -> RiskManager:
+        return RiskManager(
+            broker=broker,
+            db=db,
+            config=RiskConfig(
+                daily_loss_limit=self._settings.daily_loss_limit,
+                position_size_limit=self._settings.max_single_exposure,
+            ),
+        )
+
+    @staticmethod
+    def _calc_daily_pnl(db: Session, ref_date: dt.date) -> float:
+        """당일 포트폴리오 손익률을 계산한다.
+
+        오늘 스냅샷과 직전 거래일 스냅샷의 total_assets 차이를 비율로 반환한다.
+        스냅샷이 부족하면 0.0(Kill Switch 미발동)을 반환한다.
+        """
+        today_snap = (
+            db.query(PortfolioSnapshot)
+            .filter(
+                PortfolioSnapshot.ref_date == ref_date,
+                PortfolioSnapshot.source == "broker",
+            )
+            .first()
+        )
+        prev_snap = (
+            db.query(PortfolioSnapshot)
+            .filter(
+                PortfolioSnapshot.ref_date < ref_date,
+                PortfolioSnapshot.source == "broker",
+            )
+            .order_by(PortfolioSnapshot.ref_date.desc())
+            .first()
+        )
+        if today_snap and prev_snap and prev_snap.total_assets > 0:
+            return (today_snap.total_assets - prev_snap.total_assets) / prev_snap.total_assets
+        return 0.0
+
+    @staticmethod
+    def _fetch_intraday_prices(tickers: list[str]) -> dict[str, float]:
+        """pykrx로 장중 현재가를 조회한다 (15분 지연 KRX 데이터).
+
+        종목 목록을 받아 {ticker: 현재가} 딕셔너리를 반환한다.
+        pykrx 미설치 또는 오류 발생 시 빈 딕셔너리를 반환한다.
+        """
+        try:
+            from pykrx import stock as _krx  # noqa: PLC0415
+        except ImportError:
+            return {}
+        today = dt.date.today().strftime("%Y%m%d")
+        prices: dict[str, float] = {}
+        for ticker in tickers:
+            try:
+                df = _krx.get_market_ohlcv_by_date(today, today, ticker, freq="d")
+                if df is None or df.empty:
+                    continue
+                close_col = (
+                    "종가" if "종가" in df.columns
+                    else "Close" if "Close" in df.columns
+                    else None
+                )
+                if close_col is None:
+                    continue
+                val = float(df[close_col].iloc[-1])
+                if val > 0:
+                    prices[ticker] = val
+            except Exception:  # noqa: BLE001
+                pass
+        return prices
+
+    @staticmethod
+    def _expected_ohlcv_date(ref_date: dt.date) -> dt.date:
+        """Return the latest KRX trading day that should be available pre-open."""
+        expected = ref_date - dt.timedelta(days=1)
+        closed_dates = get_settings().krx_closed_dates
+        while is_krx_closed_date(expected, extra_closed_dates=closed_dates):
+            expected -= dt.timedelta(days=1)
+        return expected
+
+    @classmethod
+    def _is_data_fresh(cls, db: Session, ref_date: dt.date) -> tuple[bool, dt.date | None, dt.date]:
+        """OHLCV 데이터가 ref_date 기준으로 최신인지 확인한다.
+
+        최근 OHLCV 날짜가 ref_date - max_lag_days 보다 오래됐으면 False 를 반환한다.
+        데이터가 없으면 False 를 반환한다.
+        """
+        row = (
+            db.query(HistoricalOHLCV)
+            .order_by(HistoricalOHLCV.date.desc())
+            .first()
+        )
+        expected = cls._expected_ohlcv_date(ref_date)
+        if row is None:
+            return False, None, expected
+        return row.date >= expected, row.date, expected
 
     @staticmethod
     def _broker_positions(broker) -> dict[str, int]:

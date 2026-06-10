@@ -9,6 +9,7 @@ from sqlalchemy.pool import StaticPool
 from maps.common.db import Base
 import datetime as dt
 import math
+import pytest
 from types import SimpleNamespace
 
 from maps.common.models import (
@@ -810,7 +811,7 @@ def test_latest_promotion_rows_ignores_failed_evaluations() -> None:
         engine.dispose()
 
 
-def test_latest_promotions_ignores_failed_evaluations() -> None:
+def test_latest_promotions_blocks_after_latest_failed_evaluation() -> None:
     """_latest_promotions (주문 주기용) 도 passed=True 만 봐야 한다.
 
     회귀 테스트:
@@ -844,8 +845,502 @@ def test_latest_promotions_ignores_failed_evaluations() -> None:
     db = factory()
     try:
         latest = OperationalPipeline._latest_promotions(db)
-        assert latest.get("pullback_v3") == "mock_candidate"
+        assert latest.get("pullback_v3") == "rejected"
     finally:
         db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+# ── C-1: 일일 손익률 계산 테스트 ─────────────────────────────────────────────
+
+def test_calc_daily_pnl_returns_correct_ratio() -> None:
+    """전일 대비 오늘 total_assets 차이가 비율로 정확히 반환되는지 검증."""
+    engine, factory = _session_factory()
+    ref_date = dt.date(2026, 5, 8)
+    prev_date = dt.date(2026, 5, 7)
+
+    db = factory()
+    try:
+        db.add(PortfolioSnapshot(
+            ref_date=prev_date, source="broker",
+            total_assets=100_000_000, cash=100_000_000, positions_value=0,
+        ))
+        db.add(PortfolioSnapshot(
+            ref_date=ref_date, source="broker",
+            total_assets=95_000_000, cash=95_000_000, positions_value=0,
+        ))
+        db.commit()
+
+        pnl = OperationalPipeline._calc_daily_pnl(db, ref_date)
+        assert abs(pnl - (-0.05)) < 1e-9
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def test_calc_daily_pnl_returns_zero_when_no_previous_snapshot() -> None:
+    """전일 스냅샷이 없으면 0.0을 반환해 Kill Switch가 발동되지 않는지 검증."""
+    engine, factory = _session_factory()
+    ref_date = dt.date(2026, 5, 8)
+
+    db = factory()
+    try:
+        db.add(PortfolioSnapshot(
+            ref_date=ref_date, source="broker",
+            total_assets=100_000_000, cash=100_000_000, positions_value=0,
+        ))
+        db.commit()
+
+        pnl = OperationalPipeline._calc_daily_pnl(db, ref_date)
+        assert pnl == 0.0
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+# ── C-2/C-3: 시황 오버라이드 + 진입 한도 적용 테스트 ──────────────────────────
+
+def test_order_cycle_skips_all_buys_when_regime_override_is_fail(monkeypatch) -> None:
+    """MAPS_WEEKLY_TREND_OVERRIDE=fail 일 때 매수 주문이 전량 스킵되는지 검증."""
+    engine, factory = _session_factory()
+    settings = MapsSettings(
+        maps_broker_mode="mock",
+        maps_data_provider="mock",
+        maps_live_trading_enabled=True,
+        maps_weekly_trend_override="fail",
+    )
+    pipeline = OperationalPipeline(settings=settings, session_factory=factory)
+    _force_entry_signal(monkeypatch)
+    ref_date = dt.date(2026, 5, 5)
+
+    db = factory()
+    try:
+        db.add(HistoricalOHLCV(
+            ticker="AAAA", date=ref_date,
+            open=10_000, high=10_000, low=10_000, close=10_000, volume=100_000,
+        ))
+        db.add(CandidateSnapshot(
+            ref_date=ref_date, strategy_id="pullback_v3", ticker="AAAA",
+            name="AAAA", market="KOSPI", factor_score=90, trend_strength=80,
+            ts_bucket="S5", final_score=95, weekly_pass=True,
+        ))
+        db.add(PromotionHistory(
+            strategy_id="pullback_v3", from_stage="alert_only",
+            to_stage="mock_candidate", tradeability_score=70, passed=True,
+            evaluated_at=dt.datetime(2026, 5, 5, 8, 0),
+        ))
+        db.commit()
+    finally:
+        db.close()
+
+    run = pipeline.run_order_cycle(ref_date)
+
+    assert run.status == "success"
+    assert run.details["submitted_buy_orders"] == 0
+
+    db = factory()
+    try:
+        assert db.query(OrderLog).filter(OrderLog.side == "buy").count() == 0
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def test_generate_candidates_sets_weekly_pass_false_when_trend_override_is_fail() -> None:
+    """MAPS_WEEKLY_TREND_OVERRIDE=fail 일 때 후보 weekly_pass 가 False로 저장되는지 검증."""
+    engine, factory = _session_factory()
+    settings = MapsSettings(
+        maps_broker_mode="mock",
+        maps_data_provider="mock",
+        maps_live_trading_enabled=False,
+        maps_weekly_trend_override="fail",
+    )
+    pipeline = OperationalPipeline(settings=settings, session_factory=factory)
+
+    pipeline.collect_data()
+    pipeline.generate_candidates()
+
+    db = factory()
+    try:
+        snapshots = db.query(CandidateSnapshot).all()
+        assert len(snapshots) > 0
+        assert all(not snap.weekly_pass for snap in snapshots), (
+            "모든 후보의 weekly_pass 가 False 여야 함 (trend=fail)"
+        )
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def test_kill_switch_triggers_when_daily_pnl_exceeds_limit(monkeypatch) -> None:
+    """daily_pnl 이 -1.5% 이하일 때 Kill Switch 가 발동되어 매수가 차단되는지 검증.
+
+    run_order_cycle() 이 생성하는 MockBroker 를 98M 잔고로 교체해 -2% 손실을 시뮬레이션.
+    """
+    import maps.ops.scheduler as scheduler_module
+
+    engine, factory = _session_factory()
+    settings = MapsSettings(
+        maps_broker_mode="mock",
+        maps_data_provider="mock",
+        maps_live_trading_enabled=True,
+        daily_loss_limit=0.015,
+    )
+    pipeline = OperationalPipeline(settings=settings, session_factory=factory)
+    _force_entry_signal(monkeypatch)
+    ref_date = dt.date(2026, 5, 8)
+    prev_date = dt.date(2026, 5, 7)
+
+    # 전일 스냅샷 100M, 오늘 브로커 잔고 98M (-2%) 시뮬레이션
+    loss_broker = MockBroker(initial_cash=98_000_000)
+    monkeypatch.setattr(scheduler_module, "get_broker", lambda _mode: loss_broker)
+
+    db = factory()
+    try:
+        db.add(PortfolioSnapshot(
+            ref_date=prev_date, source="broker",
+            total_assets=100_000_000, cash=100_000_000, positions_value=0,
+        ))
+        db.add(HistoricalOHLCV(
+            ticker="AAAA", date=ref_date,
+            open=10_000, high=10_000, low=10_000, close=10_000, volume=100_000,
+        ))
+        db.add(CandidateSnapshot(
+            ref_date=ref_date, strategy_id="pullback_v3", ticker="AAAA",
+            name="AAAA", market="KOSPI", factor_score=90, trend_strength=80,
+            ts_bucket="S5", final_score=95, weekly_pass=True,
+        ))
+        db.add(PromotionHistory(
+            strategy_id="pullback_v3", from_stage="alert_only",
+            to_stage="mock_candidate", tradeability_score=70, passed=True,
+            evaluated_at=dt.datetime(2026, 5, 8, 8, 0),
+        ))
+        db.commit()
+    finally:
+        db.close()
+
+    run = pipeline.run_order_cycle(ref_date)
+
+    assert run.status == "success"
+    assert run.details["submitted_buy_orders"] == 0, (
+        "일일 손실 한도 초과로 Kill Switch 발동 → 매수 0건 기대"
+    )
+
+    db = factory()
+    try:
+        from maps.common.models import KillSwitchLog
+        ks = db.query(KillSwitchLog).filter(KillSwitchLog.strategy_id == "pullback_v3").first()
+        assert ks is not None, "Kill Switch 로그가 기록되어야 함"
+        assert ks.reason == "daily_loss_limit"
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# H-1: MockBroker 현재가 기반 포지션 평가 (스케줄러 통합)
+# ---------------------------------------------------------------------------
+
+def test_order_cycle_account_balance_reflects_updated_price(monkeypatch) -> None:
+    """MockBroker price_feed 갱신 후 get_account_balance() 가 시가 평가를 반환한다."""
+    broker = MockBroker(initial_cash=1_000_000, price_feed={"AAAA": 10_000})
+    from maps.execution.broker_adapter import Order, OrderSide, OrderType
+    broker.place_order(Order(
+        strategy_id="s1", ticker="AAAA", side=OrderSide.BUY,
+        order_type=OrderType.MARKET, quantity=10,
+    ))
+    # 가격 하락 반영
+    broker.set_price("AAAA", 8_000)
+
+    balance = broker.get_account_balance()
+    assert balance.positions_value == 10 * 8_000
+    assert balance.total_value == 900_000 + 80_000
+
+
+# ---------------------------------------------------------------------------
+# H-2: 장중 현재가 조회 메서드 단위 테스트
+# ---------------------------------------------------------------------------
+
+def test_fetch_intraday_prices_returns_empty_when_pykrx_unavailable(monkeypatch) -> None:
+    """pykrx 미설치 환경에서 _fetch_intraday_prices 가 빈 딕셔너리를 반환한다."""
+    import builtins
+    real_import = builtins.__import__
+
+    def _block_pykrx(name, *args, **kwargs):
+        if name == "pykrx" or name.startswith("pykrx."):
+            raise ImportError("pykrx not available")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _block_pykrx)
+    result = OperationalPipeline._fetch_intraday_prices(["005930", "000660"])
+    assert result == {}
+
+
+def test_sync_broker_updates_price_feed_when_exit_monitor_active(monkeypatch) -> None:
+    """exit_monitor_active 시 보유 종목의 현재가가 broker price_feed 에 반영된다."""
+    import maps.ops.scheduler as scheduler_module
+
+    engine, factory = _session_factory()
+    settings = MapsSettings(
+        maps_broker_mode="mock",
+        maps_data_provider="mock",
+        maps_live_trading_enabled=True,
+    )
+    pipeline = OperationalPipeline(settings=settings, session_factory=factory)
+
+    # MockBroker 에 보유 포지션 주입
+    held_broker = MockBroker(initial_cash=900_000, price_feed={"AAAA": 10_000})
+    held_broker.place_order(Order(
+        strategy_id="s1", ticker="AAAA", side=OrderSide.BUY,
+        order_type=OrderType.MARKET, quantity=10,
+    ))
+
+    monkeypatch.setattr(scheduler_module, "get_broker", lambda _mode: held_broker)
+
+    # is_market_open → True, _fetch_intraday_prices → 현재가 9,000원 반환
+    monkeypatch.setattr(held_broker, "is_market_open", lambda: True)
+    monkeypatch.setattr(
+        OperationalPipeline, "_fetch_intraday_prices",
+        staticmethod(lambda tickers: {"AAAA": 9_000}),
+    )
+
+    pipeline.sync_broker_state(dt.date(2026, 5, 5))
+
+    assert held_broker._price_feed.get("AAAA") == 9_000
+
+    engine.dispose()
+    Base.metadata.drop_all(engine)
+
+
+# ---------------------------------------------------------------------------
+# H-3: OHLCV 데이터 신선도 검증
+# ---------------------------------------------------------------------------
+
+def test_is_data_fresh_returns_true_when_data_is_recent() -> None:
+    """최신 OHLCV 날짜가 ref_date 5일 이내이면 True 를 반환한다."""
+    engine, factory = _session_factory()
+    ref_date = dt.date(2026, 5, 5)
+    db = factory()
+    try:
+        db.add(HistoricalOHLCV(
+            ticker="AAAA", date=ref_date,
+            open=10_000, high=10_000, low=10_000, close=10_000, volume=100_000,
+        ))
+        db.commit()
+        fresh, latest, expected = OperationalPipeline._is_data_fresh(db, ref_date)
+        assert fresh is True
+        assert latest == ref_date
+        assert expected <= ref_date
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def test_is_data_fresh_returns_false_when_data_is_stale() -> None:
+    """최신 OHLCV 날짜가 ref_date - 6일이면 False 를 반환한다."""
+    engine, factory = _session_factory()
+    ref_date = dt.date(2026, 5, 5)
+    stale_date = ref_date - dt.timedelta(days=6)
+    db = factory()
+    try:
+        db.add(HistoricalOHLCV(
+            ticker="AAAA", date=stale_date,
+            open=10_000, high=10_000, low=10_000, close=10_000, volume=100_000,
+        ))
+        db.commit()
+        fresh, latest, expected = OperationalPipeline._is_data_fresh(db, ref_date)
+        assert fresh is False
+        assert latest == stale_date
+        assert expected > stale_date
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def test_is_data_fresh_returns_false_when_no_ohlcv() -> None:
+    """OHLCV 데이터가 전혀 없으면 False 를 반환한다."""
+    engine, factory = _session_factory()
+    db = factory()
+    try:
+        fresh, latest, _expected = OperationalPipeline._is_data_fresh(db, dt.date(2026, 5, 5))
+        assert fresh is False
+        assert latest is None
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def test_order_cycle_skips_buy_when_ohlcv_is_stale(monkeypatch) -> None:
+    """OHLCV 데이터가 5일 이상 오래됐을 때 매수 주문이 전량 스킵된다."""
+    import maps.ops.scheduler as scheduler_module
+
+    engine, factory = _session_factory()
+    settings = MapsSettings(
+        maps_broker_mode="mock",
+        maps_data_provider="mock",
+        maps_live_trading_enabled=True,
+    )
+    pipeline = OperationalPipeline(settings=settings, session_factory=factory)
+    _force_entry_signal(monkeypatch)
+
+    ref_date = dt.date(2026, 5, 8)
+    stale_date = ref_date - dt.timedelta(days=7)  # 7일 전 데이터 → 신선도 실패
+
+    db = factory()
+    try:
+        # 오래된 OHLCV 데이터만 존재
+        db.add(HistoricalOHLCV(
+            ticker="AAAA", date=stale_date,
+            open=10_000, high=10_000, low=10_000, close=10_000, volume=100_000,
+        ))
+        db.add(CandidateSnapshot(
+            ref_date=ref_date, strategy_id="pullback_v3", ticker="AAAA",
+            name="AAAA", market="KOSPI", factor_score=90, trend_strength=80,
+            ts_bucket="S5", final_score=95, weekly_pass=True,
+        ))
+        db.add(PromotionHistory(
+            strategy_id="pullback_v3", from_stage="alert_only",
+            to_stage="mock_candidate", tradeability_score=70, passed=True,
+            evaluated_at=dt.datetime(2026, 5, 8, 8, 0),
+        ))
+        db.commit()
+    finally:
+        db.close()
+
+    run = pipeline.run_order_cycle(ref_date)
+
+    assert run.status == "success"
+    assert run.details["submitted_buy_orders"] == 0, "데이터 오래됨 → 매수 0건"
+
+    engine.dispose()
+    Base.metadata.drop_all(engine)
+
+
+# ---------------------------------------------------------------------------
+# M-1: 후보 스냅샷 저장 시 TrendStrengthCalculator 통합
+# ---------------------------------------------------------------------------
+
+def test_save_candidate_snapshot_uses_real_trend_strength() -> None:
+    """100봉 이상의 OHLCV 데이터가 있으면 trend_strength 가 50.0 이 아닌 실제 계산값으로 저장된다.
+
+    final_score = 0.6 * factor_score + 0.4 * trend_strength 공식 검증.
+    """
+    from maps.data.security_repo import Security
+    import datetime as dt_lib
+
+    engine, factory = _session_factory()
+    db = factory()
+    ref_date = dt.date(2026, 5, 5)
+
+    try:
+        # 상승 추세 OHLCV 120봉 삽입 (TrendStrengthCalculator min_bars=100 충족)
+        base_price = 10_000
+        for i in range(120):
+            day = ref_date - dt.timedelta(days=120 - i)
+            price = base_price + i * 50  # 매일 50원씩 상승
+            db.add(HistoricalOHLCV(
+                ticker="AAAA",
+                date=day,
+                open=price,
+                high=price + 100,
+                low=price - 50,
+                close=price,
+                volume=500_000,
+            ))
+        db.commit()
+    finally:
+        db.close()
+
+    settings = MapsSettings(
+        maps_broker_mode="mock",
+        maps_data_provider="mock",
+        maps_live_trading_enabled=False,
+    )
+    pipeline = OperationalPipeline(settings=settings, session_factory=factory)
+
+    # Security 객체 직접 생성 (turnover_cache 주입)
+    stock = Security(
+        ticker="AAAA",
+        name="테스트종목",
+        market="KOSPI",
+        security_type="STOCK",
+        turnover_cache={ref_date: 1_000_000_000},  # 10억 거래대금
+    )
+
+    db2 = factory()
+    try:
+        pipeline._save_candidate_snapshot(db2, ref_date, "pullback_v3", [stock])
+        snap = db2.query(CandidateSnapshot).filter(CandidateSnapshot.ticker == "AAAA").first()
+
+        assert snap is not None
+        # 상승 추세 → trend_strength 가 50.0 이 아니어야 함
+        assert snap.trend_strength != 50.0, "실제 OHLCV가 있으면 50.0 이 아닌 실제 값이어야 함"
+        # final_score = 0.6 * factor_score + 0.4 * trend_strength
+        expected_final = round(0.6 * snap.factor_score + 0.4 * snap.trend_strength, 2)
+        assert snap.final_score == expected_final, (
+            f"final_score={snap.final_score} ≠ blend({snap.factor_score}, {snap.trend_strength})={expected_final}"
+        )
+        # 단독 종목이므로 factor_score = 100.0
+        assert snap.factor_score == pytest.approx(100.0)
+    finally:
+        db2.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def test_save_candidate_snapshot_falls_back_when_insufficient_ohlcv() -> None:
+    """OHLCV 데이터가 부족하면 trend_strength=50.0, ts_bucket='S3' 으로 저장된다."""
+    from maps.data.security_repo import Security
+
+    engine, factory = _session_factory()
+    db = factory()
+    ref_date = dt.date(2026, 5, 5)
+
+    try:
+        # 10봉만 삽입 (min_bars=100 미만)
+        for i in range(10):
+            day = ref_date - dt.timedelta(days=10 - i)
+            db.add(HistoricalOHLCV(
+                ticker="BBBB", date=day,
+                open=5_000, high=5_100, low=4_900, close=5_000, volume=100_000,
+            ))
+        db.commit()
+    finally:
+        db.close()
+
+    settings = MapsSettings(
+        maps_broker_mode="mock",
+        maps_data_provider="mock",
+        maps_live_trading_enabled=False,
+    )
+    pipeline = OperationalPipeline(settings=settings, session_factory=factory)
+
+    stock = Security(
+        ticker="BBBB",
+        name="소형주",
+        market="KOSDAQ",
+        security_type="STOCK",
+        turnover_cache={ref_date: 500_000_000},
+    )
+
+    db2 = factory()
+    try:
+        pipeline._save_candidate_snapshot(db2, ref_date, "pullback_v3", [stock])
+        snap = db2.query(CandidateSnapshot).filter(CandidateSnapshot.ticker == "BBBB").first()
+
+        assert snap is not None
+        assert snap.trend_strength == pytest.approx(50.0), "데이터 부족 시 기본값 50.0"
+        assert snap.ts_bucket == "S3", "데이터 부족 시 기본 버킷 S3"
+    finally:
+        db2.close()
         Base.metadata.drop_all(engine)
         engine.dispose()

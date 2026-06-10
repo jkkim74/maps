@@ -26,11 +26,12 @@ maps/
 ## 핵심 설계 원칙 (반드시 준수)
 1. DataQualityFilter는 as-of-date 생성기. generate(ref_date) 형태.
    ref_date 이후 정보(폐지, 정지)는 절대 참조하지 않는다.
-2. WalkForwardAnalyzer 통과 조건 4개는 AND 조건:
+2. WalkForwardAnalyzer 통과 조건 3개는 AND 조건:
    - sharpe_mean > 0 (필수, 없으면 안정적 손실 전략 통과)
-   - std/|mean| <= 0.5
    - 음수 fold <= 1개
    - OOS/IS G2P >= 0.6
+   (std/|mean| <= 0.5 조건은 제거됨 — 변동성 자체를 통과 기준으로 삼으면
+   고수익·고변동 전략이 불합리하게 탈락하고, MDD/MC 가 실질 위험을 이미 통제)
 3. PromotionGate는 KeyError로 죽으면 안 됨. 모르는 전략 ID나
    없는 메트릭은 "fail with reason"으로 처리.
 4. BrokerAdapter는 추상 인터페이스. MockBroker만 Phase 4까지 사용.

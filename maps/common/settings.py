@@ -59,6 +59,10 @@ class MapsSettings(BaseSettings):
 
     maps_krx_closed_dates: str = ""
 
+    # 시황 분석 수동 오버라이드 (auto 이면 pykrx/yfinance 실데이터 분석)
+    maps_market_regime_override: Literal["auto", "strong", "mixed", "weak"] = "auto"
+    maps_weekly_trend_override: Literal["auto", "pass", "fail"] = "auto"
+
     kis_app_key: str = ""
     kis_app_secret: str = ""
     kis_account_no: str = ""

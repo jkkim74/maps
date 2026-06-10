@@ -153,12 +153,14 @@ class MockBroker(BrokerAdapter):
         pos = self._positions.get(ticker)
         if pos is None or pos.quantity <= 0:
             return None
-        return Position(ticker=ticker, quantity=pos.quantity, avg_price=pos.avg_price)
+        current = self._price_feed.get(ticker)
+        return Position(ticker=ticker, quantity=pos.quantity, avg_price=pos.avg_price, current_price=current)
 
     def get_account_balance(self) -> AccountBalance:
-        """계좌 잔고 반환."""
+        """계좌 잔고 반환. price_feed 에 현재가가 있으면 시가 평가, 없으면 매입가 기준."""
         positions_value = sum(
-            p.quantity * p.avg_price for p in self._positions.values()
+            p.quantity * (self._price_feed.get(ticker) or p.avg_price)
+            for ticker, p in self._positions.items()
         )
         return AccountBalance(cash=self._cash, positions_value=positions_value)
 

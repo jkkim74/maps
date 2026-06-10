@@ -8,11 +8,32 @@ WeeklyTrend:  10주/20주 MA 및 20주/40주 MA 방향 기반 통과 여부.
 from __future__ import annotations
 
 import datetime
+import logging
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 import numpy as np
+import pandas as pd
+
+if TYPE_CHECKING:
+    pass
+
+logger = logging.getLogger(__name__)
+
+# ── 지수 티커 매핑 ────────────────────────────────────────────────────────────
+_KRX_TICKERS: dict[str, str] = {
+    "KOSPI": "1001",
+    "KOSDAQ": "2001",
+}
+_YF_TICKERS: dict[str, str] = {
+    "S&P 500": "^GSPC",
+    "NASDAQ":  "^IXIC",
+    "USD/KRW": "KRW=X",
+    "금":      "GC=F",
+    "WTI":     "CL=F",
+    "구리":    "HG=F",
+}
 
 
 class RegimeLabel(str, Enum):
@@ -74,12 +95,90 @@ class PriceSeriesProvider(Protocol):
         ...
 
 
-class MarketRegimeAnalyzer:
-    """MarketRegime × WeeklyTrend 매트릭스를 계산한다.
+class CombinedWeeklyProvider:
+    """pykrx(국내) + yfinance(해외) 통합 주봉 종가 제공자."""
 
-    현재는 더미 데이터를 반환하는 스텁 구현이며,
-    Phase 3 KRX API 연동 시 PriceSeriesProvider 구현체를 주입한다.
-    """
+    def get_weekly_closes(self, asset_name: str, n_weeks: int) -> list[float]:
+        if asset_name in _KRX_TICKERS:
+            return self._from_krx(asset_name, n_weeks)
+        if asset_name in _YF_TICKERS:
+            return self._from_yfinance(asset_name, n_weeks)
+        return []
+
+    def _from_krx(self, asset_name: str, n_weeks: int) -> list[float]:
+        ticker = _KRX_TICKERS[asset_name]
+        try:
+            from pykrx import stock  # noqa: PLC0415
+        except ImportError:
+            logger.warning("pykrx not installed")
+            return []
+
+        end = datetime.date.today()
+        start = end - datetime.timedelta(days=max(n_weeks * 10, 120))
+        prev_raise = logging.raiseExceptions
+        prev_level = logging.root.manager.disable
+        try:
+            logging.raiseExceptions = False
+            logging.disable(logging.CRITICAL)
+            df = stock.get_index_ohlcv_by_date(
+                start.strftime("%Y%m%d"),
+                end.strftime("%Y%m%d"),
+                ticker,
+                freq="d",
+            )
+        except Exception as exc:
+            logger.warning("KRX daily data unavailable [%s]: %s", asset_name, exc)
+            return []
+        finally:
+            logging.disable(prev_level)
+            logging.raiseExceptions = prev_raise
+
+        if df is None or df.empty:
+            return []
+
+        close_col = "종가" if "종가" in df.columns else "Close" if "Close" in df.columns else None
+        if close_col is None:
+            logger.warning("KRX close column missing [%s]: cols=%s", asset_name, list(df.columns))
+            return []
+
+        weekly = df[close_col].resample("W").last().dropna()
+        return [float(v) for v in weekly.tail(n_weeks).tolist()]
+
+    def _from_yfinance(self, asset_name: str, n_weeks: int) -> list[float]:
+        ticker = _YF_TICKERS[asset_name]
+        try:
+            import yfinance as yf  # noqa: PLC0415
+        except ImportError:
+            logger.warning("yfinance not installed; overseas data unavailable")
+            return []
+
+        end = datetime.date.today() + datetime.timedelta(days=1)
+        start = end - datetime.timedelta(days=max(n_weeks * 10, 120))
+        try:
+            df = yf.download(
+                ticker,
+                start=start.strftime("%Y-%m-%d"),
+                end=end.strftime("%Y-%m-%d"),
+                interval="1d",
+                progress=False,
+                auto_adjust=True,
+            )
+        except Exception as exc:
+            logger.warning("yfinance data unavailable [%s]: %s", asset_name, exc)
+            return []
+
+        if df is None or df.empty:
+            return []
+
+        close = df["Close"] if "Close" in df.columns else df.iloc[:, 0]
+        if hasattr(close, "squeeze"):
+            close = close.squeeze()
+        weekly = close.resample("W").last().dropna()
+        return [float(v) for v in weekly.tail(n_weeks).tolist()]
+
+
+class MarketRegimeAnalyzer:
+    """MarketRegime × WeeklyTrend 매트릭스를 계산한다."""
 
     _ASSETS = ["KOSPI", "KOSDAQ", "S&P 500", "NASDAQ", "USD/KRW", "금", "WTI", "구리"]
     _MA5W = 5   # 5주 이동평균
@@ -87,17 +186,50 @@ class MarketRegimeAnalyzer:
     _MA20W = 20
     _MA40W = 40
 
-    def __init__(self, provider: PriceSeriesProvider | None = None) -> None:
+    def __init__(
+        self,
+        provider: PriceSeriesProvider | None = None,
+        *,
+        override_regime: str | None = None,
+        override_trend: str | None = None,
+    ) -> None:
         self._provider = provider
+        self._override_regime = override_regime
+        self._override_trend = override_trend
 
     def analyze(self) -> RegimeResult:
         """현재 장세를 분석한다.
 
+        override_regime / override_trend 가 지정되면 해당 값을 즉시 반환한다.
         provider가 없으면 혼조(mixed) + pass 기본값을 반환한다.
         """
+        if self._override_regime is not None or self._override_trend is not None:
+            return self._override_result()
         if self._provider is None:
             return self._stub_result()
         return self._compute()
+
+    def _override_result(self) -> RegimeResult:
+        """수동 오버라이드 값으로 RegimeResult 를 생성한다."""
+        try:
+            regime = RegimeLabel(self._override_regime) if self._override_regime else RegimeLabel.MIXED
+        except ValueError:
+            logger.warning("유효하지 않은 regime 오버라이드: %s → MIXED 사용", self._override_regime)
+            regime = RegimeLabel.MIXED
+        try:
+            weekly_trend = WeeklyTrendLabel(self._override_trend) if self._override_trend else WeeklyTrendLabel.PASS
+        except ValueError:
+            logger.warning("유효하지 않은 weekly_trend 오버라이드: %s → PASS 사용", self._override_trend)
+            weekly_trend = WeeklyTrendLabel.PASS
+        logger.info(
+            "시황 오버라이드 적용: regime=%s trend=%s", regime.value, weekly_trend.value
+        )
+        return RegimeResult(
+            regime=regime,
+            weekly_trend=weekly_trend,
+            limit_ratio=0.0,
+            kospi_ts=None,
+        )
 
     def _compute(self) -> RegimeResult:
         """실 데이터로 장세를 계산한다."""
@@ -183,3 +315,24 @@ class MarketRegimeAnalyzer:
             kospi_ts=None,
             assets=assets,
         )
+
+
+def create_regime_analyzer(settings) -> MarketRegimeAnalyzer:
+    """설정 기반 MarketRegimeAnalyzer 를 생성한다.
+
+    - maps_market_regime_override / maps_weekly_trend_override 가 'auto' 가 아니면
+      해당 오버라이드 값을 즉시 적용한다.
+    - 그 외에는 CombinedWeeklyProvider(pykrx + yfinance) 로 실 데이터를 분석한다.
+    """
+    override_regime = getattr(settings, "maps_market_regime_override", "auto") or "auto"
+    override_trend = getattr(settings, "maps_weekly_trend_override", "auto") or "auto"
+
+    has_override = override_regime != "auto" or override_trend != "auto"
+    if has_override:
+        return MarketRegimeAnalyzer(
+            provider=None,
+            override_regime=override_regime if override_regime != "auto" else None,
+            override_trend=override_trend if override_trend != "auto" else None,
+        )
+
+    return MarketRegimeAnalyzer(provider=CombinedWeeklyProvider())

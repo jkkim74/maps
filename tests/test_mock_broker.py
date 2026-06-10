@@ -137,3 +137,44 @@ def test_get_position_after_buy(broker: MockBroker) -> None:
 def test_get_position_none_when_not_held(broker: MockBroker) -> None:
     """미보유 종목은 None을 반환한다."""
     assert broker.get_position("CCCC") is None
+
+
+# ---------------------------------------------------------------------------
+# 7. H-1: 현재가 기반 포지션 평가
+# ---------------------------------------------------------------------------
+
+def test_get_position_includes_current_price_from_feed(broker: MockBroker) -> None:
+    """price_feed 에 현재가가 있으면 get_position() 의 current_price 에 반영된다."""
+    broker.place_order(_buy(broker, qty=10))  # 10,000원에 매수
+    broker.set_price("AAAA", 12_000)          # 현재가 12,000원으로 갱신
+
+    pos = broker.get_position("AAAA")
+
+    assert pos is not None
+    assert pos.avg_price == 10_000
+    assert pos.current_price == 12_000
+
+
+def test_get_account_balance_uses_current_price_when_available() -> None:
+    """price_feed 가 있으면 포지션 가치는 현재가 × 수량으로 계산된다."""
+    broker = MockBroker(initial_cash=1_000_000, price_feed={"AAAA": 10_000})
+    broker.place_order(_buy(broker, qty=10))  # 10,000원에 10주 매수 → 잔금 900,000원
+
+    # 현재가를 -10% 하락 반영
+    broker.set_price("AAAA", 9_000)
+    balance = broker.get_account_balance()
+
+    assert balance.positions_value == 10 * 9_000   # 시가 평가
+    assert balance.total_value == 900_000 + 90_000  # 잔금 + 시가 포지션
+
+
+def test_get_account_balance_falls_back_to_avg_price_when_no_feed() -> None:
+    """price_feed 가 없으면 포지션 가치를 매입가 기준으로 계산한다."""
+    broker = MockBroker(initial_cash=1_000_000, price_feed={"AAAA": 10_000})
+    broker.place_order(_buy(broker, qty=10))
+    # price_feed 를 비워 폴백 동작 확인
+    broker._price_feed.clear()
+
+    balance = broker.get_account_balance()
+
+    assert balance.positions_value == 10 * 10_000  # 매입가 기준 폴백

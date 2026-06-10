@@ -39,14 +39,13 @@ def _latest_promotions(db: Session) -> dict[str, str]:
     """전략별 최신 단계 반환 (passed=True 레코드만)."""
     rows = (
         db.query(PromotionHistory)
-        .filter(PromotionHistory.passed.is_(True))
         .order_by(PromotionHistory.evaluated_at.desc(), PromotionHistory.id.desc())
         .all()
     )
     latest: dict[str, str] = {}
     for row in rows:
         if row.strategy_id not in latest:
-            latest[row.strategy_id] = row.to_stage
+            latest[row.strategy_id] = row.to_stage if row.passed else "rejected"
     return latest
 
 

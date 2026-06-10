@@ -5,12 +5,12 @@ from __future__ import annotations
 import datetime as dt
 import math
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from maps.api.deps import get_db
-from maps.api.schemas import AlertItem, DashboardResponse, StrategyContribution
+from maps.api.schemas import AlertItem, DashboardResponse, DailyPnlResponse, DailyReturnItem, StrategyContribution
 from maps.common.constants import STRATEGY_GROUP_MAP
 from maps.common.exceptions import BrokerAdapterError
 from maps.common.models import (
@@ -263,3 +263,52 @@ def _dashboard_alerts(db: Session, latest_ohlcv_date) -> list[AlertItem]:
             )
         )
     return alerts
+
+
+@router.get("/pnl/daily", response_model=DailyPnlResponse)
+def get_daily_pnl(
+    days: int = Query(default=30, ge=1, le=365, description="조회 일수 (최대 365일)"),
+    db: Session = Depends(get_db),
+) -> DailyPnlResponse:
+    """일별 포트폴리오 손익을 반환한다.
+
+    PortfolioSnapshot(source='broker') 데이터를 기반으로 전일 대비 수익률과
+    손익 금액을 계산한다. Kill Switch 모니터링 및 운용 현황 파악에 활용한다.
+    """
+    cutoff = _today() - dt.timedelta(days=days)
+    rows = (
+        db.query(PortfolioSnapshot)
+        .filter(PortfolioSnapshot.source == "broker", PortfolioSnapshot.ref_date >= cutoff)
+        .order_by(PortfolioSnapshot.ref_date.asc())
+        .all()
+    )
+    points = [(row.ref_date, float(row.total_assets)) for row in rows if row.total_assets > 0]
+
+    items: list[DailyReturnItem] = []
+    for i, (date, assets) in enumerate(points):
+        if i == 0:
+            pnl_pct = 0.0
+            pnl_amount = 0.0
+        else:
+            prev_assets = points[i - 1][1]
+            pnl_pct = (assets - prev_assets) / prev_assets if prev_assets > 0 else 0.0
+            pnl_amount = assets - prev_assets
+        items.append(DailyReturnItem(
+            date=date.isoformat(),
+            total_assets=assets,
+            pnl_pct=round(pnl_pct, 6),
+            pnl_amount=round(pnl_amount, 0),
+        ))
+
+    if len(points) >= 2:
+        first_assets = points[0][1]
+        last_assets = points[-1][1]
+        cumulative_pct = (last_assets - first_assets) / first_assets if first_assets > 0 else 0.0
+    else:
+        cumulative_pct = 0.0
+
+    return DailyPnlResponse(
+        days=days,
+        cumulative_pct=round(cumulative_pct, 6),
+        items=items,
+    )

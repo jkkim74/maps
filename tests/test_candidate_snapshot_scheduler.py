@@ -50,7 +50,11 @@ def test_save_candidate_snapshot_replaces_day_strategy_rows() -> None:
             .all()
         )
         assert [row.ticker for row in rows] == ["005930", "000660"]
-        assert rows[0].final_score == 100.0
+        # final_score = 0.6 * factor_score + 0.4 * trend_strength
+        # OHLCV 없으면 trend_strength=50.0(기본값) 사용
+        # 005930: factor=100.0, ts=50.0 → final = 0.6*100 + 0.4*50 = 80.0
+        assert rows[0].final_score == 80.0
+        # 000660: factor=50.0,  ts=50.0 → final = 0.6*50  + 0.4*50 = 50.0
         assert rows[1].final_score == 50.0
     finally:
         db.close()

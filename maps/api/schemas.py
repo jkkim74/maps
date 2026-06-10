@@ -467,3 +467,71 @@ class StockReportRunsResponse(BaseModel):
     runs: list[StockReportRunItem]
     running_count: int
     total: int
+
+
+# ── Daily PnL ─────────────────────────────────────────────────────────────────
+
+class DailyReturnItem(BaseModel):
+    date: str
+    total_assets: float
+    pnl_pct: float        # 전일 대비 수익률 (소수, 예: 0.012 = +1.2%)
+    pnl_amount: float     # 전일 대비 손익 금액 (원)
+
+
+class DailyPnlResponse(BaseModel):
+    days: int
+    cumulative_pct: float     # 기간 전체 누적 수익률
+    items: list[DailyReturnItem]
+
+
+# ── SCR-17 Trade Review ───────────────────────────────────────────────────────
+
+class TradeReviewItem(BaseModel):
+    ticker: str
+    name: str
+    strategy_id: str
+    entry_date: str
+    entry_price: float
+    qty: int
+    entry_cost: float
+    exit_date: str | None
+    exit_price: float | None
+    exit_proceeds: float | None
+    pnl: float | None
+    pnl_pct: float | None
+    hold_days: int | None
+    status: str             # open | closed | estimated_exit
+    note: str | None
+
+
+class TradeReviewSummary(BaseModel):
+    initial_assets: float
+    current_assets: float
+    total_return_pct: float
+    total_trades: int
+    open_trades: int
+    closed_trades: int
+    winning_trades: int
+    losing_trades: int
+    win_rate: float | None
+    realized_pnl: float
+    unrealized_pnl: float
+    total_pnl: float
+
+
+class StrategyTradeStats(BaseModel):
+    strategy_id: str
+    total_trades: int
+    wins: int
+    losses: int
+    unknown: int
+    win_rate: float | None
+    total_pnl: float
+    total_cost: float
+    return_pct: float | None
+
+
+class TradeReviewResponse(BaseModel):
+    summary: TradeReviewSummary
+    trades: list[TradeReviewItem]
+    by_strategy: list[StrategyTradeStats]

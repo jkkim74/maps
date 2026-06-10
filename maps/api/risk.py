@@ -138,7 +138,7 @@ def _broker_holdings(db: Session) -> tuple[list[HoldingItem], float, int]:
                     and row.ticker not in strategy_map
                     and position is not None
                     and row.qty == position.quantity
-                    and row.status in ("pending", "partially_filled")
+                    and row.status in ("pending", "partially_filled", "expired")
                 ):
                     strategy_map[row.ticker] = row.strategy_id
                     entry_price_map[row.ticker] = row.fill_price or row.order_price or position.avg_price
