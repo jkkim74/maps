@@ -10,9 +10,24 @@ from maps.api.deps import get_db
 from maps.api.schemas import KillSwitchLogItem, LiveMonitorResponse
 from maps.backtest.cost_model import SLIPPAGE_LARGE_CAP, SLIPPAGE_SMALL_CAP
 from maps.common.constants import STRATEGY_GROUP_MAP
-from maps.common.models import KillSwitchLog
+from maps.common.models import KillSwitchLog, OrderLog, PortfolioSnapshot, SecurityMetadata
 
 router = APIRouter(prefix="/api/v1/live-monitor", tags=["SCR-13 Live Monitor"])
+
+
+def _calc_mdd(values: list[float]) -> float:
+    """최고점 대비 현재까지의 최대 낙폭(MDD). 음수 반환."""
+    if not values:
+        return 0.0
+    peak = values[0]
+    mdd = 0.0
+    for v in values:
+        if v > peak:
+            peak = v
+        dd = (v - peak) / peak
+        if dd < mdd:
+            mdd = dd
+    return mdd
 
 
 @router.get("", response_model=LiveMonitorResponse)
@@ -55,14 +70,75 @@ def get_live_monitor(db: Session = Depends(get_db)) -> LiveMonitorResponse:
     ]
     all_events = [_to_item(r) for r in recent]
 
+    # ── 실측 MDD: PortfolioSnapshot broker 이력 ─────────────────────────────
+    snaps = (
+        db.query(PortfolioSnapshot)
+        .filter(PortfolioSnapshot.source == "broker")
+        .order_by(PortfolioSnapshot.ref_date.asc())
+        .all()
+    )
+    actual_mdd = _calc_mdd([float(s.total_assets) for s in snaps if s.total_assets])
+
+    # ── 실측 슬리피지: 최근 50건 체결 기준 (KOSPI=대형주, KOSDAQ=중소형) ───
+    fill_rows = (
+        db.query(OrderLog)
+        .filter(
+            OrderLog.status.in_(["filled", "FILLED", "partially_filled", "PARTIAL"]),
+            OrderLog.fill_price.isnot(None),
+            OrderLog.order_price.isnot(None),
+            OrderLog.order_price > 0,
+        )
+        .order_by(OrderLog.created_at.desc())
+        .limit(50)
+        .all()
+    )
+    tickers = {r.ticker for r in fill_rows}
+    market_map: dict[str, str] = {}
+    if tickers:
+        market_map = {
+            m.ticker: m.market
+            for m in db.query(SecurityMetadata).filter(SecurityMetadata.ticker.in_(tickers)).all()
+        }
+    large_slips, small_slips = [], []
+    for r in fill_rows:
+        slip = abs(float(r.fill_price) - float(r.order_price)) / float(r.order_price)
+        if market_map.get(r.ticker) == "KOSPI":
+            large_slips.append(slip)
+        else:
+            small_slips.append(slip)
+    large_slip_actual = sum(large_slips) / len(large_slips) if large_slips else SLIPPAGE_LARGE_CAP
+    mid_small_slip_actual = sum(small_slips) / len(small_slips) if small_slips else SLIPPAGE_SMALL_CAP
+
+    # ── 연속 실패 횟수: 전략별 최근 주문에서 말미 연속 rejected 카운트 ────────
+    all_strategies = sorted(STRATEGY_GROUP_MAP)
+    consec_failures: dict[str, int] = {}
+    for sid in all_strategies:
+        recent_orders = (
+            db.query(OrderLog)
+            .filter(OrderLog.strategy_id == sid)
+            .order_by(OrderLog.created_at.desc())
+            .limit(10)
+            .all()
+        )
+        count = 0
+        for row in recent_orders:
+            if row.status in ("rejected", "REJECTED"):
+                count += 1
+            else:
+                break
+        consec_failures[sid] = count
+
+    # ── Kill Switch가 하나라도 활성이면 auto_response=False ────────────────
+    auto_response_active = not bool(pending_approvals or pending_releases)
+
     return LiveMonitorResponse(
-        auto_response_active=True,
+        auto_response_active=auto_response_active,
         pending_approval_count=len(pending_approvals),
         pending_release_count=len(pending_releases),
-        actual_mdd=0.0,
-        large_slip_actual=SLIPPAGE_LARGE_CAP,
-        mid_small_slip_actual=SLIPPAGE_SMALL_CAP,
-        consec_failures={strategy_id: 0 for strategy_id in sorted(STRATEGY_GROUP_MAP)},
+        actual_mdd=actual_mdd,
+        large_slip_actual=large_slip_actual,
+        mid_small_slip_actual=mid_small_slip_actual,
+        consec_failures=consec_failures,
         pending_approvals=pending_approvals,
         pending_releases=pending_releases,
         recent_events=all_events,

@@ -84,6 +84,10 @@
         <span class="nav-scr">16</span>Stock Report
         <span class="nav-badge new">NEW</span>
       </a>
+      <a href="/trade-review"   class="nav-item {% if screen == 'trade-review' %}active{% endif %}">
+        <span class="nav-scr">17</span>거래 리뷰
+        <span class="nav-badge new">NEW</span>
+      </a>
     </div>
   </nav>
 </aside>
@@ -103,7 +107,7 @@
   </div>
 </div>
 
-<script src="/static/js/app.js?v=20260601-risk-holdings"></script>
+<script src="/static/js/app.js?v={{ static_ver }}"></script>
 {% block extra_scripts %}{% endblock %}
 </body>
 </html>

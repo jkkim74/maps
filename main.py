@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -35,6 +36,7 @@ from maps.api.ops_config import router as ops_config_router
 from maps.api.scheduler import router as scheduler_router
 from maps.api.stock_report import router as stock_report_router
 from maps.api.mobile import router as mobile_router
+from maps.api.trade_review import router as trade_review_router
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +97,7 @@ app.include_router(ops_config_router)
 app.include_router(scheduler_router)
 app.include_router(stock_report_router)
 app.include_router(mobile_router)
+app.include_router(trade_review_router)
 
 
 # ── 헬스체크 ──────────────────────────────────────────────────────────────────
@@ -123,7 +126,12 @@ _SCREEN_MAP = {
     "live-monitor":     "Live Monitor",
     "data-quality":     "Data Quality",
     "ops-config":       "Ops Config",
+    "trade-review":     "거래 리뷰",
 }
+
+
+# 서버 시작 시각 기반 캐시 버스터 — 재시작 시마다 브라우저 캐시 무효화
+_STATIC_VER = str(int(time.time()))
 
 
 def _ctx(request: Request, screen: str, **extra) -> dict:
@@ -132,6 +140,7 @@ def _ctx(request: Request, screen: str, **extra) -> dict:
         "screen": screen,
         "title": _SCREEN_MAP.get(screen, screen),
         "nav_items": list(_SCREEN_MAP.items()),
+        "static_ver": _STATIC_VER,
         **extra,
     }
 
@@ -219,3 +228,8 @@ async def scr15(request: Request) -> HTMLResponse:
 @app.get("/stock-report", response_class=HTMLResponse)
 async def stock_report_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "stock_report.html", _ctx(request, "stock-report"))
+
+
+@app.get("/trade-review", response_class=HTMLResponse)
+async def trade_review_page(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(request, "trade_review.html", _ctx(request, "trade-review"))
