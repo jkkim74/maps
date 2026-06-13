@@ -28,6 +28,7 @@ from maps.common.settings import MapsSettings
 from maps.execution.broker_adapter import Order, OrderSide, OrderType
 from maps.execution.mock_broker import MockBroker
 from maps.execution.order_manager import OrderManager
+from maps.market.regime import RegimeLabel, RegimeResult, WeeklyTrendLabel
 from maps.ops.scheduler import MapsOperationalScheduler, OperationalPipeline
 from maps.risk.manager import RiskManager
 
@@ -59,6 +60,36 @@ def _force_entry_signal(monkeypatch) -> None:
         "_latest_strategy_signal",
         staticmethod(lambda *args, **kwargs: SimpleNamespace(entry_signal=True, exit_signal=False)),
     )
+
+
+def _force_regime_pass(monkeypatch) -> None:
+    monkeypatch.setattr(
+        OperationalPipeline,
+        "_analyze_regime",
+        lambda self: RegimeResult(
+            regime=RegimeLabel.MIXED,
+            weekly_trend=WeeklyTrendLabel.PASS,
+            limit_ratio=0.5,
+            kospi_ts=None,
+        ),
+    )
+
+
+def _add_fresh_ohlcv(db, ref_date: dt.date, ticker: str = "AAAA", close: float = 10_000.0) -> None:
+    """테스트용 OHLCV를 MIN_FRESH_TICKERS 이상 삽입해 _is_data_fresh=True 조건을 충족시킨다."""
+    db.add(HistoricalOHLCV(
+        ticker=ticker, date=ref_date,
+        open=int(close), high=int(close), low=int(close), close=int(close), volume=100_000,
+    ))
+    # 나머지 티커는 더미 값으로 채운다 (MIN_FRESH_TICKERS - 1개)
+    for i in range(OperationalPipeline._MIN_FRESH_TICKERS - 1):
+        dummy_ticker = f"DUMMY{i:04d}"
+        if dummy_ticker == ticker:
+            continue
+        db.add(HistoricalOHLCV(
+            ticker=dummy_ticker, date=ref_date,
+            open=1_000, high=1_000, low=1_000, close=1_000, volume=1_000,
+        ))
 
 
 def test_pipeline_collect_and_candidate_generation_with_mock_provider() -> None:
@@ -125,19 +156,12 @@ def test_order_cycle_submits_promoted_candidate_when_live_enabled(monkeypatch) -
     )
     pipeline = OperationalPipeline(settings=settings, session_factory=factory)
     _force_entry_signal(monkeypatch)
+    _force_regime_pass(monkeypatch)
     ref_date = dt.date(2026, 5, 5)
 
     db = factory()
     try:
-        db.add(HistoricalOHLCV(
-            ticker="AAAA",
-            date=ref_date,
-            open=10_000,
-            high=10_000,
-            low=10_000,
-            close=10_000,
-            volume=100_000,
-        ))
+        _add_fresh_ohlcv(db, ref_date, ticker="AAAA", close=10_000.0)
         db.add(CandidateSnapshot(
             ref_date=ref_date,
             strategy_id="pullback_v3",
@@ -202,21 +226,19 @@ def test_order_cycle_skips_candidate_when_gap_exceeds_limit(monkeypatch) -> None
     )
     pipeline = OperationalPipeline(settings=settings, session_factory=factory)
     _force_entry_signal(monkeypatch)
+    _force_regime_pass(monkeypatch)
     signal_date = dt.date(2026, 5, 5)
     order_date  = dt.date(2026, 5, 8)   # 3일 후 — 3% 갭업
 
     db = factory()
     try:
-        # 신호 발생일 종가 10,000
+        # 신호 발생일 종가 10,000 (이 날짜는 신선도 체크 대상이 아님)
         db.add(HistoricalOHLCV(
             ticker="AAAA", date=signal_date,
             open=10_000, high=10_000, low=10_000, close=10_000, volume=100_000,
         ))
-        # 주문일 직전 최신 종가 10,300 (갭 +3% → MAX_GAP 2% 초과)
-        db.add(HistoricalOHLCV(
-            ticker="AAAA", date=order_date - dt.timedelta(days=1),
-            open=10_300, high=10_300, low=10_300, close=10_300, volume=100_000,
-        ))
+        # 주문일 직전 최신 종가 10,300 (갭 +3% → MAX_GAP 2% 초과) + 신선도 충족용 더미 티커
+        _add_fresh_ohlcv(db, order_date - dt.timedelta(days=1), ticker="AAAA", close=10_300.0)
         db.add(CandidateSnapshot(
             ref_date=signal_date, strategy_id="pullback_v3", ticker="AAAA",
             name="AAAA", market="KOSPI", factor_score=90, trend_strength=80,
@@ -259,14 +281,12 @@ def test_order_cycle_applies_slippage_to_limit_price(monkeypatch) -> None:
     )
     pipeline = OperationalPipeline(settings=settings, session_factory=factory)
     _force_entry_signal(monkeypatch)
+    _force_regime_pass(monkeypatch)
     ref_date = dt.date(2026, 5, 5)
 
     db = factory()
     try:
-        db.add(HistoricalOHLCV(
-            ticker="AAAA", date=ref_date,
-            open=10_000, high=10_000, low=10_000, close=10_000, volume=100_000,
-        ))
+        _add_fresh_ohlcv(db, ref_date, ticker="AAAA", close=10_000.0)
         db.add(CandidateSnapshot(
             ref_date=ref_date, strategy_id="pullback_v3", ticker="AAAA",
             name="AAAA", market="KOSPI", factor_score=90, trend_strength=80,
@@ -297,7 +317,7 @@ def test_order_cycle_applies_slippage_to_limit_price(monkeypatch) -> None:
         engine.dispose()
 
 
-def test_order_cycle_skips_candidate_without_strategy_entry_signal() -> None:
+def test_order_cycle_skips_candidate_without_strategy_entry_signal(monkeypatch) -> None:
     engine, factory = _session_factory()
     settings = MapsSettings(
         maps_broker_mode="mock",
@@ -305,14 +325,12 @@ def test_order_cycle_skips_candidate_without_strategy_entry_signal() -> None:
         maps_live_trading_enabled=True,
     )
     pipeline = OperationalPipeline(settings=settings, session_factory=factory)
+    _force_regime_pass(monkeypatch)
     ref_date = dt.date(2026, 5, 5)
 
     db = factory()
     try:
-        db.add(HistoricalOHLCV(
-            ticker="AAAA", date=ref_date,
-            open=10_000, high=10_000, low=10_000, close=10_000, volume=100_000,
-        ))
+        _add_fresh_ohlcv(db, ref_date, ticker="AAAA", close=10_000.0)
         db.add(CandidateSnapshot(
             ref_date=ref_date, strategy_id="pullback_v3", ticker="AAAA",
             name="AAAA", market="KOSPI", factor_score=90, trend_strength=80,
@@ -918,10 +936,7 @@ def test_order_cycle_skips_all_buys_when_regime_override_is_fail(monkeypatch) ->
 
     db = factory()
     try:
-        db.add(HistoricalOHLCV(
-            ticker="AAAA", date=ref_date,
-            open=10_000, high=10_000, low=10_000, close=10_000, volume=100_000,
-        ))
+        _add_fresh_ohlcv(db, ref_date, ticker="AAAA", close=10_000.0)
         db.add(CandidateSnapshot(
             ref_date=ref_date, strategy_id="pullback_v3", ticker="AAAA",
             name="AAAA", market="KOSPI", factor_score=90, trend_strength=80,
@@ -993,6 +1008,7 @@ def test_kill_switch_triggers_when_daily_pnl_exceeds_limit(monkeypatch) -> None:
     )
     pipeline = OperationalPipeline(settings=settings, session_factory=factory)
     _force_entry_signal(monkeypatch)
+    _force_regime_pass(monkeypatch)
     ref_date = dt.date(2026, 5, 8)
     prev_date = dt.date(2026, 5, 7)
 
@@ -1006,10 +1022,7 @@ def test_kill_switch_triggers_when_daily_pnl_exceeds_limit(monkeypatch) -> None:
             ref_date=prev_date, source="broker",
             total_assets=100_000_000, cash=100_000_000, positions_value=0,
         ))
-        db.add(HistoricalOHLCV(
-            ticker="AAAA", date=ref_date,
-            open=10_000, high=10_000, low=10_000, close=10_000, volume=100_000,
-        ))
+        _add_fresh_ohlcv(db, ref_date, ticker="AAAA", close=10_000.0)
         db.add(CandidateSnapshot(
             ref_date=ref_date, strategy_id="pullback_v3", ticker="AAAA",
             name="AAAA", market="KOSPI", factor_score=90, trend_strength=80,
@@ -1123,17 +1136,19 @@ def test_sync_broker_updates_price_feed_when_exit_monitor_active(monkeypatch) ->
 # ---------------------------------------------------------------------------
 
 def test_is_data_fresh_returns_true_when_data_is_recent() -> None:
-    """최신 OHLCV 날짜가 ref_date 5일 이내이면 True 를 반환한다."""
+    """최신 OHLCV 날짜가 expected_ohlcv_date 이상이고 티커 수가 MIN_FRESH_TICKERS 이상이면 True."""
     engine, factory = _session_factory()
     ref_date = dt.date(2026, 5, 5)
+    pipeline = OperationalPipeline(session_factory=factory)
     db = factory()
     try:
-        db.add(HistoricalOHLCV(
-            ticker="AAAA", date=ref_date,
-            open=10_000, high=10_000, low=10_000, close=10_000, volume=100_000,
-        ))
+        for i in range(OperationalPipeline._MIN_FRESH_TICKERS):
+            db.add(HistoricalOHLCV(
+                ticker=f"{i:06d}", date=ref_date,
+                open=10_000, high=10_000, low=10_000, close=10_000, volume=100_000,
+            ))
         db.commit()
-        fresh, latest, expected = OperationalPipeline._is_data_fresh(db, ref_date)
+        fresh, latest, expected = pipeline._is_data_fresh(db, ref_date)
         assert fresh is True
         assert latest == ref_date
         assert expected <= ref_date
@@ -1144,10 +1159,11 @@ def test_is_data_fresh_returns_true_when_data_is_recent() -> None:
 
 
 def test_is_data_fresh_returns_false_when_data_is_stale() -> None:
-    """최신 OHLCV 날짜가 ref_date - 6일이면 False 를 반환한다."""
+    """최신 OHLCV 날짜가 expected_ohlcv_date 보다 오래됐으면 False."""
     engine, factory = _session_factory()
     ref_date = dt.date(2026, 5, 5)
     stale_date = ref_date - dt.timedelta(days=6)
+    pipeline = OperationalPipeline(session_factory=factory)
     db = factory()
     try:
         db.add(HistoricalOHLCV(
@@ -1155,7 +1171,7 @@ def test_is_data_fresh_returns_false_when_data_is_stale() -> None:
             open=10_000, high=10_000, low=10_000, close=10_000, volume=100_000,
         ))
         db.commit()
-        fresh, latest, expected = OperationalPipeline._is_data_fresh(db, ref_date)
+        fresh, latest, expected = pipeline._is_data_fresh(db, ref_date)
         assert fresh is False
         assert latest == stale_date
         assert expected > stale_date
@@ -1165,12 +1181,35 @@ def test_is_data_fresh_returns_false_when_data_is_stale() -> None:
         engine.dispose()
 
 
+def test_is_data_fresh_returns_false_when_too_few_tickers() -> None:
+    """날짜가 최신이어도 MIN_FRESH_TICKERS 미만이면 False (부분 수집 감지)."""
+    engine, factory = _session_factory()
+    ref_date = dt.date(2026, 5, 5)
+    pipeline = OperationalPipeline(session_factory=factory)
+    db = factory()
+    try:
+        for i in range(OperationalPipeline._MIN_FRESH_TICKERS - 1):
+            db.add(HistoricalOHLCV(
+                ticker=f"{i:06d}", date=ref_date,
+                open=10_000, high=10_000, low=10_000, close=10_000, volume=100_000,
+            ))
+        db.commit()
+        fresh, latest, _expected = pipeline._is_data_fresh(db, ref_date)
+        assert fresh is False
+        assert latest == ref_date
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
 def test_is_data_fresh_returns_false_when_no_ohlcv() -> None:
     """OHLCV 데이터가 전혀 없으면 False 를 반환한다."""
     engine, factory = _session_factory()
+    pipeline = OperationalPipeline(session_factory=factory)
     db = factory()
     try:
-        fresh, latest, _expected = OperationalPipeline._is_data_fresh(db, dt.date(2026, 5, 5))
+        fresh, latest, _expected = pipeline._is_data_fresh(db, dt.date(2026, 5, 5))
         assert fresh is False
         assert latest is None
     finally:

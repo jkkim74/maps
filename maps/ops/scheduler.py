@@ -17,7 +17,7 @@ import pandas as pd
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
-from sqlalchemy import delete
+from sqlalchemy import delete, func
 from sqlalchemy.orm import Session
 
 from maps.common.constants import STRATEGY_GROUP_MAP
@@ -400,11 +400,13 @@ class OperationalPipeline:
             if exit_monitor_active:
                 # H-2: 손절 정확도 향상 — 장중 현재가로 price_feed 갱신
                 held_tickers = list(self._broker_position_details(broker).keys())
-                if held_tickers and hasattr(broker, "update_prices"):
+                if held_tickers:
                     intraday = self._fetch_intraday_prices(held_tickers)
                     if intraday:
                         broker.update_prices(intraday)
-                        logger.info("장중 현재가 갱신: %d종목", len(intraday))
+                        logger.info("장중 현재가 갱신: %d/%d종목", len(intraday), len(held_tickers))
+                    else:
+                        logger.warning("장중 현재가 조회 실패 — 손절 판단에 전일 종가 사용 (보유 %d종목)", len(held_tickers))
                 submitted_sell_orders, skipped_sell_orders, exit_tickers = self._submit_exit_orders(
                     db=db,
                     broker=broker,
@@ -1145,6 +1147,8 @@ class OperationalPipeline:
             remaining_cash = max(remaining_cash - qty * limit_price, 0.0)
             positions[candidate.ticker] = positions.get(candidate.ticker, 0) + qty
 
+        # KillSwitch로 루프가 break 됐을 때 미처리 후보를 skipped에 반영한다.
+        skipped += len(candidates) - submitted - skipped
         return submitted, skipped
 
     def _submit_exit_orders(
@@ -1281,8 +1285,13 @@ class OperationalPipeline:
     def _latest_promotions(db: Session) -> dict[str, str]:
         """주문 주기에서 참조할 전략별 현재 단계를 반환한다.
 
-        passed=True 레코드만 읽는다.  실패 평가가 주문 자격(eligible_stages)을
-        잘못 차단하는 것을 방지한다.
+        가장 최근 평가 기록을 기준으로 단계를 결정한다.
+        - passed=True → 해당 to_stage (예: "live", "mock_candidate")
+        - passed=False → PromotionStage.REJECTED ("rejected")
+
+        실패 평가가 가장 최신이면 해당 전략의 주문이 차단된다.
+        eligible_stages에 "rejected"가 포함되지 않으므로 _order_candidates에서
+        해당 전략의 후보가 필터링된다.
         """
         rows = (
             db.query(PromotionHistory)
@@ -1364,11 +1373,11 @@ class OperationalPipeline:
         return max_qty
 
     def _analyze_regime(self) -> RegimeResult:
-        """현재 시황을 분석한다. 실패 시 혼조(mixed)+통과(pass) 기본값을 반환한다."""
+        """현재 시황을 분석한다. 실패 시 WEAK+FAIL로 진입을 차단한다."""
         try:
             return create_regime_analyzer(self._settings).analyze()
         except Exception as exc:  # noqa: BLE001
-            logger.warning("시황 분석 실패, 기본값(MIXED+PASS) 사용: %s", exc)
+            logger.warning("시황 분석 실패 — 진입 차단(WEAK+FAIL) 적용: %s", exc)
             from maps.market.regime import RegimeLabel  # noqa: PLC0415
             return RegimeResult(
                 regime=RegimeLabel.WEAK,
@@ -1417,61 +1426,83 @@ class OperationalPipeline:
 
     @staticmethod
     def _fetch_intraday_prices(tickers: list[str]) -> dict[str, float]:
-        """pykrx로 장중 현재가를 조회한다 (15분 지연 KRX 데이터).
+        """pykrx 배치 API로 장중 현재가를 조회한다 (15분 지연 KRX 데이터).
 
-        종목 목록을 받아 {ticker: 현재가} 딕셔너리를 반환한다.
-        pykrx 미설치 또는 오류 발생 시 빈 딕셔너리를 반환한다.
+        KOSPI/KOSDAQ 전 종목을 각 1회 호출로 조회 후 보유 티커만 필터링한다.
+        티커별 개별 호출 대신 배치 호출을 사용해 rate-limit 위험을 최소화한다.
+        pykrx 미설치 또는 전체 조회 실패 시 빈 딕셔너리를 반환한다.
         """
         try:
             from pykrx import stock as _krx  # noqa: PLC0415
         except ImportError:
             return {}
+
+        target = set(tickers)
         today = dt.date.today().strftime("%Y%m%d")
         prices: dict[str, float] = {}
-        for ticker in tickers:
+        _COL_ALIASES = {"Close": "종가", "close": "종가"}
+
+        for market in ("KOSPI", "KOSDAQ"):
             try:
-                df = _krx.get_market_ohlcv_by_date(today, today, ticker, freq="d")
+                df = _krx.get_market_ohlcv(today, market=market)
                 if df is None or df.empty:
                     continue
-                close_col = (
-                    "종가" if "종가" in df.columns
-                    else "Close" if "Close" in df.columns
-                    else None
-                )
-                if close_col is None:
+                df = df.rename(columns=_COL_ALIASES)
+                if "종가" not in df.columns:
                     continue
-                val = float(df[close_col].iloc[-1])
-                if val > 0:
-                    prices[ticker] = val
+                for ticker in df.index:
+                    if ticker not in target:
+                        continue
+                    val = df.at[ticker, "종가"]
+                    if pd.notna(val) and float(val) > 0:
+                        prices[ticker] = float(val)
             except Exception:  # noqa: BLE001
-                pass
+                logger.warning("pykrx 배치 현재가 조회 실패 [시장=%s 날짜=%s]", market, today)
+
         return prices
 
-    @staticmethod
-    def _expected_ohlcv_date(ref_date: dt.date) -> dt.date:
-        """Return the latest KRX trading day that should be available pre-open."""
+    def _expected_ohlcv_date(self, ref_date: dt.date) -> dt.date:
+        """ref_date 기준으로 장 시작 전에 수집돼 있어야 할 가장 최근 KRX 거래일을 반환한다."""
         expected = ref_date - dt.timedelta(days=1)
-        closed_dates = get_settings().krx_closed_dates
+        closed_dates = self._settings.krx_closed_dates
         while is_krx_closed_date(expected, extra_closed_dates=closed_dates):
             expected -= dt.timedelta(days=1)
         return expected
 
-    @classmethod
-    def _is_data_fresh(cls, db: Session, ref_date: dt.date) -> tuple[bool, dt.date | None, dt.date]:
+    # 수집 실패로 일부 티커만 갱신된 경우를 걸러내기 위한 최소 티커 수 기준
+    _MIN_FRESH_TICKERS: int = 50
+
+    def _is_data_fresh(self, db: Session, ref_date: dt.date) -> tuple[bool, dt.date | None, dt.date]:
         """OHLCV 데이터가 ref_date 기준으로 최신인지 확인한다.
 
-        최근 OHLCV 날짜가 ref_date - max_lag_days 보다 오래됐으면 False 를 반환한다.
-        데이터가 없으면 False 를 반환한다.
+        두 조건을 모두 충족해야 True를 반환한다:
+        1. 전체 최신 날짜 >= expected_ohlcv_date (날짜 기준)
+        2. expected 이후 데이터를 가진 티커 수 >= _MIN_FRESH_TICKERS (부분 수집 방지)
+
+        반환: (is_fresh, latest_ohlcv_date, expected_ohlcv_date)
+          - latest_ohlcv_date: 전체 최신 날짜 (진단/로그용). 데이터 없으면 None.
+          - expected_ohlcv_date: 있어야 할 거래일.
         """
-        row = (
-            db.query(HistoricalOHLCV)
+        expected = self._expected_ohlcv_date(ref_date)
+
+        latest_row = (
+            db.query(HistoricalOHLCV.date)
             .order_by(HistoricalOHLCV.date.desc())
             .first()
         )
-        expected = cls._expected_ohlcv_date(ref_date)
-        if row is None:
+        if latest_row is None:
             return False, None, expected
-        return row.date >= expected, row.date, expected
+        latest_date: dt.date = latest_row[0]
+
+        if latest_date < expected:
+            return False, latest_date, expected
+
+        fresh_count: int = (
+            db.query(func.count(func.distinct(HistoricalOHLCV.ticker)))
+            .filter(HistoricalOHLCV.date >= expected)
+            .scalar()
+        ) or 0
+        return fresh_count >= self._MIN_FRESH_TICKERS, latest_date, expected
 
     @staticmethod
     def _broker_positions(broker) -> dict[str, int]:

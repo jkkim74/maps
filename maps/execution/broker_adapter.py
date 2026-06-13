@@ -193,6 +193,13 @@ class BrokerAdapter(abc.ABC):
         """Return broker-reported same-day buy quantities when supported."""
         raise NotImplementedError
 
+    def update_prices(self, prices: dict[str, float]) -> None:
+        """장중 현재가를 갱신한다. 실시간 API를 지원하는 브로커는 이 메서드를 오버라이드한다.
+
+        기본 구현은 no-op. MockBroker는 내부 price_feed를 갱신한다.
+        KIS/Kiwoom 어댑터는 자체 실시간 API를 사용하므로 브로커별로 구현한다.
+        """
+
 
 def get_broker(mode: str | None = None, **kwargs) -> BrokerAdapter:
     """브로커 어댑터 팩토리.
