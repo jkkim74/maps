@@ -180,6 +180,10 @@ class OrderPreviewResponse(BaseModel):
     items: list[PreviewOrderItem]
     eligible_strategies: list[str]
     data_available: bool
+    market_regime: str = "unknown"
+    entry_limit_ratio: float = 0.5
+    weekly_trend: str = "unknown"
+    max_orders_effective: int = 3
 
 
 # ── SCR-06 Risk ───────────────────────────────────────────────────────────────

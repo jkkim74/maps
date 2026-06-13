@@ -150,6 +150,21 @@ def build_order_preview(db: Session, settings: MapsSettings) -> OrderPreviewResp
     today = dt.date.today()
     next_day = next_trading_day(today)
 
+    # 장세 분석
+    try:
+        from maps.market.regime import MarketRegimeAnalyzer
+        from maps.api.market import _CombinedWeeklyProvider
+        _regime = MarketRegimeAnalyzer(_CombinedWeeklyProvider()).analyze()
+        market_regime = _regime.regime.value
+        weekly_trend = _regime.weekly_trend.value
+        entry_limit_ratio = _regime.entry_limit_ratio
+    except Exception as _e:
+        logger.warning("장세 분석 실패, 기본값 사용: %s", _e)
+        market_regime = "unknown"
+        weekly_trend = "unknown"
+        entry_limit_ratio = 0.5
+    effective_max = max(1, math.ceil(_MAX_ORDERS * entry_limit_ratio))
+
     candidates = _get_order_candidates(db, min_score=settings.maps_candidate_min_score)
     data_available = _has_candidate_snapshot(db)
 
@@ -173,7 +188,7 @@ def build_order_preview(db: Session, settings: MapsSettings) -> OrderPreviewResp
     remaining_cash = cash
 
     for candidate in candidates:
-        if submitted >= _MAX_ORDERS:
+        if submitted >= effective_max:
             break
         if candidate.ticker in seen_tickers:
             continue
@@ -193,7 +208,7 @@ def build_order_preview(db: Session, settings: MapsSettings) -> OrderPreviewResp
             current_close * (1 + slippage),
             market=candidate.market,
         )
-        remaining_slots = max(_MAX_ORDERS - submitted, 1)
+        remaining_slots = max(effective_max - submitted, 1)
 
         # entry_signal 체크: 전략이 현재 날짜 기준 진입 신호를 발생시키지 않으면 스킵
         sig = OperationalPipeline._latest_strategy_signal(
@@ -285,4 +300,8 @@ def build_order_preview(db: Session, settings: MapsSettings) -> OrderPreviewResp
         items=items,
         eligible_strategies=eligible_strategies,
         data_available=data_available,
+        market_regime=market_regime,
+        entry_limit_ratio=entry_limit_ratio,
+        weekly_trend=weekly_trend,
+        max_orders_effective=effective_max,
     )

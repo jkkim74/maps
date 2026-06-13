@@ -427,12 +427,12 @@ async function loadLiveMonitor() {
         <div class="kpi-card">
           <div class="kpi-label">대형주 슬립</div>
           <div class="kpi-value">${d.large_slip_actual != null ? fmt.pct1(d.large_slip_actual) : '—'}</div>
-          <div class="kpi-sub">가정 0.05%</div>
+          <div class="kpi-sub">KOSPI 실측 (최근 50건)</div>
         </div>
         <div class="kpi-card">
           <div class="kpi-label">중소형 슬립</div>
           <div class="kpi-value">${d.mid_small_slip_actual != null ? fmt.pct1(d.mid_small_slip_actual) : '—'}</div>
-          <div class="kpi-sub">가정 0.15%</div>
+          <div class="kpi-sub">KOSDAQ 실측 (최근 50건)</div>
         </div>
       </div>`;
 
@@ -478,12 +478,12 @@ async function loadLiveMonitorV2() {
         <div class="kpi-card">
           <div class="kpi-label">Large Slip</div>
           <div class="kpi-value">${d.large_slip_actual != null ? fmt.pct1(d.large_slip_actual) : '-'}</div>
-          <div class="kpi-sub">current assumption</div>
+          <div class="kpi-sub">KOSPI actual (last 50 fills)</div>
         </div>
         <div class="kpi-card">
           <div class="kpi-label">Mid/Small Slip</div>
           <div class="kpi-value">${d.mid_small_slip_actual != null ? fmt.pct1(d.mid_small_slip_actual) : '-'}</div>
-          <div class="kpi-sub">current assumption</div>
+          <div class="kpi-sub">KOSDAQ actual (last 50 fills)</div>
         </div>
       </div>`;
 
@@ -491,9 +491,9 @@ async function loadLiveMonitorV2() {
       const failureRows = Object.entries(d.consec_failures || {}).map(([strategyId, count]) => `
         <tr>
           <td class="mono">${strategyId}</td>
-          <td>${badge('CLEAR', 'pass')}</td>
-          <td class="mono">${count}</td>
-          <td>No Kill Switch events</td>
+          <td>${count > 0 ? badge('WARN', 'warn') : badge('CLEAR', 'pass')}</td>
+          <td class="mono ${count > 0 ? 'text-warn' : ''}">${count}</td>
+          <td>${count > 0 ? `연속 실패 ${count}회` : 'No Kill Switch events'}</td>
         </tr>`).join('');
       document.getElementById('live-events').innerHTML = `
         <table>
@@ -1074,7 +1074,23 @@ function _renderOrderPreview(p) {
   const totalAmt = validItems.reduce((s, i) => s + i.estimated_amount, 0);
   const eligible = (p.eligible_strategies || []).join(', ') || '없음';
 
-  document.getElementById('orders-preview-kpi').innerHTML = `
+  const regimeCls = (p.entry_limit_ratio >= 1.0) ? 'pass'
+                  : (p.entry_limit_ratio <= 0) ? 'fail' : 'warn';
+  const regimeBanner = `
+    <div class="kpi-grid" style="margin-bottom:12px">
+      <div class="kpi-card ${regimeCls}">
+        <div class="kpi-label">장세 (Regime)</div>
+        <div class="kpi-value">${(p.market_regime || 'unknown').toUpperCase()}</div>
+        <div class="kpi-sub">주봉 트렌드 ${p.weekly_trend || '—'}</div>
+      </div>
+      <div class="kpi-card ${regimeCls}">
+        <div class="kpi-label">신규진입 허용</div>
+        <div class="kpi-value">${p.max_orders_effective ?? p.max_orders}건</div>
+        <div class="kpi-sub">limit_ratio ${Math.round((p.entry_limit_ratio||0)*100)}%</div>
+      </div>
+    </div>`;
+
+  document.getElementById('orders-preview-kpi').innerHTML = regimeBanner + `
     <div class="kpi-grid">
       <div class="kpi-card info">
         <div class="kpi-label">다음 거래일</div>
@@ -1083,7 +1099,7 @@ function _renderOrderPreview(p) {
       </div>
       <div class="kpi-card ${validItems.length > 0 ? 'pass' : 'warn'}">
         <div class="kpi-label">예정 주문 수</div>
-        <div class="kpi-value">${validItems.length} / ${p.max_orders}</div>
+        <div class="kpi-value">${validItems.length} / ${p.max_orders_effective ?? p.max_orders}</div>
         <div class="kpi-sub">슬리피지 ${fmt.pct1(p.slippage_pct)} · GAP한도 ${fmt.pct1(p.max_gap_pct)}</div>
       </div>
       <div class="kpi-card">
@@ -1104,8 +1120,13 @@ function _renderOrderPreview(p) {
   }
   const rows = p.items.map((item, idx) => {
     const gapCls = item.gap_exceeded ? 'text-fail' : item.gap_pct > 0.01 ? 'text-warn' : '';
+    const skipLabel = {
+      gap_exceeded: 'GAP초과',
+      insufficient_cash: '수량부족',
+      no_entry_signal: '진입신호없음',
+    }[item.skip_reason] || item.skip_reason || '스킵';
     const statusBadge = item.skipped
-      ? badge(item.skip_reason === 'gap_exceeded' ? 'GAP초과' : '수량부족', 'fail')
+      ? badge(skipLabel, 'fail')
       : badge('예정', 'pass');
     return `
       <tr class="${item.skipped ? 'text-muted' : ''}">
@@ -1294,6 +1315,7 @@ const PAGE_LOADERS = {
   wfa:              loadWfa,
   'ops-config':     loadOpsConfig,
   'stock-report':   () => {},  // stock_report.html 인라인 스크립트로 처리
+  'trade-review':   loadTradeReview,
 };
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -1301,3 +1323,112 @@ document.addEventListener('DOMContentLoaded', () => {
   const loader = PAGE_LOADERS[screen];
   if (loader) loader();
 });
+
+// ── SCR-17 거래 리뷰 ─────────────────────────────────────────────────────────
+async function loadTradeReview() {
+  loading('trade-review-kpi');
+  loading('trade-review-strategy');
+  loading('trade-review-table');
+  try {
+    const d = await apiFetch('/trade-review');
+    const s = d.summary;
+
+    // ── KPI 카드 ────────────────────────────────────────────────────────────
+    const returnCls = s.total_return_pct >= 0 ? 'pass' : 'fail';
+    const pnlCls    = s.total_pnl >= 0 ? 'pass' : 'fail';
+    document.getElementById('trade-review-kpi').innerHTML = `
+      <div class="kpi-grid">
+        <div class="kpi-card ${returnCls}">
+          <div class="kpi-label">총 수익률</div>
+          <div class="kpi-value">${fmt.pct(s.total_return_pct / 100)}</div>
+          <div class="kpi-sub">${fmt.krw(s.initial_assets)} → ${fmt.krw(s.current_assets)}</div>
+        </div>
+        <div class="kpi-card ${pnlCls}">
+          <div class="kpi-label">추정 손익</div>
+          <div class="kpi-value">${fmt.krw(s.total_pnl)}</div>
+          <div class="kpi-sub">실현 ${fmt.krw(s.realized_pnl)} / 미실현 ${fmt.krw(s.unrealized_pnl)}</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">거래 건수</div>
+          <div class="kpi-value">${s.total_trades}</div>
+          <div class="kpi-sub">청산 ${s.closed_trades} · 보유 ${s.open_trades}</div>
+        </div>
+        <div class="kpi-card ${s.win_rate != null && s.win_rate >= 50 ? 'pass' : 'warn'}">
+          <div class="kpi-label">승률 (추정)</div>
+          <div class="kpi-value">${s.win_rate != null ? s.win_rate.toFixed(1) + '%' : '—'}</div>
+          <div class="kpi-sub">승 ${s.winning_trades} / 패 ${s.losing_trades}</div>
+        </div>
+      </div>`;
+
+    // ── 전략별 성과 ──────────────────────────────────────────────────────────
+    if (!d.by_strategy || d.by_strategy.length === 0) {
+      empty('trade-review-strategy', '전략별 데이터 없음');
+    } else {
+      const rows = d.by_strategy.map(s => {
+        const retCls = s.return_pct != null ? (s.return_pct >= 0 ? 'text-pass' : 'text-fail') : '';
+        return `<tr>
+          <td class="mono">${s.strategy_id}</td>
+          <td class="mono">${s.total_trades}</td>
+          <td class="mono">${s.wins} / ${s.losses}</td>
+          <td class="mono">${s.win_rate != null ? s.win_rate.toFixed(1) + '%' : '—'}</td>
+          <td class="mono ${retCls}">${s.return_pct != null ? fmt.pct(s.return_pct / 100) : '—'}</td>
+          <td class="mono ${retCls}">${fmt.krw(s.total_pnl)}</td>
+          <td class="mono text-muted">${fmt.krw(s.total_cost)}</td>
+        </tr>`;
+      }).join('');
+      document.getElementById('trade-review-strategy').innerHTML = `
+        <table>
+          <thead><tr>
+            <th>전략</th><th>건수</th><th>승/패</th><th>승률</th>
+            <th>수익률</th><th>손익</th><th>투자원금</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>`;
+    }
+
+    // ── 거래 상세 ────────────────────────────────────────────────────────────
+    const statusLabel = {
+      open:           s => badge('보유중', 'info'),
+      closed:         s => badge('청산', 'pass'),
+      estimated_exit: s => badge('추정청산', 'warn'),
+    };
+    if (!d.trades || d.trades.length === 0) {
+      empty('trade-review-table', '거래 이력 없음');
+    } else {
+      const rows = d.trades.map(t => {
+        const pnlCls = t.pnl == null ? '' : t.pnl >= 0 ? 'text-pass' : 'text-fail';
+        const statusBadge = (statusLabel[t.status] || (() => badge(t.status, 'warn')))(t);
+        return `<tr>
+          <td>${statusBadge}</td>
+          <td class="mono">${t.ticker}</td>
+          <td>${t.name}</td>
+          <td class="mono text-muted">${t.strategy_id}</td>
+          <td class="mono">${fmt.date(t.entry_date)}</td>
+          <td class="mono">${t.entry_price.toLocaleString('ko-KR')}</td>
+          <td class="mono">${t.qty}</td>
+          <td class="mono">${fmt.krw(t.entry_cost)}</td>
+          <td class="mono">${t.exit_date ? fmt.date(t.exit_date) : '—'}</td>
+          <td class="mono">${t.exit_price ? t.exit_price.toLocaleString('ko-KR') : '—'}</td>
+          <td class="mono ${pnlCls}">${t.pnl != null ? fmt.krw(t.pnl) : '—'}</td>
+          <td class="mono ${pnlCls}">${t.pnl_pct != null ? fmt.pct(t.pnl_pct / 100) : '—'}</td>
+          <td class="mono text-muted">${t.hold_days != null ? t.hold_days + '일' : '—'}</td>
+          <td class="text-muted" style="font-size:0.75rem">${t.note || ''}</td>
+        </tr>`;
+      }).join('');
+      document.getElementById('trade-review-table').innerHTML = `
+        <table>
+          <thead><tr>
+            <th>상태</th><th>종목코드</th><th>종목명</th><th>전략</th>
+            <th>매수일</th><th>매수가</th><th>수량</th><th>투자금</th>
+            <th>매도일</th><th>매도가</th><th>손익</th><th>수익률</th>
+            <th>보유일</th><th>비고</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>`;
+    }
+  } catch (e) {
+    empty('trade-review-kpi', `오류: ${e.message}`);
+    empty('trade-review-strategy', '');
+    empty('trade-review-table', '');
+  }
+}
