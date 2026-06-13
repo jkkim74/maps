@@ -23,6 +23,24 @@ logger = logging.getLogger(__name__)
 ACCOUNT_RISK_PER_TRADE = 0.005   # 계좌 위험 0.5%
 MAX_SINGLE_EXPOSURE = 0.10       # 단일 종목 노출 10% 상한
 
+# ATR 기반 손절 배율 (변동성 적응형)
+_ATR_STOP_MULTIPLIER = 2.0       # 손절 = 진입가 - ATR(14) × 2.0
+
+
+def _compute_atr14(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    """ATR(14)을 계산한다 (Wilder EMA 방식).
+
+    변동성 장세에서 고정% 손절보다 넓은 손절폭을 제공해 노이즈에 의한 조기 청산을 줄인다.
+    """
+    high = df["high"]
+    low = df["low"]
+    prev_close = df["close"].shift(1)
+    tr = pd.concat(
+        [high - low, (high - prev_close).abs(), (low - prev_close).abs()],
+        axis=1,
+    ).max(axis=1)
+    return tr.ewm(com=period - 1, min_periods=period).mean()
+
 
 @dataclass
 class TradeRecord:
@@ -138,6 +156,7 @@ class BacktestEngine:
             raise BacktestError("데이터가 비어 있습니다.")
 
         df = strategy.generate_signals(data.copy(), params)
+        atr_series = _compute_atr14(df)
 
         equity = self._capital
         position: dict = {}       # {"qty": int, "entry_price": float, "entry_date": date, "stop": float}
@@ -193,7 +212,15 @@ class BacktestEngine:
             # ── 미보유: 진입 체크 ──
             if not position and bool(row.get("entry_signal", False)):
                 entry_price = float(row["close"])
-                stop_price = float(row.get("stop_price", entry_price * 0.95))
+                stop_from_signal = float(row.get("stop_price", entry_price * 0.95))
+                # ATR 기반 손절: 변동성 장세에서 고정% 손절보다 넓은 쪽을 선택
+                # 넓은 손절 → 포지션 크기 자동 감소 (계좌 위험 0.5% 고정 원칙 유지)
+                atr_val = float(atr_series.get(dt, 0.0) or 0.0)
+                if atr_val > 0:
+                    atr_stop = entry_price - _ATR_STOP_MULTIPLIER * atr_val
+                    stop_price = min(stop_from_signal, atr_stop)  # 더 낮은(넓은) 손절 선택
+                else:
+                    stop_price = stop_from_signal
                 qty = self._sizer.calc_qty(equity, entry_price, stop_price)
                 if qty > 0 and entry_price * qty <= equity:
                     position = {

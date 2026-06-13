@@ -44,8 +44,11 @@ class CostModel:
 
     비용 항목:
         - 브로커 수수료 (편도, 매수/매도 각 1회)
-        - 슬리피지 (대형주 / 소형주)
+        - 슬리피지 (대형주 / 소형주) × vol_multiplier
         - 거래세 (매도 시, ETF 면제)
+
+    vol_multiplier: 변동성 국면별 슬리피지 배수.
+        low=1.0x (평온), normal=1.5x (기본), high=3.0x (위기 시 호가 스프레드 확대)
     """
 
     def __init__(
@@ -54,11 +57,13 @@ class CostModel:
         slippage_large: float = SLIPPAGE_LARGE_CAP,
         slippage_small: float = SLIPPAGE_SMALL_CAP,
         tax_sell: float = TRANSACTION_TAX_SELL,
+        vol_multiplier: float = 1.0,
     ) -> None:
         self._fee = broker_fee
         self._slip_large = slippage_large
         self._slip_small = slippage_small
         self._tax = tax_sell
+        self._vol_multiplier = vol_multiplier
 
     def apply(self, trade: Trade) -> float:
         """거래 비용을 적용한 순손익을 반환한다.
@@ -102,8 +107,8 @@ class CostModel:
         )
         tax = 0.0 if trade.is_etf else self._tax
 
-        fee_cost = val * self._fee            # 편도 수수료 × 2 (매수+매도)
-        slip_cost = val * slippage_rate * 2   # 슬리피지 왕복
+        fee_cost = val * self._fee                                  # 편도 수수료 × 2 (매수+매도)
+        slip_cost = val * slippage_rate * 2 * self._vol_multiplier  # 슬리피지 왕복 (변동성 배율 적용)
         tax_cost = trade.exit_price * trade.qty * tax
 
         return fee_cost + slip_cost + tax_cost

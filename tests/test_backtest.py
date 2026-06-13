@@ -101,8 +101,9 @@ def test_param_grid():
 def test_strategy_required_bars_matches_warmup_window():
     strategy = MultiAssetTrendV1Strategy()
 
-    assert strategy.required_bars(strategy.default_params) == 62
-    assert strategy.required_bars({"ma_fast": 20, "ma_slow": 80}) == 82
+    # 레짐 필터(_REGIME_SHIFT=20) 추가로 required_bars = ma_slow + 20 + 2
+    assert strategy.required_bars(strategy.default_params) == 82   # ma_slow=60 + 22
+    assert strategy.required_bars({"ma_fast": 20, "ma_slow": 80}) == 102  # ma_slow=80 + 22
 
 
 # ---------------------------------------------------------------------------

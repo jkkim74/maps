@@ -1,8 +1,10 @@
-"""장세 분석 — MarketRegime + WeeklyTrend.
+"""장세 분석 — MarketRegime + WeeklyTrend + VolRegime.
 
 설계서 SCR-03 기준.
 MarketRegime: 5개 자산군의 5주 이동평균 기반 3단계 분류 (strong | mixed | weak).
 WeeklyTrend:  10주/20주 MA 및 20주/40주 MA 방향 기반 통과 여부.
+VolRegime:    KOSPI 20주 실현변동성 기반 변동성 국면 (low | normal | high).
+              high_vol 시 entry_limit_ratio를 1단계 하향한다 (WEAK+HIGH → 완전 중단).
 """
 
 from __future__ import annotations
@@ -47,6 +49,12 @@ class WeeklyTrendLabel(str, Enum):
     FAIL = "fail"
 
 
+class VolRegimeLabel(str, Enum):
+    LOW = "low"
+    NORMAL = "normal"
+    HIGH = "high"
+
+
 @dataclass
 class AssetTrendInfo:
     """개별 자산군 추세 정보."""
@@ -67,24 +75,35 @@ class RegimeResult:
     kospi_ts: float | None          # 코스피 추세 강도 점수
     assets: list[AssetTrendInfo] = field(default_factory=list)
     evaluated_at: datetime.datetime = field(default_factory=datetime.datetime.now)
+    vol_regime: VolRegimeLabel = VolRegimeLabel.NORMAL  # 변동성 국면
 
-    # ── 한도 비율 테이블 (설계서 §3) ──────────────────────────────────────────
-    # strong + pass  → 1.0
-    # mixed  + pass  → 0.5
-    # weak   + pass  → 0.25 (ATH/Pullback only)
-    # * + fail        → 0.0
+    # ── 한도 비율 테이블 (vol_regime 반영) ────────────────────────────────────
+    # weekly_trend FAIL          → 0.0 (항상)
+    # strong + low/normal + pass → 1.0
+    # strong + high       + pass → 0.5  (1단계 하향)
+    # mixed  + low/normal + pass → 0.5
+    # mixed  + high       + pass → 0.25 (1단계 하향)
+    # weak   + low/normal + pass → 0.25
+    # weak   + high       + pass → 0.0  (완전 중단)
 
     @property
     def entry_limit_ratio(self) -> float:
-        """현재 매트릭스 셀에 따른 진입 한도 비율."""
+        """현재 매트릭스 셀에 따른 진입 한도 비율.
+
+        고변동성(HIGH) 국면에서는 비율을 1단계 하향한다.
+        """
         if self.weekly_trend == WeeklyTrendLabel.FAIL:
             return 0.0
-        mapping = {
+        base_mapping = {
             RegimeLabel.STRONG: 1.0,
             RegimeLabel.MIXED: 0.5,
             RegimeLabel.WEAK: 0.25,
         }
-        return mapping[self.regime]
+        base = base_mapping[self.regime]
+        if self.vol_regime == VolRegimeLabel.HIGH:
+            downgrade = {1.0: 0.5, 0.5: 0.25, 0.25: 0.0}
+            return downgrade[base]
+        return base
 
 
 class PriceSeriesProvider(Protocol):
@@ -178,13 +197,18 @@ class CombinedWeeklyProvider:
 
 
 class MarketRegimeAnalyzer:
-    """MarketRegime × WeeklyTrend 매트릭스를 계산한다."""
+    """MarketRegime × WeeklyTrend × VolRegime 매트릭스를 계산한다."""
 
     _ASSETS = ["KOSPI", "KOSDAQ", "S&P 500", "NASDAQ", "USD/KRW", "금", "WTI", "구리"]
     _MA5W = 5   # 5주 이동평균
     _MA10W = 10
     _MA20W = 20
     _MA40W = 40
+
+    # 변동성 국면 기준 (KOSPI 20주 수익률 연환산 표준편차)
+    _VOL_LOOKBACK = 20           # 20주 수익률 윈도우
+    _VOL_LOW_THRESHOLD = 0.12    # 12% 미만 → LOW
+    _VOL_HIGH_THRESHOLD = 0.20   # 20% 초과 → HIGH
 
     def __init__(
         self,
@@ -275,6 +299,7 @@ class MarketRegimeAnalyzer:
                 regime = RegimeLabel.WEAK
 
         weekly_trend = self._check_weekly_trend()
+        vol_regime = self._compute_vol_regime()
 
         return RegimeResult(
             regime=regime,
@@ -282,7 +307,32 @@ class MarketRegimeAnalyzer:
             limit_ratio=0.0,
             kospi_ts=kospi_ts,
             assets=assets,
+            vol_regime=vol_regime,
         )
+
+    def _compute_vol_regime(self) -> VolRegimeLabel:
+        """KOSPI 20주 수익률 표준편차로 변동성 국면을 분류한다.
+
+        annualized_vol < 12%  → LOW
+        12% ≤ vol ≤ 20%       → NORMAL
+        vol > 20%              → HIGH
+        """
+        if self._provider is None:
+            return VolRegimeLabel.NORMAL
+        try:
+            closes = self._provider.get_weekly_closes("KOSPI", self._VOL_LOOKBACK + 1)
+            if len(closes) < self._VOL_LOOKBACK:
+                return VolRegimeLabel.NORMAL
+            arr = np.array(closes, dtype=float)
+            returns = np.diff(arr) / arr[:-1]
+            annualized_vol = float(returns.std() * np.sqrt(52))
+            if annualized_vol < self._VOL_LOW_THRESHOLD:
+                return VolRegimeLabel.LOW
+            if annualized_vol > self._VOL_HIGH_THRESHOLD:
+                return VolRegimeLabel.HIGH
+            return VolRegimeLabel.NORMAL
+        except Exception:
+            return VolRegimeLabel.NORMAL
 
     def _check_weekly_trend(self) -> WeeklyTrendLabel:
         """10/20주 MA 및 20/40주 MA 방향 확인."""

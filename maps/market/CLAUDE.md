@@ -19,6 +19,7 @@ market/
 |---|---|
 | `RegimeLabel` | `STRONG`, `MIXED`, `WEAK` |
 | `WeeklyTrendLabel` | `PASS`, `FAIL` |
+| `VolRegimeLabel` | `LOW`, `NORMAL`, `HIGH` |
 
 ### 데이터 클래스
 
@@ -28,9 +29,18 @@ market/
 |---|---|
 | `regime` | `RegimeLabel` |
 | `weekly_trend` | `WeeklyTrendLabel` |
+| `vol_regime` | `VolRegimeLabel` (기본 NORMAL) — KOSPI 20주 실현변동성 기반 |
 | `kospi_ts` | KOSPI 추세 강도 점수 (0~100, None 가능) |
 | `assets` | `list[AssetTrendInfo]` |
-| `entry_limit_ratio` (프로퍼티) | STRONG+PASS=1.0, MIXED+PASS=0.5, WEAK+PASS=0.25, *+FAIL=0.0 |
+| `entry_limit_ratio` (프로퍼티) | vol_regime=HIGH 시 1단계 하향; WEAK+HIGH+PASS=0.0 (완전 중단) |
+
+#### entry_limit_ratio 매트릭스 (weekly_trend=FAIL → 항상 0.0)
+
+| regime / vol_regime | LOW/NORMAL | HIGH |
+|---|---|---|
+| STRONG | 1.0 | 0.5 |
+| MIXED | 0.5 | 0.25 |
+| WEAK | 0.25 | 0.0 |
 
 #### `AssetTrendInfo`
 
