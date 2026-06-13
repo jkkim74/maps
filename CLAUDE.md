@@ -69,14 +69,16 @@ The application is a FastAPI server (`main.py`) with a Jinja2 web dashboard and 
 | `common/` | `settings.py` (pydantic-settings), `db.py` (SQLAlchemy engine + session), `models.py` (all ORM tables), `constants.py`, `exceptions.py` |
 | `data/` | `collector.py` orchestrates collection; `krx_adapter.py` / `MockKRXAdapter` fetch OHLCV; `ohlcv_repo.py`, `security_repo.py` are DB repos |
 | `data_quality/` | `universe_filter.py` — as-of-date universe generator. `generate(ref_date)` only uses information available on that date |
-| `strategy/` | `base.py` abstract; `pullback_v3.py`, `ath_breakout_v1/v2.py`, `donchian_v1/v2.py`, `multi_asset_trend_v1.py` concrete strategies |
+| `indicator/` | `trend_strength.py` — computes 0-100 TrendStrength score (MA20 position 40%, RSI14 30%, volume ratio 30%) and classifies into S1–S5 buckets; feeds `CandidateSnapshot.ts_bucket` |
+| `strategy/` | `base.py` abstract; `pullback_v3.py`, `ath_breakout_v1/v2.py`, `donchian_v1/v2.py`, `multi_asset_trend_v1.py` concrete strategies; `live_rules.py` per-strategy stop-loss percentages |
 | `backtest/` | `engine.py` + `cost_model.py` — runs strategy backtests |
 | `validation/` | `walk_forward.py`, `plateau.py`, `monte_carlo.py` — validation suite |
 | `promotion/` | `gate.py` — decides strategy stage advancement and writes audit log |
 | `execution/` | `broker_adapter.py` (abstract), `mock_broker.py`, `kis_adapter.py`, `kiwoom_adapter.py`, `order_manager.py` |
 | `risk/` | `manager.py` — kill switch + exposure limits |
-| `market/` | `regime.py` (market regime), `trading_rules.py` (KRX rules) |
+| `market/` | `regime.py` (market regime: strong/mixed/weak + weekly trend), `trading_rules.py` (KRX rules) |
 | `ops/` | `scheduler.py` (APScheduler jobs), `notifications.py` (Slack), `order_state.py`, `order_preview.py` |
+| `stock_report/` | `runner.py` — integrates external stock-report tool (`MAPS_STOCK_REPORT_PATH`); stores HTML results in `stock_report_runs` table |
 | `api/` | One router per screen; `deps.py` provides `get_db()`; `schemas.py` holds Pydantic response models |
 | `dashboard/` | `strategy_compare.py` |
 
@@ -91,6 +93,26 @@ Enabled by `MAPS_SCHEDULER_ENABLED=true`. Off by default.
 `research` → `alert_only` → `mock_candidate` → `live_candidate` → `live` (or `rejected`)
 
 `PromotionGate` in `promotion/gate.py` evaluates all three validation checks and writes to `promotion_history`. Unknown strategy IDs or missing metrics must always result in `fail with reason` (never `KeyError`).
+
+Per-stage gate conditions (all AND):
+
+| Stage (current → next) | Min score | WFA | MC limit | Plateau | Sharpe | Other |
+|---|---|---|---|---|---|---|
+| research → alert_only | 0 | no | no | — | — | — |
+| alert_only → mock_candidate | 60 | no | no | — | ≥ 0 | — |
+| mock_candidate → live_candidate | 60 | yes | yes | C+ | ≥ 0.3 | 3 months mock or replay |
+| live_candidate → live | 75 | yes | yes | B+ | ≥ 0.5 | 3 months mock or replay |
+
+### Strategy-to-group mapping (`STRATEGY_GROUP_MAP`)
+
+| Strategy ID | Group |
+|---|---|
+| `pullback_v3`, `pullback_v2` | `pullback_short` |
+| `ath_breakout_v1`, `ath_breakout_v2` | `ath_outlier` |
+| `multi_asset_trend_v1` | `multi_asset` |
+| `donchian_v1`, `donchian_v2` | `donchian_research` |
+
+This mapping drives MC MDD limit lookups in `PromotionGate`. Adding a new strategy ID requires updating `STRATEGY_GROUP_MAP` in `common/constants.py`.
 
 ### Database
 
@@ -128,7 +150,48 @@ SQLite by default (`maps.db`). Switch to PostgreSQL via `MAPS_DB_URL`. All table
 
 `robustness=0.30, risk=0.30, recovery=0.20, return=0.20`
 
+Other presets: `conservative` (robustness 0.40, risk 0.35) and `growth` (return 0.35, robustness 0.20). All presets are in `common/constants.py:WEIGHT_PRESETS`.
+
 Promotion thresholds: `mock_candidate=60`, `live_candidate=75` (fixed, independent of weights).
+
+## Key env vars for testing / overrides
+
+| Var | Default | Purpose |
+|---|---|---|
+| `MAPS_MARKET_REGIME_OVERRIDE` | `auto` | Force `strong`, `mixed`, or `weak` — bypasses live pykrx/yfinance analysis |
+| `MAPS_WEEKLY_TREND_OVERRIDE` | `auto` | Force `pass` or `fail` — bypasses live MA calculation |
+| `MAPS_CANDIDATE_MIN_SCORE` | `10.0` | Skip order for candidates with `final_score` below this |
+| `MAPS_ORDER_SLIPPAGE_PCT` | `0.01` | Limit price = last close × (1 + slippage) |
+| `MAPS_ORDER_MAX_GAP_PCT` | `0.02` | Cancel order if gap-up from signal price exceeds this |
+| `MAPS_STOCK_REPORT_PATH` | `/opt/stock_report` | Path to external stock-report source tree |
+
+## Workflow Triggers
+
+These keywords, when typed alone (or with an optional argument), activate a fixed automated workflow. Claude must follow the steps exactly — no skipping, no reordering.
+
+### `!ship [commit message]` — Test → Commit → Push
+
+When the user types `!ship` (optionally followed by a commit message), execute **in order**:
+
+1. **Run tests** — `pytest --tb=short`
+   - If **any test fails**: stop immediately, print the failure summary, and do **NOT** proceed to commit or push.
+2. **Inspect working tree** — run `git status` and `git diff` in parallel.
+3. **Stage changes** — `git add -u` (tracked files only; never `git add -A` to avoid committing secrets).
+4. **Commit** — use the message provided after `!ship`. If no message was given, generate a concise one from the diff (imperative mood, ≤ 72 chars subject line), confirm it with the user, then commit.
+5. **Push** — `git push` to the current branch's upstream.
+6. Report the final commit hash and push result.
+
+> **Safety rules that cannot be overridden by `!ship`:**
+> - Never force-push (`--force`).
+> - Never skip hooks (`--no-verify`).
+> - If `git push` is rejected (non-fast-forward), stop and ask the user how to proceed.
+
+**Usage examples:**
+```
+!ship
+!ship fix: correct order cycle safety check
+!ship feat: add maps_candidate_min_score env var
+```
 
 ## Coding conventions
 
