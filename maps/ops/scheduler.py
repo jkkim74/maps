@@ -35,7 +35,7 @@ from maps.common.models import (
     WalkForwardResults,
 )
 from maps.common.settings import MapsSettings, get_settings
-from maps.backtest.engine import BacktestEngine, BacktestResult
+from maps.backtest.engine import BacktestEngine, BacktestResult, _compute_atr14
 from maps.common.exceptions import BacktestError, DuplicateOrderError, KillSwitchError, ValidationError
 from maps.data.collector import DataCollector
 from maps.data.ohlcv_repo import HistoricalOHLCVRepository
@@ -58,7 +58,7 @@ from maps.strategy.donchian_v2 import DonchianV2Strategy
 from maps.strategy.multi_asset_trend_v1 import MultiAssetTrendV1Strategy
 from maps.strategy.pullback_v2 import PullbackV2Strategy
 from maps.strategy.pullback_v3 import PullbackV3Strategy
-from maps.strategy.live_rules import stop_loss_price
+from maps.strategy.live_rules import atr_stop_price, stop_loss_price
 from maps.indicator.trend_strength import TrendStrengthCalculator
 from maps.stock_report.runner import run_all_reports_if_idle
 from maps.validation.monte_carlo import MonteCarloValidator
@@ -151,6 +151,7 @@ class StrategySignal:
     entry_signal: bool
     exit_signal: bool
     close: float
+    atr14: float | None = None
 
 
 class OperationalPipeline:
@@ -1197,7 +1198,11 @@ class OperationalPipeline:
                 else self._latest_close(db, ticker, ref_date)
             )
             entry_price = entry.fill_price or entry.order_price or position.avg_price
-            stop_price = stop_loss_price(entry.strategy_id, entry_price)
+            atr14 = signal.atr14 if signal is not None else None
+            stop_price = (
+                atr_stop_price(entry.strategy_id, entry_price, atr14)
+                or stop_loss_price(entry.strategy_id, entry_price)
+            )
             stop_triggered = (
                 stop_price is not None
                 and current_price > 0
@@ -1350,10 +1355,14 @@ class OperationalPipeline:
         if signals.empty:
             return None
         latest = signals.iloc[-1]
+        atr_series = _compute_atr14(frame)
+        last_atr = atr_series.iloc[-1] if not atr_series.empty else float("nan")
+        atr14 = float(last_atr) if pd.notna(last_atr) else None
         return StrategySignal(
             entry_signal=bool(latest.get("entry_signal", False)),
             exit_signal=bool(latest.get("exit_signal", False)),
             close=float(latest.get("close", 0.0)),
+            atr14=atr14,
         )
 
     def _order_qty(

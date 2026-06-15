@@ -11,13 +11,35 @@ from maps.api.deps import get_db
 from maps.api.schemas import HoldingItem, RiskGaugeItem, RiskResponse
 from maps.common.constants import ALLOWED_MDD, STRATEGY_GROUP_MAP
 from maps.common.exceptions import BrokerAdapterError
-from maps.common.models import KillSwitchLog, MonteCarloSequenceResults, OrderLog, SecurityMetadata
+from maps.backtest.engine import _compute_atr14
+from maps.common.models import HistoricalOHLCV, KillSwitchLog, MonteCarloSequenceResults, OrderLog, SecurityMetadata
 from maps.common.settings import get_settings
 from maps.execution.broker_adapter import get_broker
-from maps.strategy.live_rules import stop_loss_price
+from maps.strategy.live_rules import atr_stop_price, stop_loss_price
 
 router = APIRouter(prefix="/api/v1/risk", tags=["SCR-06 Risk"])
 logger = logging.getLogger(__name__)
+
+
+def _atr14_for_ticker(db: Session, ticker: str) -> float | None:
+    """DB에서 최근 OHLCV를 조회해 ATR(14) 최신값을 반환한다."""
+    import pandas as pd
+
+    rows = (
+        db.query(HistoricalOHLCV)
+        .filter(HistoricalOHLCV.ticker == ticker)
+        .order_by(HistoricalOHLCV.date.desc())
+        .limit(20)
+        .all()
+    )
+    if len(rows) < 14:
+        return None
+    frame = pd.DataFrame(
+        [{"high": r.high, "low": r.low, "close": r.close} for r in reversed(rows)]
+    )
+    atr_series = _compute_atr14(frame)
+    last = atr_series.iloc[-1] if not atr_series.empty else float("nan")
+    return float(last) if pd.notna(last) else None
 
 @router.get("", response_model=RiskResponse)
 def get_risk(db: Session = Depends(get_db)) -> RiskResponse:
@@ -156,7 +178,11 @@ def _broker_holdings(db: Session) -> tuple[list[HoldingItem], float, int]:
             )
             strategy_id = strategy_map.get(ticker, "broker")
             entry_price = round(entry_price_map.get(ticker) or position.avg_price)
-            raw_stop = stop_loss_price(strategy_map.get(ticker), entry_price)
+            atr14 = _atr14_for_ticker(db, ticker)
+            raw_stop = (
+                atr_stop_price(strategy_map.get(ticker), entry_price, atr14)
+                or stop_loss_price(strategy_map.get(ticker), entry_price)
+            )
             stop_price = round(raw_stop) if raw_stop is not None else None
             holdings.append(
                 HoldingItem(

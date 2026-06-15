@@ -18,6 +18,9 @@ SLIPPAGE_SMALL_CAP: float = 0.0015      # 시총 < 5천억 슬리피지
 
 LARGE_CAP_THRESHOLD: float = 5e11       # 5천억 원
 
+# 변동성 국면별 슬리피지 배수 (CostModel.vol_multiplier 기준값)
+VOL_MULTIPLIER_MAP: dict[str, float] = {"low": 1.0, "normal": 1.5, "high": 3.0}
+
 
 @dataclass
 class Trade:

@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
-from maps.backtest.cost_model import CostModel, Trade
+from maps.backtest.cost_model import VOL_MULTIPLIER_MAP, CostModel, Trade
 from maps.common.exceptions import BacktestError
 from maps.strategy.base import BaseStrategy
 
@@ -123,7 +123,7 @@ class BacktestEngine:
         cost_model: CostModel | None = None,
         initial_capital: float = 100_000_000,
     ) -> None:
-        self._cost = cost_model or CostModel()
+        self._cost = cost_model or CostModel(vol_multiplier=VOL_MULTIPLIER_MAP["normal"])
         self._capital = initial_capital
         self._sizer = PositionSizingEngine()
 
