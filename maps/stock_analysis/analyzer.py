@@ -7,11 +7,14 @@ import io
 import json
 import xml.etree.ElementTree as ET
 import zipfile
+from collections.abc import Callable
 from typing import Any
 
 import pandas as pd
 import requests
 from pykrx import stock
+
+ProgressFn = Callable[[str, int], None]  # (step_label, pct 0-100)
 
 
 # ── 1. 종목코드 해석 ──────────────────────────────────────────────────────────
@@ -124,11 +127,11 @@ def fundamentals(code: str) -> dict[str, Any]:
         f = f[f.index <= today].iloc[-1]
         cap = stock.get_market_cap(start, today, code).iloc[-1]
         return {
-            "PER": float(f.get("PER", 0)),
-            "PBR": float(f.get("PBR", 0)),
-            "EPS": float(f.get("EPS", 0)),
-            "BPS": float(f.get("BPS", 0)),
-            "DIV_배당수익률": float(f.get("DIV", 0)),
+            "PER": round(float(f.get("PER", 0)), 2),
+            "PBR": round(float(f.get("PBR", 0)), 2),
+            "EPS": round(float(f.get("EPS", 0)), 0),
+            "BPS": round(float(f.get("BPS", 0)), 0),
+            "DIV_배당수익률": round(float(f.get("DIV", 0)), 2),
             "시가총액_억원": round(float(cap.get("시가총액", 0)) / 1e8, 0),
             "상장주식수": int(cap.get("상장주식수", 0)),
         }
@@ -166,11 +169,20 @@ def dart_corp_code(api_key: str, stock_code: str) -> str | None:
     return None
 
 
-def dart_financials(api_key: str, corp_code: str) -> dict[str, Any]:
+def dart_financials(
+    api_key: str,
+    corp_code: str,
+    _report: ProgressFn | None = None,
+) -> dict[str, Any]:
     """최근 3개년 주요 재무계정(연결 우선)을 반환한다."""
     this_year = datetime.datetime.now().year
     result: dict[str, Any] = {}
-    for yr in range(this_year - 1, this_year - 4, -1):
+    years = list(range(this_year - 1, this_year - 4, -1))
+
+    for i, yr in enumerate(years):
+        if _report:
+            # 70 → 95% 구간을 3개년에 균등 분배
+            _report(f"재무제표 {yr}년 수집 중…", 70 + i * 9)
         for fs in ("CFS", "OFS"):
             r = requests.get(
                 f"{_DART_BASE}/fnlttSinglAcntAll.json",
@@ -230,29 +242,51 @@ def _json_default(o: Any) -> Any:
     return str(o)
 
 
-def analyze(ticker: str, dart_api_key: str = "") -> dict[str, Any]:
-    """종목명 또는 종목코드를 받아 종합 분석 결과 dict를 반환한다."""
+def analyze(
+    ticker: str,
+    dart_api_key: str = "",
+    progress_callback: ProgressFn | None = None,
+) -> dict[str, Any]:
+    """종목명 또는 종목코드를 받아 종합 분석 결과 dict를 반환한다.
+
+    progress_callback(step_label, pct): 각 단계 완료 시 호출된다.
+    """
+    def report(step: str, pct: int) -> None:
+        if progress_callback:
+            progress_callback(step, pct)
+
+    report("종목코드 해석 중…", 5)
     code, name = resolve_ticker(ticker)
+    report(f"{name} ({code}) 확인", 10)
+
+    report("시세 데이터 수집 중… (pykrx)", 15)
+    tech = calc_technicals(code)
+    report("기술적 지표 계산 완료", 40)
+
+    report("밸류에이션 데이터 조회 중…", 45)
+    val = fundamentals(code)
+    report("밸류에이션 조회 완료", 55)
 
     data: dict[str, Any] = {
         "종목명": name,
         "종목코드": code,
         "수집시각": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "기술적분석": calc_technicals(code),
-        "밸류에이션": fundamentals(code),
+        "기술적분석": tech,
+        "밸류에이션": val,
     }
 
     if dart_api_key:
         try:
+            report("DART 법인코드 조회 중… (10~20초 소요)", 60)
             corp = dart_corp_code(dart_api_key, code)
-            data["재무제표_3개년"] = (
-                dart_financials(dart_api_key, corp) if corp
-                else {"error": "DART corp_code 매핑 실패"}
-            )
+            if corp:
+                data["재무제표_3개년"] = dart_financials(dart_api_key, corp, _report=report)
+            else:
+                data["재무제표_3개년"] = {"error": "DART corp_code 매핑 실패"}
         except Exception as e:
             data["재무제표_3개년"] = {"error": f"DART 조회 실패: {e}"}
     else:
         data["재무제표_3개년"] = {"error": "DART_API_KEY 미설정"}
 
-    # numpy/pandas 타입을 기본 타입으로 변환
+    report("데이터 정리 중…", 97)
     return json.loads(json.dumps(data, default=_json_default, ensure_ascii=False))
