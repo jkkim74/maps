@@ -165,9 +165,73 @@ Promotion thresholds: `mock_candidate=60`, `live_candidate=75` (fixed, independe
 | `MAPS_ORDER_MAX_GAP_PCT` | `0.02` | Cancel order if gap-up from signal price exceeds this |
 | `MAPS_STOCK_REPORT_PATH` | `/opt/stock_report` | Path to external stock-report source tree |
 
+## Production Server
+
+| Item | Value |
+|---|---|
+| Provider | AWS Lightsail (ap-northeast-2 / Seoul) |
+| Public IP | `3.37.117.246` |
+| SSH user | `ubuntu` |
+| SSH key | `D:\ssh_maps\LightsailDefaultKey-ap-northeast-2.pem` |
+| App root | `/opt/maps` |
+| Service | `maps` (systemd) |
+
+### SSH access
+
+```powershell
+ssh -i "D:\ssh_maps\LightsailDefaultKey-ap-northeast-2.pem" ubuntu@3.37.117.246
+```
+
+### Manual deploy (step-by-step on server)
+
+```bash
+cd /opt/maps
+git pull origin master
+source .venv/bin/activate
+pip install -r requirements.txt   # requirements 변경 시에만
+alembic upgrade head              # 마이그레이션 변경 시에만
+sudo systemctl restart maps
+sudo systemctl status maps        # 기동 확인
+```
+
+### One-liner deploy from local (PowerShell)
+
+```powershell
+ssh -i "D:\ssh_maps\LightsailDefaultKey-ap-northeast-2.pem" ubuntu@3.37.117.246 `
+  "cd /opt/maps && git pull origin master && sudo systemctl restart maps && sudo systemctl status maps --no-pager"
+```
+
+### Check logs
+
+```powershell
+# 실시간 로그
+ssh -i "D:\ssh_maps\LightsailDefaultKey-ap-northeast-2.pem" ubuntu@3.37.117.246 `
+  "sudo journalctl -u maps -f"
+
+# 최근 100줄
+ssh -i "D:\ssh_maps\LightsailDefaultKey-ap-northeast-2.pem" ubuntu@3.37.117.246 `
+  "sudo journalctl -u maps -n 100 --no-pager"
+```
+
 ## Workflow Triggers
 
 These keywords, when typed alone (or with an optional argument), activate a fixed automated workflow. Claude must follow the steps exactly — no skipping, no reordering.
+
+### `!deploy` — Deploy to production server
+
+When the user types `!deploy`, execute **in order**:
+
+1. **Run tests** — `pytest --tb=short`
+   - If **any test fails**: stop immediately and do **NOT** proceed.
+2. **Confirm latest commit is pushed** — `git status` must show clean + up to date with remote.
+3. **Deploy via SSH** — run the one-liner deploy command above (git pull + systemctl restart).
+4. **Verify** — check `systemctl status maps` output shows `active (running)`.
+5. Report the deployed commit hash and server status.
+
+> **Safety rules:**
+> - Never deploy if tests fail.
+> - Never deploy a dirty working tree (uncommitted changes).
+> - If `systemctl restart` fails, immediately run `sudo journalctl -u maps -n 50 --no-pager` and report the error.
 
 ### `!ship [commit message]` — Test → Commit → Push
 
