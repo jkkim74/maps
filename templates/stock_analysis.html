@@ -1,0 +1,306 @@
+{% extends "base.html" %}
+{% block extra_head %}
+<style>
+.sa-search-bar{display:flex;gap:10px;align-items:center;margin-bottom:24px}
+.sa-search-bar input{flex:1;padding:10px 14px;border:1px solid var(--border);border-radius:6px;background:var(--bg-card);color:var(--text-primary);font-size:1rem}
+.sa-search-bar input:focus{outline:none;border-color:var(--accent)}
+.sa-result{display:none}
+.sa-hero{display:flex;align-items:baseline;gap:12px;margin-bottom:4px}
+.sa-price{font-size:2rem;font-weight:700;color:var(--text-primary)}
+.sa-change-pos{color:#4caf50;font-size:1.1rem;font-weight:600}
+.sa-change-neg{color:#f44336;font-size:1.1rem;font-weight:600}
+.sa-change-neu{color:var(--text-muted);font-size:1.1rem}
+.sa-name{font-size:1.1rem;color:var(--text-muted)}
+.sa-badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:0.75rem;font-weight:600;margin-left:6px}
+.sa-badge-green{background:#1b5e20;color:#a5d6a7}
+.sa-badge-red{background:#b71c1c;color:#ef9a9a}
+.sa-badge-gray{background:var(--bg-hover);color:var(--text-muted)}
+.sa-grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.sa-grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+.sa-grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+.sa-mini-card{background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:12px 16px}
+.sa-mini-label{font-size:0.72rem;color:var(--text-muted);margin-bottom:4px}
+.sa-mini-val{font-size:1.15rem;font-weight:600;color:var(--text-primary)}
+.sa-mini-sub{font-size:0.72rem;color:var(--text-muted);margin-top:2px}
+.sa-indicator-row{display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border)}
+.sa-indicator-row:last-child{border-bottom:none}
+.sa-indicator-label{font-size:0.82rem;color:var(--text-muted)}
+.sa-indicator-val{font-size:0.9rem;font-weight:600;color:var(--text-primary)}
+#sa-chart{width:100%;height:280px}
+.sa-err{background:#1a0000;border:1px solid #b71c1c;border-radius:8px;padding:16px;color:#ef9a9a;font-size:0.9rem}
+</style>
+{% endblock %}
+{% block content %}
+
+<div class="sa-search-bar">
+  <input type="text" id="sa-input" placeholder="종목명 또는 종목코드 (예: 삼성전자, 005930)" autocomplete="off"
+         onkeydown="if(event.key==='Enter') runAnalysis()">
+  <button class="topbar-btn" id="sa-btn" onclick="runAnalysis()">▶ 분석</button>
+</div>
+
+<div id="sa-loading" style="display:none">
+  <div class="loading"><div class="spinner"></div><span style="margin-left:12px">분석 중… 데이터를 수집하고 있습니다.</span></div>
+</div>
+
+<div id="sa-error" class="sa-err" style="display:none"></div>
+
+<div id="sa-result" class="sa-result">
+
+  <!-- 헤더 -->
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-body">
+      <div class="sa-hero">
+        <span class="sa-name" id="r-name"></span>
+        <span class="mono" id="r-code" style="font-size:0.85rem;color:var(--text-muted)"></span>
+      </div>
+      <div style="display:flex;align-items:baseline;gap:16px">
+        <span class="sa-price" id="r-price"></span>
+        <span id="r-change"></span>
+        <span id="r-align-badge"></span>
+      </div>
+      <div style="font-size:0.78rem;color:var(--text-muted);margin-top:6px" id="r-date"></div>
+    </div>
+  </div>
+
+  <!-- 차트 + 기술적 지표 -->
+  <div class="sa-grid2" style="margin-bottom:16px">
+    <div class="card">
+      <div class="card-body">
+        <div class="section-title" style="font-size:0.85rem;margin-bottom:10px">가격 차트 (6개월)</div>
+        <div id="sa-chart"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-body">
+        <div class="section-title" style="font-size:0.85rem;margin-bottom:10px">기술적 지표</div>
+        <div id="r-technicals"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 이동평균선 -->
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-body">
+      <div class="section-title" style="font-size:0.85rem;margin-bottom:10px">이동평균선</div>
+      <div class="sa-grid4" id="r-ma"></div>
+    </div>
+  </div>
+
+  <!-- 밸류에이션 -->
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-body">
+      <div class="section-title" style="font-size:0.85rem;margin-bottom:10px">밸류에이션</div>
+      <div class="sa-grid4" id="r-valuation"></div>
+    </div>
+  </div>
+
+  <!-- 재무제표 -->
+  <div class="card">
+    <div class="card-body">
+      <div class="section-title" style="font-size:0.85rem;margin-bottom:10px">재무제표 (3개년)</div>
+      <div id="r-financials"></div>
+    </div>
+  </div>
+
+</div><!-- /sa-result -->
+{% endblock %}
+{% block extra_scripts %}
+<script>
+function fmt(n, suffix='') {
+  if (n === null || n === undefined) return '—';
+  if (typeof n === 'number') return n.toLocaleString('ko-KR') + suffix;
+  return n;
+}
+function fmtPct(n) {
+  if (n === null || n === undefined) return '—';
+  const s = (n >= 0 ? '+' : '') + n.toFixed(2) + '%';
+  return s;
+}
+
+async function runAnalysis() {
+  const ticker = document.getElementById('sa-input').value.trim();
+  if (!ticker) { alert('종목명 또는 종목코드를 입력하세요.'); return; }
+
+  document.getElementById('sa-loading').style.display = 'flex';
+  document.getElementById('sa-error').style.display = 'none';
+  document.getElementById('sa-result').style.display = 'none';
+  document.getElementById('sa-btn').disabled = true;
+  document.getElementById('sa-btn').textContent = '분석 중...';
+
+  try {
+    const res = await fetch('/api/v1/stock-analysis/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ticker }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.detail || `HTTP ${res.status}`);
+    }
+    renderResult(data);
+  } catch (e) {
+    document.getElementById('sa-error').textContent = '오류: ' + e.message;
+    document.getElementById('sa-error').style.display = 'block';
+  } finally {
+    document.getElementById('sa-loading').style.display = 'none';
+    document.getElementById('sa-btn').disabled = false;
+    document.getElementById('sa-btn').textContent = '▶ 분석';
+  }
+}
+
+function renderResult(d) {
+  const ta = d['기술적분석'] || {};
+  const val = d['밸류에이션'] || {};
+  const fin = d['재무제표_3개년'] || {};
+
+  // 헤더
+  document.getElementById('r-name').textContent = d['종목명'] || '—';
+  document.getElementById('r-code').textContent = '(' + (d['종목코드'] || '') + ')';
+  document.getElementById('r-date').textContent =
+    '기준일: ' + (ta['기준일'] || '—') + '  ·  수집: ' + (d['수집시각'] || '—');
+
+  const price = ta['현재가'];
+  const chgPct = ta['전일대비_pct'];
+  document.getElementById('r-price').textContent = price ? price.toLocaleString('ko-KR') + '원' : '—';
+
+  const chgEl = document.getElementById('r-change');
+  if (chgPct !== undefined) {
+    const cls = chgPct > 0 ? 'sa-change-pos' : chgPct < 0 ? 'sa-change-neg' : 'sa-change-neu';
+    chgEl.className = cls;
+    chgEl.textContent = (chgPct >= 0 ? '+' : '') + chgPct.toFixed(2) + '%';
+  }
+
+  const alignEl = document.getElementById('r-align-badge');
+  if (ta['정배열_여부'] === true) {
+    alignEl.innerHTML = '<span class="sa-badge sa-badge-green">정배열</span>';
+  } else if (ta['정배열_여부'] === false) {
+    alignEl.innerHTML = '<span class="sa-badge sa-badge-red">역배열</span>';
+  } else {
+    alignEl.innerHTML = '';
+  }
+
+  // 기술적 지표
+  const rsiCls = ta['RSI_상태'] === '과매수' ? 'sa-change-pos' : ta['RSI_상태'] === '과매도' ? 'sa-change-neg' : '';
+  const macdDir = ta['MACD_방향'] || '—';
+  const cross = ta['20_60_크로스'];
+  const crossLabel = cross === 'golden_cross' ? '🟢 골든크로스' : cross === 'dead_cross' ? '🔴 데드크로스' : '없음';
+
+  document.getElementById('r-technicals').innerHTML = `
+    <div class="sa-indicator-row">
+      <span class="sa-indicator-label">52주 고가</span>
+      <span class="sa-indicator-val">${fmt(ta['52주_고가'])}원</span>
+    </div>
+    <div class="sa-indicator-row">
+      <span class="sa-indicator-label">52주 저가</span>
+      <span class="sa-indicator-val">${fmt(ta['52주_저가'])}원</span>
+    </div>
+    <div class="sa-indicator-row">
+      <span class="sa-indicator-label">RSI(14)</span>
+      <span class="sa-indicator-val"><span class="${rsiCls}">${fmt(ta['RSI14'])} · ${ta['RSI_상태'] || '—'}</span></span>
+    </div>
+    <div class="sa-indicator-row">
+      <span class="sa-indicator-label">MACD</span>
+      <span class="sa-indicator-val">${fmt(ta['MACD'])} (시그널: ${fmt(ta['MACD_signal'])})</span>
+    </div>
+    <div class="sa-indicator-row">
+      <span class="sa-indicator-label">MACD 방향</span>
+      <span class="sa-indicator-val">${macdDir}</span>
+    </div>
+    <div class="sa-indicator-row">
+      <span class="sa-indicator-label">20·60 크로스</span>
+      <span class="sa-indicator-val">${crossLabel}</span>
+    </div>
+  `;
+
+  // 이동평균선
+  const maData = ta['이동평균선'] || {};
+  const maKeys = ['MA5', 'MA20', 'MA60', 'MA120'];
+  document.getElementById('r-ma').innerHTML = maKeys.map(k => {
+    const v = maData[k];
+    const diff = (v && price) ? ((price / v - 1) * 100) : null;
+    const diffStr = diff !== null ? (diff >= 0 ? `<span class="sa-change-pos">+${diff.toFixed(1)}%</span>` : `<span class="sa-change-neg">${diff.toFixed(1)}%</span>`) : '';
+    return `<div class="sa-mini-card">
+      <div class="sa-mini-label">${k}</div>
+      <div class="sa-mini-val">${v ? v.toLocaleString('ko-KR') : '—'}원</div>
+      <div class="sa-mini-sub">현재가 대비 ${diffStr}</div>
+    </div>`;
+  }).join('');
+
+  // 밸류에이션
+  if (val.error) {
+    document.getElementById('r-valuation').innerHTML = `<div class="text-muted" style="font-size:0.82rem">${val.error}</div>`;
+  } else {
+    document.getElementById('r-valuation').innerHTML = `
+      <div class="sa-mini-card"><div class="sa-mini-label">PER</div><div class="sa-mini-val">${fmt(val['PER'])}배</div></div>
+      <div class="sa-mini-card"><div class="sa-mini-label">PBR</div><div class="sa-mini-val">${fmt(val['PBR'])}배</div></div>
+      <div class="sa-mini-card"><div class="sa-mini-label">EPS</div><div class="sa-mini-val">${fmt(val['EPS'])}원</div></div>
+      <div class="sa-mini-card"><div class="sa-mini-label">배당수익률</div><div class="sa-mini-val">${fmt(val['DIV_배당수익률'])}%</div></div>
+      <div class="sa-mini-card"><div class="sa-mini-label">시가총액</div><div class="sa-mini-val">${fmt(val['시가총액_억원'])}억원</div></div>
+      <div class="sa-mini-card"><div class="sa-mini-label">BPS</div><div class="sa-mini-val">${fmt(val['BPS'])}원</div></div>
+      <div class="sa-mini-card"><div class="sa-mini-label">상장주식수</div><div class="sa-mini-val" style="font-size:0.9rem">${fmt(val['상장주식수'])}주</div></div>
+    `;
+  }
+
+  // 재무제표
+  const years = Object.keys(fin).sort().reverse();
+  if (fin.error || years.length === 0) {
+    const msg = fin.error || '재무 데이터 없음';
+    document.getElementById('r-financials').innerHTML = `<div class="text-muted" style="font-size:0.82rem">${msg}</div>`;
+  } else {
+    const rows = [
+      ['매출액 (백만원)', '매출액', 1e6],
+      ['영업이익 (백만원)', '영업이익', 1e6],
+      ['당기순이익 (백만원)', '당기순이익', 1e6],
+      ['영업이익률', '영업이익률_pct', null, '%'],
+      ['ROE', 'ROE_pct', null, '%'],
+      ['부채비율', '부채비율_pct', null, '%'],
+      ['자산총계 (백만원)', '자산총계', 1e6],
+      ['자본총계 (백만원)', '자본총계', 1e6],
+      ['영업활동현금흐름 (백만원)', '영업활동현금흐름', 1e6],
+    ];
+    const header = `<tr><th>항목</th>${years.map(y => `<th>${y}</th>`).join('')}</tr>`;
+    const body = rows.map(([label, key, div, suffix]) => {
+      const cells = years.map(y => {
+        const v = fin[y]?.[key];
+        if (v === undefined || v === null) return '<td class="mono text-muted">—</td>';
+        const display = div ? Math.round(v / div).toLocaleString('ko-KR') : v.toLocaleString('ko-KR');
+        return `<td class="mono">${display}${suffix || ''}</td>`;
+      }).join('');
+      return `<tr><td style="font-size:0.8rem;color:var(--text-muted)">${label}</td>${cells}</tr>`;
+    }).join('');
+    document.getElementById('r-financials').innerHTML =
+      `<table><thead>${header}</thead><tbody>${body}</tbody></table>`;
+  }
+
+  // 차트
+  const chart = ta['차트_6개월'] || [];
+  if (chart.length) {
+    const dates = chart.map(c => c.date);
+    const closes = chart.map(c => c.close);
+    const trace = {
+      x: dates, y: closes, type: 'scatter', mode: 'lines',
+      line: { color: '#5c9aff', width: 2 },
+      fill: 'tozeroy', fillcolor: 'rgba(92,154,255,0.08)',
+      name: '종가',
+    };
+    const layout = {
+      paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
+      font: { color: '#aaa', size: 11 },
+      xaxis: { gridcolor: '#2a2a2a', tickfont: { size: 10 } },
+      yaxis: { gridcolor: '#2a2a2a', tickformat: ',d', tickfont: { size: 10 } },
+      margin: { l: 55, r: 10, t: 10, b: 40 },
+      showlegend: false,
+    };
+    Plotly.newPlot('sa-chart', [trace], layout, { responsive: true, displayModeBar: false });
+  }
+
+  document.getElementById('sa-result').style.display = 'block';
+  document.getElementById('sa-result').scrollIntoView({ behavior: 'smooth' });
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('sa-input').focus();
+});
+</script>
+{% endblock %}
