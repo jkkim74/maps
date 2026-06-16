@@ -285,7 +285,7 @@ async function runAnalysis() {
 }
 
 /* ── 결과 렌더링 ─────────────────────────────────────────── */
-function fmt(n, suffix='') {
+function saFmt(n, suffix='') {
   if (n === null || n === undefined) return '—';
   if (typeof n === 'number') return n.toLocaleString('ko-KR') + suffix;
   return n;
@@ -325,10 +325,10 @@ function renderResult(d) {
   const crossLbl = cross === 'golden_cross' ? '🟢 골든크로스' : cross === 'dead_cross' ? '🔴 데드크로스' : '없음';
 
   document.getElementById('r-technicals').innerHTML = `
-    <div class="sa-indicator-row"><span class="sa-indicator-label">52주 고가</span><span class="sa-indicator-val">${fmt(ta['52주_고가'])}원</span></div>
-    <div class="sa-indicator-row"><span class="sa-indicator-label">52주 저가</span><span class="sa-indicator-val">${fmt(ta['52주_저가'])}원</span></div>
-    <div class="sa-indicator-row"><span class="sa-indicator-label">RSI(14)</span><span class="sa-indicator-val"><span class="${rsiCls}">${fmt(ta['RSI14'])} · ${ta['RSI_상태'] || '—'}</span></span></div>
-    <div class="sa-indicator-row"><span class="sa-indicator-label">MACD</span><span class="sa-indicator-val">${fmt(ta['MACD'])} (시그널: ${fmt(ta['MACD_signal'])})</span></div>
+    <div class="sa-indicator-row"><span class="sa-indicator-label">52주 고가</span><span class="sa-indicator-val">${saFmt(ta['52주_고가'])}원</span></div>
+    <div class="sa-indicator-row"><span class="sa-indicator-label">52주 저가</span><span class="sa-indicator-val">${saFmt(ta['52주_저가'])}원</span></div>
+    <div class="sa-indicator-row"><span class="sa-indicator-label">RSI(14)</span><span class="sa-indicator-val"><span class="${rsiCls}">${saFmt(ta['RSI14'])} · ${ta['RSI_상태'] || '—'}</span></span></div>
+    <div class="sa-indicator-row"><span class="sa-indicator-label">MACD</span><span class="sa-indicator-val">${saFmt(ta['MACD'])} (시그널: ${saFmt(ta['MACD_signal'])})</span></div>
     <div class="sa-indicator-row"><span class="sa-indicator-label">MACD 방향</span><span class="sa-indicator-val">${ta['MACD_방향'] || '—'}</span></div>
     <div class="sa-indicator-row"><span class="sa-indicator-label">20·60 크로스</span><span class="sa-indicator-val">${crossLbl}</span></div>`;
 
@@ -353,13 +353,13 @@ function renderResult(d) {
       `<div class="text-muted" style="font-size:.82rem">${val.error}</div>`;
   } else {
     document.getElementById('r-valuation').innerHTML = `
-      <div class="sa-mini-card"><div class="sa-mini-label">PER</div><div class="sa-mini-val">${fmt(val['PER'])}배</div></div>
-      <div class="sa-mini-card"><div class="sa-mini-label">PBR</div><div class="sa-mini-val">${fmt(val['PBR'])}배</div></div>
-      <div class="sa-mini-card"><div class="sa-mini-label">EPS</div><div class="sa-mini-val">${fmt(val['EPS'])}원</div></div>
-      <div class="sa-mini-card"><div class="sa-mini-label">배당수익률</div><div class="sa-mini-val">${fmt(val['DIV_배당수익률'])}%</div></div>
-      <div class="sa-mini-card"><div class="sa-mini-label">시가총액</div><div class="sa-mini-val">${fmt(val['시가총액_억원'])}억원</div></div>
-      <div class="sa-mini-card"><div class="sa-mini-label">BPS</div><div class="sa-mini-val">${fmt(val['BPS'])}원</div></div>
-      <div class="sa-mini-card"><div class="sa-mini-label">상장주식수</div><div class="sa-mini-val" style="font-size:.9rem">${fmt(val['상장주식수'])}주</div></div>`;
+      <div class="sa-mini-card"><div class="sa-mini-label">PER</div><div class="sa-mini-val">${saFmt(val['PER'])}배</div></div>
+      <div class="sa-mini-card"><div class="sa-mini-label">PBR</div><div class="sa-mini-val">${saFmt(val['PBR'])}배</div></div>
+      <div class="sa-mini-card"><div class="sa-mini-label">EPS</div><div class="sa-mini-val">${saFmt(val['EPS'])}원</div></div>
+      <div class="sa-mini-card"><div class="sa-mini-label">배당수익률</div><div class="sa-mini-val">${saFmt(val['DIV_배당수익률'])}%</div></div>
+      <div class="sa-mini-card"><div class="sa-mini-label">시가총액</div><div class="sa-mini-val">${saFmt(val['시가총액_억원'])}억원</div></div>
+      <div class="sa-mini-card"><div class="sa-mini-label">BPS</div><div class="sa-mini-val">${saFmt(val['BPS'])}원</div></div>
+      <div class="sa-mini-card"><div class="sa-mini-label">상장주식수</div><div class="sa-mini-val" style="font-size:.9rem">${saFmt(val['상장주식수'])}주</div></div>`;
   }
 
   const years = Object.keys(fin).sort().reverse();
