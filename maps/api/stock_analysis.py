@@ -71,6 +71,22 @@ async def analyze_stream(ticker: str) -> StreamingResponse:
     def _run() -> None:
         try:
             result = analyze(ticker, settings.dart_api_key, progress_callback=_progress)
+
+            if settings.anthropic_api_key:
+                _progress("AI 종합분석 시작 (Claude)…", 98)
+                try:
+                    from maps.stock_analysis.analyzer import stream_llm_analysis
+                    for chunk in stream_llm_analysis(result, settings.anthropic_api_key):
+                        asyncio.run_coroutine_threadsafe(
+                            queue.put({"analysis_chunk": chunk, "done": False}),
+                            loop,
+                        )
+                except Exception as llm_err:
+                    asyncio.run_coroutine_threadsafe(
+                        queue.put({"analysis_chunk": f"\n\n[AI 분석 오류: {llm_err}]", "done": False}),
+                        loop,
+                    )
+
             asyncio.run_coroutine_threadsafe(
                 queue.put({"step": "분석 완료", "pct": 100, "done": True, "data": result}),
                 loop,
@@ -91,9 +107,9 @@ async def analyze_stream(ticker: str) -> StreamingResponse:
     async def _generate():
         while True:
             try:
-                item = await asyncio.wait_for(queue.get(), timeout=180.0)
+                item = await asyncio.wait_for(queue.get(), timeout=600.0)
             except asyncio.TimeoutError:
-                yield "data: {\"step\": \"타임아웃\", \"pct\": 0, \"done\": true, \"error\": \"분석 시간 초과 (3분)\"}\n\n"
+                yield "data: {\"step\": \"타임아웃\", \"pct\": 0, \"done\": true, \"error\": \"분석 시간 초과 (10분)\"}\n\n"
                 break
             yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
             if item.get("done"):

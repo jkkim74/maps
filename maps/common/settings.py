@@ -74,6 +74,7 @@ class MapsSettings(BaseSettings):
     kiwoom_password: str = ""
 
     dart_api_key: str = ""
+    anthropic_api_key: str = ""
     slack_webhook_url: str = ""
 
     daily_loss_limit: float = Field(default=0.015, ge=0.0)
@@ -220,6 +221,7 @@ def get_config_status(settings: MapsSettings | None = None) -> list[ConfigSectio
             "External Data",
             [
                 _field(s, "dart_api_key", "DART_API_KEY", "DART API key for managed/delisted stock metadata", secret=True),
+                _field(s, "anthropic_api_key", "ANTHROPIC_API_KEY", "Anthropic API key for AI stock analysis (Claude Opus)", secret=True),
             ],
         ),
         _section(

@@ -7,7 +7,7 @@ import io
 import json
 import xml.etree.ElementTree as ET
 import zipfile
-from collections.abc import Callable
+from collections.abc import Callable, Generator
 from typing import Any
 
 import pandas as pd
@@ -290,3 +290,101 @@ def analyze(
 
     report("데이터 정리 중…", 97)
     return json.loads(json.dumps(data, default=_json_default, ensure_ascii=False))
+
+
+# ── 6. LLM 종합 분석 (Claude Opus) ───────────────────────────────────────────
+
+def stream_llm_analysis(data: dict[str, Any], api_key: str) -> Generator[str, None, None]:
+    """Claude claude-opus-4-8 으로 7단계 종합 분석 텍스트를 스트리밍한다.
+
+    web_search 툴을 사용하므로 실시간 업종·실적 정보가 포함된다.
+    차트 시계열 데이터는 LLM 프롬프트에서 제외해 토큰을 절약한다.
+    """
+    import anthropic
+
+    name = data.get("종목명", "")
+    code = data.get("종목코드", "")
+    collect_time = data.get("수집시각", "")
+
+    # 차트 시계열은 텍스트 분석에 불필요하므로 제거
+    ta_raw = data.get("기술적분석", {})
+    ta_trimmed = {k: v for k, v in ta_raw.items() if k != "차트_6개월"}
+    data_for_llm: dict[str, Any] = {
+        k: v for k, v in data.items() if k != "기술적분석"
+    }
+    data_for_llm["기술적분석"] = ta_trimmed
+
+    data_json = json.dumps(data_for_llm, ensure_ascii=False, indent=2)
+
+    prompt = f"""당신은 한국 주식 시장 전문 애널리스트입니다. 아래 JSON 데이터를 바탕으로 **{name}({code})** 종목에 대한 심층 종합 분석을 수행하세요.
+
+## 기초 데이터 (기준: {collect_time})
+
+```json
+{data_json}
+```
+
+다음 7단계 분석을 순서대로 작성하세요:
+
+---
+
+### STEP 1: 기업 개요 및 주가 동향
+- 기업 특성, 주요 사업, 시장 포지셔닝
+- 현재 주가 위치 (52주 고/저가 대비), 최근 가격 흐름
+
+### STEP 2: 기본적 분석
+- PER/PBR/EPS/BPS 분석 및 업종·시장 평균 대비 평가 (웹 검색으로 업종 평균 확인)
+- 3개년 재무제표 YoY 변화율, 매출 CAGR, ROE 추이, 부채비율 적정성
+
+### STEP 3: 최근 실적 및 컨센서스 (웹 검색 필수)
+- 최근 분기 실적 (매출, 영업이익, 순이익)
+- 시장 컨센서스 대비 어닝 서프라이즈/쇼크 여부
+- 다음 실적 발표 일정
+
+### STEP 4: 기술적 분석
+- 이동평균선 배열 (정배열/역배열), 주요 지지/저항선
+- RSI·MACD 신호 해석
+- 매수/매도/관망 신호 (표 형식):
+
+| 지표 | 현재값 | 신호 | 강도 |
+|------|--------|------|------|
+| MA20/60 크로스 | | | |
+| RSI(14) | | | |
+| MACD | | | |
+
+### STEP 5: 업종·산업 분석 (웹 검색 필수)
+- 글로벌 업종 트렌드 및 주요 경쟁사 동향
+- 미·중 무역 정책, AI/반도체 수요 등 거시 환경 영향
+- 동종업계 내 경쟁력 포지션
+
+### STEP 6: 향후 6개월 주요 임팩트 요인
+- 상승 촉매 (3-4가지)
+- 하락 리스크 (3-4가지)
+- 주요 이벤트 캘린더 (실적, IR, 배당 등)
+
+### STEP 7: 장기 투자 매력도 및 분할매수 전략
+- 장기 투자 관점의 매력도 평가 (★★★★☆ 형식)
+- 분할매수 목표가 3단계 제시 (1차/2차/3차)
+- 목표주가 및 기대 수익률 (6개월~1년)
+- 3~5문장의 핵심 투자 결론
+
+---
+
+**주의사항:**
+- 핵심 수치는 반드시 표 형식으로 정리하세요
+- 기초 데이터의 기준일({collect_time})을 명시하세요
+- 마지막에 반드시 다음을 추가하세요:
+
+> *본 분석은 투자 참고용이며 투자 결정의 최종 책임은 투자자 본인에게 있습니다.*
+"""
+
+    client = anthropic.Anthropic(api_key=api_key)
+    with client.messages.stream(
+        model="claude-opus-4-8",
+        max_tokens=16000,
+        thinking={"type": "adaptive"},
+        tools=[{"type": "web_search_20260209", "name": "web_search"}],
+        messages=[{"role": "user", "content": prompt}],
+    ) as stream:
+        for text in stream.text_stream:
+            yield text

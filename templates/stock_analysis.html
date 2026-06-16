@@ -53,6 +53,27 @@
 #sa-chart{width:100%;height:280px}
 .sa-err{background:#1a0000;border:1px solid #b71c1c;border-radius:8px;
   padding:16px;color:#ef9a9a;font-size:.9rem}
+
+/* ── AI 종합분석 섹션 ── */
+.sa-ai-card{margin-top:16px;display:none}
+.sa-ai-body{font-size:.88rem;line-height:1.75;color:var(--text-primary)}
+.sa-ai-body h3{font-size:.95rem;font-weight:700;color:var(--accent);margin:20px 0 8px;
+  border-bottom:1px solid var(--border);padding-bottom:4px}
+.sa-ai-body h4{font-size:.88rem;font-weight:600;color:var(--text-primary);margin:14px 0 6px}
+.sa-ai-body p{margin:6px 0}
+.sa-ai-body table{width:100%;border-collapse:collapse;margin:10px 0;font-size:.82rem}
+.sa-ai-body th,.sa-ai-body td{border:1px solid var(--border);padding:6px 10px;text-align:left}
+.sa-ai-body th{background:var(--bg-hover);font-weight:600;color:var(--text-primary)}
+.sa-ai-body ul,.sa-ai-body ol{padding-left:1.5em;margin:6px 0}
+.sa-ai-body li{margin:3px 0}
+.sa-ai-body strong{color:var(--text-primary)}
+.sa-ai-body em{color:var(--text-muted)}
+.sa-ai-body blockquote{border-left:3px solid var(--accent);margin:10px 0;padding:4px 12px;
+  color:var(--text-muted);font-style:italic}
+.sa-ai-body code{background:var(--bg-hover);border-radius:3px;padding:1px 5px;font-family:monospace;font-size:.85em}
+.sa-ai-cursor{display:inline-block;width:2px;height:1em;background:var(--accent);
+  animation:blink .8s infinite;vertical-align:text-bottom;margin-left:1px}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
 </style>
 {% endblock %}
 {% block content %}
@@ -136,16 +157,30 @@
   </div>
 
 </div>
+
+<!-- ── AI 종합분석 ── -->
+<div class="card sa-ai-card" id="sa-ai-card">
+  <div class="card-body">
+    <div class="section-title" style="font-size:.85rem;margin-bottom:14px">
+      AI 종합분석
+      <span style="font-size:.75rem;color:var(--text-muted);font-weight:400;margin-left:6px">Claude Opus 4.8 · web_search</span>
+    </div>
+    <div class="sa-ai-body" id="sa-ai-body"></div>
+  </div>
+</div>
+
 {% endblock %}
 {% block extra_scripts %}
+<script src="https://cdn.jsdelivr.net/npm/marked@9/marked.min.js"></script>
 <script>
 /* ── 분석 단계 정의 ───────────────────────────────────────── */
 const STEP_DEFS = [
-  { key: 'resolve',      label: '종목코드 확인',           pctFrom: 0  },
-  { key: 'technicals',   label: '시세 · 기술적 지표 수집', pctFrom: 10 },
-  { key: 'fundamentals', label: '밸류에이션 조회',          pctFrom: 40 },
-  { key: 'dart_corp',    label: 'DART 법인코드 조회',       pctFrom: 55 },
-  { key: 'financials',   label: '재무제표 수집 (3개년)',    pctFrom: 70 },
+  { key: 'resolve',      label: '종목코드 확인',             pctFrom: 0  },
+  { key: 'technicals',   label: '시세 · 기술적 지표 수집',   pctFrom: 10 },
+  { key: 'fundamentals', label: '밸류에이션 조회',            pctFrom: 40 },
+  { key: 'dart_corp',    label: 'DART 법인코드 조회',         pctFrom: 55 },
+  { key: 'financials',   label: '재무제표 수집 (3개년)',      pctFrom: 70 },
+  { key: 'ai_analysis',  label: 'AI 종합분석 (Claude Opus)', pctFrom: 97 },
 ];
 
 function stepKeyFromPct(pct) {
@@ -159,12 +194,18 @@ function stepKeyFromPct(pct) {
 let _elapsedTimer = null;
 let _startTime = null;
 let _activeEs = null;
+let _analysisText = '';
+let _aiStarted = false;
 
 function startProgress(ticker) {
   _startTime = Date.now();
+  _analysisText = '';
+  _aiStarted = false;
   document.getElementById('sa-progress').style.display = 'block';
   document.getElementById('sa-error').style.display = 'none';
   document.getElementById('sa-result').style.display = 'none';
+  document.getElementById('sa-ai-card').style.display = 'none';
+  document.getElementById('sa-ai-body').innerHTML = '';
   document.getElementById('prog-title').textContent = `${ticker} 분석 진행 중…`;
   document.getElementById('prog-step').textContent = '';
   document.getElementById('prog-bar').style.width = '0%';
@@ -224,6 +265,25 @@ function stopProgress() {
   });
 }
 
+/* ── AI 분석 청크 처리 ────────────────────────────────────── */
+function appendAnalysisChunk(chunk) {
+  if (!_aiStarted) {
+    _aiStarted = true;
+    updateProgress('AI 종합분석 진행 중… (웹 검색 포함)', 98);
+    document.getElementById('sa-ai-card').style.display = 'block';
+    document.getElementById('sa-ai-card').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+  _analysisText += chunk;
+  const body = document.getElementById('sa-ai-body');
+  body.innerHTML = marked.parse(_analysisText) + '<span class="sa-ai-cursor"></span>';
+}
+
+function finalizeAnalysis() {
+  if (_analysisText) {
+    document.getElementById('sa-ai-body').innerHTML = marked.parse(_analysisText);
+  }
+}
+
 /* ── 분석 실행 (SSE) ─────────────────────────────────────── */
 async function runAnalysis() {
   const ticker = document.getElementById('sa-input').value.trim();
@@ -244,6 +304,12 @@ async function runAnalysis() {
     let d;
     try { d = JSON.parse(e.data); } catch { return; }
 
+    // AI 분석 청크
+    if (d.analysis_chunk !== undefined) {
+      appendAnalysisChunk(d.analysis_chunk);
+      return;
+    }
+
     if (!d.done) {
       updateProgress(d.step, d.pct);
       return;
@@ -253,6 +319,7 @@ async function runAnalysis() {
     es.close();
     _activeEs = null;
     stopProgress();
+    finalizeAnalysis();
     document.getElementById('sa-btn').disabled = false;
     document.getElementById('sa-btn').textContent = '▶ 분석';
 
@@ -276,8 +343,9 @@ async function runAnalysis() {
     es.close();
     _activeEs = null;
     stopProgress();
+    finalizeAnalysis();
     document.getElementById('sa-btn').disabled = false;
-    document.getElementById('sa-btn').textContent = '▶ 분석';
+    document.getElementById('sa-btn').textContent = '▶ 분析';
     document.getElementById('sa-progress').style.display = 'none';
     document.getElementById('sa-error').textContent = '연결 오류: 서버와 통신 중 문제가 발생했습니다.';
     document.getElementById('sa-error').style.display = 'block';
