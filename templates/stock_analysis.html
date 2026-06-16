@@ -392,25 +392,29 @@ function renderResult(d) {
       `<table><thead>${hdr}</thead><tbody>${body}</tbody></table>`;
   }
 
+  document.getElementById('sa-result').style.display = 'block';
+  document.getElementById('sa-result').scrollIntoView({ behavior: 'smooth' });
+
   const chart = ta['차트_6개월'] || [];
   if (chart.length) {
     const dates  = chart.map(c => c.date);
     const closes = chart.map(c => c.close);
-    Plotly.newPlot('sa-chart',
-      [{ x: dates, y: closes, type: 'scatter', mode: 'lines',
-         line: { color: '#5c9aff', width: 2 },
-         fill: 'tozeroy', fillcolor: 'rgba(92,154,255,0.08)', name: '종가' }],
-      { paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
-        font: { color: '#aaa', size: 11 },
-        xaxis: { gridcolor: '#2a2a2a', tickfont: { size: 10 } },
-        yaxis: { gridcolor: '#2a2a2a', tickformat: ',d', tickfont: { size: 10 } },
-        margin: { l: 55, r: 10, t: 10, b: 40 }, showlegend: false },
-      { responsive: true, displayModeBar: false }
-    );
+    try {
+      Plotly.newPlot('sa-chart',
+        [{ x: dates, y: closes, type: 'scatter', mode: 'lines',
+           line: { color: '#5c9aff', width: 2 },
+           fill: 'tozeroy', fillcolor: 'rgba(92,154,255,0.08)', name: '종가' }],
+        { paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
+          font: { color: '#aaa', size: 11 },
+          xaxis: { gridcolor: '#2a2a2a', tickfont: { size: 10 } },
+          yaxis: { gridcolor: '#2a2a2a', tickformat: ',d', tickfont: { size: 10 } },
+          margin: { l: 55, r: 10, t: 10, b: 40 }, showlegend: false },
+        { responsive: true, displayModeBar: false }
+      );
+    } catch (e) {
+      console.error('차트 렌더링 오류:', e);
+    }
   }
-
-  document.getElementById('sa-result').style.display = 'block';
-  document.getElementById('sa-result').scrollIntoView({ behavior: 'smooth' });
 }
 
 document.addEventListener('DOMContentLoaded', () => {
