@@ -80,7 +80,7 @@ class MapsSettings(BaseSettings):
     aws_access_key_id: str = ""
     aws_secret_access_key: str = ""
     aws_region: str = "us-east-1"
-    aws_bedrock_model_id: str = "us.anthropic.claude-opus-4-8-20251101-v1:0"
+    aws_bedrock_model_id: str = "us.anthropic.claude-opus-4-8"
 
     daily_loss_limit: float = Field(default=0.015, ge=0.0)
     max_single_exposure: float = Field(default=0.10, ge=0.0)
