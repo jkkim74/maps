@@ -1177,6 +1177,26 @@ class OperationalPipeline:
             if row.ticker not in entries:
                 entries[row.ticker] = row
 
+        # 체결 기록이 없는 포지션에 대한 폴백: expired 주문으로 진입 정보 복원
+        # (당일 체결됐지만 sync에서 filled로 갱신되지 못한 경우 등)
+        missing = set(positions) - set(entries)
+        if missing:
+            expired_rows = (
+                db.query(OrderLog)
+                .filter(OrderLog.ticker.in_(missing))
+                .filter(OrderLog.side == OrderSide.BUY.value)
+                .filter(OrderLog.status == "expired")
+                .order_by(OrderLog.created_at.desc(), OrderLog.id.desc())
+                .all()
+            )
+            for row in expired_rows:
+                if row.ticker not in entries and row.strategy_id:
+                    entries[row.ticker] = row
+                    logger.warning(
+                        "Stop-loss fallback: using expired buy order [%s %s] as entry (order_price=%.0f)",
+                        row.strategy_id, row.ticker, row.order_price or 0,
+                    )
+
         submitted = 0
         skipped = 0
         exit_tickers: set[str] = set()

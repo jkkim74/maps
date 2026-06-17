@@ -195,7 +195,7 @@ class KISAdapter(BrokerAdapter):
 
     def get_open_orders(self) -> list[PendingOrder]:
         """Return same-day orders with remaining quantity greater than zero."""
-        rows = self._fetch_daily_order_rows()
+        rows = self._fetch_daily_order_rows(ccld_dvsn="02")
         pending: list[PendingOrder] = []
         for row in rows:
             order_qty = self._row_order_qty(row)
@@ -244,7 +244,8 @@ class KISAdapter(BrokerAdapter):
             )
         return results
 
-    def _fetch_daily_order_rows(self) -> list[dict[str, Any]]:
+    def _fetch_daily_order_rows(self, *, ccld_dvsn: str = "00") -> list[dict[str, Any]]:
+        # ccld_dvsn: "00"=전체, "01"=체결, "02"=미체결
         params = {
             "CANO": self._account_prefix,
             "ACNT_PRDT_CD": self._account_product_code,
@@ -253,7 +254,7 @@ class KISAdapter(BrokerAdapter):
             "SLL_BUY_DVSN_CD": "00",
             "INQR_DVSN": "00",
             "PDNO": "",
-            "CCLD_DVSN": "02",
+            "CCLD_DVSN": ccld_dvsn,
             "ORD_GNO_BRNO": "",
             "ODNO": "",
             "INQR_DVSN_3": "00",
