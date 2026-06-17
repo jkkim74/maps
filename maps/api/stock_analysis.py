@@ -72,11 +72,17 @@ async def analyze_stream(ticker: str) -> StreamingResponse:
         try:
             result = analyze(ticker, settings.dart_api_key, progress_callback=_progress)
 
-            if settings.anthropic_api_key:
-                _progress("AI 종합분석 시작 (Claude)…", 98)
+            if settings.aws_access_key_id:
+                _progress("AI 종합분석 시작 (Claude via Bedrock)…", 98)
                 try:
                     from maps.stock_analysis.analyzer import stream_llm_analysis
-                    for chunk in stream_llm_analysis(result, settings.anthropic_api_key):
+                    for chunk in stream_llm_analysis(
+                        result,
+                        aws_access_key_id=settings.aws_access_key_id,
+                        aws_secret_access_key=settings.aws_secret_access_key,
+                        aws_region=settings.aws_region,
+                        model_id=settings.aws_bedrock_model_id,
+                    ):
                         asyncio.run_coroutine_threadsafe(
                             queue.put({"analysis_chunk": chunk, "done": False}),
                             loop,

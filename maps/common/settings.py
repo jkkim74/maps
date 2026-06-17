@@ -74,8 +74,13 @@ class MapsSettings(BaseSettings):
     kiwoom_password: str = ""
 
     dart_api_key: str = ""
-    anthropic_api_key: str = ""
     slack_webhook_url: str = ""
+
+    # AWS Bedrock (Claude AI 분석)
+    aws_access_key_id: str = ""
+    aws_secret_access_key: str = ""
+    aws_region: str = "us-east-1"
+    aws_bedrock_model_id: str = "us.anthropic.claude-opus-4-8-20251101-v1:0"
 
     daily_loss_limit: float = Field(default=0.015, ge=0.0)
     max_single_exposure: float = Field(default=0.10, ge=0.0)
@@ -221,7 +226,10 @@ def get_config_status(settings: MapsSettings | None = None) -> list[ConfigSectio
             "External Data",
             [
                 _field(s, "dart_api_key", "DART_API_KEY", "DART API key for managed/delisted stock metadata", secret=True),
-                _field(s, "anthropic_api_key", "ANTHROPIC_API_KEY", "Anthropic API key for AI stock analysis (Claude Opus)", secret=True),
+                _field(s, "aws_access_key_id", "AWS_ACCESS_KEY_ID", "AWS access key for Bedrock AI analysis", secret=True),
+                _field(s, "aws_secret_access_key", "AWS_SECRET_ACCESS_KEY", "AWS secret key for Bedrock AI analysis", secret=True),
+                _field(s, "aws_region", "AWS_REGION", "AWS region for Bedrock (default: us-east-1)"),
+                _field(s, "aws_bedrock_model_id", "AWS_BEDROCK_MODEL_ID", "Bedrock Claude model ID"),
             ],
         ),
         _section(

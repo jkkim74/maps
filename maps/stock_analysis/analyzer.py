@@ -292,21 +292,25 @@ def analyze(
     return json.loads(json.dumps(data, default=_json_default, ensure_ascii=False))
 
 
-# ── 6. LLM 종합 분석 (Claude Opus) ───────────────────────────────────────────
+# ── 6. LLM 종합 분석 (Claude Opus via AWS Bedrock) ───────────────────────────
 
-def stream_llm_analysis(data: dict[str, Any], api_key: str) -> Generator[str, None, None]:
-    """Claude claude-opus-4-8 으로 7단계 종합 분석 텍스트를 스트리밍한다.
+def stream_llm_analysis(
+    data: dict[str, Any],
+    aws_access_key_id: str = "",
+    aws_secret_access_key: str = "",
+    aws_region: str = "us-east-1",
+    model_id: str = "us.anthropic.claude-opus-4-8-20251101-v1:0",
+) -> Generator[str, None, None]:
+    """AWS Bedrock Claude claude-opus-4-8으로 7단계 종합 분석 텍스트를 스트리밍한다.
 
-    web_search 툴을 사용하므로 실시간 업종·실적 정보가 포함된다.
     차트 시계열 데이터는 LLM 프롬프트에서 제외해 토큰을 절약한다.
     """
-    import anthropic
+    import boto3
 
     name = data.get("종목명", "")
     code = data.get("종목코드", "")
     collect_time = data.get("수집시각", "")
 
-    # 차트 시계열은 텍스트 분석에 불필요하므로 제거
     ta_raw = data.get("기술적분석", {})
     ta_trimmed = {k: v for k, v in ta_raw.items() if k != "차트_6개월"}
     data_for_llm: dict[str, Any] = {
@@ -333,13 +337,13 @@ def stream_llm_analysis(data: dict[str, Any], api_key: str) -> Generator[str, No
 - 현재 주가 위치 (52주 고/저가 대비), 최근 가격 흐름
 
 ### STEP 2: 기본적 분석
-- PER/PBR/EPS/BPS 분석 및 업종·시장 평균 대비 평가 (웹 검색으로 업종 평균 확인)
+- PER/PBR/EPS/BPS 분석 및 업종·시장 평균 대비 평가 (학습 데이터 기반 업종 평균 활용)
 - 3개년 재무제표 YoY 변화율, 매출 CAGR, ROE 추이, 부채비율 적정성
 
-### STEP 3: 최근 실적 및 컨센서스 (웹 검색 필수)
-- 최근 분기 실적 (매출, 영업이익, 순이익)
-- 시장 컨센서스 대비 어닝 서프라이즈/쇼크 여부
-- 다음 실적 발표 일정
+### STEP 3: 최근 실적 및 컨센서스
+- 제공된 재무 데이터 기반 실적 분석 (매출, 영업이익, 순이익 추이)
+- 재무지표로 추론한 실적 방향성 및 성장성 평가
+- 일반적인 실적 발표 시즌 기준 다음 발표 예상 시기
 
 ### STEP 4: 기술적 분석
 - 이동평균선 배열 (정배열/역배열), 주요 지지/저항선
@@ -352,10 +356,10 @@ def stream_llm_analysis(data: dict[str, Any], api_key: str) -> Generator[str, No
 | RSI(14) | | | |
 | MACD | | | |
 
-### STEP 5: 업종·산업 분석 (웹 검색 필수)
-- 글로벌 업종 트렌드 및 주요 경쟁사 동향
-- 미·중 무역 정책, AI/반도체 수요 등 거시 환경 영향
-- 동종업계 내 경쟁력 포지션
+### STEP 5: 업종·산업 분석
+- 해당 기업의 사업 특성 기반 업종 트렌드 분석
+- 거시 환경(금리, 환율, 무역 정책) 영향 평가
+- 동종업계 내 경쟁력 포지션 (재무지표 기반)
 
 ### STEP 6: 향후 6개월 주요 임팩트 요인
 - 상승 촉매 (3-4가지)
@@ -378,13 +382,30 @@ def stream_llm_analysis(data: dict[str, Any], api_key: str) -> Generator[str, No
 > *본 분석은 투자 참고용이며 투자 결정의 최종 책임은 투자자 본인에게 있습니다.*
 """
 
-    client = anthropic.Anthropic(api_key=api_key)
-    with client.messages.stream(
-        model="claude-opus-4-8",
-        max_tokens=16000,
-        thinking={"type": "adaptive"},
-        tools=[{"type": "web_search_20260209", "name": "web_search"}],
-        messages=[{"role": "user", "content": prompt}],
-    ) as stream:
-        for text in stream.text_stream:
-            yield text
+    client_kwargs: dict[str, Any] = {"region_name": aws_region}
+    if aws_access_key_id and aws_secret_access_key:
+        client_kwargs["aws_access_key_id"] = aws_access_key_id
+        client_kwargs["aws_secret_access_key"] = aws_secret_access_key
+
+    client = boto3.client("bedrock-runtime", **client_kwargs)
+
+    body = json.dumps({
+        "anthropic_version": "bedrock-2023-05-31",
+        "max_tokens": 16000,
+        "thinking": {"type": "enabled", "budget_tokens": 10000},
+        "messages": [{"role": "user", "content": prompt}],
+    })
+
+    response = client.invoke_model_with_response_stream(
+        modelId=model_id,
+        body=body,
+        contentType="application/json",
+        accept="application/json",
+    )
+
+    for event in response["body"]:
+        chunk = json.loads(event["chunk"]["bytes"].decode())
+        if chunk.get("type") == "content_block_delta":
+            delta = chunk.get("delta", {})
+            if delta.get("type") == "text_delta":
+                yield delta.get("text", "")
