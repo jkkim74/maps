@@ -1281,7 +1281,7 @@ class OperationalPipeline:
             return []
 
         min_score = self._settings.maps_candidate_min_score
-        eligible_stages = {"mock_candidate", "live_candidate", "live"}
+        eligible_stages = {"live_candidate", "live"}
         latest_promotions = self._latest_promotions(db)
         rows = (
             db.query(CandidateSnapshot)
@@ -1315,8 +1315,8 @@ class OperationalPipeline:
         - passed=False → PromotionStage.REJECTED ("rejected")
 
         실패 평가가 가장 최신이면 해당 전략의 주문이 차단된다.
-        eligible_stages에 "rejected"가 포함되지 않으므로 _order_candidates에서
-        해당 전략의 후보가 필터링된다.
+        eligible_stages에 "mock_candidate"와 "rejected"가 포함되지 않으므로
+        _order_candidates에서 해당 전략의 후보가 필터링된다.
         """
         rows = (
             db.query(PromotionHistory)

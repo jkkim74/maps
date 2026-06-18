@@ -176,8 +176,8 @@ def test_order_cycle_submits_promoted_candidate_when_live_enabled(monkeypatch) -
         ))
         db.add(PromotionHistory(
             strategy_id="pullback_v3",
-            from_stage="alert_only",
-            to_stage="mock_candidate",
+            from_stage="mock_candidate",
+            to_stage="live_candidate",
             tradeability_score=70,
             passed=True,
             evaluated_at=dt.datetime(2026, 5, 5, 8, 0),
@@ -245,8 +245,8 @@ def test_order_cycle_skips_candidate_when_gap_exceeds_limit(monkeypatch) -> None
             ts_bucket="S5", final_score=95, weekly_pass=True,
         ))
         db.add(PromotionHistory(
-            strategy_id="pullback_v3", from_stage="alert_only",
-            to_stage="mock_candidate", tradeability_score=70, passed=True,
+            strategy_id="pullback_v3", from_stage="mock_candidate",
+            to_stage="live_candidate", tradeability_score=70, passed=True,
             evaluated_at=dt.datetime(2026, 5, 5, 8, 0),
         ))
         db.commit()
@@ -293,8 +293,8 @@ def test_order_cycle_applies_slippage_to_limit_price(monkeypatch) -> None:
             ts_bucket="S5", final_score=95, weekly_pass=True,
         ))
         db.add(PromotionHistory(
-            strategy_id="pullback_v3", from_stage="alert_only",
-            to_stage="mock_candidate", tradeability_score=70, passed=True,
+            strategy_id="pullback_v3", from_stage="mock_candidate",
+            to_stage="live_candidate", tradeability_score=70, passed=True,
             evaluated_at=dt.datetime(2026, 5, 5, 8, 0),
         ))
         db.commit()
@@ -337,8 +337,8 @@ def test_order_cycle_skips_candidate_without_strategy_entry_signal(monkeypatch) 
             ts_bucket="S5", final_score=95, weekly_pass=True,
         ))
         db.add(PromotionHistory(
-            strategy_id="pullback_v3", from_stage="alert_only",
-            to_stage="mock_candidate", tradeability_score=70, passed=True,
+            strategy_id="pullback_v3", from_stage="mock_candidate",
+            to_stage="live_candidate", tradeability_score=70, passed=True,
             evaluated_at=dt.datetime(2026, 5, 5, 8, 0),
         ))
         db.commit()
@@ -943,8 +943,8 @@ def test_order_cycle_skips_all_buys_when_regime_override_is_fail(monkeypatch) ->
             ts_bucket="S5", final_score=95, weekly_pass=True,
         ))
         db.add(PromotionHistory(
-            strategy_id="pullback_v3", from_stage="alert_only",
-            to_stage="mock_candidate", tradeability_score=70, passed=True,
+            strategy_id="pullback_v3", from_stage="mock_candidate",
+            to_stage="live_candidate", tradeability_score=70, passed=True,
             evaluated_at=dt.datetime(2026, 5, 5, 8, 0),
         ))
         db.commit()
@@ -1029,8 +1029,8 @@ def test_kill_switch_triggers_when_daily_pnl_exceeds_limit(monkeypatch) -> None:
             ts_bucket="S5", final_score=95, weekly_pass=True,
         ))
         db.add(PromotionHistory(
-            strategy_id="pullback_v3", from_stage="alert_only",
-            to_stage="mock_candidate", tradeability_score=70, passed=True,
+            strategy_id="pullback_v3", from_stage="mock_candidate",
+            to_stage="live_candidate", tradeability_score=70, passed=True,
             evaluated_at=dt.datetime(2026, 5, 8, 8, 0),
         ))
         db.commit()
@@ -1247,8 +1247,8 @@ def test_order_cycle_skips_buy_when_ohlcv_is_stale(monkeypatch) -> None:
             ts_bucket="S5", final_score=95, weekly_pass=True,
         ))
         db.add(PromotionHistory(
-            strategy_id="pullback_v3", from_stage="alert_only",
-            to_stage="mock_candidate", tradeability_score=70, passed=True,
+            strategy_id="pullback_v3", from_stage="mock_candidate",
+            to_stage="live_candidate", tradeability_score=70, passed=True,
             evaluated_at=dt.datetime(2026, 5, 8, 8, 0),
         ))
         db.commit()
