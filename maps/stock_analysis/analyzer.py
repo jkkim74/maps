@@ -391,8 +391,7 @@ def stream_llm_analysis(
 
     body = json.dumps({
         "anthropic_version": "bedrock-2023-05-31",
-        "max_tokens": 16000,
-        "thinking": {"type": "enabled", "budget_tokens": 10000},
+        "max_tokens": 8000,
         "messages": [{"role": "user", "content": prompt}],
     })
 
