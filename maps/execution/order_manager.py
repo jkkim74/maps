@@ -186,6 +186,36 @@ class OrderManager:
             if changed:
                 updated += 1
         updated += self._reconcile_same_day_buys({result.order_id for result in broker_results})
+
+        # 포지션 기반 매도 체결 폴백: KIS VTS는 장전 시장가 주문을 daily CCLD에서
+        # 반환하지 않는 경우가 있으므로, 브로커 포지션에서 사라진 종목의 pending SELL을
+        # filled로 처리한다.
+        try:
+            current_positions = set(self._broker.get_positions().keys())
+        except (NotImplementedError, BrokerAdapterError):
+            current_positions = None
+
+        if current_positions is not None:
+            returned_ids = {r.order_id for r in broker_results}
+            pending_sells = (
+                self._db.query(OrderLog)
+                .filter(OrderLog.status == OrderStatus.PENDING.value)
+                .filter(OrderLog.side == OrderSide.SELL.value)
+                .filter(OrderLog.order_id.notin_(returned_ids))
+                .all()
+            )
+            for sell_row in pending_sells:
+                if sell_row.ticker not in current_positions:
+                    sell_row.status = OrderStatus.FILLED.value
+                    if not sell_row.fill_qty:
+                        sell_row.fill_qty = sell_row.qty
+                    updated += 1
+                    logger.info(
+                        "Position-based fill: sell [%s %s] marked filled (ticker absent from broker)",
+                        sell_row.order_id,
+                        sell_row.ticker,
+                    )
+
         self._db.commit()
         return {
             "cash": balance.cash,
