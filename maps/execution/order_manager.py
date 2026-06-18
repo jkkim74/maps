@@ -319,7 +319,7 @@ class OrderManager:
                     ticker=result.ticker,
                     side=result.side.value,
                     qty=order.quantity,
-                    order_price=order.limit_price,
+                    order_price=order.limit_price or order.current_price or None,
                     fill_price=result.avg_price if result.avg_price else None,
                     fill_qty=result.filled_quantity,
                     status=result.status.value,

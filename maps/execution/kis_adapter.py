@@ -482,6 +482,8 @@ class KISAdapter(BrokerAdapter):
                 logger.warning("KIS token expired (%s) — invalidating cache and retrying: %s", code, path)
                 self._invalidate_token_cache()
                 headers["authorization"] = f"Bearer {self._ensure_token()}"
+                if hash_body is not None:
+                    headers["hashkey"] = self._hashkey(hash_body)
                 response = self._send_with_retry(method, path, headers=headers, params=params, json=json)
                 payload = self._decode_response(response)
                 rt_cd = str(payload.get("rt_cd", "0"))

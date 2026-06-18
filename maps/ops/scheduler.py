@@ -468,7 +468,7 @@ class OperationalPipeline:
                 broker.eod_cleanup()  # type: ignore[attr-defined]
             # 만료 전 마지막 체결 동기화 — VTS 장전 주문 등 daily CCLD 누락 케이스 처리
             manager.sync_broker_state()
-            expired = manager.expire_pending_orders()
+            expired = manager.expire_pending_orders(before=dt.datetime.now())
             self._write_log(
                 db,
                 ref_date=ref_date,
