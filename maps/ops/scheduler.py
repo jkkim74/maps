@@ -51,6 +51,7 @@ from maps.ops.order_state import claimed_candidate_tickers
 from maps.promotion.gate import PromotionGate, PromotionStage
 from maps.risk.manager import RiskConfig, RiskManager
 from maps.strategy.ath_breakout_v1 import ATHBreakoutV1Strategy
+from maps.strategy.live_rules import atr_stop_price, stop_loss_price
 from maps.strategy.ath_breakout_v2 import ATHBreakoutV2Strategy
 from maps.strategy.base import BaseStrategy
 from maps.strategy.donchian_v1 import DonchianV1Strategy
@@ -223,11 +224,17 @@ class OperationalPipeline:
                 weekly_pass,
             )
 
+            regime_label = regime.regime.value  # "strong" | "mixed" | "weak"
             saved_count = 0
-            for strategy_id in _RUNNABLE_STRATEGIES:
+            active_strategies: list[str] = []
+            for strategy_id, strategy_cls in _RUNNABLE_STRATEGIES.items():
+                if regime_label not in strategy_cls.preferred_regimes:
+                    logger.info("전략 스킵 [%s]: 시황=%s", strategy_id, regime_label)
+                    continue
                 saved_count += self._save_candidate_snapshot(
                     db, ref_date, strategy_id, result.universe, weekly_pass=weekly_pass
                 )
+                active_strategies.append(strategy_id)
             self._last_universe = result
             return {
                 "ref_date": ref_date.isoformat(),
@@ -236,7 +243,11 @@ class OperationalPipeline:
                 "rejected_count": len(result.rejected),
                 "rejection_ratio": round(result.rejection_ratio, 4),
                 "saved_count": saved_count,
-                "strategies_updated": list(_RUNNABLE_STRATEGIES.keys()),
+                "strategies_updated": active_strategies,
+                "strategies_skipped_regime": [
+                    sid for sid, cls in _RUNNABLE_STRATEGIES.items()
+                    if regime_label not in cls.preferred_regimes
+                ],
             }
 
         return self._job("candidate_generation", _run)
@@ -986,6 +997,41 @@ class OperationalPipeline:
             else:
                 final_score = round(base_score, 2)
 
+            # Rule-based 3가지 가격 계획 (AI 없을 때도 항상 채운다)
+            slippage = self._settings.maps_order_slippage_pct
+            rr = self._settings.maps_trade_rr_ratio
+            current_close_val = stock.avg_turnover_20d_as_of(ref_date)  # 대용값이 아닌 실제 종가 사용
+            try:
+                last_ohlcv = repo.to_dataframe(stock.ticker, end=ref_date)
+                current_close_val = float(last_ohlcv["close"].iloc[-1]) if last_ohlcv is not None and len(last_ohlcv) > 0 else 0.0
+            except Exception:  # noqa: BLE001
+                current_close_val = 0.0
+
+            plan_buy: float | None = None
+            plan_stop: float | None = None
+            plan_target: float | None = None
+            if current_close_val > 0:
+                plan_buy = float(round_up_krx_price(current_close_val * (1 + slippage), market=stock.market))
+                atr14_val: float | None = None
+                if ohlcv_df is not None and len(ohlcv_df) >= 14:
+                    try:
+                        atr14_val = float(_compute_atr14(ohlcv_df).iloc[-1])
+                    except Exception:  # noqa: BLE001
+                        pass
+                stop_candidates = [
+                    stop_loss_price(strategy_id, plan_buy),
+                    atr_stop_price(strategy_id, plan_buy, atr14_val) if atr14_val else None,
+                ]
+                valid_stops = [v for v in stop_candidates if v is not None]
+                plan_stop = min(valid_stops) if valid_stops else None
+                if plan_stop is not None:
+                    plan_target = round(plan_buy + (plan_buy - plan_stop) * rr, 0)
+
+            # AI 우선, None이면 rule-based 폴백
+            final_buy = (round(ai_result.ai_buy_price, 0) if ai_result and ai_result.ai_buy_price else None) or plan_buy
+            final_stop = (round(ai_result.ai_stop_price, 0) if ai_result and ai_result.ai_stop_price else None) or plan_stop
+            final_target = (round(ai_result.ai_target_price, 0) if ai_result and ai_result.ai_target_price else None) or plan_target
+
             db.add(
                 CandidateSnapshot(
                     ref_date=ref_date,
@@ -1000,9 +1046,9 @@ class OperationalPipeline:
                     weekly_pass=weekly_pass,
                     estimated_qty=None,
                     ai_technical_score=round(ai_result.technical_score, 2) if ai_result else None,
-                    ai_buy_price=round(ai_result.ai_buy_price, 0) if ai_result else None,
-                    ai_stop_price=round(ai_result.ai_stop_price, 0) if ai_result else None,
-                    ai_target_price=round(ai_result.ai_target_price, 0) if ai_result else None,
+                    ai_buy_price=final_buy,
+                    ai_stop_price=final_stop,
+                    ai_target_price=final_target,
                     ai_analysis_memo=ai_result.raw_memo if ai_result else None,
                 )
             )
@@ -1130,11 +1176,15 @@ class OperationalPipeline:
                 skipped += 1
                 continue
 
-            # 지정가 = 최신 종가 × (1 + slippage) — 당일 소폭 상승 흡수
-            limit_price = round_up_krx_price(
-                current_close * (1 + slippage_pct),
-                market=candidate.market,
-            )
+            # 지정가: ai_buy_price가 있고 현재 종가 대비 5% 이내면 우선 사용,
+            # 그렇지 않으면 종가 × (1 + slippage) 계산
+            if candidate.ai_buy_price and 0 < candidate.ai_buy_price <= current_close * 1.05:
+                limit_price = float(candidate.ai_buy_price)
+            else:
+                limit_price = round_up_krx_price(
+                    current_close * (1 + slippage_pct),
+                    market=candidate.market,
+                )
 
             remaining_slots = max(max_orders - submitted, 1)
             qty = self._order_qty(candidate, account.total_value, remaining_cash, limit_price, remaining_slots)

@@ -26,6 +26,7 @@ class ATHBreakoutV1Strategy(BaseStrategy):
 
     strategy_id = "ath_breakout_v1"
     strategy_group = "ath_outlier"
+    preferred_regimes: frozenset[str] = frozenset({"strong"})
 
     _STOP_LOSS_PCT = 0.10
 

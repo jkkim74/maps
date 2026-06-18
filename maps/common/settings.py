@@ -55,6 +55,7 @@ class MapsSettings(BaseSettings):
     maps_order_slippage_pct: float = Field(default=0.01, ge=0.0)   # 지정가 = 최신종가 * (1 + slippage)
     maps_order_max_gap_pct: float = Field(default=0.02, ge=0.0)    # 신호 이후 갭 상승 허용 상한 (초과 시 주문 스킵)
     maps_candidate_min_score: float = Field(default=10.0, ge=0.0)  # CandidateSnapshot final_score 최소 기준 (미만 종목 주문 제외)
+    maps_trade_rr_ratio: float = Field(default=2.0, ge=0.5)        # 목표가 = 매수가 + 손절폭 × 이 값 (MAPS_TRADE_RR_RATIO)
     maps_stock_report_path: str = "/opt/stock_report"              # stock-report 소스 경로
 
     maps_krx_closed_dates: str = ""

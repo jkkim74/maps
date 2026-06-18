@@ -21,6 +21,7 @@ class BaseStrategy(abc.ABC):
 
     strategy_id: str
     strategy_group: str
+    preferred_regimes: frozenset[str] = frozenset({"strong", "mixed", "weak"})
 
     @abc.abstractmethod
     def generate_signals(self, data: pd.DataFrame, params: dict) -> pd.DataFrame:

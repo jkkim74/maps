@@ -29,6 +29,7 @@ class DonchianV2Strategy(BaseStrategy):
 
     strategy_id = "donchian_v2"
     strategy_group = "donchian_research"
+    preferred_regimes: frozenset[str] = frozenset({"strong", "mixed"})
 
     _STOP_LOSS_PCT = 0.10
     _EXIT_RATIO = 0.5    # 청산 채널 = 진입 채널의 50% 기간

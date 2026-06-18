@@ -31,6 +31,7 @@ class MultiAssetTrendV1Strategy(BaseStrategy):
 
     strategy_id = "multi_asset_trend_v1"
     strategy_group = "multi_asset"
+    preferred_regimes: frozenset[str] = frozenset({"strong", "mixed", "weak"})
 
     _STOP_LOSS_PCT = 0.08
     # 레짐 필터: ma_slow가 20봉 전보다 높아야 상승 국면.

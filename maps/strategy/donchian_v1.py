@@ -26,6 +26,7 @@ class DonchianV1Strategy(BaseStrategy):
 
     strategy_id = "donchian_v1"
     strategy_group = "donchian_research"
+    preferred_regimes: frozenset[str] = frozenset({"strong", "mixed"})
 
     _STOP_LOSS_PCT = 0.08
 

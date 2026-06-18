@@ -29,6 +29,7 @@ class PullbackV2Strategy(BaseStrategy):
 
     strategy_id = "pullback_v2"
     strategy_group = "pullback_short"
+    preferred_regimes: frozenset[str] = frozenset({"strong", "mixed"})
 
     _MA_SHORT = 5
     _STOP_LOSS_PCT = 0.06

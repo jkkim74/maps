@@ -30,6 +30,7 @@ class ATHBreakoutV2Strategy(BaseStrategy):
 
     strategy_id = "ath_breakout_v2"
     strategy_group = "ath_outlier"
+    preferred_regimes: frozenset[str] = frozenset({"strong"})
 
     _STOP_LOSS_PCT = 0.12
     _TRAIL_PCT = 0.08   # 최고점 대비 -8% 트레일링 스탑
