@@ -60,6 +60,7 @@ from maps.strategy.pullback_v2 import PullbackV2Strategy
 from maps.strategy.pullback_v3 import PullbackV3Strategy
 from maps.strategy.live_rules import atr_stop_price, stop_loss_price
 from maps.indicator.trend_strength import TrendStrengthCalculator
+from maps.ai.technical_scorer import AITechnicalScorer
 from maps.stock_report.runner import run_all_reports_if_idle
 from maps.validation.monte_carlo import MonteCarloValidator
 from maps.validation.plateau import ParameterPlateauTester
@@ -943,6 +944,10 @@ class OperationalPipeline:
         repo = HistoricalOHLCVRepository(db)
         ts_calc = TrendStrengthCalculator()
 
+        ai_enabled = self._settings.maps_ai_technical_scoring_enabled
+        ai_weight = self._settings.maps_ai_technical_score_weight if ai_enabled else 0.0
+        ai_scorer = AITechnicalScorer.from_settings() if ai_enabled else None
+
         for stock in ranked:
             turnover = stock.avg_turnover_20d_as_of(ref_date)
             factor_score = (turnover / max_turnover * 100.0) if max_turnover > 0 else 0.0
@@ -950,6 +955,7 @@ class OperationalPipeline:
             # 실제 추세강도 계산 (데이터 부족 시 중립값 50.0 / "S3" 사용)
             trend_strength = 50.0
             ts_bucket = "S3"
+            ohlcv_df = None
             try:
                 ohlcv_df = repo.to_dataframe(stock.ticker, end=ref_date)
                 ts_score = ts_calc.score_one(stock.ticker, ohlcv_df, ref_date)
@@ -959,8 +965,26 @@ class OperationalPipeline:
             except Exception:  # noqa: BLE001
                 pass  # OHLCV 없으면 중립값 유지
 
-            # final_score: 유동성(거래대금) 60% + 추세강도 40%
-            final_score = round(0.6 * factor_score + 0.4 * trend_strength, 2)
+            # AI 기술적 분석 (활성화 시)
+            ai_result = None
+            if ai_scorer is not None and ohlcv_df is not None and not ohlcv_df.empty:
+                try:
+                    ai_result = ai_scorer.score(
+                        stock.ticker, stock.name, ohlcv_df, strategy_id,
+                        trend_strength, ts_bucket, ref_date.isoformat(),
+                    )
+                except Exception:  # noqa: BLE001
+                    pass  # AI 오류 시 기존 점수 유지
+
+            # final_score 계산
+            # AI 비활성: 유동성 60% + 추세강도 40%
+            # AI 활성:   유동성 (1-ai_w)×60% + 추세강도 (1-ai_w)×40% + AI ai_w%
+            base_score = 0.6 * factor_score + 0.4 * trend_strength
+            if ai_result is not None:
+                rest_w = 1.0 - ai_weight
+                final_score = round(rest_w * base_score + ai_weight * ai_result.technical_score, 2)
+            else:
+                final_score = round(base_score, 2)
 
             db.add(
                 CandidateSnapshot(
@@ -975,6 +999,11 @@ class OperationalPipeline:
                     final_score=final_score,
                     weekly_pass=weekly_pass,
                     estimated_qty=None,
+                    ai_technical_score=round(ai_result.technical_score, 2) if ai_result else None,
+                    ai_buy_price=round(ai_result.ai_buy_price, 0) if ai_result else None,
+                    ai_stop_price=round(ai_result.ai_stop_price, 0) if ai_result else None,
+                    ai_target_price=round(ai_result.ai_target_price, 0) if ai_result else None,
+                    ai_analysis_memo=ai_result.raw_memo if ai_result else None,
                 )
             )
         db.commit()

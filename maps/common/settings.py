@@ -82,6 +82,10 @@ class MapsSettings(BaseSettings):
     aws_region: str = "us-east-1"
     aws_bedrock_model_id: str = "us.anthropic.claude-sonnet-4-6"
 
+    # AI 기술적 분석 (후보 생성 시점, 16:20 KST)
+    maps_ai_technical_scoring_enabled: bool = False  # 명시적으로 켜야 작동
+    maps_ai_technical_score_weight: float = Field(default=0.20, ge=0.0, le=1.0)
+
     daily_loss_limit: float = Field(default=0.015, ge=0.0)
     max_single_exposure: float = Field(default=0.10, ge=0.0)
     account_risk_per_trade: float = Field(default=0.005, ge=0.0)

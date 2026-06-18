@@ -90,6 +90,12 @@ class CandidateSnapshot(Base):
     final_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     weekly_pass: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     estimated_qty: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # AI 기술적 분석 결과 (maps_ai_technical_scoring_enabled=true 시 채워짐)
+    ai_technical_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    ai_buy_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    ai_stop_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    ai_target_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    ai_analysis_memo: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc)
     )
