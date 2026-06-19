@@ -29,6 +29,11 @@ ALLOWED_MDD: Final[dict[str, dict[str, float]]] = {
         "expected": 0.18,
         "mc_p95_limit": 0.30,
     },
+    # 역발상 분할 매수는 공포 구간 진입 특성상 MDD 허용치를 높게 설정
+    "contrarian_quality": {
+        "expected": 0.15,
+        "mc_p95_limit": 0.25,
+    },
     "portfolio_total": {
         "expected": 0.16,
         "mc_p95_limit": 0.28,
@@ -75,6 +80,7 @@ STRATEGY_GROUP_MAP: Final[dict[str, str]] = {
     "multi_asset_trend_v1": "multi_asset",
     "donchian_v1":          "donchian_research",
     "donchian_v2":          "donchian_research",
+    "contrarian_quality_accumulation_v1": "contrarian_quality",
 }
 
 # ---------------------------------------------------------------------------

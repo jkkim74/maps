@@ -92,11 +92,33 @@ class MapsSettings(BaseSettings):
     maps_valuation_margin_enabled: bool = False
     maps_strategy_aware_scoring_enabled: bool = False
 
+    # 7단계: AI 역발상 검증 (코스톨라니식 투자 논리 검증)
+    maps_ai_contrarian_check_enabled: bool = False
+
     # 업종 필터 (Phase B)
     maps_sector_filter_enabled: bool = False   # 명시적으로 켜야 작동
     maps_sector_kostolany_mode_enabled: bool = False
     maps_sector_top_n: int = Field(default=5, ge=1, le=30)
     maps_sector_lookback_days: int = Field(default=20, ge=5, le=120)
+
+    # 8단계: 테마·섹터·상관관계 노출 한도
+    maps_theme_exposure_limit_enabled: bool = False
+    maps_sector_exposure_limit_enabled: bool = False
+    maps_min_cash_ratio_strong: float = Field(default=0.15, ge=0.0, le=1.0)
+    maps_min_cash_ratio_mixed: float = Field(default=0.25, ge=0.0, le=1.0)
+    maps_min_cash_ratio_weak: float = Field(default=0.35, ge=0.0, le=1.0)
+    maps_max_sector_exposure: float = Field(default=0.25, ge=0.0, le=1.0)
+    maps_max_theme_exposure: float = Field(default=0.35, ge=0.0, le=1.0)
+
+    # 9단계: 보유 성격 분류 (CORE/SWING/TRADING/WATCH/BAN)
+    maps_holding_type_classification_enabled: bool = False
+
+    # 10단계: 코스톨라니 가격 산출
+    maps_kostolany_price_calculator_enabled: bool = False
+
+    # 12단계: 드라이런/백테스트 비교 모드
+    maps_dry_run: bool = False
+    maps_backtest_mode: bool = False
 
     daily_loss_limit: float = Field(default=0.015, ge=0.0)
     max_single_exposure: float = Field(default=0.10, ge=0.0)

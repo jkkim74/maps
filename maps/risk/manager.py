@@ -56,6 +56,22 @@ class RiskConfig:
     daily_loss_limit: float = 0.015     # 일일 손실 한도 (1.5%)
     mdd_limit: float = 0.15             # 포트폴리오 MDD 한도 (15%)
     position_size_limit: float = 0.10   # 단일 종목 최대 비중 (10%)
+    # 8단계: 테마·섹터 노출 한도
+    sector_exposure_limit: float = 0.25         # 단일 섹터 최대 비중 (25%)
+    theme_exposure_limit: float = 0.35          # 단일 테마 최대 비중 (35%)
+    theme_exposure_limit_enabled: bool = False  # 테마 노출 한도 활성 여부
+    sector_exposure_limit_enabled: bool = False # 섹터 노출 한도 활성 여부
+    # 시장 국면별 최소 현금 비율
+    min_cash_ratio_strong: float = 0.15
+    min_cash_ratio_mixed: float = 0.25
+    min_cash_ratio_weak: float = 0.35
+
+
+# 테마 매핑 (종목 ticker → 테마명)
+# SecurityMetadata.theme 컬럼에 없을 경우 이 딕셔너리를 fallback으로 사용
+_THEME_MAP: dict[str, str] = {
+    # 실제 배포 시 SecurityMetadata.theme 컬럼으로 관리
+}
 
 
 class RiskManager:
@@ -123,6 +139,10 @@ class RiskManager:
             exposure = order_value / account.total_value
             if exposure > self._cfg.position_size_limit:
                 raise ExposureCapError(order.ticker, exposure)
+
+        # 8단계: 섹터·테마 노출 한도 체크 (활성화된 경우)
+        if effective_price and effective_price > 0 and account.total_value > 0:
+            self._check_exposure_limits(order, account, effective_price)
 
     # ------------------------------------------------------------------
     # 신규: 주문 성공/실패 카운터
@@ -255,6 +275,96 @@ class RiskManager:
         self._log_kill_switch(event)
         self._notify_kill_switch(event)
         logger.info("Kill Switch 해제 [%s] by %s", strategy_id, released_by)
+
+    # ------------------------------------------------------------------
+    # 8단계: 테마·섹터 노출 한도 체크
+    # ------------------------------------------------------------------
+
+    def _check_exposure_limits(
+        self,
+        order: Order,
+        account: AccountBalance,
+        effective_price: float,
+    ) -> None:
+        """섹터·테마 노출 한도를 체크하고 초과 시 ExposureCapError를 발생시킨다."""
+        from maps.common.models import SecurityMetadata, PortfolioSnapshot
+
+        if not (self._cfg.sector_exposure_limit_enabled or self._cfg.theme_exposure_limit_enabled):
+            return
+
+        # 현재 포지션 전체 목록 조회 (broker에서 가져온 포지션 기준)
+        try:
+            positions: list = self._broker.get_positions() if hasattr(self._broker, "get_positions") else []
+        except Exception:
+            positions = []
+
+        # 신규 주문 종목의 섹터·테마 조회
+        meta = (
+            self._db.query(SecurityMetadata)
+            .filter(SecurityMetadata.ticker == order.ticker)
+            .first()
+        )
+        order_sector = (meta.sector or "") if meta else ""
+        order_theme = (meta.theme or "") if meta else ""
+        order_value = order.quantity * effective_price
+
+        if account.total_value <= 0:
+            return
+
+        if self._cfg.sector_exposure_limit_enabled and order_sector:
+            sector_value = sum(
+                p.current_value
+                for p in positions
+                if hasattr(p, "ticker") and self._get_ticker_sector(p.ticker) == order_sector
+            )
+            new_sector_ratio = (sector_value + order_value) / account.total_value
+            if new_sector_ratio > self._cfg.sector_exposure_limit:
+                raise ExposureCapError(
+                    order.ticker,
+                    new_sector_ratio,
+                    f"섹터 '{order_sector}' 노출 {new_sector_ratio:.1%} > 한도 {self._cfg.sector_exposure_limit:.1%}",
+                )
+
+        if self._cfg.theme_exposure_limit_enabled and order_theme:
+            theme_value = sum(
+                p.current_value
+                for p in positions
+                if hasattr(p, "ticker") and self._get_ticker_theme(p.ticker) == order_theme
+            )
+            new_theme_ratio = (theme_value + order_value) / account.total_value
+            if new_theme_ratio > self._cfg.theme_exposure_limit:
+                raise ExposureCapError(
+                    order.ticker,
+                    new_theme_ratio,
+                    f"테마 '{order_theme}' 노출 {new_theme_ratio:.1%} > 한도 {self._cfg.theme_exposure_limit:.1%}",
+                )
+
+    def _get_ticker_sector(self, ticker: str) -> str:
+        """DB에서 종목의 섹터를 조회한다."""
+        from maps.common.models import SecurityMetadata
+        try:
+            meta = self._db.query(SecurityMetadata).filter(SecurityMetadata.ticker == ticker).first()
+            return (meta.sector or "") if meta else ""
+        except Exception:
+            return ""
+
+    def _get_ticker_theme(self, ticker: str) -> str:
+        """DB에서 종목의 테마를 조회한다."""
+        from maps.common.models import SecurityMetadata
+        try:
+            meta = self._db.query(SecurityMetadata).filter(SecurityMetadata.ticker == ticker).first()
+            return (meta.theme or "") if meta else ""
+        except Exception:
+            return ""
+
+    def min_cash_ratio(self, market_regime: str = "mixed") -> float:
+        """시장 국면에 따른 최소 현금 비율을 반환한다."""
+        regime = market_regime.lower()
+        if regime == "strong":
+            return self._cfg.min_cash_ratio_strong
+        if regime == "weak":
+            return self._cfg.min_cash_ratio_weak
+        return self._cfg.min_cash_ratio_mixed
 
     # ------------------------------------------------------------------
     # 내부 헬퍼

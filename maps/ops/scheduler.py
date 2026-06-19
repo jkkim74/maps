@@ -59,13 +59,17 @@ from maps.strategy.base import BaseStrategy, StrategyType
 from maps.strategy.donchian_v1 import DonchianV1Strategy
 from maps.strategy.donchian_v2 import DonchianV2Strategy
 from maps.strategy.multi_asset_trend_v1 import MultiAssetTrendV1Strategy
+from maps.strategy.contrarian_quality_v1 import ContrarianQualityAccumulationV1Strategy
 from maps.strategy.pullback_v2 import PullbackV2Strategy
 from maps.strategy.pullback_v3 import PullbackV3Strategy
 from maps.strategy.scoring import LegacyFinalScoreCalculator, StrategyAwareScoreCalculator, StrategyScoreInput
 from maps.strategy.live_rules import atr_stop_price, stop_loss_price
 from maps.indicator.trend_strength import TrendStrengthCalculator
+from maps.ai.contrarian_analyzer import AIContrarianAnalyzer
 from maps.ai.technical_scorer import AITechnicalScorer
 from maps.ai.valuation_margin import PlaceholderValuationDataProvider, ValuationMarginScorer
+from maps.strategy.holding_type import HoldingTypeClassifier, HoldingTypeInput
+from maps.strategy.price_calculator import KostolanyPriceCalculator, PriceInput
 from maps.stock_report.runner import run_all_reports_if_idle
 from maps.validation.monte_carlo import MonteCarloValidator
 from maps.validation.plateau import ParameterPlateauTester
@@ -121,6 +125,7 @@ _RUNNABLE_STRATEGIES: dict[str, type[BaseStrategy]] = {
     "multi_asset_trend_v1": MultiAssetTrendV1Strategy,
     "donchian_v1": DonchianV1Strategy,
     "donchian_v2": DonchianV2Strategy,
+    "contrarian_quality_accumulation_v1": ContrarianQualityAccumulationV1Strategy,
 }
 
 _VALIDATION_SAMPLE_TICKERS = 5
@@ -312,7 +317,11 @@ class OperationalPipeline:
                         "strategy_type": policy.strategy_type,
                         "reason": policy.reason,
                     })
-                    continue
+                    # weekly_trend_fail은 스냅샷을 weekly_pass=False로 저장하고
+                    # 진입만 차단한다. 리포트에서 후보 목록이 보여야 하기 때문.
+                    # 장세/변동성 불일치(contrarian 외 WEAK+HIGH 등)는 스킵.
+                    if policy.reason != "weekly_trend_fail":
+                        continue
                 saved_count += self._save_candidate_snapshot(
                     db,
                     ref_date,
@@ -420,7 +429,9 @@ class OperationalPipeline:
             skipped_sell_orders = 0
             note = None
 
-            if live_enabled:
+            dry_run = getattr(self._settings, "maps_dry_run", False)
+
+            if live_enabled and not dry_run:
                 submitted_sell_orders, skipped_sell_orders, exit_tickers = self._submit_exit_orders(
                     db=db,
                     broker=broker,
@@ -455,6 +466,11 @@ class OperationalPipeline:
                     "positions_value": final_balance.positions_value,
                     "total_assets": final_balance.total_value,
                 }, holdings=holdings)
+            elif dry_run:
+                # Dry-run: 실거래 주문 없이 후보·포지션 계획만 로깅한다.
+                self._log_dry_run_candidates(db, ref_date)
+                note = "dry_run=True: order submission skipped, candidates logged only."
+                logger.info("[DRY-RUN] ref_date=%s — 모든 주문 제출 생략", ref_date)
             else:
                 note = "Order submission disabled by MAPS_LIVE_TRADING_ENABLED=false."
 
@@ -1064,9 +1080,15 @@ class OperationalPipeline:
         ai_enabled = self._settings.maps_ai_technical_scoring_enabled
         ai_weight = self._settings.maps_ai_technical_score_weight if ai_enabled else 0.0
         ai_scorer = AITechnicalScorer.from_settings() if ai_enabled else None
+        contrarian_check_enabled = self._settings.maps_ai_contrarian_check_enabled
+        contrarian_analyzer = AIContrarianAnalyzer.from_settings() if contrarian_check_enabled else None
         valuation_enabled = self._settings.maps_valuation_margin_enabled
         valuation_scorer = ValuationMarginScorer() if valuation_enabled else None
         valuation_provider = PlaceholderValuationDataProvider() if valuation_enabled else None
+        holding_type_enabled = self._settings.maps_holding_type_classification_enabled
+        holding_type_classifier = HoldingTypeClassifier() if holding_type_enabled else None
+        price_calc_enabled = self._settings.maps_kostolany_price_calculator_enabled
+        price_calculator = KostolanyPriceCalculator() if price_calc_enabled else None
         strategy_cls = _RUNNABLE_STRATEGIES.get(strategy_id)
         strategy_type = getattr(strategy_cls, "strategy_type", StrategyType.MOMENTUM)
         legacy_score_calculator = LegacyFinalScoreCalculator()
@@ -1172,12 +1194,12 @@ class OperationalPipeline:
             else:
                 current_close_val = 0.0
 
+            atr14_val: float | None = None
             plan_buy: float | None = None
             plan_stop: float | None = None
             plan_target: float | None = None
             if current_close_val > 0:
                 plan_buy = float(round_up_krx_price(current_close_val * (1 + slippage), market=stock.market))
-                atr14_val: float | None = None
                 if ohlcv_df is not None and len(ohlcv_df) >= 14:
                     try:
                         atr14_val = float(_compute_atr14(ohlcv_df).iloc[-1])
@@ -1196,6 +1218,65 @@ class OperationalPipeline:
             final_buy = (round(ai_result.ai_buy_price, 0) if ai_result and ai_result.ai_buy_price else None) or plan_buy
             final_stop = (round(ai_result.ai_stop_price, 0) if ai_result and ai_result.ai_stop_price else None) or plan_stop
             final_target = (round(ai_result.ai_target_price, 0) if ai_result and ai_result.ai_target_price else None) or plan_target
+
+            # 7단계: AI 역발상 검증 (contrarian_check_enabled 시에만 실행)
+            contrarian_result = None
+            if contrarian_analyzer is not None:
+                try:
+                    val_score = valuation_result.valuation_score if valuation_result else 50.0
+                    high52w = float(ohlcv_df["high"].rolling(min(252, len(ohlcv_df))).max().iloc[-1]) if ohlcv_df is not None and not ohlcv_df.empty else current_close_val
+                    drop_pct = round((high52w - current_close_val) / high52w * 100, 1) if high52w > 0 else 0.0
+                    contrarian_result = contrarian_analyzer.analyze(
+                        ticker=stock.ticker,
+                        name=stock.name,
+                        ref_date=str(ref_date),
+                        close=current_close_val,
+                        drop_pct=drop_pct,
+                        liquidity_score=factor_score,
+                        trend_strength=trend_strength,
+                        valuation_margin_score=val_score,
+                        sector=getattr(stock, "sector", "") or "",
+                    )
+                    # REJECT → final_score 감산
+                    if contrarian_result.final_opinion == "REJECT":
+                        final_score = max(0.0, final_score - 20.0)
+                    # WATCH → final_score 소폭 감산
+                    elif contrarian_result.final_opinion == "WATCH":
+                        final_score = max(0.0, final_score - 5.0)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("AI 역발상 검증 오류 [%s]: %s", stock.ticker, exc)
+
+            # 9단계: 보유 성격 분류 (CORE/SWING/TRADING/WATCH/BAN)
+            computed_holding_type: str | None = None
+            if holding_type_classifier is not None:
+                ht_inp = HoldingTypeInput(
+                    strategy_type=score_result.strategy_type,
+                    valuation_margin_score=valuation_result.valuation_score if valuation_result else None,
+                    excluded_reason=score_result.excluded_reason,
+                    ai_contrarian_opinion=contrarian_result.final_opinion if contrarian_result else None,
+                )
+                computed_holding_type = holding_type_classifier.classify(ht_inp).value
+
+            # 10단계: 코스톨라니 이중 목표가·손절가 산출
+            price_result = None
+            if price_calculator is not None and current_close_val > 0:
+                try:
+                    high52w_val: float | None = None
+                    if ohlcv_df is not None and not ohlcv_df.empty:
+                        high52w_val = float(
+                            ohlcv_df["high"].rolling(min(252, len(ohlcv_df))).max().iloc[-1]
+                        )
+                    price_inp = PriceInput(
+                        holding_type=computed_holding_type or "SWING",
+                        current_close=current_close_val,
+                        atr14=atr14_val,
+                        high_52w=high52w_val,
+                        rr_ratio=rr,
+                        slippage_pct=slippage,
+                    )
+                    price_result = price_calculator.calculate(price_inp)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("코스톨라니 가격 산출 오류 [%s]: %s", stock.ticker, exc)
 
             db.add(
                 CandidateSnapshot(
@@ -1222,6 +1303,19 @@ class OperationalPipeline:
                     ai_analysis_memo=ai_result.raw_memo if ai_result else None,
                     valuation_margin_score=valuation_result.valuation_score if valuation_result else None,
                     valuation_margin_reason=valuation_result.reason if valuation_result else None,
+                    ai_contrarian_score=round(contrarian_result.contrarian_score, 2) if contrarian_result else None,
+                    ai_contrarian_opinion=contrarian_result.final_opinion if contrarian_result else None,
+                    ai_contrarian_reason=contrarian_result.reason if contrarian_result else None,
+                    ai_contrarian_thesis=contrarian_result.thesis_summary if contrarian_result else None,
+                    ai_contrarian_anti_thesis=contrarian_result.anti_thesis if contrarian_result else None,
+                    holding_type=computed_holding_type,
+                    technical_stop=price_result.technical_stop if price_result else None,
+                    thesis_stop=price_result.thesis_stop if price_result else None,
+                    emergency_stop=price_result.emergency_stop if price_result else None,
+                    trading_target=price_result.trading_target if price_result else None,
+                    value_target=price_result.value_target if price_result else None,
+                    first_sell_price=price_result.first_sell_price if price_result else None,
+                    final_sell_price=price_result.final_sell_price if price_result else None,
                 )
             )
         db.commit()
@@ -1435,6 +1529,39 @@ class OperationalPipeline:
         # KillSwitch로 루프가 break 됐을 때 미처리 후보를 skipped에 반영한다.
         skipped += len(candidates) - submitted - skipped
         return submitted, skipped
+
+    def _log_dry_run_candidates(self, db: Session, ref_date: dt.date) -> None:
+        """Dry-run 모드: 실제 주문 없이 당일 후보 목록을 로깅한다."""
+        candidates = (
+            db.query(CandidateSnapshot)
+            .filter(
+                CandidateSnapshot.ref_date == ref_date,
+                CandidateSnapshot.weekly_pass.is_(True),
+            )
+            .order_by(CandidateSnapshot.final_score.desc())
+            .limit(20)
+            .all()
+        )
+        for snap in candidates:
+            holding = getattr(snap, "holding_type", None) or "SWING"
+            ai_opinion = getattr(snap, "ai_contrarian_opinion", None) or "-"
+            plan_buy = getattr(snap, "ai_buy_price", None)
+            technical_stop = getattr(snap, "technical_stop", None)
+            trading_target = getattr(snap, "trading_target", None)
+            value_target = getattr(snap, "value_target", None)
+            logger.info(
+                "[DRY-RUN] %s %s | holding=%s | score=%.1f | ai=%s | "
+                "plan_buy=%s | t_stop=%s | t_target=%s | v_target=%s",
+                snap.ticker,
+                snap.name,
+                holding,
+                snap.final_score,
+                ai_opinion,
+                f"{plan_buy:,.0f}" if plan_buy else "N/A",
+                f"{technical_stop:,.0f}" if technical_stop else "N/A",
+                f"{trading_target:,.0f}" if trading_target else "N/A",
+                f"{value_target:,.0f}" if value_target else "N/A",
+            )
 
     def _submit_exit_orders(
         self,

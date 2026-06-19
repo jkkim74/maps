@@ -11,6 +11,19 @@ _STOP_LOSS_PCTS: dict[str, float] = {
     "multi_asset_trend_v1": 0.08,
     "donchian_v1": 0.08,
     "donchian_v2": 0.10,
+    # 역발상 분할 매수 — thesis 무효화 기준 손절 (기술적 기본값)
+    "contrarian_quality_accumulation_v1": 0.08,
+}
+
+# thesis 무효화 기반 손절 비율 (단순 기술적 손절과 별도 관리)
+# KostolanyPriceCalculator가 thesis_stop을 산출할 때 참조한다.
+_THESIS_STOP_TRIGGERS: dict[str, list[str]] = {
+    "contrarian_quality_accumulation_v1": [
+        "operating_profit_drop_over_30pct",
+        "debt_ratio_surge",
+        "business_cycle_peak_confirmed",
+        "major_support_broken_with_credit_deterioration",
+    ],
 }
 
 # ATR(14) 기반 동적 손절 배율.
@@ -24,6 +37,8 @@ _ATR_MULTIPLIERS: dict[str, float] = {
     "multi_asset_trend_v1": 2.0,
     "donchian_v1": 2.0,
     "donchian_v2": 2.0,
+    # 역발상 전략은 변동성이 크므로 ATR 배율을 높게 유지
+    "contrarian_quality_accumulation_v1": 3.0,
 }
 
 

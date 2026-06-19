@@ -41,6 +41,7 @@ class SecurityMetadata(Base):
     delisting_date: Mapped[datetime.date | None] = mapped_column(Date, nullable=True)
     has_adjusted_price: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     sector: Mapped[str | None] = mapped_column(String(100), nullable=True)      # WICS 업종 분류
+    theme: Mapped[str | None] = mapped_column(String(64), nullable=True)        # 8단계: 테마 분류 (AI반도체·HBM 등)
     updated_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc),
         onupdate=lambda: datetime.datetime.now(datetime.timezone.utc),
@@ -104,6 +105,29 @@ class CandidateSnapshot(Base):
     ai_analysis_memo: Mapped[str | None] = mapped_column(String(500), nullable=True)
     valuation_margin_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     valuation_margin_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+    # 6단계: 역발상 분할 매수 단계 (1차=25%, 2차=35%, 3차=40%)
+    buy_stage: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # 7단계: AI 역발상 검증 결과
+    ai_contrarian_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    ai_contrarian_opinion: Mapped[str | None] = mapped_column(String(16), nullable=True)   # PASS|WATCH|REJECT
+    ai_contrarian_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ai_contrarian_thesis: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ai_contrarian_anti_thesis: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # 9단계: 보유 성격 분류
+    holding_type: Mapped[str | None] = mapped_column(String(16), nullable=True)  # CORE|SWING|TRADING|WATCH|BAN
+
+    # 10단계: 코스톨라니 가격 산출 (기존 plan_buy/stop/target은 유지)
+    technical_stop: Mapped[float | None] = mapped_column(Float, nullable=True)
+    thesis_stop: Mapped[float | None] = mapped_column(Float, nullable=True)
+    emergency_stop: Mapped[float | None] = mapped_column(Float, nullable=True)
+    trading_target: Mapped[float | None] = mapped_column(Float, nullable=True)
+    value_target: Mapped[float | None] = mapped_column(Float, nullable=True)
+    first_sell_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    final_sell_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc)
     )
