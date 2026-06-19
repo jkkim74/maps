@@ -218,17 +218,55 @@ async function loadMarket() {
 }
 
 // ── SCR-04 종목 후보 ─────────────────────────────────────────────────────────
+const _CANDIDATE_STRATEGIES = [
+  'pullback_v3','pullback_v2','ath_breakout_v1','ath_breakout_v2',
+  'donchian_v1','donchian_v2','multi_asset_trend_v1',
+];
+
+function aiScoreBadge(score) {
+  if (score == null) return '<span class="text-muted">—</span>';
+  const v = Math.round(score);
+  const cls = v >= 80 ? 'pass' : v >= 60 ? 'info' : v >= 40 ? '' : v >= 20 ? 'warn' : 'fail';
+  return `<span class="badge${cls ? ' badge-'+cls : ''}" title="AI 기술적 분석 점수">${v}</span>`;
+}
+
+function krPrice(p) {
+  if (p == null) return '<span class="text-muted">—</span>';
+  return `<span class="mono">${Math.round(p).toLocaleString('ko-KR')}</span>`;
+}
+
 async function loadCandidates() {
   loading('candidates-kpi');
   loading('candidates-area');
   try {
-    const d = await apiFetch('/candidates');
+    const params = new URLSearchParams(location.search);
+    const strategyId = params.get('strategy_id') || 'pullback_v3';
+
+    // 전략 선택기 셀렉트박스 동기화
+    const sel = document.getElementById('candidates-strategy-select');
+    if (sel) sel.value = strategyId;
+
+    const d = await apiFetch(`/candidates?strategy_id=${encodeURIComponent(strategyId)}`);
+
+    // AI 분석 활성 여부 — 하나라도 점수가 있으면 활성
+    const aiActive = d.candidates && d.candidates.some(c => c.ai_technical_score != null);
+
+    // AI 범례 섹션 표시/숨김
+    const aiSection = document.getElementById('candidates-ai-section');
+    const aiLegend = document.getElementById('candidates-ai-legend');
+    if (aiSection) aiSection.style.display = aiActive ? '' : 'none';
+    if (aiLegend) aiLegend.style.display = aiActive ? '' : 'none';
+
+    const aiKpi = aiActive
+      ? `<div class="kpi-card info"><div class="kpi-label">AI 분석</div><div class="kpi-value">ON</div><div class="kpi-sub">매수가·손절가·목표가</div></div>`
+      : `<div class="kpi-card"><div class="kpi-label">AI 분석</div><div class="kpi-value">—</div><div class="kpi-sub">비활성 (설정 필요)</div></div>`;
+
     document.getElementById('candidates-kpi').innerHTML = `
       <div class="kpi-grid">
         <div class="kpi-card"><div class="kpi-label">Universe</div><div class="kpi-value">${d.universe_count}</div><div class="kpi-sub">${d.ref_date}</div></div>
         <div class="kpi-card pass"><div class="kpi-label">Final</div><div class="kpi-value">${d.final_count}</div><div class="kpi-sub">저장 후보</div></div>
         <div class="kpi-card warn"><div class="kpi-label">Excluded</div><div class="kpi-value">${d.missing_count}</div><div class="kpi-sub">품질 필터 제외</div></div>
-        <div class="kpi-card"><div class="kpi-label">Strategy</div><div class="kpi-value">${d.strategy_id}</div><div class="kpi-sub">candidate snapshot</div></div>
+        ${aiKpi}
       </div>`;
 
     if (!d.candidates || d.candidates.length === 0) {
@@ -236,23 +274,60 @@ async function loadCandidates() {
       return;
     }
 
-    const rows = d.candidates.map(c => `
-      <tr>
+    const rows = d.candidates.map(c => {
+      // AI 분석 행 (메모 툴팁)
+      const aiMemo = c.ai_analysis_memo ? ` title="${c.ai_analysis_memo.replace(/"/g, '&quot;')}"` : '';
+      // 목표 수익률 표시 (목표가/매수가 - 1)
+      let rrHtml = '<span class="text-muted">—</span>';
+      if (c.ai_target_price && c.ai_buy_price && c.ai_buy_price > 0) {
+        const rr = ((c.ai_target_price - c.ai_buy_price) / c.ai_buy_price * 100).toFixed(1);
+        rrHtml = `<span class="mono text-muted">+${rr}%</span>`;
+      }
+      return `
+      <tr${aiMemo}>
         <td class="mono">${c.ticker}</td>
-        <td>${c.name}</td>
+        <td>${c.name} <span class="text-muted" style="font-size:10px">${c.market}</span></td>
         <td>${badge(c.ts_bucket, 'info')}</td>
         <td class="mono">${fmt.score(c.factor_score)}</td>
         <td class="mono">${fmt.score(c.trend_strength)}</td>
-        <td class="mono">${fmt.score(c.final_score)}</td>
+        <td class="mono"><strong>${fmt.score(c.final_score)}</strong></td>
+        <td>${aiScoreBadge(c.ai_technical_score)}</td>
+        <td>${krPrice(c.ai_buy_price)}</td>
+        <td>${krPrice(c.ai_stop_price)}</td>
+        <td>${krPrice(c.ai_target_price)}</td>
+        <td>${rrHtml}</td>
         <td>${c.weekly_pass ? passBadge(true) : passBadge(false)}</td>
         <td class="mono">${c.estimated_qty ?? '—'}</td>
-      </tr>`).join('');
-    document.getElementById('candidates-area').innerHTML =
-      `<table><thead><tr><th>티커</th><th>종목명</th><th>TS</th><th>Factor</th><th>Trend</th><th>Final</th><th>Weekly</th><th>수량</th></tr></thead><tbody>${rows}</tbody></table>`;
+      </tr>`;
+    }).join('');
+
+    document.getElementById('candidates-area').innerHTML = `
+      <table>
+        <thead>
+          <tr>
+            <th>티커</th><th>종목명</th><th>TS</th>
+            <th>Factor</th><th>Trend</th><th>Final</th>
+            <th title="Claude AI 기술적 분석 점수 (0-100)">AI점수</th>
+            <th title="AI 적정 매수가">매수가</th>
+            <th title="AI 손절가 (지지선 기반)">손절가</th>
+            <th title="AI 3개월 목표가">목표가</th>
+            <th title="목표 수익률 (목표가/매수가)">목표수익</th>
+            <th>Weekly</th><th>수량</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>`;
   } catch (e) {
     empty('candidates-kpi', `오류: ${e.message}`);
     empty('candidates-area', '');
   }
+}
+
+function changeCandidateStrategy(val) {
+  const url = new URL(location.href);
+  url.searchParams.set('strategy_id', val);
+  history.replaceState(null, '', url.toString());
+  loadCandidates();
 }
 
 // ── SCR-06 리스크 · 모니터 ───────────────────────────────────────────────────

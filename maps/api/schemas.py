@@ -95,12 +95,18 @@ class MarketResponse(BaseModel):
 class CandidateItem(BaseModel):
     ticker: str
     name: str
+    market: str
     factor_score: float
     trend_strength: float
     ts_bucket: str
     final_score: float
     weekly_pass: bool
     estimated_qty: int | None
+    ai_technical_score: float | None = None
+    ai_buy_price: float | None = None
+    ai_stop_price: float | None = None
+    ai_target_price: float | None = None
+    ai_analysis_memo: str | None = None
 
 
 class CandidatesResponse(BaseModel):

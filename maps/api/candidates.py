@@ -74,12 +74,18 @@ def get_candidates(
             CandidateItem(
                 ticker=row.ticker,
                 name=row.name,
+                market=row.market,
                 factor_score=row.factor_score,
                 trend_strength=row.trend_strength,
                 ts_bucket=row.ts_bucket,
                 final_score=row.final_score,
                 weekly_pass=row.weekly_pass,
                 estimated_qty=row.estimated_qty or 0,
+                ai_technical_score=row.ai_technical_score,
+                ai_buy_price=row.ai_buy_price,
+                ai_stop_price=row.ai_stop_price,
+                ai_target_price=row.ai_target_price,
+                ai_analysis_memo=row.ai_analysis_memo,
             )
             for row in rows
         ],

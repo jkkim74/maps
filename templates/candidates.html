@@ -2,6 +2,47 @@
 {% block content %}
 <div id="candidates-kpi"><div class="loading"><div class="spinner"></div>로딩 중...</div></div>
 
-<div class="section-header"><span class="section-title">최신 후보 종목</span><hr></div>
-<div class="card"><div class="card-body" id="candidates-area"><div class="loading"><div class="spinner"></div></div></div></div>
+<div class="section-header">
+  <span class="section-title">최신 후보 종목</span>
+  <div style="display:flex;align-items:center;gap:8px;">
+    <label for="candidates-strategy-select" style="font-size:12px;color:var(--text-muted);">전략</label>
+    <select id="candidates-strategy-select"
+            onchange="changeCandidateStrategy(this.value)"
+            style="font-size:12px;padding:4px 8px;background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:4px;cursor:pointer;">
+      <option value="pullback_v3">pullback_v3</option>
+      <option value="pullback_v2">pullback_v2</option>
+      <option value="ath_breakout_v1">ath_breakout_v1</option>
+      <option value="ath_breakout_v2">ath_breakout_v2</option>
+      <option value="donchian_v1">donchian_v1</option>
+      <option value="donchian_v2">donchian_v2</option>
+      <option value="multi_asset_trend_v1">multi_asset_trend_v1</option>
+    </select>
+  </div>
+  <hr>
+</div>
+
+<div class="card">
+  <div class="card-body" id="candidates-area"><div class="loading"><div class="spinner"></div></div></div>
+</div>
+
+<div class="section-header" id="candidates-ai-section" style="display:none;">
+  <span class="section-title">AI 기술적 분석 안내</span><hr>
+</div>
+<div class="card" id="candidates-ai-legend" style="display:none;">
+  <div class="card-body" style="font-size:12px;color:var(--text-muted);line-height:1.8;">
+    <strong style="color:var(--text);">AI 분석 컬럼 설명</strong><br>
+    <b>AI점수</b> — Claude가 OHLCV·이동평균·RSI·MACD 등을 분석한 매수 적합성 점수 (0-100)<br>
+    &nbsp;&nbsp;
+    <span class="badge badge-pass">80+</span> 매우적합 &nbsp;
+    <span class="badge badge-info">60+</span> 적합 &nbsp;
+    <span class="badge">40+</span> 보통 &nbsp;
+    <span class="badge badge-warn">20+</span> 부적합 &nbsp;
+    <span class="badge badge-fail">0+</span> 매우부적합<br>
+    <b>매수가</b> — AI가 제안하는 적정 지정가 진입 가격 (현재가 ±8% 이내)<br>
+    <b>손절가</b> — AI가 산출한 지지선 기반 손절 기준가<br>
+    <b>목표가</b> — AI 3개월 기술적 목표가<br>
+    <b>목표수익</b> — 목표가/매수가 기준 예상 수익률<br>
+    <span style="color:var(--text-muted);">※ 행 위에 마우스를 올리면 AI 분석 메모를 확인할 수 있습니다.</span>
+  </div>
+</div>
 {% endblock %}
