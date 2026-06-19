@@ -1026,11 +1026,10 @@ class OperationalPipeline:
             # Rule-based 3가지 가격 계획 (AI 없을 때도 항상 채운다)
             slippage = self._settings.maps_order_slippage_pct
             rr = self._settings.maps_trade_rr_ratio
-            current_close_val = stock.avg_turnover_20d_as_of(ref_date)  # 대용값이 아닌 실제 종가 사용
-            try:
-                last_ohlcv = repo.to_dataframe(stock.ticker, end=ref_date)
-                current_close_val = float(last_ohlcv["close"].iloc[-1]) if last_ohlcv is not None and len(last_ohlcv) > 0 else 0.0
-            except Exception:  # noqa: BLE001
+            # ohlcv_df는 위 TS 계산에서 이미 로드됨 — 중복 조회 없이 재사용
+            if ohlcv_df is not None and len(ohlcv_df) > 0:
+                current_close_val = float(ohlcv_df["close"].iloc[-1])
+            else:
                 current_close_val = 0.0
 
             plan_buy: float | None = None
