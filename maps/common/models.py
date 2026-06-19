@@ -40,6 +40,7 @@ class SecurityMetadata(Base):
     listing_date: Mapped[datetime.date | None] = mapped_column(Date, nullable=True)
     delisting_date: Mapped[datetime.date | None] = mapped_column(Date, nullable=True)
     has_adjusted_price: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    sector: Mapped[str | None] = mapped_column(String(100), nullable=True)      # WICS 업종 분류
     updated_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc),
         onupdate=lambda: datetime.datetime.now(datetime.timezone.utc),

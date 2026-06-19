@@ -172,14 +172,14 @@ Promotion thresholds: `mock_candidate=60`, `live_candidate=75` (fixed, independe
 | Provider | AWS Lightsail (ap-northeast-2 / Seoul) |
 | Public IP | `3.37.117.246` |
 | SSH user | `ubuntu` |
-| SSH key | `D:\ssh_maps\LightsailDefaultKey-ap-northeast-2.pem` |
+| SSH key | `D:\maps\LightsailDefaultKey-ap-northeast-2.pem` |
 | App root | `/opt/maps` |
 | Service | `maps` (systemd) |
 
 ### SSH access
 
 ```powershell
-ssh -i "D:\ssh_maps\LightsailDefaultKey-ap-northeast-2.pem" ubuntu@3.37.117.246
+ssh -i "D:\maps\LightsailDefaultKey-ap-northeast-2.pem" ubuntu@3.37.117.246
 ```
 
 ### Manual deploy (step-by-step on server)
@@ -197,7 +197,7 @@ sudo systemctl status maps        # 기동 확인
 ### One-liner deploy from local (PowerShell)
 
 ```powershell
-ssh -i "D:\ssh_maps\LightsailDefaultKey-ap-northeast-2.pem" ubuntu@3.37.117.246 `
+ssh -i "D:\maps\LightsailDefaultKey-ap-northeast-2.pem" ubuntu@3.37.117.246 `
   "cd /opt/maps && git pull origin master && sudo systemctl restart maps && sudo systemctl status maps --no-pager"
 ```
 
@@ -205,11 +205,11 @@ ssh -i "D:\ssh_maps\LightsailDefaultKey-ap-northeast-2.pem" ubuntu@3.37.117.246 
 
 ```powershell
 # 실시간 로그
-ssh -i "D:\ssh_maps\LightsailDefaultKey-ap-northeast-2.pem" ubuntu@3.37.117.246 `
+ssh -i "D:\maps\LightsailDefaultKey-ap-northeast-2.pem" ubuntu@3.37.117.246 `
   "sudo journalctl -u maps -f"
 
 # 최근 100줄
-ssh -i "D:\ssh_maps\LightsailDefaultKey-ap-northeast-2.pem" ubuntu@3.37.117.246 `
+ssh -i "D:\maps\LightsailDefaultKey-ap-northeast-2.pem" ubuntu@3.37.117.246 `
   "sudo journalctl -u maps -n 100 --no-pager"
 ```
 

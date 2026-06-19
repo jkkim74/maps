@@ -87,6 +87,11 @@ class MapsSettings(BaseSettings):
     maps_ai_technical_scoring_enabled: bool = False  # 명시적으로 켜야 작동
     maps_ai_technical_score_weight: float = Field(default=0.20, ge=0.0, le=1.0)
 
+    # 업종 필터 (Phase B)
+    maps_sector_filter_enabled: bool = False   # 명시적으로 켜야 작동
+    maps_sector_top_n: int = Field(default=5, ge=1, le=30)
+    maps_sector_lookback_days: int = Field(default=20, ge=5, le=120)
+
     daily_loss_limit: float = Field(default=0.015, ge=0.0)
     max_single_exposure: float = Field(default=0.10, ge=0.0)
     account_risk_per_trade: float = Field(default=0.005, ge=0.0)

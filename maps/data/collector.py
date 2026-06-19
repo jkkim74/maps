@@ -58,6 +58,12 @@ class DataCollector:
                 logger.warning("수정주가 누락 %d건 — broker 폴백 (Phase 4 구현 예정)", len(missing_adj))
                 # Phase 4: broker.get_adjusted_ohlcv(ref_date) 연동 후 구현
 
+            try:
+                sectors = self._krx.get_sector_classifications(ref_date)
+            except Exception as exc:
+                logger.warning("업종 분류 수집 실패 (스킵): %s", exc)
+                sectors = {}
+
             result = CollectionResult(
                 ref_date=ref_date,
                 ohlcv=ohlcv,
@@ -65,7 +71,11 @@ class DataCollector:
                 halts=halts,
                 managed=managed,
             )
-            self._upsert_meta(meta, {row.ticker: row.has_adjusted for row in ohlcv})
+            self._upsert_meta(
+                meta,
+                {row.ticker: row.has_adjusted for row in ohlcv},
+                sectors,
+            )
             saved_rows = self._upsert_ohlcv(ohlcv)
             self._write_log(ref_date, "success", saved_rows)
             return result
@@ -124,11 +134,18 @@ class DataCollector:
             "failures": failures[:10],
         }
 
-    def _upsert_meta(self, meta_list, adjusted_by_ticker: dict[str, bool] | None = None) -> None:
+    def _upsert_meta(
+        self,
+        meta_list,
+        adjusted_by_ticker: dict[str, bool] | None = None,
+        sector_by_ticker: dict[str, str] | None = None,
+    ) -> None:
         """종목 메타를 security_metadata 테이블에 upsert한다."""
         adjusted_by_ticker = adjusted_by_ticker or {}
+        sector_by_ticker = sector_by_ticker or {}
         for m in meta_list:
             has_adjusted_price = adjusted_by_ticker.get(m.ticker, False)
+            sector = sector_by_ticker.get(m.ticker)
             existing = (
                 self._db.query(SecurityMetadata)
                 .filter(SecurityMetadata.ticker == m.ticker)
@@ -141,6 +158,8 @@ class DataCollector:
                 existing.listing_date = m.listing_date
                 existing.delisting_date = m.delisting_date
                 existing.has_adjusted_price = has_adjusted_price
+                if sector is not None:
+                    existing.sector = sector
                 existing.updated_at = datetime.datetime.now(datetime.timezone.utc)
             else:
                 self._db.add(
@@ -152,6 +171,7 @@ class DataCollector:
                         listing_date=m.listing_date,
                         delisting_date=m.delisting_date,
                         has_adjusted_price=has_adjusted_price,
+                        sector=sector,
                     )
                 )
         self._db.commit()

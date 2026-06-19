@@ -45,6 +45,7 @@ from maps.data_quality.universe_filter import DataQualityFilter, UniverseResult
 from maps.execution.broker_adapter import Order, OrderSide, OrderType, Position, get_broker
 from maps.execution.order_manager import OrderManager
 from maps.market.regime import RegimeResult, WeeklyTrendLabel, create_regime_analyzer
+from maps.market.sector_selector import SectorSelector
 from maps.market.trading_rules import is_krx_closed_date, round_up_krx_price
 from maps.ops.notifications import SlackNotifier
 from maps.ops.order_state import claimed_candidate_tickers
@@ -225,6 +226,28 @@ class OperationalPipeline:
             )
 
             regime_label = regime.regime.value  # "strong" | "mixed" | "weak"
+
+            # 업종 필터 (MAPS_SECTOR_FILTER_ENABLED=true 일 때만 적용)
+            sector_filter_enabled = self._settings.maps_sector_filter_enabled
+            filtered_universe = list(result.universe)
+            strong_sectors: list[str] = []
+            if sector_filter_enabled:
+                selector = SectorSelector(
+                    lookback_days=self._settings.maps_sector_lookback_days,
+                    top_n=self._settings.maps_sector_top_n,
+                )
+                strong_sectors = selector.select_strong_sectors(db, ref_date, regime)
+                if strong_sectors:
+                    pre_count = len(filtered_universe)
+                    filtered_universe = [
+                        s for s in filtered_universe
+                        if getattr(s, "sector", None) in strong_sectors
+                    ]
+                    logger.info(
+                        "업종 필터 적용: %d → %d종목 (강세업종=%s)",
+                        pre_count, len(filtered_universe), strong_sectors,
+                    )
+
             saved_count = 0
             active_strategies: list[str] = []
             for strategy_id, strategy_cls in _RUNNABLE_STRATEGIES.items():
@@ -232,7 +255,7 @@ class OperationalPipeline:
                     logger.info("전략 스킵 [%s]: 시황=%s", strategy_id, regime_label)
                     continue
                 saved_count += self._save_candidate_snapshot(
-                    db, ref_date, strategy_id, result.universe, weekly_pass=weekly_pass
+                    db, ref_date, strategy_id, filtered_universe, weekly_pass=weekly_pass
                 )
                 active_strategies.append(strategy_id)
             self._last_universe = result
@@ -242,6 +265,9 @@ class OperationalPipeline:
                 "kept_count": len(result.universe),
                 "rejected_count": len(result.rejected),
                 "rejection_ratio": round(result.rejection_ratio, 4),
+                "sector_filter_enabled": sector_filter_enabled,
+                "strong_sectors": strong_sectors,
+                "sector_filtered_count": len(filtered_universe),
                 "saved_count": saved_count,
                 "strategies_updated": active_strategies,
                 "strategies_skipped_regime": [

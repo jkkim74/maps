@@ -98,6 +98,10 @@ class KRXAdapterBase(ABC):
     def get_managed_list(self, ref_date: datetime.date) -> list[str]:
         """ref_date 에 관리종목 지정 중인 ticker 목록을 반환한다."""
 
+    @abstractmethod
+    def get_sector_classifications(self, ref_date: datetime.date) -> dict[str, str]:
+        """ref_date 기준 ticker → WICS 업종명 매핑을 반환한다."""
+
 
 class KRXAdapter(KRXAdapterBase):
     """KRX 데이터 어댑터 — pykrx 기반 Phase 1.1 구현.
@@ -249,6 +253,42 @@ class KRXAdapter(KRXAdapterBase):
             )
         return managed
 
+    def get_sector_classifications(self, ref_date: datetime.date) -> dict[str, str]:
+        """KOSPI + KOSDAQ 전 종목의 WICS 업종 분류를 반환한다."""
+        try:
+            from pykrx import stock as _krx
+        except ImportError as e:
+            raise DataCollectionError("pykrx 라이브러리가 필요합니다: pip install pykrx") from e
+
+        date_str = ref_date.strftime("%Y%m%d")
+        result: dict[str, str] = {}
+        for market in ("KOSPI", "KOSDAQ"):
+            try:
+                df = _krx.get_market_sector_classifications(date_str, market=market)
+                if df is None or df.empty:
+                    continue
+                # 컬럼명: '종목코드', '종목명', '시가총액', ..., '업종명'
+                sector_col = next(
+                    (c for c in df.columns if "업종" in c and "명" in c), None
+                )
+                ticker_col = next(
+                    (c for c in df.columns if "종목코드" in c or "티커" in c or c == "Symbol"), None
+                )
+                if sector_col is None:
+                    logger.warning("업종명 컬럼 없음 [%s %s] 컬럼=%s", market, date_str, list(df.columns))
+                    continue
+                if ticker_col is not None:
+                    for _, row in df.iterrows():
+                        result[str(row[ticker_col])] = str(row[sector_col])
+                else:
+                    # 인덱스가 ticker인 경우
+                    for ticker, row in df.iterrows():
+                        result[str(ticker)] = str(row[sector_col])
+            except Exception as exc:
+                logger.warning("업종 수집 오류 [%s %s]: %s", market, date_str, exc)
+        logger.info("업종 분류 수집 완료 [%s]: %d종목", date_str, len(result))
+        return result
+
 
 class MockKRXAdapter(KRXAdapterBase):
     """테스트용 더미 KRX 어댑터.
@@ -267,6 +307,7 @@ class MockKRXAdapter(KRXAdapterBase):
         self._halt_override: dict[datetime.date, list[str]] = {}
         self._managed_override: dict[datetime.date, list[str]] = {}
         self._meta_override: dict[str, SecurityMeta] = {}
+        self._sector_override: dict[str, str] = {}
 
     def set_halts(self, date: datetime.date, tickers: list[str]) -> None:
         self._halt_override[date] = tickers
@@ -276,6 +317,10 @@ class MockKRXAdapter(KRXAdapterBase):
 
     def set_meta(self, ticker: str, meta: SecurityMeta) -> None:
         self._meta_override[ticker] = meta
+
+    def set_sectors(self, sectors: dict[str, str]) -> None:
+        """ticker → 업종명 매핑을 주입한다."""
+        self._sector_override = sectors
 
     def get_ohlcv(self, ref_date: datetime.date) -> list[OHLCVData]:
         result = []
@@ -318,3 +363,6 @@ class MockKRXAdapter(KRXAdapterBase):
 
     def get_managed_list(self, ref_date: datetime.date) -> list[str]:
         return self._managed_override.get(ref_date, [])
+
+    def get_sector_classifications(self, ref_date: datetime.date) -> dict[str, str]:
+        return dict(self._sector_override)
