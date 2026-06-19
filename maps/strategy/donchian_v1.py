@@ -18,7 +18,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from maps.strategy.base import BaseStrategy
+from maps.strategy.base import BaseStrategy, StrategyType
 
 
 class DonchianV1Strategy(BaseStrategy):
@@ -26,6 +26,7 @@ class DonchianV1Strategy(BaseStrategy):
 
     strategy_id = "donchian_v1"
     strategy_group = "donchian_research"
+    strategy_type = StrategyType.MOMENTUM
     preferred_regimes: frozenset[str] = frozenset({"strong", "mixed"})
 
     _STOP_LOSS_PCT = 0.08

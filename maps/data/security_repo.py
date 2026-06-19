@@ -42,6 +42,7 @@ class Security:
     name: str
     market: str           # KOSPI | KOSDAQ
     security_type: str    # STOCK | ETF | SPAC
+    sector: str | None = None
     listing_date: datetime.date | None = None
     delisting_date: datetime.date | None = None
     has_adjusted_price: bool = False
@@ -160,6 +161,7 @@ class SecurityRepository:
             name=row.name,
             market=row.market,
             security_type=row.security_type,
+            sector=row.sector,
             listing_date=row.listing_date,
             delisting_date=row.delisting_date,
             has_adjusted_price=row.has_adjusted_price,

@@ -79,6 +79,11 @@ def get_candidates(
                 trend_strength=row.trend_strength,
                 ts_bucket=row.ts_bucket,
                 final_score=row.final_score,
+                score_type=row.score_type,
+                strategy_type=row.strategy_type,
+                component_scores=row.component_scores,
+                score_reason=row.score_reason,
+                excluded_reason=row.excluded_reason,
                 weekly_pass=row.weekly_pass,
                 estimated_qty=row.estimated_qty or 0,
                 ai_technical_score=row.ai_technical_score,
@@ -86,6 +91,8 @@ def get_candidates(
                 ai_stop_price=row.ai_stop_price,
                 ai_target_price=row.ai_target_price,
                 ai_analysis_memo=row.ai_analysis_memo,
+                valuation_margin_score=row.valuation_margin_score,
+                valuation_margin_reason=row.valuation_margin_reason,
             )
             for row in rows
         ],

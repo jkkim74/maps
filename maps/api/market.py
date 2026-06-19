@@ -20,7 +20,12 @@ _CombinedWeeklyProvider = CombinedWeeklyProvider
 @router.get("", response_model=MarketResponse)
 def get_market() -> MarketResponse:
     """현재 장세 및 팩터 분석 데이터를 반환한다."""
-    result = create_regime_analyzer(get_settings()).analyze()
+    settings = get_settings()
+    result = create_regime_analyzer(settings).analyze()
+    composite = result.composite
+    market_mode = result.market_mode(
+        contrarian_enabled=settings.maps_contrarian_accumulation_enabled
+    )
     return MarketResponse(
         regime=result.regime.value,
         weekly_trend=result.weekly_trend.value,
@@ -31,4 +36,15 @@ def get_market() -> MarketResponse:
             for item in result.assets
         ],
         updated_at=result.evaluated_at.isoformat(),
+        legacy_regime=composite.legacy_regime if composite else result.regime.value,
+        composite_regime=composite.composite_regime if composite else result.regime.value,
+        market_mode=market_mode.value,
+        price_trend_score=composite.price_trend_score if composite else None,
+        volatility_score=composite.volatility_score if composite else None,
+        liquidity_score=composite.liquidity_score if composite else None,
+        foreign_fx_score=composite.foreign_fx_score if composite else None,
+        psychology_score=composite.psychology_score if composite else None,
+        final_market_score=composite.final_market_score if composite else None,
+        contrarian_entry_limit_ratio=settings.maps_contrarian_max_entry_ratio,
+        reason=composite.reason if composite else "legacy market regime mode",
     )

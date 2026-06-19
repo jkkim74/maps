@@ -23,7 +23,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from maps.strategy.base import BaseStrategy
+from maps.strategy.base import BaseStrategy, StrategyType
 
 
 class MultiAssetTrendV1Strategy(BaseStrategy):
@@ -31,6 +31,7 @@ class MultiAssetTrendV1Strategy(BaseStrategy):
 
     strategy_id = "multi_asset_trend_v1"
     strategy_group = "multi_asset"
+    strategy_type = StrategyType.MULTI_ASSET_TREND
     preferred_regimes: frozenset[str] = frozenset({"strong", "mixed", "weak"})
 
     _STOP_LOSS_PCT = 0.08

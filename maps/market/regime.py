@@ -55,6 +55,22 @@ class VolRegimeLabel(str, Enum):
     HIGH = "high"
 
 
+class MarketModeLabel(str, Enum):
+    TREND_FOLLOWING = "TREND_FOLLOWING"
+    CASH_DEFENSE = "CASH_DEFENSE"
+    CONTRARIAN_ACCUMULATION = "CONTRARIAN_ACCUMULATION"
+    NORMAL = "NORMAL"
+
+
+class StrategyEntryType(str, Enum):
+    BREAKOUT = "BREAKOUT"
+    PULLBACK = "PULLBACK"
+    MOMENTUM = "MOMENTUM"
+    MULTI_ASSET_TREND = "MULTI_ASSET_TREND"
+    CONTRARIAN_QUALITY = "CONTRARIAN_QUALITY"
+    CASH_ONLY = "CASH_ONLY"
+
+
 @dataclass
 class AssetTrendInfo:
     """개별 자산군 추세 정보."""
@@ -63,6 +79,199 @@ class AssetTrendInfo:
     direction: str      # up | down | flat
     value: float | None = None
     above_ma5w: bool = False
+
+
+@dataclass(frozen=True)
+class StrategyEntryPolicy:
+    strategy_type: str
+    market_mode: MarketModeLabel
+    allowed: bool
+    entry_limit_ratio: float
+    reason: str
+
+
+@dataclass(frozen=True)
+class MarketRegimeInput:
+    """Inputs for the Kostolany-style composite market scorer.
+
+    All fields are optional because the external macro/flow data providers are
+    not wired yet. Missing inputs are treated as neutral by the scorers.
+    """
+
+    legacy_regime: str
+    vol_regime: str
+    weekly_trend: str
+    price_trend_score: float | None = None
+    volatility_score: float | None = None
+    foreign_fx_score: float | None = None
+    policy_rate_direction: float | None = None
+    yield_curve_change: float | None = None
+    usdkrw_stability: float | None = None
+    foreign_net_buying: float | None = None
+    margin_debt_growth: float | None = None
+    customer_deposit_change: float | None = None
+    credit_spread_risk: float | None = None
+    turnover_surge: float | None = None
+    retail_overheat: float | None = None
+    news_sentiment: float | None = None
+    theme_concentration: float | None = None
+    new_high_ratio: float | None = None
+    sharp_drop_ratio: float | None = None
+
+
+@dataclass(frozen=True)
+class MarketRegimeResult:
+    """Kostolany-style composite market score result."""
+
+    legacy_regime: str
+    composite_regime: str
+    price_trend_score: float
+    volatility_score: float
+    liquidity_score: float
+    foreign_fx_score: float
+    psychology_score: float
+    final_market_score: float
+    reason: str
+
+
+class PlaceholderKostolanyDataProvider:
+    """Placeholder provider until macro, flow, and sentiment feeds are wired."""
+
+    def enrich(self, base: MarketRegimeInput) -> MarketRegimeInput:
+        return base
+
+
+class LiquidityCycleScorer:
+    """Scores liquidity cycle quality on a 0-100 scale."""
+
+    neutral_score = 50.0
+
+    def score(self, data: MarketRegimeInput) -> float:
+        values = [
+            data.policy_rate_direction,
+            data.yield_curve_change,
+            data.usdkrw_stability,
+            data.foreign_net_buying,
+            self._invert(data.margin_debt_growth),
+            data.customer_deposit_change,
+            self._invert(data.credit_spread_risk),
+        ]
+        return _average_or_neutral(values, self.neutral_score)
+
+    @staticmethod
+    def _invert(value: float | None) -> float | None:
+        return None if value is None else 100.0 - _clamp_score(value)
+
+
+class PsychologyScorer:
+    """Scores market psychology on a 0-100 scale."""
+
+    neutral_score = 50.0
+
+    def score(self, data: MarketRegimeInput) -> float:
+        values = [
+            self._overheat_penalty(data.turnover_surge),
+            self._overheat_penalty(data.retail_overheat),
+            data.news_sentiment,
+            self._overheat_penalty(data.theme_concentration),
+            data.new_high_ratio,
+            self._invert(data.sharp_drop_ratio),
+        ]
+        return _average_or_neutral(values, self.neutral_score)
+
+    @staticmethod
+    def _invert(value: float | None) -> float | None:
+        return None if value is None else 100.0 - _clamp_score(value)
+
+    @staticmethod
+    def _overheat_penalty(value: float | None) -> float | None:
+        if value is None:
+            return None
+        value = _clamp_score(value)
+        return 100.0 - abs(value - 50.0) * 2.0
+
+
+class MarketRegimeCompositeScorer:
+    """Combines trend, volatility, liquidity, FX/foreign, and psychology."""
+
+    _WEIGHTS = {
+        "price_trend": 0.30,
+        "volatility": 0.20,
+        "liquidity": 0.25,
+        "foreign_fx": 0.15,
+        "psychology": 0.10,
+    }
+
+    def __init__(
+        self,
+        *,
+        liquidity_scorer: LiquidityCycleScorer | None = None,
+        psychology_scorer: PsychologyScorer | None = None,
+    ) -> None:
+        self._liquidity = liquidity_scorer or LiquidityCycleScorer()
+        self._psychology = psychology_scorer or PsychologyScorer()
+
+    def score(self, data: MarketRegimeInput) -> MarketRegimeResult:
+        price_score = _clamp_score(data.price_trend_score if data.price_trend_score is not None else 50.0)
+        vol_score = _clamp_score(data.volatility_score if data.volatility_score is not None else 50.0)
+        liquidity_score = self._liquidity.score(data)
+        foreign_fx_score = _clamp_score(data.foreign_fx_score if data.foreign_fx_score is not None else 50.0)
+        psychology_score = self._psychology.score(data)
+
+        final_score = round(
+            price_score * self._WEIGHTS["price_trend"]
+            + vol_score * self._WEIGHTS["volatility"]
+            + liquidity_score * self._WEIGHTS["liquidity"]
+            + foreign_fx_score * self._WEIGHTS["foreign_fx"]
+            + psychology_score * self._WEIGHTS["psychology"],
+            2,
+        )
+        composite = self._classify(data.legacy_regime, final_score, liquidity_score)
+        reason = (
+            f"legacy={data.legacy_regime}, final={final_score:.1f}, "
+            f"liquidity={liquidity_score:.1f}, psychology={psychology_score:.1f}"
+        )
+        if composite == "contrarian":
+            reason += "; weak price trend with improving liquidity"
+        elif data.legacy_regime == "strong" and composite == "mixed":
+            reason += "; strong trend downgraded by weak liquidity"
+
+        return MarketRegimeResult(
+            legacy_regime=data.legacy_regime,
+            composite_regime=composite,
+            price_trend_score=round(price_score, 2),
+            volatility_score=round(vol_score, 2),
+            liquidity_score=round(liquidity_score, 2),
+            foreign_fx_score=round(foreign_fx_score, 2),
+            psychology_score=round(psychology_score, 2),
+            final_market_score=final_score,
+            reason=reason,
+        )
+
+    @staticmethod
+    def _classify(legacy_regime: str, final_score: float, liquidity_score: float) -> str:
+        if legacy_regime == RegimeLabel.WEAK.value and liquidity_score >= 65.0 and final_score >= 45.0:
+            return "contrarian"
+        if final_score >= 67.0:
+            composite = RegimeLabel.STRONG.value
+        elif final_score >= 40.0:
+            composite = RegimeLabel.MIXED.value
+        else:
+            composite = RegimeLabel.WEAK.value
+        if legacy_regime == RegimeLabel.STRONG.value and liquidity_score < 35.0:
+            return RegimeLabel.MIXED.value
+        return composite
+
+
+def _clamp_score(value: float) -> float:
+    return max(0.0, min(100.0, float(value)))
+
+
+def _average_or_neutral(values: list[float | None], neutral: float) -> float:
+    scored = [_clamp_score(v) for v in values if v is not None]
+    if not scored:
+        return neutral
+    return round(sum(scored) / len(scored), 2)
 
 
 @dataclass
@@ -76,6 +285,7 @@ class RegimeResult:
     assets: list[AssetTrendInfo] = field(default_factory=list)
     evaluated_at: datetime.datetime = field(default_factory=datetime.datetime.now)
     vol_regime: VolRegimeLabel = VolRegimeLabel.NORMAL  # 변동성 국면
+    composite: MarketRegimeResult | None = None
 
     # ── 한도 비율 테이블 (vol_regime 반영) ────────────────────────────────────
     # weekly_trend FAIL          → 0.0 (항상)
@@ -104,6 +314,98 @@ class RegimeResult:
             downgrade = {1.0: 0.5, 0.5: 0.25, 0.25: 0.0}
             return downgrade[base]
         return base
+
+    def market_mode(self, *, contrarian_enabled: bool = False) -> MarketModeLabel:
+        """Return the broad market operating mode without changing legacy regime."""
+        if self.regime == RegimeLabel.WEAK and self.vol_regime == VolRegimeLabel.HIGH:
+            if contrarian_enabled:
+                return MarketModeLabel.CONTRARIAN_ACCUMULATION
+            return MarketModeLabel.CASH_DEFENSE
+        if self.regime == RegimeLabel.WEAK:
+            return MarketModeLabel.CASH_DEFENSE
+        if self.regime == RegimeLabel.STRONG:
+            return MarketModeLabel.TREND_FOLLOWING
+        return MarketModeLabel.NORMAL
+
+    def entry_policy_for_strategy(
+        self,
+        strategy_type: str | Enum | None,
+        *,
+        contrarian_enabled: bool = False,
+        contrarian_entry_limit_ratio: float = 0.25,
+    ) -> StrategyEntryPolicy:
+        """Return strategy-type-specific entry permission and limit.
+
+        This extends, but does not replace, the legacy entry_limit_ratio matrix.
+        Unknown strategy types are treated as MOMENTUM for safety.
+        """
+        st = _normalize_strategy_type(strategy_type)
+        market_mode = self.market_mode(contrarian_enabled=contrarian_enabled)
+        contrarian_ratio = _clamp_ratio(contrarian_entry_limit_ratio)
+
+        if self.weekly_trend == WeeklyTrendLabel.FAIL:
+            return StrategyEntryPolicy(
+                strategy_type=st.value,
+                market_mode=market_mode,
+                allowed=False,
+                entry_limit_ratio=0.0,
+                reason="weekly_trend_fail",
+            )
+
+        if self.regime == RegimeLabel.WEAK and self.vol_regime == VolRegimeLabel.HIGH:
+            if st == StrategyEntryType.CONTRARIAN_QUALITY and contrarian_enabled:
+                return StrategyEntryPolicy(
+                    strategy_type=st.value,
+                    market_mode=market_mode,
+                    allowed=True,
+                    entry_limit_ratio=contrarian_ratio,
+                    reason="weak_high_vol_contrarian_quality_limited",
+                )
+            return StrategyEntryPolicy(
+                strategy_type=st.value,
+                market_mode=market_mode,
+                allowed=False,
+                entry_limit_ratio=0.0,
+                reason="weak_high_vol_blocks_trend_momentum_breakout_trading",
+            )
+
+        if self.regime == RegimeLabel.WEAK:
+            if st == StrategyEntryType.BREAKOUT:
+                return StrategyEntryPolicy(st.value, market_mode, False, 0.0, "weak_market_blocks_breakout")
+            if st == StrategyEntryType.CONTRARIAN_QUALITY:
+                return StrategyEntryPolicy(
+                    st.value,
+                    market_mode,
+                    contrarian_enabled,
+                    contrarian_ratio if contrarian_enabled else 0.0,
+                    "weak_market_allows_contrarian_quality" if contrarian_enabled else "contrarian_accumulation_disabled",
+                )
+            if st == StrategyEntryType.PULLBACK:
+                return StrategyEntryPolicy(st.value, market_mode, True, min(self.entry_limit_ratio, 0.25), "weak_market_limits_pullback")
+            return StrategyEntryPolicy(st.value, market_mode, True, min(self.entry_limit_ratio, 0.25), "weak_market_limits_trend")
+
+        if self.regime == RegimeLabel.MIXED:
+            if st == StrategyEntryType.CONTRARIAN_QUALITY:
+                return StrategyEntryPolicy(st.value, market_mode, True, min(contrarian_ratio, 0.25), "mixed_market_allows_partial_contrarian")
+            if st == StrategyEntryType.MULTI_ASSET_TREND:
+                return StrategyEntryPolicy(st.value, market_mode, True, min(self.entry_limit_ratio, 0.35), "mixed_market_limits_trend")
+            return StrategyEntryPolicy(st.value, market_mode, True, self.entry_limit_ratio, "mixed_market_allows_strategy")
+
+        if st == StrategyEntryType.CONTRARIAN_QUALITY:
+            return StrategyEntryPolicy(st.value, market_mode, True, min(contrarian_ratio, 0.15), "strong_market_reduces_contrarian")
+        return StrategyEntryPolicy(st.value, market_mode, True, self.entry_limit_ratio, "strong_market_allows_trend_breakout_pullback")
+
+
+def _normalize_strategy_type(strategy_type: str | Enum | None) -> StrategyEntryType:
+    raw = getattr(strategy_type, "value", strategy_type) or StrategyEntryType.MOMENTUM.value
+    try:
+        return StrategyEntryType(str(raw))
+    except ValueError:
+        return StrategyEntryType.MOMENTUM
+
+
+def _clamp_ratio(value: float) -> float:
+    return max(0.0, min(1.0, float(value)))
 
 
 class PriceSeriesProvider(Protocol):
@@ -216,10 +518,16 @@ class MarketRegimeAnalyzer:
         *,
         override_regime: str | None = None,
         override_trend: str | None = None,
+        kostolany_enabled: bool = False,
+        composite_scorer: MarketRegimeCompositeScorer | None = None,
+        kostolany_provider: PlaceholderKostolanyDataProvider | None = None,
     ) -> None:
         self._provider = provider
         self._override_regime = override_regime
         self._override_trend = override_trend
+        self._kostolany_enabled = kostolany_enabled
+        self._composite_scorer = composite_scorer or MarketRegimeCompositeScorer()
+        self._kostolany_provider = kostolany_provider or PlaceholderKostolanyDataProvider()
 
     def analyze(self) -> RegimeResult:
         """현재 장세를 분석한다.
@@ -248,12 +556,13 @@ class MarketRegimeAnalyzer:
         logger.info(
             "시황 오버라이드 적용: regime=%s trend=%s", regime.value, weekly_trend.value
         )
-        return RegimeResult(
+        result = RegimeResult(
             regime=regime,
             weekly_trend=weekly_trend,
             limit_ratio=0.0,
             kospi_ts=None,
         )
+        return self._with_composite(result)
 
     def _compute(self) -> RegimeResult:
         """실 데이터로 장세를 계산한다."""
@@ -301,7 +610,7 @@ class MarketRegimeAnalyzer:
         weekly_trend = self._check_weekly_trend()
         vol_regime = self._compute_vol_regime()
 
-        return RegimeResult(
+        result = RegimeResult(
             regime=regime,
             weekly_trend=weekly_trend,
             limit_ratio=0.0,
@@ -309,6 +618,7 @@ class MarketRegimeAnalyzer:
             assets=assets,
             vol_regime=vol_regime,
         )
+        return self._with_composite(result)
 
     def _compute_vol_regime(self) -> VolRegimeLabel:
         """KOSPI 20주 수익률 표준편차로 변동성 국면을 분류한다.
@@ -358,13 +668,55 @@ class MarketRegimeAnalyzer:
         ] + [
             AssetTrendInfo(name=n, direction="down") for n in self._ASSETS[4:]
         ]
-        return RegimeResult(
+        result = RegimeResult(
             regime=RegimeLabel.MIXED,
             weekly_trend=WeeklyTrendLabel.PASS,
             limit_ratio=0.5,
             kospi_ts=None,
             assets=assets,
         )
+        return self._with_composite(result)
+
+    def _with_composite(self, result: RegimeResult) -> RegimeResult:
+        if not self._kostolany_enabled:
+            return result
+        base_input = MarketRegimeInput(
+            legacy_regime=result.regime.value,
+            vol_regime=result.vol_regime.value,
+            weekly_trend=result.weekly_trend.value,
+            price_trend_score=self._price_trend_score(result),
+            volatility_score=self._volatility_score(result.vol_regime),
+            foreign_fx_score=self._foreign_fx_score(result.assets),
+        )
+        enriched = self._kostolany_provider.enrich(base_input)
+        result.composite = self._composite_scorer.score(enriched)
+        return result
+
+    @staticmethod
+    def _price_trend_score(result: RegimeResult) -> float:
+        if result.kospi_ts is not None:
+            return _clamp_score(result.kospi_ts)
+        if not result.assets:
+            return 50.0
+        evaluated = [asset for asset in result.assets if asset.direction in {"up", "down"}]
+        if not evaluated:
+            return 50.0
+        return round(sum(1 for asset in evaluated if asset.direction == "up") / len(evaluated) * 100.0, 2)
+
+    @staticmethod
+    def _volatility_score(vol_regime: VolRegimeLabel) -> float:
+        if vol_regime == VolRegimeLabel.LOW:
+            return 75.0
+        if vol_regime == VolRegimeLabel.HIGH:
+            return 25.0
+        return 50.0
+
+    @staticmethod
+    def _foreign_fx_score(assets: list[AssetTrendInfo]) -> float:
+        usdkrw = next((asset for asset in assets if asset.name == "USD/KRW"), None)
+        if usdkrw is None or usdkrw.direction == "flat":
+            return 50.0
+        return 40.0 if usdkrw.direction == "up" else 60.0
 
 
 def create_regime_analyzer(settings) -> MarketRegimeAnalyzer:
@@ -383,6 +735,10 @@ def create_regime_analyzer(settings) -> MarketRegimeAnalyzer:
             provider=None,
             override_regime=override_regime if override_regime != "auto" else None,
             override_trend=override_trend if override_trend != "auto" else None,
+            kostolany_enabled=bool(getattr(settings, "maps_kostolany_regime_enabled", False)),
         )
 
-    return MarketRegimeAnalyzer(provider=CombinedWeeklyProvider())
+    return MarketRegimeAnalyzer(
+        provider=CombinedWeeklyProvider(),
+        kostolany_enabled=bool(getattr(settings, "maps_kostolany_regime_enabled", False)),
+    )

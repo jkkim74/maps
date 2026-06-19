@@ -7,8 +7,18 @@ from __future__ import annotations
 
 import abc
 import datetime
+from enum import Enum
 
 import pandas as pd
+
+
+class StrategyType(str, Enum):
+    BREAKOUT = "BREAKOUT"
+    PULLBACK = "PULLBACK"
+    MOMENTUM = "MOMENTUM"
+    MULTI_ASSET_TREND = "MULTI_ASSET_TREND"
+    CONTRARIAN_QUALITY = "CONTRARIAN_QUALITY"
+    CASH_ONLY = "CASH_ONLY"
 
 
 class BaseStrategy(abc.ABC):
@@ -21,6 +31,7 @@ class BaseStrategy(abc.ABC):
 
     strategy_id: str
     strategy_group: str
+    strategy_type: StrategyType = StrategyType.MOMENTUM
     preferred_regimes: frozenset[str] = frozenset({"strong", "mixed", "weak"})
 
     @abc.abstractmethod

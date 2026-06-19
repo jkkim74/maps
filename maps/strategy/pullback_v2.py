@@ -19,7 +19,7 @@ import numpy as np
 import pandas as pd
 
 from maps.common.exceptions import StrategyConfigError
-from maps.strategy.base import BaseStrategy
+from maps.strategy.base import BaseStrategy, StrategyType
 
 _SMOOTH = 3   # Stochastic %K 스무딩 기간
 
@@ -29,6 +29,7 @@ class PullbackV2Strategy(BaseStrategy):
 
     strategy_id = "pullback_v2"
     strategy_group = "pullback_short"
+    strategy_type = StrategyType.PULLBACK
     preferred_regimes: frozenset[str] = frozenset({"strong", "mixed"})
 
     _MA_SHORT = 5

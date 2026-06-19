@@ -88,6 +88,17 @@ class MarketResponse(BaseModel):
     kospi_ts: float | None
     assets: list[AssetTrend]
     updated_at: str | None
+    legacy_regime: str | None = None
+    composite_regime: str | None = None
+    market_mode: str | None = None
+    price_trend_score: float | None = None
+    volatility_score: float | None = None
+    liquidity_score: float | None = None
+    foreign_fx_score: float | None = None
+    psychology_score: float | None = None
+    final_market_score: float | None = None
+    contrarian_entry_limit_ratio: float | None = None
+    reason: str | None = None
 
 
 # ── SCR-04 Candidates ─────────────────────────────────────────────────────────
@@ -100,6 +111,11 @@ class CandidateItem(BaseModel):
     trend_strength: float
     ts_bucket: str
     final_score: float
+    score_type: str | None = None
+    strategy_type: str | None = None
+    component_scores: dict[str, float] | None = None
+    score_reason: str | None = None
+    excluded_reason: str | None = None
     weekly_pass: bool
     estimated_qty: int | None
     ai_technical_score: float | None = None
@@ -107,6 +123,8 @@ class CandidateItem(BaseModel):
     ai_stop_price: float | None = None
     ai_target_price: float | None = None
     ai_analysis_memo: str | None = None
+    valuation_margin_score: float | None = None
+    valuation_margin_reason: str | None = None
 
 
 class CandidatesResponse(BaseModel):

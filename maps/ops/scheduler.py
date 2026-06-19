@@ -31,6 +31,7 @@ from maps.common.models import (
     PortfolioSnapshot,
     PromotionHistory,
     OrderLog,
+    SecurityMetadata,
     WalkForwardFoldResults,
     WalkForwardResults,
 )
@@ -45,7 +46,7 @@ from maps.data_quality.universe_filter import DataQualityFilter, UniverseResult
 from maps.execution.broker_adapter import Order, OrderSide, OrderType, Position, get_broker
 from maps.execution.order_manager import OrderManager
 from maps.market.regime import RegimeResult, WeeklyTrendLabel, create_regime_analyzer
-from maps.market.sector_selector import SectorSelector
+from maps.market.sector_selector import SectorRegimeSelector, SectorSelector
 from maps.market.trading_rules import is_krx_closed_date, round_up_krx_price
 from maps.ops.notifications import SlackNotifier
 from maps.ops.order_state import claimed_candidate_tickers
@@ -54,15 +55,17 @@ from maps.risk.manager import RiskConfig, RiskManager
 from maps.strategy.ath_breakout_v1 import ATHBreakoutV1Strategy
 from maps.strategy.live_rules import atr_stop_price, stop_loss_price
 from maps.strategy.ath_breakout_v2 import ATHBreakoutV2Strategy
-from maps.strategy.base import BaseStrategy
+from maps.strategy.base import BaseStrategy, StrategyType
 from maps.strategy.donchian_v1 import DonchianV1Strategy
 from maps.strategy.donchian_v2 import DonchianV2Strategy
 from maps.strategy.multi_asset_trend_v1 import MultiAssetTrendV1Strategy
 from maps.strategy.pullback_v2 import PullbackV2Strategy
 from maps.strategy.pullback_v3 import PullbackV3Strategy
+from maps.strategy.scoring import LegacyFinalScoreCalculator, StrategyAwareScoreCalculator, StrategyScoreInput
 from maps.strategy.live_rules import atr_stop_price, stop_loss_price
 from maps.indicator.trend_strength import TrendStrengthCalculator
 from maps.ai.technical_scorer import AITechnicalScorer
+from maps.ai.valuation_margin import PlaceholderValuationDataProvider, ValuationMarginScorer
 from maps.stock_report.runner import run_all_reports_if_idle
 from maps.validation.monte_carlo import MonteCarloValidator
 from maps.validation.plateau import ParameterPlateauTester
@@ -208,7 +211,7 @@ class OperationalPipeline:
                 collection = collector.collect_daily(ref_date)
                 self._last_collection = collection
 
-            candidates = self._to_securities(collection.meta, collection, ref_date)
+            candidates = self._to_securities(db, collection.meta, collection, ref_date)
             result = DataQualityFilter(db=db, mode="live").generate(ref_date, candidates)
             # 등록된 모든 전략에 동일한 유니버스 스냅샷을 저장한다.
             # DataQualityFilter 유니버스는 유동성·데이터 품질 기반 공통 후보군이므로
@@ -231,17 +234,48 @@ class OperationalPipeline:
             sector_filter_enabled = self._settings.maps_sector_filter_enabled
             filtered_universe = list(result.universe)
             strong_sectors: list[str] = []
+            excluded_sectors: dict[str, str] = {}
+            watchlist_sectors: list[str] = []
+            sector_scores: dict[str, float] = {}
+            overheated_sectors: list[str] = []
+            sector_selection_reason: str | None = None
+            sector_excluded_reason_by_ticker: dict[str, str] = {}
             if sector_filter_enabled:
-                selector = SectorSelector(
-                    lookback_days=self._settings.maps_sector_lookback_days,
-                    top_n=self._settings.maps_sector_top_n,
-                )
-                strong_sectors = selector.select_strong_sectors(db, ref_date, regime)
+                if self._settings.maps_sector_kostolany_mode_enabled:
+                    selector = SectorRegimeSelector(
+                        lookback_days=self._settings.maps_sector_lookback_days,
+                        top_n=self._settings.maps_sector_top_n,
+                    )
+                    sector_result = selector.select(db, ref_date, regime)
+                    strong_sectors = sector_result.selected_sectors
+                    excluded_sectors = sector_result.excluded_sectors
+                    watchlist_sectors = sector_result.watchlist_sectors
+                    sector_scores = {
+                        sector: score.score
+                        for sector, score in sector_result.sector_scores.items()
+                    }
+                    overheated_sectors = sector_result.overheated_sectors
+                    sector_selection_reason = sector_result.reason
+                else:
+                    selector = SectorSelector(
+                        lookback_days=self._settings.maps_sector_lookback_days,
+                        top_n=self._settings.maps_sector_top_n,
+                    )
+                    strong_sectors = selector.select_strong_sectors(db, ref_date, regime)
+                    sector_selection_reason = "legacy sector selector"
                 if strong_sectors:
                     pre_count = len(filtered_universe)
+                    selected_sector_set = set(strong_sectors)
+                    for stock in filtered_universe:
+                        stock_sector = getattr(stock, "sector", None)
+                        if stock_sector not in selected_sector_set:
+                            sector_excluded_reason_by_ticker[stock.ticker] = (
+                                excluded_sectors.get(stock_sector or "")
+                                or f"sector_filter_excluded:{stock_sector or 'unknown'}"
+                            )
                     filtered_universe = [
                         s for s in filtered_universe
-                        if getattr(s, "sector", None) in strong_sectors
+                        if getattr(s, "sector", None) in selected_sector_set
                     ]
                     logger.info(
                         "업종 필터 적용: %d → %d종목 (강세업종=%s)",
@@ -250,12 +284,42 @@ class OperationalPipeline:
 
             saved_count = 0
             active_strategies: list[str] = []
+            blocked_strategies: list[dict[str, str]] = []
             for strategy_id, strategy_cls in _RUNNABLE_STRATEGIES.items():
                 if regime_label not in strategy_cls.preferred_regimes:
                     logger.info("전략 스킵 [%s]: 시황=%s", strategy_id, regime_label)
+                    blocked_strategies.append({
+                        "strategy_id": strategy_id,
+                        "strategy_type": getattr(getattr(strategy_cls, "strategy_type", None), "value", "MOMENTUM"),
+                        "reason": f"preferred_regime_mismatch:{regime_label}",
+                    })
+                    continue
+                policy = regime.entry_policy_for_strategy(
+                    getattr(strategy_cls, "strategy_type", None),
+                    contrarian_enabled=self._settings.maps_contrarian_accumulation_enabled,
+                    contrarian_entry_limit_ratio=self._settings.maps_contrarian_max_entry_ratio,
+                )
+                if not policy.allowed:
+                    logger.info(
+                        "전략 스킵 [%s]: strategy_type=%s market_mode=%s reason=%s",
+                        strategy_id,
+                        policy.strategy_type,
+                        policy.market_mode.value,
+                        policy.reason,
+                    )
+                    blocked_strategies.append({
+                        "strategy_id": strategy_id,
+                        "strategy_type": policy.strategy_type,
+                        "reason": policy.reason,
+                    })
                     continue
                 saved_count += self._save_candidate_snapshot(
-                    db, ref_date, strategy_id, filtered_universe, weekly_pass=weekly_pass
+                    db,
+                    ref_date,
+                    strategy_id,
+                    result.universe,
+                    weekly_pass=weekly_pass,
+                    excluded_reason_by_ticker=sector_excluded_reason_by_ticker,
                 )
                 active_strategies.append(strategy_id)
             self._last_universe = result
@@ -267,9 +331,15 @@ class OperationalPipeline:
                 "rejection_ratio": round(result.rejection_ratio, 4),
                 "sector_filter_enabled": sector_filter_enabled,
                 "strong_sectors": strong_sectors,
+                "excluded_sectors": excluded_sectors,
+                "watchlist_sectors": watchlist_sectors,
+                "sector_scores": sector_scores,
+                "overheated_sectors": overheated_sectors,
+                "sector_selection_reason": sector_selection_reason,
                 "sector_filtered_count": len(filtered_universe),
                 "saved_count": saved_count,
                 "strategies_updated": active_strategies,
+                "strategies_blocked": blocked_strategies,
                 "strategies_skipped_regime": [
                     sid for sid, cls in _RUNNABLE_STRATEGIES.items()
                     if regime_label not in cls.preferred_regimes
@@ -904,6 +974,7 @@ class OperationalPipeline:
 
     def _to_securities(
         self,
+        db: Session,
         meta: list[SecurityMeta],
         collection: CollectionResult,
         ref_date: dt.date,
@@ -911,6 +982,12 @@ class OperationalPipeline:
         ohlcv_by_ticker = {row.ticker: row for row in collection.ohlcv}
         halted = set(collection.halts)
         managed = set(collection.managed)
+        sectors_by_ticker = {
+            row.ticker: row.sector
+            for row in db.query(SecurityMetadata.ticker, SecurityMetadata.sector)
+            .filter(SecurityMetadata.ticker.in_([item.ticker for item in meta]))
+            .all()
+        }
         securities: list[Security] = []
         for item in meta:
             ohlcv = ohlcv_by_ticker.get(item.ticker)
@@ -922,6 +999,7 @@ class OperationalPipeline:
                     name=item.name,
                     market=item.market,
                     security_type=item.security_type,
+                    sector=getattr(item, "sector", None) or sectors_by_ticker.get(item.ticker),
                     listing_date=item.listing_date or dt.date(2000, 1, 1),
                     delisting_date=item.delisting_date,
                     # The current collector does not persist a separate
@@ -964,6 +1042,7 @@ class OperationalPipeline:
         universe: list[Security],
         *,
         weekly_pass: bool = True,
+        excluded_reason_by_ticker: dict[str, str] | None = None,
     ) -> int:
         db.execute(
             delete(CandidateSnapshot).where(
@@ -977,6 +1056,7 @@ class OperationalPipeline:
             reverse=True,
         )
         max_turnover = max((stock.avg_turnover_20d_as_of(ref_date) for stock in ranked), default=0.0)
+        excluded_reason_by_ticker = excluded_reason_by_ticker or {}
 
         repo = HistoricalOHLCVRepository(db)
         ts_calc = TrendStrengthCalculator()
@@ -984,10 +1064,44 @@ class OperationalPipeline:
         ai_enabled = self._settings.maps_ai_technical_scoring_enabled
         ai_weight = self._settings.maps_ai_technical_score_weight if ai_enabled else 0.0
         ai_scorer = AITechnicalScorer.from_settings() if ai_enabled else None
+        valuation_enabled = self._settings.maps_valuation_margin_enabled
+        valuation_scorer = ValuationMarginScorer() if valuation_enabled else None
+        valuation_provider = PlaceholderValuationDataProvider() if valuation_enabled else None
+        strategy_cls = _RUNNABLE_STRATEGIES.get(strategy_id)
+        strategy_type = getattr(strategy_cls, "strategy_type", StrategyType.MOMENTUM)
+        legacy_score_calculator = LegacyFinalScoreCalculator()
+        strategy_score_calculator = (
+            StrategyAwareScoreCalculator()
+            if self._settings.maps_strategy_aware_scoring_enabled
+            else None
+        )
 
         for stock in ranked:
             turnover = stock.avg_turnover_20d_as_of(ref_date)
             factor_score = (turnover / max_turnover * 100.0) if max_turnover > 0 else 0.0
+            sector_excluded_reason = excluded_reason_by_ticker.get(stock.ticker)
+            if sector_excluded_reason:
+                db.add(
+                    CandidateSnapshot(
+                        ref_date=ref_date,
+                        strategy_id=strategy_id,
+                        ticker=stock.ticker,
+                        name=stock.name,
+                        market=stock.market,
+                        factor_score=round(factor_score, 2),
+                        trend_strength=50.0,
+                        ts_bucket="S3",
+                        final_score=0.0,
+                        score_type="SECTOR_FILTER",
+                        strategy_type=getattr(strategy_type, "value", str(strategy_type)),
+                        component_scores={},
+                        score_reason="excluded before stock scoring by sector filter",
+                        excluded_reason=sector_excluded_reason,
+                        weekly_pass=False,
+                        estimated_qty=None,
+                    )
+                )
+                continue
 
             # 실제 추세강도 계산 (데이터 부족 시 중립값 50.0 / "S3" 사용)
             trend_strength = 50.0
@@ -1016,14 +1130,40 @@ class OperationalPipeline:
             # final_score 계산
             # AI 비활성: 유동성 60% + 추세강도 40%
             # AI 활성:   유동성 (1-ai_w)×60% + 추세강도 (1-ai_w)×40% + AI ai_w%
-            base_score = 0.6 * factor_score + 0.4 * trend_strength
-            if ai_result is not None:
-                rest_w = 1.0 - ai_weight
-                final_score = round(rest_w * base_score + ai_weight * ai_result.technical_score, 2)
-            else:
-                final_score = round(base_score, 2)
+            valuation_result = None
+            if valuation_scorer is not None and valuation_provider is not None:
+                valuation_input = valuation_provider.get(
+                    stock.ticker,
+                    current_price=float(ohlcv_df["close"].iloc[-1]) if ohlcv_df is not None and not ohlcv_df.empty else None,
+                )
+                valuation_result = valuation_scorer.score(valuation_input)
 
             # Rule-based 3가지 가격 계획 (AI 없을 때도 항상 채운다)
+            ai_technical_score = ai_result.technical_score if ai_result else None
+            if strategy_score_calculator is not None:
+                score_result = strategy_score_calculator.calculate(
+                    StrategyScoreInput(
+                        strategy_type=strategy_type,
+                        liquidity_score=factor_score,
+                        trend_strength=trend_strength,
+                        ts_bucket=ts_bucket,
+                        valuation_margin_score=(
+                            valuation_result.valuation_score if valuation_result else None
+                        ),
+                        ai_technical_score=ai_technical_score,
+                        ai_weight=ai_weight,
+                    )
+                )
+            else:
+                score_result = legacy_score_calculator.calculate(
+                    factor_score=factor_score,
+                    trend_strength=trend_strength,
+                    ai_technical_score=ai_technical_score,
+                    ai_weight=ai_weight,
+                    strategy_type=strategy_type,
+                )
+            final_score = score_result.final_score
+
             slippage = self._settings.maps_order_slippage_pct
             rr = self._settings.maps_trade_rr_ratio
             # ohlcv_df는 위 TS 계산에서 이미 로드됨 — 중복 조회 없이 재사용
@@ -1068,6 +1208,11 @@ class OperationalPipeline:
                     trend_strength=round(trend_strength, 2),
                     ts_bucket=ts_bucket,
                     final_score=final_score,
+                    score_type=score_result.score_type,
+                    strategy_type=score_result.strategy_type,
+                    component_scores=score_result.component_scores,
+                    score_reason=score_result.reason,
+                    excluded_reason=score_result.excluded_reason,
                     weekly_pass=weekly_pass,
                     estimated_qty=None,
                     ai_technical_score=round(ai_result.technical_score, 2) if ai_result else None,
@@ -1075,6 +1220,8 @@ class OperationalPipeline:
                     ai_stop_price=final_stop,
                     ai_target_price=final_target,
                     ai_analysis_memo=ai_result.raw_memo if ai_result else None,
+                    valuation_margin_score=valuation_result.valuation_score if valuation_result else None,
+                    valuation_margin_reason=valuation_result.reason if valuation_result else None,
                 )
             )
         db.commit()
@@ -1130,11 +1277,10 @@ class OperationalPipeline:
         candidates = self._order_candidates(db, ref_date)
         if limit_ratio == 0.0:
             logger.warning(
-                "시황 진입 한도 0.0 (regime=%s trend=%s) — 매수 주문 전량 스킵",
+                "시황 일반 진입 한도 0.0 (regime=%s trend=%s) — 전략별 정책으로 재확인",
                 regime.regime.value,
                 regime.weekly_trend.value,
             )
-            return 0, len(candidates)
 
         # ── C-1: 당일 포트폴리오 손익률 계산 → Kill Switch 연동 ───────────────
         daily_pnl = self._calc_daily_pnl(db, ref_date)
@@ -1147,14 +1293,46 @@ class OperationalPipeline:
         submitted = 0
         skipped = 0
         # STRONG(1.0)→3건, MIXED(0.5)→2건, WEAK(0.25)→1건
-        max_orders = max(1, round(3 * limit_ratio))
+        max_policy_ratio = max(
+            limit_ratio,
+            self._settings.maps_contrarian_max_entry_ratio
+            if self._settings.maps_contrarian_accumulation_enabled
+            else 0.0,
+        )
+        max_orders = max(1, round(3 * max_policy_ratio))
         blocked_tickers = blocked_tickers or set()
 
         slippage_pct = self._settings.maps_order_slippage_pct
         max_gap_pct = self._settings.maps_order_max_gap_pct
 
         for candidate in candidates:
-            if submitted >= max_orders:
+            strategy_type = self._strategy_type_for_id(candidate.strategy_id)
+            policy = regime.entry_policy_for_strategy(
+                strategy_type,
+                contrarian_enabled=self._settings.maps_contrarian_accumulation_enabled,
+                contrarian_entry_limit_ratio=self._settings.maps_contrarian_max_entry_ratio,
+            )
+            if not policy.allowed:
+                logger.info(
+                    "Order skipped [%s %s]: strategy_type=%s market_mode=%s reason=%s",
+                    candidate.strategy_id,
+                    candidate.ticker,
+                    policy.strategy_type,
+                    policy.market_mode.value,
+                    policy.reason,
+                )
+                skipped += 1
+                continue
+            candidate_max_orders = max(1, round(3 * policy.entry_limit_ratio))
+            if submitted >= min(max_orders, candidate_max_orders):
+                logger.info(
+                    "Order skipped [%s %s]: entry limit reached strategy_type=%s ratio=%.2f reason=%s",
+                    candidate.strategy_id,
+                    candidate.ticker,
+                    policy.strategy_type,
+                    policy.entry_limit_ratio,
+                    policy.reason,
+                )
                 skipped += 1
                 continue
             if candidate.ticker in blocked_tickers:
@@ -1211,7 +1389,7 @@ class OperationalPipeline:
                     market=candidate.market,
                 )
 
-            remaining_slots = max(max_orders - submitted, 1)
+            remaining_slots = max(min(max_orders, candidate_max_orders) - submitted, 1)
             qty = self._order_qty(candidate, account.total_value, remaining_cash, limit_price, remaining_slots)
             if qty <= 0:
                 skipped += 1
@@ -1404,6 +1582,19 @@ class OperationalPipeline:
         for row in rows:
             if latest_promotions.get(row.strategy_id) not in eligible_stages:
                 continue
+            strategy_type = self._strategy_type_for_id(row.strategy_id)
+            if (
+                strategy_type == StrategyType.CONTRARIAN_QUALITY
+                and row.valuation_margin_score is not None
+                and row.valuation_margin_score < 60.0
+            ):
+                logger.info(
+                    "Order candidate skipped [%s %s]: valuation_margin_score %.1f < 60 for contrarian quality",
+                    row.strategy_id,
+                    row.ticker,
+                    row.valuation_margin_score,
+                )
+                continue
             if row.ticker in claimed:
                 continue
             if row.ticker in seen_tickers:
@@ -1434,6 +1625,11 @@ class OperationalPipeline:
             if row.strategy_id not in latest:
                 latest[row.strategy_id] = row.to_stage if row.passed else PromotionStage.REJECTED.value
         return latest
+
+    @staticmethod
+    def _strategy_type_for_id(strategy_id: str | None):
+        strategy_cls = _RUNNABLE_STRATEGIES.get(strategy_id or "")
+        return getattr(strategy_cls, "strategy_type", None) if strategy_cls is not None else None
 
     @staticmethod
     def _latest_close(db: Session, ticker: str, ref_date: dt.date) -> float:

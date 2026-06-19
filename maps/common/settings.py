@@ -63,6 +63,9 @@ class MapsSettings(BaseSettings):
     # 시황 분석 수동 오버라이드 (auto 이면 pykrx/yfinance 실데이터 분석)
     maps_market_regime_override: Literal["auto", "strong", "mixed", "weak"] = "auto"
     maps_weekly_trend_override: Literal["auto", "pass", "fail"] = "auto"
+    maps_kostolany_regime_enabled: bool = False
+    maps_contrarian_accumulation_enabled: bool = False
+    maps_contrarian_max_entry_ratio: float = Field(default=0.25, ge=0.0, le=1.0)
 
     kis_app_key: str = ""
     kis_app_secret: str = ""
@@ -86,9 +89,12 @@ class MapsSettings(BaseSettings):
     # AI 기술적 분석 (후보 생성 시점, 16:20 KST)
     maps_ai_technical_scoring_enabled: bool = False  # 명시적으로 켜야 작동
     maps_ai_technical_score_weight: float = Field(default=0.20, ge=0.0, le=1.0)
+    maps_valuation_margin_enabled: bool = False
+    maps_strategy_aware_scoring_enabled: bool = False
 
     # 업종 필터 (Phase B)
     maps_sector_filter_enabled: bool = False   # 명시적으로 켜야 작동
+    maps_sector_kostolany_mode_enabled: bool = False
     maps_sector_top_n: int = Field(default=5, ge=1, le=30)
     maps_sector_lookback_days: int = Field(default=20, ge=5, le=120)
 
@@ -209,6 +215,9 @@ def get_config_status(settings: MapsSettings | None = None) -> list[ConfigSectio
                 _field(s, "maps_broker_sync_interval_seconds", "MAPS_BROKER_SYNC_INTERVAL_SECONDS", "Broker balance/fill sync interval seconds"),
                 _field(s, "maps_stock_report_time", "MAPS_STOCK_REPORT_TIME", "Daily stock report generation time"),
                 _field(s, "maps_krx_closed_dates", "MAPS_KRX_CLOSED_DATES", "Additional comma-separated KRX closure dates"),
+                _field(s, "maps_kostolany_regime_enabled", "MAPS_KOSTOLANY_REGIME_ENABLED", "Enable Kostolany-style composite market regime scoring"),
+                _field(s, "maps_contrarian_accumulation_enabled", "MAPS_CONTRARIAN_ACCUMULATION_ENABLED", "Allow limited contrarian-quality accumulation in weak/high-volatility markets"),
+                _field(s, "maps_contrarian_max_entry_ratio", "MAPS_CONTRARIAN_MAX_ENTRY_RATIO", "Maximum entry ratio for contrarian-quality accumulation"),
             ],
         ),
         _section(
@@ -240,6 +249,10 @@ def get_config_status(settings: MapsSettings | None = None) -> list[ConfigSectio
                 _field(s, "aws_secret_access_key", "AWS_SECRET_ACCESS_KEY", "AWS secret key for Bedrock AI analysis", secret=True),
                 _field(s, "aws_region", "AWS_REGION", "AWS region for Bedrock (default: us-east-1)"),
                 _field(s, "aws_bedrock_model_id", "AWS_BEDROCK_MODEL_ID", "Bedrock Claude model ID"),
+                _field(s, "maps_valuation_margin_enabled", "MAPS_VALUATION_MARGIN_ENABLED", "Enable valuation margin scoring on candidate snapshots"),
+                _field(s, "maps_strategy_aware_scoring_enabled", "MAPS_STRATEGY_AWARE_SCORING_ENABLED", "Enable strategy-specific final_score formulas"),
+                _field(s, "maps_sector_filter_enabled", "MAPS_SECTOR_FILTER_ENABLED", "Enable sector filter before candidate generation"),
+                _field(s, "maps_sector_kostolany_mode_enabled", "MAPS_SECTOR_KOSTOLANY_MODE_ENABLED", "Enable Kostolany-style sector cycle selector"),
             ],
         ),
         _section(

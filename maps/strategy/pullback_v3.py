@@ -34,7 +34,7 @@ import numpy as np
 import pandas as pd
 
 from maps.common.exceptions import StrategyConfigError
-from maps.strategy.base import BaseStrategy
+from maps.strategy.base import BaseStrategy, StrategyType
 
 
 def _rsi(series: pd.Series, period: int = 2) -> pd.Series:
@@ -52,6 +52,7 @@ class PullbackV3Strategy(BaseStrategy):
 
     strategy_id = "pullback_v3"
     strategy_group = "pullback_short"
+    strategy_type = StrategyType.PULLBACK
     preferred_regimes: frozenset[str] = frozenset({"strong", "mixed"})
 
     _MA_SHORT = 5
