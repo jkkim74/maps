@@ -166,6 +166,43 @@ class HistoricalOHLCV(Base):
 
 
 # ---------------------------------------------------------------------------
+# 펀더멘털 히스토리 (안전마진·가치 목표가 산출용)
+# ---------------------------------------------------------------------------
+class SecurityFundamental(Base):
+    """security_fundamental — pykrx 기반 일별 밸류에이션 지표 히스토리.
+
+    안전마진(ValuationMarginScorer)과 가치 목표가(KostolanyPriceCalculator.value_target)
+    산출의 데이터 소스다. pykrx ``get_market_fundamental`` 컬럼(BPS/PER/PBR/EPS/DIV/DPS)을 적재한다.
+    forward_per/roe 등 pykrx 미제공 지표는 nullable이며, 스코어러가 결측을 중립 처리한다.
+    """
+
+    __tablename__ = "security_fundamental"
+    __table_args__ = (
+        UniqueConstraint("ticker", "date", name="uq_security_fundamental_ticker_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ticker: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    date: Mapped[datetime.date] = mapped_column(Date, nullable=False, index=True)
+    per: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pbr: Mapped[float | None] = mapped_column(Float, nullable=True)
+    eps: Mapped[float | None] = mapped_column(Float, nullable=True)
+    bps: Mapped[float | None] = mapped_column(Float, nullable=True)
+    div: Mapped[float | None] = mapped_column(Float, nullable=True)   # 배당수익률(%)
+    dps: Mapped[float | None] = mapped_column(Float, nullable=True)   # 주당배당금
+    source: Mapped[str] = mapped_column(String(32), nullable=False, default="pykrx")
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc)
+    )
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+        default=lambda: datetime.datetime.now(datetime.timezone.utc),
+        onupdate=lambda: datetime.datetime.now(datetime.timezone.utc),
+    )
+
+
+# ---------------------------------------------------------------------------
 # 데이터 수집 이력
 # ---------------------------------------------------------------------------
 class CollectionLog(Base):

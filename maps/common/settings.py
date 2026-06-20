@@ -89,7 +89,9 @@ class MapsSettings(BaseSettings):
     # AI 기술적 분석 (후보 생성 시점, 16:20 KST)
     maps_ai_technical_scoring_enabled: bool = False  # 명시적으로 켜야 작동
     maps_ai_technical_score_weight: float = Field(default=0.20, ge=0.0, le=1.0)
-    maps_valuation_margin_enabled: bool = False
+    # 안전마진 스코어링(요건 5) — pykrx 펀더멘털 연동 완료로 기본 활성.
+    # 후보 점수/스냅샷에만 영향하며, 실주문은 maps_live_trading_enabled로 별도 게이트된다.
+    maps_valuation_margin_enabled: bool = True
     maps_strategy_aware_scoring_enabled: bool = False
 
     # 7단계: AI 역발상 검증 (코스톨라니식 투자 논리 검증)
@@ -113,8 +115,9 @@ class MapsSettings(BaseSettings):
     # 9단계: 보유 성격 분류 (CORE/SWING/TRADING/WATCH/BAN)
     maps_holding_type_classification_enabled: bool = False
 
-    # 10단계: 코스톨라니 가격 산출
-    maps_kostolany_price_calculator_enabled: bool = False
+    # 10단계: 코스톨라니 가격 산출(요건 7·8) — 룰 기반, API 불필요. 기본 활성.
+    # 모든 후보에 매수가·손절가·목표가(단기/가치)를 기록한다. 실주문 게이트와 무관.
+    maps_kostolany_price_calculator_enabled: bool = True
 
     # 12단계: 드라이런/백테스트 비교 모드
     maps_dry_run: bool = False

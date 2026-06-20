@@ -37,6 +37,24 @@ def _env_tickers(name: str) -> set[str]:
     return {item.strip() for item in raw.split(",") if item.strip()}
 
 
+def _pos_or_none(value) -> float | None:
+    """양수면 float, 그 외(0·결측·음수)는 None. pykrx 0=미산출 관례 대응."""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return None
+    return v if v > 0 else None
+
+
+def _nonneg_or_none(value) -> float | None:
+    """0 이상이면 float, 결측/음수는 None (배당 지표는 0이 유효)."""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return None
+    return v if v >= 0 else None
+
+
 @dataclass
 class OHLCVData:
     """일별 OHLCV 데이터."""
@@ -53,6 +71,20 @@ class OHLCVData:
     @property
     def has_adjusted(self) -> bool:
         return self.adj_close is not None
+
+
+@dataclass
+class FundamentalData:
+    """일별 펀더멘털 지표 (pykrx get_market_fundamental 기준)."""
+
+    date: datetime.date
+    ticker: str
+    per: float | None = None
+    pbr: float | None = None
+    eps: float | None = None
+    bps: float | None = None
+    div: float | None = None   # 배당수익률(%)
+    dps: float | None = None   # 주당배당금
 
 
 @dataclass
@@ -101,6 +133,10 @@ class KRXAdapterBase(ABC):
     @abstractmethod
     def get_sector_classifications(self, ref_date: datetime.date) -> dict[str, str]:
         """ref_date 기준 ticker → WICS 업종명 매핑을 반환한다."""
+
+    @abstractmethod
+    def get_fundamental(self, ref_date: datetime.date) -> list[FundamentalData]:
+        """ref_date 기준 전체 종목 펀더멘털(PER/PBR/EPS/BPS/DIV/DPS)을 반환한다."""
 
 
 class KRXAdapter(KRXAdapterBase):
@@ -289,6 +325,41 @@ class KRXAdapter(KRXAdapterBase):
         logger.info("업종 분류 수집 완료 [%s]: %d종목", date_str, len(result))
         return result
 
+    def get_fundamental(self, ref_date: datetime.date) -> list[FundamentalData]:
+        """KOSPI + KOSDAQ 전 종목 펀더멘털을 반환한다.
+
+        pykrx ``get_market_fundamental`` 은 ticker 인덱스 + [BPS, PER, PBR, EPS, DIV, DPS]
+        컬럼을 반환한다. 값 0 은 결측(휴장/미산출)으로 보고 None 처리한다.
+        """
+        try:
+            from pykrx import stock as _krx
+        except ImportError as e:
+            raise DataCollectionError("pykrx 라이브러리가 필요합니다: pip install pykrx") from e
+
+        date_str = ref_date.strftime("%Y%m%d")
+        result: list[FundamentalData] = []
+        for market in ("KOSPI", "KOSDAQ"):
+            try:
+                df = _krx.get_market_fundamental(date_str, market=market)
+            except Exception as exc:
+                logger.warning("KRX 펀더멘털 수집 실패 [%s %s]: %s", market, date_str, exc)
+                continue
+            if df is None or df.empty:
+                continue
+            for ticker, row in df.iterrows():
+                result.append(FundamentalData(
+                    date=ref_date,
+                    ticker=str(ticker),
+                    per=_pos_or_none(row.get("PER")),
+                    pbr=_pos_or_none(row.get("PBR")),
+                    eps=_pos_or_none(row.get("EPS")),
+                    bps=_pos_or_none(row.get("BPS")),
+                    div=_nonneg_or_none(row.get("DIV")),
+                    dps=_nonneg_or_none(row.get("DPS")),
+                ))
+        logger.info("KRX 펀더멘털 수집 완료 [%s]: %d종목", date_str, len(result))
+        return result
+
 
 class MockKRXAdapter(KRXAdapterBase):
     """테스트용 더미 KRX 어댑터.
@@ -308,6 +379,7 @@ class MockKRXAdapter(KRXAdapterBase):
         self._managed_override: dict[datetime.date, list[str]] = {}
         self._meta_override: dict[str, SecurityMeta] = {}
         self._sector_override: dict[str, str] = {}
+        self._fundamental_override: dict[str, FundamentalData] = {}
 
     def set_halts(self, date: datetime.date, tickers: list[str]) -> None:
         self._halt_override[date] = tickers
@@ -366,3 +438,20 @@ class MockKRXAdapter(KRXAdapterBase):
 
     def get_sector_classifications(self, ref_date: datetime.date) -> dict[str, str]:
         return dict(self._sector_override)
+
+    def set_fundamentals(self, fundamentals: dict[str, FundamentalData]) -> None:
+        """ticker → FundamentalData 매핑을 주입한다."""
+        self._fundamental_override = fundamentals
+
+    def get_fundamental(self, ref_date: datetime.date) -> list[FundamentalData]:
+        result: list[FundamentalData] = []
+        for ticker in self._tickers:
+            if ticker in self._fundamental_override:
+                fd = self._fundamental_override[ticker]
+                result.append(FundamentalData(
+                    date=ref_date,
+                    ticker=ticker,
+                    per=fd.per, pbr=fd.pbr, eps=fd.eps,
+                    bps=fd.bps, div=fd.div, dps=fd.dps,
+                ))
+        return result

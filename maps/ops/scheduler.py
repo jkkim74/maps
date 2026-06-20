@@ -67,7 +67,8 @@ from maps.strategy.live_rules import atr_stop_price, stop_loss_price
 from maps.indicator.trend_strength import TrendStrengthCalculator
 from maps.ai.contrarian_analyzer import AIContrarianAnalyzer
 from maps.ai.technical_scorer import AITechnicalScorer
-from maps.ai.valuation_margin import PlaceholderValuationDataProvider, ValuationMarginScorer
+from maps.ai.valuation_margin import ValuationMarginScorer
+from maps.data.fundamental_repo import FundamentalValuationProvider
 from maps.strategy.holding_type import HoldingTypeClassifier, HoldingTypeInput
 from maps.strategy.price_calculator import KostolanyPriceCalculator, PriceInput
 from maps.stock_report.runner import run_all_reports_if_idle
@@ -1084,11 +1085,17 @@ class OperationalPipeline:
         contrarian_analyzer = AIContrarianAnalyzer.from_settings() if contrarian_check_enabled else None
         valuation_enabled = self._settings.maps_valuation_margin_enabled
         valuation_scorer = ValuationMarginScorer() if valuation_enabled else None
-        valuation_provider = PlaceholderValuationDataProvider() if valuation_enabled else None
         holding_type_enabled = self._settings.maps_holding_type_classification_enabled
         holding_type_classifier = HoldingTypeClassifier() if holding_type_enabled else None
         price_calc_enabled = self._settings.maps_kostolany_price_calculator_enabled
         price_calculator = KostolanyPriceCalculator() if price_calc_enabled else None
+        # 펀더멘털 프로바이더(pykrx DB) — 안전마진·가치목표가의 실데이터 소스.
+        # 데이터가 없으면 내부적으로 중립 입력을 반환하므로 항상 안전하다.
+        fundamental_provider = (
+            FundamentalValuationProvider(db, ref_date)
+            if (valuation_enabled or price_calc_enabled)
+            else None
+        )
         strategy_cls = _RUNNABLE_STRATEGIES.get(strategy_id)
         strategy_type = getattr(strategy_cls, "strategy_type", StrategyType.MOMENTUM)
         legacy_score_calculator = LegacyFinalScoreCalculator()
@@ -1153,8 +1160,8 @@ class OperationalPipeline:
             # AI 비활성: 유동성 60% + 추세강도 40%
             # AI 활성:   유동성 (1-ai_w)×60% + 추세강도 (1-ai_w)×40% + AI ai_w%
             valuation_result = None
-            if valuation_scorer is not None and valuation_provider is not None:
-                valuation_input = valuation_provider.get(
+            if valuation_scorer is not None and fundamental_provider is not None:
+                valuation_input = fundamental_provider.get(
                     stock.ticker,
                     current_price=float(ohlcv_df["close"].iloc[-1]) if ohlcv_df is not None and not ohlcv_df.empty else None,
                 )
@@ -1262,15 +1269,29 @@ class OperationalPipeline:
             if price_calculator is not None and current_close_val > 0:
                 try:
                     high52w_val: float | None = None
+                    low52w_val: float | None = None
                     if ohlcv_df is not None and not ohlcv_df.empty:
-                        high52w_val = float(
-                            ohlcv_df["high"].rolling(min(252, len(ohlcv_df))).max().iloc[-1]
-                        )
+                        window = min(252, len(ohlcv_df))
+                        high52w_val = float(ohlcv_df["high"].rolling(window).max().iloc[-1])
+                        low52w_val = float(ohlcv_df["low"].rolling(window).min().iloc[-1])
+                    # 가치 목표가(value_target)·thesis_stop 산출용 펀더멘털 주입
+                    pf = (
+                        fundamental_provider.price_fundamentals(stock.ticker)
+                        if fundamental_provider is not None
+                        else None
+                    )
                     price_inp = PriceInput(
                         holding_type=computed_holding_type or "SWING",
                         current_close=current_close_val,
                         atr14=atr14_val,
                         high_52w=high52w_val,
+                        low_52w=low52w_val,
+                        per=pf.per if pf else None,
+                        pbr=pf.pbr if pf else None,
+                        eps_forward=pf.eps_forward if pf else None,
+                        bps=pf.bps if pf else None,
+                        historical_per_avg=pf.historical_per_avg if pf else None,
+                        historical_pbr_avg=pf.historical_pbr_avg if pf else None,
                         rr_ratio=rr,
                         slippage_pct=slippage,
                     )

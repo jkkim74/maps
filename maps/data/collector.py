@@ -9,7 +9,12 @@ import pandas as pd
 from sqlalchemy.orm import Session
 
 from maps.common.exceptions import DataCollectionError
-from maps.common.models import CollectionLog, HistoricalOHLCV, SecurityMetadata
+from maps.common.models import (
+    CollectionLog,
+    HistoricalOHLCV,
+    SecurityFundamental,
+    SecurityMetadata,
+)
 from maps.data.krx_adapter import CollectionResult, KRXAdapterBase, MockKRXAdapter
 
 logger = logging.getLogger(__name__)
@@ -71,12 +76,19 @@ class DataCollector:
                 halts=halts,
                 managed=managed,
             )
+            try:
+                fundamentals = self._krx.get_fundamental(ref_date)
+            except Exception as exc:
+                logger.warning("펀더멘털 수집 실패 (스킵): %s", exc)
+                fundamentals = []
+
             self._upsert_meta(
                 meta,
                 {row.ticker: row.has_adjusted for row in ohlcv},
                 sectors,
             )
             saved_rows = self._upsert_ohlcv(ohlcv)
+            self._upsert_fundamentals(fundamentals)
             self._write_log(ref_date, "success", saved_rows)
             return result
 
@@ -132,6 +144,40 @@ class DataCollector:
             "failed_days": failed_days,
             "rows": total_rows,
             "failures": failures[:10],
+        }
+
+    def collect_fundamental_history(self, start: datetime.date, end: datetime.date) -> dict:
+        """기간 펀더멘털만 백필한다.
+
+        value_target/역사적 밸류 밴드(요건 7·8)는 과거 PER/PBR 히스토리가 있어야 의미가 있다.
+        가격 백필(`collect_ohlcv_history`)과 분리된 일자별 펀더멘털 적재 경로다.
+        """
+        if start > end:
+            raise DataCollectionError(f"백필 시작일이 종료일보다 늦습니다: {start} > {end}")
+
+        requested_days = _business_days(start, end)
+        success_days = 0
+        failed_days = 0
+        total_rows = 0
+        for day in requested_days:
+            try:
+                rows = self._krx.get_fundamental(day)
+                saved = self._upsert_fundamentals(rows)
+                self._write_log(day, "success", saved, source="krx.fundamental")
+                success_days += 1
+                total_rows += saved
+            except Exception as exc:
+                failed_days += 1
+                self._write_log(day, "failed", 0, str(exc), source="krx.fundamental")
+                logger.warning("펀더멘털 백필 실패: %s — %s", day, exc)
+
+        return {
+            "start": start.isoformat(),
+            "end": end.isoformat(),
+            "business_days": len(requested_days),
+            "success_days": success_days,
+            "failed_days": failed_days,
+            "rows": total_rows,
         }
 
     def _upsert_meta(
@@ -212,6 +258,47 @@ class DataCollector:
                         volume=row.volume,
                         adj_close=row.adj_close,
                         source="krx",
+                    )
+                )
+        self._db.commit()
+        return saved_rows
+
+    def _upsert_fundamentals(self, rows) -> int:
+        """일별 펀더멘털을 security_fundamental 테이블에 upsert한다."""
+        saved_rows = 0
+        for row in rows:
+            if not any(v is not None for v in (row.per, row.pbr, row.eps, row.bps)):
+                continue
+            saved_rows += 1
+            existing = (
+                self._db.query(SecurityFundamental)
+                .filter(
+                    SecurityFundamental.ticker == row.ticker,
+                    SecurityFundamental.date == row.date,
+                )
+                .first()
+            )
+            if existing:
+                existing.per = row.per
+                existing.pbr = row.pbr
+                existing.eps = row.eps
+                existing.bps = row.bps
+                existing.div = row.div
+                existing.dps = row.dps
+                existing.source = "pykrx"
+                existing.updated_at = datetime.datetime.now(datetime.timezone.utc)
+            else:
+                self._db.add(
+                    SecurityFundamental(
+                        ticker=row.ticker,
+                        date=row.date,
+                        per=row.per,
+                        pbr=row.pbr,
+                        eps=row.eps,
+                        bps=row.bps,
+                        div=row.div,
+                        dps=row.dps,
+                        source="pykrx",
                     )
                 )
         self._db.commit()
