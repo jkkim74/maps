@@ -125,7 +125,8 @@ class OrderManager:
         _KST = zoneinfo.ZoneInfo("Asia/Seoul")
         today_kst = datetime.now(_KST).date()
         today_start = datetime.combine(today_kst, dt_time.min) - timedelta(hours=9)
-        expired = self.expire_pending_orders(before=today_start)
+        # expire_pending_orders는 아래 브로커 포지션 대조가 끝난 뒤 마지막에 실행한다.
+        # (전일 제출됐지만 브로커에서 실제 체결된 매도가 동기화 전에 만료로 오기록되는 버그 방지)
         balance = self._broker.get_account_balance()
         sync_errors = 0
         try:
@@ -201,11 +202,12 @@ class OrderManager:
             logger.warning("Broker position sync unavailable: %s", exc)
 
         if current_positions is not None:
+            # 전일분 포함 모든 pending 매도를 브로커 포지션과 대조한다 (created_at 제한 없음).
+            # 만료 처리 전에 실행되어, 브로커에서 이미 체결돼 포지션이 사라진 매도를 filled로 보정한다.
             pending_sells = (
                 self._db.query(OrderLog)
                 .filter(OrderLog.status == OrderStatus.PENDING.value)
                 .filter(OrderLog.side == OrderSide.SELL.value)
-                .filter(OrderLog.created_at >= today_start)
                 .filter(OrderLog.order_id.notin_(broker_result_ids))
                 .all()
             )
@@ -222,6 +224,11 @@ class OrderManager:
                         sell_row.order_id,
                         sell_row.ticker,
                     )
+            # 포지션 대조 결과를 DB에 반영(flush)한 뒤 만료 처리해야, bulk update가 보정된 행을 건너뛴다.
+            self._db.flush()
+
+        # 포지션 대조 후에도 미해결인 전일 이전 주문만 만료 처리한다.
+        expired = self.expire_pending_orders(before=today_start)
 
         self._db.commit()
         return {
