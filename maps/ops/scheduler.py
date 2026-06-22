@@ -365,6 +365,18 @@ class OperationalPipeline:
 
         return self._job("ohlcv_backfill", _run)
 
+    def backfill_fundamentals(self, start: dt.date, end: dt.date) -> JobRun:
+        """기간 펀더멘털(PER/PBR/EPS/BPS)을 백필한다.
+
+        역사적 밸류 밴드(`FundamentalRepository.historical_band`)·가치 목표가용 히스토리를
+        적재한다. 가격 백필(`backfill_ohlcv`)과 분리된 일자별 펀더멘털 경로다.
+        """
+        def _run(db: Session) -> dict:
+            collector = DataCollector(self._make_krx_adapter(), db)
+            return collector.collect_fundamental_history(start, end)
+
+        return self._job("fundamental_backfill", _run)
+
     def run_validation(self, ref_date: dt.date | None = None) -> JobRun:
         ref_date = ref_date or dt.date.today()
 
@@ -2078,6 +2090,12 @@ class MapsOperationalScheduler:
 
     def backfill_ohlcv(self, start: dt.date, end: dt.date) -> JobRun:
         return self._record("ohlcv_backfill", lambda: self._pipeline.backfill_ohlcv(start, end))
+
+    def backfill_fundamentals(self, start: dt.date, end: dt.date) -> JobRun:
+        return self._record(
+            "fundamental_backfill",
+            lambda: self._pipeline.backfill_fundamentals(start, end),
+        )
 
     def _make_krx_job(self, name: str) -> Callable:
         """KRX 거래일에만 실행되는 잡 콜러블을 반환한다.

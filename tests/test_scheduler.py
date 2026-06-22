@@ -779,6 +779,41 @@ def test_scheduler_backfill_ohlcv() -> None:
         engine.dispose()
 
 
+def test_scheduler_backfill_fundamentals() -> None:
+    import datetime as dt
+
+    engine, factory = _session_factory()
+    settings = MapsSettings(
+        maps_broker_mode="mock",
+        maps_data_provider="mock",
+        maps_scheduler_enabled=False,
+    )
+    pipeline = OperationalPipeline(settings=settings, session_factory=factory)
+    scheduler = MapsOperationalScheduler(settings=settings, pipeline=pipeline)
+
+    # 2026-05-01 (금) 단일 영업일 백필. MockKRXAdapter 는 펀더멘털 오버라이드가 없어
+    # rows==0 이지만, JobRun 플러밍과 collection_log 배선이 동작해야 한다.
+    run = scheduler.backfill_fundamentals(dt.date(2026, 5, 1), dt.date(2026, 5, 1))
+
+    assert run.status == "success"
+    assert run.details["rows"] == 0
+    assert run.details["business_days"] == 1
+
+    db = factory()
+    try:
+        logs = (
+            db.query(CollectionLog)
+            .filter(CollectionLog.source == "krx.fundamental")
+            .all()
+        )
+        assert len(logs) == 1
+        assert logs[0].status == "success"
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
 def test_latest_promotion_rows_ignores_failed_evaluations() -> None:
     """_latest_promotion_rows 는 passed=True 레코드만 반환해야 한다.
 
