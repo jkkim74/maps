@@ -1122,6 +1122,72 @@ class OperationalPipeline:
             if self._settings.maps_strategy_aware_scoring_enabled
             else None
         )
+        ai_target_tickers: set[str] = set()
+        ai_requested = ai_scorer is not None or contrarian_analyzer is not None
+        ai_candidate_top_n = self._settings.maps_ai_candidate_top_n if ai_requested else 0
+        if ai_candidate_top_n > 0:
+            pre_scored: list[tuple[float, float, str]] = []
+            for stock in ranked:
+                if excluded_reason_by_ticker.get(stock.ticker):
+                    continue
+                turnover = stock.avg_turnover_20d_as_of(ref_date)
+                factor_score = (turnover / max_turnover * 100.0) if max_turnover > 0 else 0.0
+                trend_strength = 50.0
+                ts_bucket = "S3"
+                ohlcv_df = None
+                try:
+                    ohlcv_df = repo.to_dataframe(stock.ticker, end=ref_date)
+                    ts_score = ts_calc.score_one(stock.ticker, ohlcv_df, ref_date)
+                    if ts_score is not None:
+                        trend_strength = ts_score.score
+                        ts_bucket = ts_score.bucket
+                except Exception:  # noqa: BLE001
+                    pass
+
+                valuation_result = None
+                if valuation_scorer is not None and fundamental_provider is not None:
+                    valuation_input = fundamental_provider.get(
+                        stock.ticker,
+                        current_price=(
+                            float(ohlcv_df["close"].iloc[-1])
+                            if ohlcv_df is not None and not ohlcv_df.empty
+                            else None
+                        ),
+                    )
+                    valuation_result = valuation_scorer.score(valuation_input)
+
+                if strategy_score_calculator is not None:
+                    score_result = strategy_score_calculator.calculate(
+                        StrategyScoreInput(
+                            strategy_type=strategy_type,
+                            liquidity_score=factor_score,
+                            trend_strength=trend_strength,
+                            ts_bucket=ts_bucket,
+                            valuation_margin_score=(
+                                valuation_result.valuation_score if valuation_result else None
+                            ),
+                            ai_technical_score=None,
+                            ai_weight=0.0,
+                        )
+                    )
+                else:
+                    score_result = legacy_score_calculator.calculate(
+                        factor_score=factor_score,
+                        trend_strength=trend_strength,
+                        ai_technical_score=None,
+                        ai_weight=0.0,
+                        strategy_type=strategy_type,
+                    )
+                pre_scored.append((score_result.final_score, trend_strength, stock.ticker))
+
+            pre_scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+            ai_target_tickers = {ticker for _score, _trend, ticker in pre_scored[:ai_candidate_top_n]}
+            logger.info(
+                "Bedrock AI candidate limit [%s]: top %d of %d rule-based candidates",
+                strategy_id,
+                len(ai_target_tickers),
+                len(pre_scored),
+            )
 
         for stock in ranked:
             turnover = stock.avg_turnover_20d_as_of(ref_date)
@@ -1165,7 +1231,12 @@ class OperationalPipeline:
 
             # AI 기술적 분석 (활성화 시)
             ai_result = None
-            if ai_scorer is not None and ohlcv_df is not None and not ohlcv_df.empty:
+            if (
+                ai_scorer is not None
+                and stock.ticker in ai_target_tickers
+                and ohlcv_df is not None
+                and not ohlcv_df.empty
+            ):
                 try:
                     ai_result = ai_scorer.score(
                         stock.ticker, stock.name, ohlcv_df, strategy_id,
@@ -1246,7 +1317,7 @@ class OperationalPipeline:
 
             # 7단계: AI 역발상 검증 (contrarian_check_enabled 시에만 실행)
             contrarian_result = None
-            if contrarian_analyzer is not None:
+            if contrarian_analyzer is not None and stock.ticker in ai_target_tickers:
                 try:
                     val_score = valuation_result.valuation_score if valuation_result else 50.0
                     high52w = float(ohlcv_df["high"].rolling(min(252, len(ohlcv_df))).max().iloc[-1]) if ohlcv_df is not None and not ohlcv_df.empty else current_close_val

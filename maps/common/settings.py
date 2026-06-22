@@ -92,6 +92,7 @@ class MapsSettings(BaseSettings):
     # AI 기술적 분석 (후보 생성 시점, 16:20 KST)
     maps_ai_technical_scoring_enabled: bool = False  # 명시적으로 켜야 작동
     maps_ai_technical_score_weight: float = Field(default=0.20, ge=0.0, le=1.0)
+    maps_ai_candidate_top_n: int = Field(default=5, ge=0, le=100)
     # 안전마진 스코어링(요건 5) — pykrx 펀더멘털 연동 완료로 기본 활성.
     # 후보 점수/스냅샷에만 영향하며, 실주문은 maps_live_trading_enabled로 별도 게이트된다.
     maps_valuation_margin_enabled: bool = True
@@ -277,6 +278,7 @@ def get_config_status(settings: MapsSettings | None = None) -> list[ConfigSectio
                 _field(s, "aws_secret_access_key", "AWS_SECRET_ACCESS_KEY", "AWS secret key for Bedrock AI analysis", secret=True),
                 _field(s, "aws_region", "AWS_REGION", "AWS region for Bedrock (default: us-east-1)"),
                 _field(s, "aws_bedrock_model_id", "AWS_BEDROCK_MODEL_ID", "Bedrock Claude model ID"),
+                _field(s, "maps_ai_candidate_top_n", "MAPS_AI_CANDIDATE_TOP_N", "Maximum rule-based top candidates sent to Bedrock AI"),
                 _field(s, "maps_valuation_margin_enabled", "MAPS_VALUATION_MARGIN_ENABLED", "Enable valuation margin scoring on candidate snapshots"),
                 _field(s, "maps_strategy_aware_scoring_enabled", "MAPS_STRATEGY_AWARE_SCORING_ENABLED", "Enable strategy-specific final_score formulas"),
                 _field(s, "maps_sector_filter_enabled", "MAPS_SECTOR_FILTER_ENABLED", "Enable sector filter before candidate generation"),
