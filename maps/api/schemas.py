@@ -477,6 +477,19 @@ class OpsConfigResponse(BaseModel):
     sections: list[OpsConfigSection]
 
 
+class BrokerHealthResponse(BaseModel):
+    """브로커 연결 진단 결과 (주문은 제출하지 않음)."""
+
+    ok: bool
+    broker_mode: str
+    trading_mode: str            # describe_trading_mode() 결과 (PAPER/REAL/MOCK 등)
+    account_masked: str          # 마스킹된 계좌번호
+    cash: float | None = None
+    positions_value: float | None = None
+    total_assets: float | None = None
+    error: str | None = None
+
+
 # ── Stock Report ──────────────────────────────────────────────────────────────
 
 class StockReportRunItem(BaseModel):

@@ -46,10 +46,27 @@ logger = logging.getLogger(__name__)
 async def _lifespan(app: FastAPI):
     """앱 시작/종료 수명주기 핸들러."""
     import maps.common.models  # noqa: F401 — 모델 등록
+    from maps.common.settings import (
+        describe_trading_mode,
+        get_settings,
+        real_trading_unconfirmed,
+    )
     from maps.ops.scheduler import (
         shutdown_operational_scheduler,
         start_operational_scheduler_if_enabled,
     )
+
+    settings = get_settings()
+    # 부팅 배너 — 현재 트레이딩 모드를 명시 (paper/real 오인 방지)
+    logger.warning("=== MAPS 트레이딩 모드: %s ===", describe_trading_mode(settings))
+    # 실거래 안전 가드 — REAL 거래가 활성인데 명시 확인이 없으면 기동 거부
+    if real_trading_unconfirmed(settings):
+        raise RuntimeError(
+            "실거래(KIS_REAL_TRADING=true)가 주문 활성 상태로 설정됐으나 "
+            "MAPS_CONFIRM_REAL_TRADING=true 확인이 없습니다. "
+            "모의투자(paper)는 KIS_REAL_TRADING=false로 두세요. "
+            "실거래가 의도라면 MAPS_CONFIRM_REAL_TRADING=true를 명시적으로 설정하십시오."
+        )
 
     Base.metadata.create_all(bind=engine)
     start_operational_scheduler_if_enabled()

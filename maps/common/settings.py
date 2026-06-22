@@ -39,6 +39,9 @@ class MapsSettings(BaseSettings):
 
     maps_broker_mode: BrokerMode = "mock"
     maps_live_trading_enabled: bool = False
+    # 실거래(real) 안전 확인 스위치. KIS_REAL_TRADING=true + 주문 활성 상태에서
+    # 이 값이 true가 아니면 기동을 거부한다(모의투자 paper 운영을 실거래로 오인 방지).
+    maps_confirm_real_trading: bool = False
     maps_data_provider: DataProvider = "pykrx"
     maps_scheduler_enabled: bool = False
     maps_scheduler_timezone: str = "Asia/Seoul"
@@ -317,3 +320,27 @@ def reload_settings() -> MapsSettings:
     """Clear and reload cached settings. Mainly useful for tests and admin tools."""
     get_settings.cache_clear()
     return get_settings()
+
+
+def describe_trading_mode(settings: MapsSettings | None = None) -> str:
+    """현재 트레이딩 모드를 사람이 읽을 수 있는 문자열로 반환한다."""
+    s = settings or get_settings()
+    if s.maps_broker_mode == "mock":
+        return "MOCK (인메모리 시뮬레이션)"
+    broker = s.maps_broker_mode.upper()
+    if not s.maps_live_trading_enabled:
+        return f"{broker} 연결 · 주문 비활성 (MAPS_LIVE_TRADING_ENABLED=false)"
+    if s.kis_real_trading:
+        return f"{broker} 실거래(REAL) — ⚠️ 실제 주문/체결"
+    return f"{broker} 모의투자(PAPER) — 모의 주문/체결"
+
+
+def real_trading_unconfirmed(settings: MapsSettings | None = None) -> bool:
+    """실거래가 활성화됐는데 명시적 확인(MAPS_CONFIRM_REAL_TRADING)이 없는 위험 상태인지 반환한다."""
+    s = settings or get_settings()
+    return (
+        s.maps_broker_mode in ("kis", "kiwoom")
+        and s.maps_live_trading_enabled
+        and s.kis_real_trading
+        and not s.maps_confirm_real_trading
+    )

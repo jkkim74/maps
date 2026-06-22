@@ -1884,6 +1884,14 @@ class OperationalPipeline:
             config=RiskConfig(
                 daily_loss_limit=self._settings.daily_loss_limit,
                 position_size_limit=self._settings.max_single_exposure,
+                # 8단계: 테마·섹터 노출 한도 + 최소 현금 비중 (설정으로 활성화)
+                sector_exposure_limit=self._settings.maps_max_sector_exposure,
+                theme_exposure_limit=self._settings.maps_max_theme_exposure,
+                sector_exposure_limit_enabled=self._settings.maps_sector_exposure_limit_enabled,
+                theme_exposure_limit_enabled=self._settings.maps_theme_exposure_limit_enabled,
+                min_cash_ratio_strong=self._settings.maps_min_cash_ratio_strong,
+                min_cash_ratio_mixed=self._settings.maps_min_cash_ratio_mixed,
+                min_cash_ratio_weak=self._settings.maps_min_cash_ratio_weak,
             ),
         )
 
