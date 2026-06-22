@@ -101,13 +101,25 @@ class OrderManager:
         try:
             result = self._place_with_retry(order)
             if result.status == OrderStatus.REJECTED:
-                self._risk.on_order_failure(order.strategy_id)
+                logger.warning(
+                    "주문 거부됨 [%s %s %s]: 브로커가 REJECTED 반환",
+                    order.strategy_id, order.ticker, order.side.value,
+                )
+                self._risk.on_order_failure(
+                    order.strategy_id,
+                    reason=f"broker rejected ({order.ticker} {order.side.value})",
+                )
             else:
                 self._risk.on_order_success(order.strategy_id)
             self._log_order(order, result)
             return result
-        except Exception:
-            self._risk.on_order_failure(order.strategy_id)
+        except Exception as exc:
+            # 관측성: 브로커 예외(KIS 에러코드 등)를 사유와 함께 WARNING으로 남기고 카운터에 반영
+            logger.warning(
+                "주문 제출 실패 [%s %s %s]: %s",
+                order.strategy_id, order.ticker, order.side.value, exc,
+            )
+            self._risk.on_order_failure(order.strategy_id, reason=str(exc))
             raise
 
     def cancel(self, order_id: str) -> bool:

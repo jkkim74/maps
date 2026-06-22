@@ -152,8 +152,13 @@ class RiskManager:
         """주문 성공 시 연속 실패 카운터를 리셋한다."""
         self._failure_counts[strategy_id] = 0
 
-    def on_order_failure(self, strategy_id: str) -> KillSwitchEvent | None:
+    def on_order_failure(self, strategy_id: str, reason: str = "") -> KillSwitchEvent | None:
         """주문 실패 시 카운터를 증가시키고, 5회 시 Kill Switch를 자동 발동한다.
+
+        Args:
+            strategy_id: 실패한 전략 ID.
+            reason: 실패 원인(브로커 예외 메시지·KIS 에러코드 등). 관측성을 위해 WARNING
+                로그와 Kill Switch 발동 detail(`kill_switch_log.value`)에 기록된다.
 
         Returns:
             Kill Switch 발동 시 KillSwitchEvent, 아니면 None.
@@ -162,13 +167,21 @@ class RiskManager:
             self._failure_counts.get(strategy_id, 0) + 1
         )
         count = self._failure_counts[strategy_id]
-        logger.debug("연속 실패 [%s]: %d회", strategy_id, count)
+        # 관측성: 개별 주문 실패도 사유와 함께 WARNING으로 남긴다.
+        # (기존 DEBUG 로깅은 INFO 운영 로그에 남지 않아 거부 사유 추적이 불가능했음)
+        logger.warning(
+            "주문 실패 [%s] %d/%d회: %s",
+            strategy_id, count, _CONSEC_FAILURE_THRESHOLD, reason or "(사유 미상)",
+        )
 
         if count >= _CONSEC_FAILURE_THRESHOLD:
+            detail = f"연속 주문 실패 {count}회 >= {_CONSEC_FAILURE_THRESHOLD}회"
+            if reason:
+                detail += f" (마지막 사유: {reason})"
             return self._trigger_kill(
                 strategy_id,
                 KillSwitchReason.CONSECUTIVE_FAILURE,
-                f"연속 주문 실패 {count}회 >= {_CONSEC_FAILURE_THRESHOLD}회",
+                detail,
             )
         return None
 

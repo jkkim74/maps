@@ -37,7 +37,13 @@ from maps.common.models import (
 )
 from maps.common.settings import MapsSettings, get_settings
 from maps.backtest.engine import BacktestEngine, BacktestResult, _compute_atr14
-from maps.common.exceptions import BacktestError, DuplicateOrderError, KillSwitchError, ValidationError
+from maps.common.exceptions import (
+    BacktestError,
+    BrokerAdapterError,
+    DuplicateOrderError,
+    KillSwitchError,
+    ValidationError,
+)
 from maps.data.collector import DataCollector
 from maps.data.ohlcv_repo import HistoricalOHLCVRepository
 from maps.data.krx_adapter import CollectionResult, KRXAdapter, MockKRXAdapter, SecurityMeta
@@ -1555,6 +1561,16 @@ class OperationalPipeline:
                 )
                 skipped += 1
                 continue
+            except BrokerAdapterError as exc:
+                # 브로커 거부(KIS 에러코드 등): 사유를 남기고 해당 후보만 건너뛴다 (잡 전체 중단 방지)
+                logger.warning(
+                    "매수 주문 실패 [%s %s]: %s",
+                    candidate.strategy_id,
+                    candidate.ticker,
+                    exc,
+                )
+                skipped += 1
+                continue
             submitted += 1
             remaining_cash = max(remaining_cash - qty * limit_price, 0.0)
             positions[candidate.ticker] = positions.get(candidate.ticker, 0) + qty
@@ -1699,6 +1715,16 @@ class OperationalPipeline:
                 )
                 skipped += 1
                 exit_tickers.add(ticker)
+                continue
+            except BrokerAdapterError as exc:
+                # 브로커 거부(KIS 에러코드 등): 사유를 남기고 해당 청산만 건너뛴다 (잡 전체 중단 방지)
+                logger.warning(
+                    "매도(청산) 주문 실패 [%s %s]: %s",
+                    entry.strategy_id,
+                    ticker,
+                    exc,
+                )
+                skipped += 1
                 continue
             submitted += 1
             exit_tickers.add(ticker)
