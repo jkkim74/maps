@@ -490,6 +490,40 @@ class BrokerHealthResponse(BaseModel):
     error: str | None = None
 
 
+class ReconciliationSideStat(BaseModel):
+    side: str
+    submitted: int
+    filled: int
+    partially_filled: int
+    expired: int
+    rejected: int
+    fill_rate: float
+
+
+class ReconciliationUnfilledItem(BaseModel):
+    kst_date: str
+    strategy_id: str
+    ticker: str
+    side: str
+    status: str
+    qty: int
+    order_price: float | None = None
+    day_high: float | None = None
+    day_low: float | None = None
+    day_close: float | None = None
+    reachable: bool | None = None
+
+
+class ReconciliationResponse(BaseModel):
+    """주문 정산 리포트 — 제출/체결/만료 집계 + 미체결 진단."""
+
+    start_kst: str
+    end_kst: str
+    total_orders: int
+    by_side: list[ReconciliationSideStat]
+    unfilled: list[ReconciliationUnfilledItem]
+
+
 # ── Stock Report ──────────────────────────────────────────────────────────────
 
 class StockReportRunItem(BaseModel):

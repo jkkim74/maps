@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from maps.api.deps import get_db
@@ -11,13 +11,59 @@ from maps.api.schemas import (
     OrderPreviewResponse,
     OrderQueueItem,
     OrdersResponse,
+    ReconciliationResponse,
+    ReconciliationSideStat,
+    ReconciliationUnfilledItem,
     SlippageStats,
 )
 from maps.common.models import KillSwitchLog, OrderLog, SecurityMetadata
 from maps.common.settings import get_settings
 from maps.ops.order_preview import build_order_preview
+from maps.ops.reconciliation import build_reconciliation
 
 router = APIRouter(prefix="/api/v1/orders", tags=["SCR-05 Orders"])
+
+
+@router.get("/reconciliation", response_model=ReconciliationResponse)
+def get_reconciliation(
+    days: int = Query(default=30, ge=1, le=365),
+    db: Session = Depends(get_db),
+) -> ReconciliationResponse:
+    """최근 N일 주문 정산 리포트 — 제출/체결/만료 집계 + 미체결 도달가능성 진단."""
+    summary = build_reconciliation(db, days=days)
+    return ReconciliationResponse(
+        start_kst=summary.start_kst,
+        end_kst=summary.end_kst,
+        total_orders=summary.total_orders,
+        by_side=[
+            ReconciliationSideStat(
+                side=s.side,
+                submitted=s.submitted,
+                filled=s.filled,
+                partially_filled=s.partially_filled,
+                expired=s.expired,
+                rejected=s.rejected,
+                fill_rate=s.fill_rate,
+            )
+            for s in summary.by_side
+        ],
+        unfilled=[
+            ReconciliationUnfilledItem(
+                kst_date=u.kst_date,
+                strategy_id=u.strategy_id,
+                ticker=u.ticker,
+                side=u.side,
+                status=u.status,
+                qty=u.qty,
+                order_price=u.order_price,
+                day_high=u.day_high,
+                day_low=u.day_low,
+                day_close=u.day_close,
+                reachable=u.reachable,
+            )
+            for u in summary.unfilled
+        ],
+    )
 
 
 @router.get("", response_model=OrdersResponse)
