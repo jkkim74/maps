@@ -36,16 +36,22 @@ def next_trading_day(from_date: dt.date) -> dt.date:
 
 
 def _latest_promotions(db: Session) -> dict[str, str]:
-    """전략별 최신 단계 반환 (passed=True 레코드만)."""
+    """전략별 최신 단계 반환 (passed=True 레코드만).
+
+    승격 실패(passed=False)는 무시한다 — 다음 단계 승격 실패가 이미 획득한
+    단계를 강등시켜 주문 자격을 박탈하면 안 되기 때문이다. 마지막 성공 단계가
+    곧 현재 단계다.
+    """
     rows = (
         db.query(PromotionHistory)
+        .filter(PromotionHistory.passed.is_(True))
         .order_by(PromotionHistory.evaluated_at.desc(), PromotionHistory.id.desc())
         .all()
     )
     latest: dict[str, str] = {}
     for row in rows:
         if row.strategy_id not in latest:
-            latest[row.strategy_id] = row.to_stage if row.passed else "rejected"
+            latest[row.strategy_id] = row.to_stage
     return latest
 
 

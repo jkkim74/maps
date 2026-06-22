@@ -142,11 +142,15 @@ class PromotionGate:
         if not passed and score < threshold:
             reasons.append(f"점수 {score:.1f} < 임계값 {threshold}")
 
+        # 승격 실패는 '탈락'이 아니라 '현재 단계 유지'다. 다음 단계 기준 미달
+        # (예: mock_candidate 가 live_candidate 점수/트랙레코드 기준 미달)이어도
+        # REJECTED 로 강등하지 않고 current_stage 에 머문다 — 그래야 mock_candidate
+        # 전략이 주문 자격(eligible_stages)을 잃지 않는다.
         decision = PromotionDecision(
             strategy_id=strategy_id,
             score=score,
             current_stage=current_stage,
-            target_stage=target_stage if passed else PromotionStage.REJECTED,
+            target_stage=target_stage if passed else current_stage,
             passed=passed,
             reasons=reasons,
         )

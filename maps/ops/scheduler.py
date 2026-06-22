@@ -1793,23 +1793,21 @@ class OperationalPipeline:
     def _latest_promotions(db: Session) -> dict[str, str]:
         """주문 주기에서 참조할 전략별 현재 단계를 반환한다.
 
-        가장 최근 평가 기록을 기준으로 단계를 결정한다.
-        - passed=True → 해당 to_stage (예: "live", "mock_candidate")
-        - passed=False → PromotionStage.REJECTED ("rejected")
-
-        실패 평가가 가장 최신이면 해당 전략의 주문이 차단된다.
-        eligible_stages에 "mock_candidate"와 "rejected"가 포함되지 않으므로
-        _order_candidates에서 해당 전략의 후보가 필터링된다.
+        passed=True 레코드만 본다 (_latest_promotion_rows 와 동일 규칙).
+        승격 실패(passed=False)는 이전에 획득한 단계를 강등시키지 않는다 —
+        다음 단계 승격에 한 번 실패했다고 mock_candidate 전략의 주문 자격을
+        박탈하면 안 되기 때문이다. 마지막 성공 단계가 곧 현재 단계다.
         """
         rows = (
             db.query(PromotionHistory)
+            .filter(PromotionHistory.passed.is_(True))
             .order_by(PromotionHistory.evaluated_at.desc(), PromotionHistory.id.desc())
             .all()
         )
         latest: dict[str, str] = {}
         for row in rows:
             if row.strategy_id not in latest:
-                latest[row.strategy_id] = row.to_stage if row.passed else PromotionStage.REJECTED.value
+                latest[row.strategy_id] = row.to_stage
         return latest
 
     @staticmethod

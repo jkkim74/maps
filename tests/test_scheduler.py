@@ -864,12 +864,13 @@ def test_latest_promotion_rows_ignores_failed_evaluations() -> None:
         engine.dispose()
 
 
-def test_latest_promotions_blocks_after_latest_failed_evaluation() -> None:
+def test_latest_promotions_keeps_stage_after_latest_failed_evaluation() -> None:
     """_latest_promotions (주문 주기용) 도 passed=True 만 봐야 한다.
 
     회귀 테스트:
-      mock_candidate 승격 후 실패 평가가 기록되더라도
-      주문 자격(eligible_stages)은 유지돼야 한다.
+      mock_candidate 승격 후 실패 평가(passed=False)가 기록되더라도
+      주문 자격(eligible_stages)은 유지돼야 한다. 실패 레코드의 to_stage 가
+      "rejected" 여도 무시하고 마지막 성공 단계(mock_candidate)를 반환한다.
     """
     engine, factory = _session_factory()
 
@@ -898,7 +899,7 @@ def test_latest_promotions_blocks_after_latest_failed_evaluation() -> None:
     db = factory()
     try:
         latest = OperationalPipeline._latest_promotions(db)
-        assert latest.get("pullback_v3") == "rejected"
+        assert latest.get("pullback_v3") == "mock_candidate"
     finally:
         db.close()
         Base.metadata.drop_all(engine)
