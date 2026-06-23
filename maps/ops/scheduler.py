@@ -1099,7 +1099,18 @@ class OperationalPipeline:
         ai_enabled = self._settings.maps_ai_technical_scoring_enabled
         ai_weight = self._settings.maps_ai_technical_score_weight if ai_enabled else 0.0
         ai_scorer = AITechnicalScorer.from_settings() if ai_enabled else None
-        contrarian_check_enabled = self._settings.maps_ai_contrarian_check_enabled
+        contrarian_check_enabled = (
+            self._settings.maps_ai_contrarian_check_enabled
+            and self._settings.maps_ai_analysis_mode == "all"
+        )
+        if (
+            self._settings.maps_ai_contrarian_check_enabled
+            and self._settings.maps_ai_analysis_mode == "technical_only"
+        ):
+            logger.info(
+                "AI contrarian check skipped [%s]: MAPS_AI_ANALYSIS_MODE=technical_only",
+                strategy_id,
+            )
         contrarian_analyzer = AIContrarianAnalyzer.from_settings() if contrarian_check_enabled else None
         valuation_enabled = self._settings.maps_valuation_margin_enabled
         valuation_scorer = ValuationMarginScorer() if valuation_enabled else None

@@ -17,6 +17,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BrokerMode = Literal["mock", "kis", "kiwoom"]
 DataProvider = Literal["pykrx", "mock"]
+AIAnalysisMode = Literal["technical_only", "all"]
 
 
 class MapsSettings(BaseSettings):
@@ -90,6 +91,7 @@ class MapsSettings(BaseSettings):
     aws_bedrock_model_id: str = "us.anthropic.claude-sonnet-4-6"
 
     # AI 기술적 분석 (후보 생성 시점, 16:20 KST)
+    maps_ai_analysis_mode: AIAnalysisMode = "technical_only"
     maps_ai_technical_scoring_enabled: bool = False  # 명시적으로 켜야 작동
     maps_ai_technical_score_weight: float = Field(default=0.20, ge=0.0, le=1.0)
     maps_ai_candidate_top_n: int = Field(default=5, ge=0, le=100)
@@ -278,6 +280,7 @@ def get_config_status(settings: MapsSettings | None = None) -> list[ConfigSectio
                 _field(s, "aws_secret_access_key", "AWS_SECRET_ACCESS_KEY", "AWS secret key for Bedrock AI analysis", secret=True),
                 _field(s, "aws_region", "AWS_REGION", "AWS region for Bedrock (default: us-east-1)"),
                 _field(s, "aws_bedrock_model_id", "AWS_BEDROCK_MODEL_ID", "Bedrock Claude model ID"),
+                _field(s, "maps_ai_analysis_mode", "MAPS_AI_ANALYSIS_MODE", "AI validation mode: technical_only or all"),
                 _field(s, "maps_ai_candidate_top_n", "MAPS_AI_CANDIDATE_TOP_N", "Maximum rule-based top candidates sent to Bedrock AI"),
                 _field(s, "maps_valuation_margin_enabled", "MAPS_VALUATION_MARGIN_ENABLED", "Enable valuation margin scoring on candidate snapshots"),
                 _field(s, "maps_strategy_aware_scoring_enabled", "MAPS_STRATEGY_AWARE_SCORING_ENABLED", "Enable strategy-specific final_score formulas"),
