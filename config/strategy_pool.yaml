@@ -1,0 +1,108 @@
+# config/strategy_pool.yaml
+#
+# 전략 선정(strategy-selector)용 메타데이터 풀.
+#
+# 주의: historical_mdd / win_rate 는 실제 백테스트·검증 지표로 교체되기 전까지의
+# 보수적 SEED 값이다. regime_fit 는 각 전략의 설계 성격(추세추종/역발상/돌파)에
+# 근거한 정성 매핑이며, group 과 mc_p95_limit 은 CLAUDE.md 의 권위 있는 값을 따른다.
+#
+# group → mc_p95_limit (MDD 한도, CLAUDE.md):
+#   pullback_short=0.18, ath_outlier=0.35, multi_asset=0.22,
+#   donchian_research=0.30, portfolio_total=0.28
+
+strategies:
+  - id: pullback_v3
+    group: pullback_short
+    mc_p95_limit: 0.18
+    stop_loss_pct: 0.05
+    regime_fit:
+      strong: medium
+      mixed: high
+      weak: medium
+    historical_mdd: 0.14
+    win_rate: 0.56
+    trend_dependent: false
+
+  - id: pullback_v2
+    group: pullback_short
+    mc_p95_limit: 0.18
+    stop_loss_pct: 0.06
+    regime_fit:
+      strong: medium
+      mixed: high
+      weak: low
+    historical_mdd: 0.15
+    win_rate: 0.54
+    trend_dependent: false
+
+  - id: ath_breakout_v2
+    group: ath_outlier
+    mc_p95_limit: 0.35
+    stop_loss_pct: 0.12
+    regime_fit:
+      strong: high
+      mixed: low
+      weak: low
+    historical_mdd: 0.28
+    win_rate: 0.50
+    trend_dependent: true
+
+  - id: ath_breakout_v1
+    group: ath_outlier
+    mc_p95_limit: 0.35
+    stop_loss_pct: 0.10
+    regime_fit:
+      strong: high
+      mixed: low
+      weak: low
+    historical_mdd: 0.30
+    win_rate: 0.48
+    trend_dependent: true
+
+  - id: multi_asset_trend_v1
+    group: multi_asset
+    mc_p95_limit: 0.22
+    stop_loss_pct: 0.08
+    regime_fit:
+      strong: medium
+      mixed: high
+      weak: medium
+    historical_mdd: 0.16
+    win_rate: 0.53
+    trend_dependent: true
+
+  - id: donchian_v2
+    group: donchian_research
+    mc_p95_limit: 0.30
+    stop_loss_pct: 0.10
+    regime_fit:
+      strong: high
+      mixed: medium
+      weak: low
+    historical_mdd: 0.22
+    win_rate: 0.49
+    trend_dependent: true
+
+  - id: donchian_v1
+    group: donchian_research
+    mc_p95_limit: 0.30
+    stop_loss_pct: 0.08
+    regime_fit:
+      strong: high
+      mixed: medium
+      weak: low
+    historical_mdd: 0.24
+    win_rate: 0.47
+    trend_dependent: true
+
+  - id: contrarian_quality_accumulation_v1
+    group: kostolany
+    mc_p95_limit: 0.28
+    stop_loss_pct: 0.08
+    regime_fit:
+      strong: low
+      mixed: medium
+      weak: high
+    historical_mdd: 0.20
+    win_rate: 0.55
+    trend_dependent: false
