@@ -26,7 +26,8 @@ env/
 # IDE
 .vscode/
 .idea/
-.claude/
+.claude/*
+!.claude/agents/
 *.iml
 
 # Testing
