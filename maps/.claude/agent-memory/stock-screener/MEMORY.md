@@ -1,0 +1,2 @@
+- [pykrx API 패턴 및 신뢰도](pykrx-api-patterns.md) — get_market_ohlcv_by_date만 안정적, sector_classifications 등 시장전체 API는 2026-06 기준 불안정
+- [스크리닝 점수 산정 로직](screening-scoring-logic.md) — 4-factor 복합 점수, 전략별 진입조건 검증 공식, 관리종목 필터 방식
