@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+from typing import TYPE_CHECKING
 
 import pandas as pd
 from sqlalchemy.orm import Session
@@ -16,6 +17,9 @@ from maps.common.models import (
     SecurityMetadata,
 )
 from maps.data.krx_adapter import CollectionResult, KRXAdapterBase, MockKRXAdapter
+
+if TYPE_CHECKING:
+    from maps.data.naver_fundamental import NaverFundamentalAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -263,8 +267,11 @@ class DataCollector:
         self._db.commit()
         return saved_rows
 
-    def _upsert_fundamentals(self, rows) -> int:
-        """일별 펀더멘털을 security_fundamental 테이블에 upsert한다."""
+    def _upsert_fundamentals(self, rows, source: str = "pykrx") -> int:
+        """일별 펀더멘털을 security_fundamental 테이블에 upsert한다.
+
+        :param source: 데이터 출처 태그 (``pykrx`` 기본, Naver 대체 시 ``naver``).
+        """
         saved_rows = 0
         for row in rows:
             if not any(v is not None for v in (row.per, row.pbr, row.eps, row.bps)):
@@ -285,7 +292,7 @@ class DataCollector:
                 existing.bps = row.bps
                 existing.div = row.div
                 existing.dps = row.dps
-                existing.source = "pykrx"
+                existing.source = source
                 existing.updated_at = datetime.datetime.now(datetime.timezone.utc)
             else:
                 self._db.add(
@@ -298,11 +305,32 @@ class DataCollector:
                         bps=row.bps,
                         div=row.div,
                         dps=row.dps,
-                        source="pykrx",
+                        source=source,
                     )
                 )
         self._db.commit()
         return saved_rows
+
+    def collect_fundamental_snapshot(
+        self,
+        adapter: "NaverFundamentalAdapter",
+        ref_date: datetime.date,
+        tickers: list[str],
+    ) -> dict:
+        """Naver 대체 소스로 ref_date 펀더멘털 스냅샷을 백필한다.
+
+        KRX MDC 엔드포인트가 차단(``400 LOGOUT``)된 환경에서 pykrx 대신 사용한다.
+        Naver는 현재 스냅샷만 제공하므로 단일 일자(ref_date)에만 적재된다.
+        """
+        rows = adapter.get_many(tickers, ref_date)
+        saved = self._upsert_fundamentals(rows, source="naver")
+        self._write_log(ref_date, "success", saved, source="naver.fundamental")
+        return {
+            "ref_date": ref_date.isoformat(),
+            "requested": len(tickers),
+            "fetched": len(rows),
+            "rows": saved,
+        }
 
     @staticmethod
     def _is_valid_ohlcv(row) -> bool:
