@@ -4,9 +4,9 @@ KRX MDC 펀더멘털 엔드포인트가 ``400 LOGOUT`` 으로 차단된 환경�
 통합 API로 PER/PBR/EPS/BPS/DIV/DPS 스냅샷을 가져와 `security_fundamental` 에 적재한다.
 
 사용법 (프로젝트 루트에서):
-    python scripts/backfill_fundamentals.py                 # 전체 STOCK 유니버스
-    python scripts/backfill_fundamentals.py 005930 000660   # 특정 종목만
-    python scripts/backfill_fundamentals.py --date 2026-06-23 005930
+    python scripts/backfill_fundamentals_naver.py                 # 전체 STOCK 유니버스
+    python scripts/backfill_fundamentals_naver.py 005930 000660   # 특정 종목만
+    python scripts/backfill_fundamentals_naver.py --date 2026-06-23 005930
 
 Naver는 현재 스냅샷만 제공하므로 기본 적재 일자는 오늘(KST)이다. ``--date`` 로
 명시할 수 있으나, 과거 일자에 대해서도 *현재* 지표가 적재됨에 유의한다(시계열 백필 불가).
