@@ -23,7 +23,10 @@ import argparse
 import datetime
 import json
 import sys
+from collections.abc import Callable
 from typing import Any
+
+from sqlalchemy.orm import Session
 
 from maps.common.db import SessionLocal
 from maps.common.models import AnalysisPick
@@ -81,8 +84,12 @@ def load_picks(
     source: str,
     ref_date: datetime.date,
     dry_run: bool,
+    session_factory: Callable[[], Session] = SessionLocal,
 ) -> list[dict[str, Any]]:
-    """종목 배열을 analysis_pick 으로 적재한다. 적재된(또는 예정) 항목 요약을 반환한다."""
+    """종목 배열을 analysis_pick 으로 적재한다. 적재된(또는 예정) 항목 요약을 반환한다.
+
+    session_factory 를 주입하면(테스트용) 임의의 DB 세션으로 적재할 수 있다.
+    """
     prepared: list[dict[str, Any]] = []
     picks: list[AnalysisPick] = []
     for item in plan:
@@ -118,7 +125,7 @@ def load_picks(
     if dry_run or not picks:
         return prepared
 
-    session = SessionLocal()
+    session = session_factory()
     try:
         session.add_all(picks)
         session.commit()
