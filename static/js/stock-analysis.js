@@ -114,6 +114,13 @@ function stopProgress() {
 }
 
 /* ── AI 분석 청크 처리 ────────────────────────────────────── */
+function _renderMarkdown(text) {
+  // marked는 기본적으로 HTML을 살균하지 않는다. web_search 영향 콘텐츠가 섞일 수 있어
+  // DOMPurify로 살균한다(로드 실패 시에만 원본 — 그래도 표시는 되도록).
+  const html = marked.parse(text);
+  return (typeof DOMPurify !== 'undefined') ? DOMPurify.sanitize(html) : html;
+}
+
 function appendAnalysisChunk(chunk) {
   if (!_aiStarted) {
     _aiStarted = true;
@@ -123,12 +130,12 @@ function appendAnalysisChunk(chunk) {
   }
   _analysisText += chunk;
   const body = _byId('sa-ai-body');
-  body.innerHTML = marked.parse(_analysisText) + '<span class="sa-ai-cursor"></span>';
+  body.innerHTML = _renderMarkdown(_analysisText) + '<span class="sa-ai-cursor"></span>';
 }
 
 function finalizeAnalysis() {
   if (_analysisText) {
-    _byId('sa-ai-body').innerHTML = marked.parse(_analysisText);
+    _byId('sa-ai-body').innerHTML = _renderMarkdown(_analysisText);
   }
 }
 

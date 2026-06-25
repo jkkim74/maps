@@ -1905,12 +1905,26 @@ class OperationalPipeline:
             if pick.state == "ARMED" and pick.entry_order_id and pos is not None and pos.quantity > 0:
                 pick.state = "BOUGHT"
                 pick.last_action_at = now
+                db.commit()   # 브로커 체결과 즉시 동기화 (이후 단계 실패로 인한 롤백 desync 방지)
 
             current = _current(pick.ticker, pos)
             if current is None:
                 continue
 
             if pick.state == "ARMED":
+                # 진입 주문이 체결 없이 종료(취소/만료/거부)되면 entry_order_id를 비워 재진입을 허용한다.
+                if pick.entry_order_id and (pos is None or pos.quantity <= 0):
+                    entry_log = (
+                        db.query(OrderLog)
+                        .filter(OrderLog.order_id == pick.entry_order_id)
+                        .first()
+                    )
+                    if entry_log is not None and entry_log.status in ("cancelled", "expired", "rejected"):
+                        logger.info(
+                            "전략매매 진입 주문 %s — 재진입 허용 [%s]", entry_log.status, pick.ticker
+                        )
+                        pick.entry_order_id = None
+                        db.commit()
                 # 현재가 ≤ 매수가 & 미제출 → 지정가 진입
                 if pick.entry_order_id is None and pick.buy_price and current <= pick.buy_price:
                     qty = self._strategy_trade_qty(broker, pick)
@@ -1934,6 +1948,7 @@ class OperationalPipeline:
                         continue
                     pick.entry_order_id = result.order_id
                     pick.last_action_at = now
+                    db.commit()   # 주문(이미 커밋된 OrderLog)과 entry_order_id를 즉시 동기화
                     submitted += 1
                     logger.info("전략매매 진입 제출 [%s] qty=%d @%.0f", pick.ticker, qty, pick.buy_price)
                 continue
@@ -1965,6 +1980,7 @@ class OperationalPipeline:
                 pick.exit_order_id = result.order_id
                 pick.state = "CLOSED"
                 pick.last_action_at = now
+                db.commit()   # 청산(이미 커밋된 OrderLog)과 CLOSED 상태를 즉시 동기화
                 closed += 1
                 logger.info("전략매매 청산 [%s] %s qty=%d @%.0f", pick.ticker, reason, pos.quantity, current)
 

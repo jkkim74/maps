@@ -663,10 +663,9 @@ class AnalysisPickBatchCreate(BaseModel):
 
 
 class AnalysisPickUpdate(BaseModel):
+    """가격/메모만 수정한다. state·strategy_trade_enabled는 arm/disarm 전용."""
     buy_price: float | None = None
     target_price: float | None = None
     stop_price: float | None = None
     qty: int | None = None
     rationale: str | None = None
-    strategy_trade_enabled: bool | None = None
-    state: str | None = None

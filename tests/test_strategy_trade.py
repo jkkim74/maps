@@ -127,6 +127,35 @@ def test_qty_prefers_explicit(env):
     assert pipeline._strategy_trade_qty(broker, pick) == 33
 
 
+def test_rearm_after_dead_entry_order(env):
+    # entry_order_id가 있지만 그 주문이 expired/cancelled이고 포지션이 없으면 재진입 허용
+    from maps.common.models import OrderLog
+    pipeline, broker, manager, db = env
+    pick = _pick(db)
+    pick.entry_order_id = "dead-1"
+    db.add(OrderLog(order_id="dead-1", strategy_id="strategy_trade", ticker="005930",
+                    side="buy", qty=10, status="expired"))
+    db.commit()
+    submitted, closed = _run(pipeline, broker, manager, db, [pick], {"005930": 69000})
+    assert submitted == 1
+    assert pick.entry_order_id not in (None, "dead-1")   # 죽은 주문 정리 후 새 진입
+    assert broker.get_positions().get("005930") == 10
+
+
+def test_no_rearm_while_entry_order_pending(env):
+    # entry_order_id가 살아있는(pending) 동안에는 재진입하지 않는다 (중복 방지)
+    from maps.common.models import OrderLog
+    pipeline, broker, manager, db = env
+    pick = _pick(db)
+    pick.entry_order_id = "pending-1"
+    db.add(OrderLog(order_id="pending-1", strategy_id="strategy_trade", ticker="005930",
+                    side="buy", qty=10, status="pending"))
+    db.commit()
+    submitted, closed = _run(pipeline, broker, manager, db, [pick], {"005930": 69000})
+    assert submitted == 0
+    assert pick.entry_order_id == "pending-1"
+
+
 def test_submit_exit_orders_excludes_bracket_tickers(env):
     pipeline, broker, manager, db = env
     broker.place_order(Order(

@@ -2,6 +2,7 @@
 {% block extra_head %}
 <link rel="stylesheet" href="/static/css/stock-analysis.css?v={{ static_ver }}">
 <script src="https://cdn.jsdelivr.net/npm/marked@9/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
 <style>
 .ap-link{cursor:pointer;color:var(--text-primary)}
 .ap-link:hover{color:var(--accent);text-decoration:underline}
@@ -70,7 +71,13 @@ function stateBadge(st) {
   return `<span class="badge badge-${cls}">${label}</span>`;
 }
 function esc(s) {
-  return (s == null ? '' : String(s)).replace(/'/g, "\\'").replace(/"/g, '&quot;');
+  // JS 문자열 리터럴용 이스케이프 (onclick 인자)
+  return (s == null ? '' : String(s)).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+}
+function escHtml(s) {
+  // HTML 텍스트/속성용 이스케이프 (innerHTML 주입 — 저장형 XSS 방지)
+  return (s == null ? '' : String(s)).replace(/[&<>"']/g, c =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
 async function loadPicks() {
@@ -85,16 +92,16 @@ async function loadPicks() {
     const rows = d.picks.map(p => `
       <tr>
         <td><span class="ap-link" onclick="openStockAnalysisModal('${esc(p.ticker)}')">
-          ${p.name || p.ticker}<br><span class="mono text-muted" style="font-size:.75rem">${p.ticker}</span>
+          ${escHtml(p.name || p.ticker)}<br><span class="mono text-muted" style="font-size:.75rem">${escHtml(p.ticker)}</span>
         </span></td>
-        <td class="text-muted">${p.market || '—'}</td>
+        <td class="text-muted">${escHtml(p.market || '—')}</td>
         <td class="ap-num mono">${fmtPrice(p.buy_price)}</td>
         <td class="ap-num mono">${fmtPrice(p.target_price)}</td>
         <td class="ap-num mono">${fmtPrice(p.stop_price)}</td>
         <td class="ap-num mono">${p.rr_ratio != null ? p.rr_ratio.toFixed(2) : '—'}</td>
         <td title="${[p.entry_order_id ? 'entry=' + p.entry_order_id : '', p.exit_order_id ? 'exit=' + p.exit_order_id : ''].filter(Boolean).join(' ')}">${stateBadge(p.state)}</td>
         <td style="text-align:center">${bracketCell(p)}</td>
-        <td class="text-muted" style="font-size:.75rem">${p.source}</td>
+        <td class="text-muted" style="font-size:.75rem">${escHtml(p.source)}</td>
         <td class="mono text-muted" style="font-size:.75rem">${toKST(p.created_at)}</td>
         <td><button class="topbar-btn" style="font-size:.72rem" onclick="deletePick(${p.id})">삭제</button></td>
       </tr>`).join('');

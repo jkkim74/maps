@@ -34,6 +34,7 @@ def client():
 
     app.dependency_overrides[get_db] = override_get_db
     test_client = TestClient(app, raise_server_exceptions=True)
+    test_client.session_factory = factory   # 일부 테스트에서 직접 DB 시드용
     yield test_client
 
     app.dependency_overrides.pop(get_db, None)
@@ -102,22 +103,32 @@ def test_filter_by_source(client) -> None:
     assert client.get("/api/v1/analysis-picks?source=manual").json()["total"] == 1
 
 
-def test_patch_toggle_and_state(client) -> None:
+def test_patch_updates_prices_and_rr(client) -> None:
     pid = client.post("/api/v1/analysis-picks", json={"picks": [_sample()]}).json()["picks"][0]["id"]
-    r = client.patch(f"/api/v1/analysis-picks/{pid}", json={"strategy_trade_enabled": True, "state": "ARMED"})
+    r = client.patch(f"/api/v1/analysis-picks/{pid}", json={"target_price": 90000})
     assert r.status_code == 200
-    assert r.json()["strategy_trade_enabled"] is True
-    assert r.json()["state"] == "ARMED"
+    assert r.json()["target_price"] == 90000
+    # rr 재계산: (90000-70000)/(70000-66000)=5.0
+    assert r.json()["rr_ratio"] == 5.0
 
 
-def test_patch_invalid_state_400(client) -> None:
+def test_patch_ignores_state_field(client) -> None:
+    # state/strategy_trade_enabled는 PATCH 대상이 아님 (arm/disarm 전용) — 무시되고 WATCH 유지
     pid = client.post("/api/v1/analysis-picks", json={"picks": [_sample()]}).json()["picks"][0]["id"]
-    r = client.patch(f"/api/v1/analysis-picks/{pid}", json={"state": "BOGUS"})
-    assert r.status_code == 400
+    r = client.patch(f"/api/v1/analysis-picks/{pid}", json={"state": "ARMED", "strategy_trade_enabled": True})
+    assert r.status_code == 200
+    assert r.json()["state"] == "WATCH"
+    assert r.json()["strategy_trade_enabled"] is False
+
+
+def test_patch_price_blocked_when_armed(client) -> None:
+    pid = _new_pick(client)
+    client.post(f"/api/v1/analysis-picks/{pid}/arm")
+    assert client.patch(f"/api/v1/analysis-picks/{pid}", json={"buy_price": 71000}).status_code == 409
 
 
 def test_patch_missing_404(client) -> None:
-    assert client.patch("/api/v1/analysis-picks/9999", json={"state": "WATCH"}).status_code == 404
+    assert client.patch("/api/v1/analysis-picks/9999", json={"rationale": "x"}).status_code == 404
 
 
 def test_delete_and_missing_404(client) -> None:
@@ -127,10 +138,10 @@ def test_delete_and_missing_404(client) -> None:
     assert client.delete(f"/api/v1/analysis-picks/{pid}").status_code == 404
 
 
-def test_state_filter_after_patch(client) -> None:
-    pid = client.post("/api/v1/analysis-picks", json={"picks": [_sample()]}).json()["picks"][0]["id"]
-    client.patch(f"/api/v1/analysis-picks/{pid}", json={"state": "BOUGHT"})
-    assert client.get("/api/v1/analysis-picks?state=BOUGHT").json()["total"] == 1
+def test_state_filter_via_arm(client) -> None:
+    pid = _new_pick(client)
+    client.post(f"/api/v1/analysis-picks/{pid}/arm")
+    assert client.get("/api/v1/analysis-picks?state=ARMED").json()["total"] == 1
     assert client.get("/api/v1/analysis-picks?state=WATCH").json()["total"] == 0
 
 
@@ -173,10 +184,24 @@ def test_disarm_from_armed(client) -> None:
 
 
 def test_disarm_rejected_when_bought(client) -> None:
+    from maps.common.models import AnalysisPick
     pid = _new_pick(client)
-    client.patch(f"/api/v1/analysis-picks/{pid}", json={"state": "BOUGHT"})
+    with client.session_factory() as s:
+        s.get(AnalysisPick, pid).state = "BOUGHT"
+        s.commit()
     assert client.post(f"/api/v1/analysis-picks/{pid}/disarm").status_code == 409
 
 
 def test_arm_missing_404(client) -> None:
     assert client.post("/api/v1/analysis-picks/9999/arm").status_code == 404
+
+
+def test_disarm_rejected_when_entry_cancel_unconfirmed(client) -> None:
+    # 진입 주문이 살아있는데 mock 브로커 cancel_order가 False면 disarm 거부(409)
+    from maps.common.models import AnalysisPick
+    pid = _new_pick(client)
+    client.post(f"/api/v1/analysis-picks/{pid}/arm")
+    with client.session_factory() as s:
+        s.get(AnalysisPick, pid).entry_order_id = "live-order-xyz"
+        s.commit()
+    assert client.post(f"/api/v1/analysis-picks/{pid}/disarm").status_code == 409

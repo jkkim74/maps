@@ -27,8 +27,6 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/analysis-picks", tags=["SCR-19 Analysis Picks"])
 
-_VALID_STATES = {"WATCH", "ARMED", "BOUGHT", "CLOSED", "CANCELLED"}
-
 
 def _rr_ratio(buy: float | None, target: float | None, stop: float | None) -> float | None:
     """손익비 = (목표가 - 매수가) / (매수가 - 손절가). 계산 불가 시 None."""
@@ -125,14 +123,16 @@ def create_picks(body: AnalysisPickBatchCreate, db: Session = DbDep) -> Analysis
 
 @router.patch("/{pick_id}", response_model=AnalysisPickItem)
 def update_pick(pick_id: int, body: AnalysisPickUpdate, db: Session = DbDep) -> AnalysisPickItem:
-    """가격/전략매매 토글/상태를 부분 수정한다."""
+    """가격/메모를 부분 수정한다. 상태 전이는 arm/disarm 전용."""
     pick = db.get(AnalysisPick, pick_id)
     if pick is None:
         raise HTTPException(status_code=404, detail="픽을 찾을 수 없습니다.")
 
     data = body.model_dump(exclude_unset=True)
-    if "state" in data and data["state"] not in _VALID_STATES:
-        raise HTTPException(status_code=400, detail=f"유효하지 않은 state: {data['state']}")
+    # 무장/보유 중에는 가격·수량 변경 금지 (브래킷 정합성 보호 — 먼저 disarm 필요)
+    price_fields = {"buy_price", "target_price", "stop_price", "qty"}
+    if pick.state in ("ARMED", "BOUGHT") and price_fields & data.keys():
+        raise HTTPException(status_code=409, detail="무장/보유 중에는 가격을 수정할 수 없습니다. 먼저 해제하세요.")
     for key, value in data.items():
         setattr(pick, key, value)
 
@@ -171,13 +171,20 @@ def disarm_pick(pick_id: int, db: Session = DbDep) -> AnalysisPickItem:
         raise HTTPException(status_code=404, detail="픽을 찾을 수 없습니다.")
     if pick.state == "BOUGHT":
         raise HTTPException(status_code=409, detail="보유 중인 포지션 — 청산은 주문 화면에서 별도 처리하세요.")
-    # 미체결 진입 주문이 있으면 best-effort로 취소한다(브로커 불가용 시 무시).
+    # 미체결 진입 주문이 있으면 취소를 시도하고, 취소가 확인되지 않으면 거부한다.
+    # (라이브 주문이 살아있는 채로 entry_order_id를 비우면 체결 시 추적 불가 — 고아 포지션)
     if pick.entry_order_id:
         try:
             from maps.execution.broker_adapter import get_broker
-            get_broker(get_settings().maps_broker_mode).cancel_order(pick.entry_order_id)
+            cancelled = bool(get_broker(get_settings().maps_broker_mode).cancel_order(pick.entry_order_id))
         except Exception as exc:  # noqa: BLE001
             logger.warning("disarm 진입주문 취소 실패 [%s %s]: %s", pick.ticker, pick.entry_order_id, exc)
+            cancelled = False
+        if not cancelled:
+            raise HTTPException(
+                status_code=409,
+                detail="진입 주문 취소를 확인하지 못했습니다. 주문 화면에서 처리 후 다시 시도하세요.",
+            )
     pick.strategy_trade_enabled = False
     pick.state = "WATCH"
     pick.entry_order_id = None
