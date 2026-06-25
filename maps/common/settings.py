@@ -60,6 +60,10 @@ class MapsSettings(BaseSettings):
     maps_order_max_gap_pct: float = Field(default=0.02, ge=0.0)    # 신호 이후 갭 상승 허용 상한 (초과 시 주문 스킵)
     maps_candidate_min_score: float = Field(default=10.0, ge=0.0)  # CandidateSnapshot final_score 최소 기준 (미만 종목 주문 제외)
     maps_trade_rr_ratio: float = Field(default=2.0, ge=0.5)        # 목표가 = 매수가 + 손절폭 × 이 값 (MAPS_TRADE_RR_RATIO)
+    # 전략매매(분석 워치리스트 브래킷 실행) 마스터 스위치. live_trading_enabled + 픽별 무장과 AND 게이트.
+    maps_strategy_trade_enabled: bool = False
+    # pick.qty 미지정 시 진입 수량 산정용 계좌 리스크 비율 (손절폭 기준).
+    maps_strategy_trade_account_risk_pct: float = Field(default=0.01, gt=0.0, le=0.1)
     maps_stock_report_path: str = "/opt/stock_report"              # stock-report 소스 경로
 
     maps_krx_closed_dates: str = ""
@@ -240,6 +244,7 @@ def get_config_status(settings: MapsSettings | None = None) -> list[ConfigSectio
                 _field(s, "maps_db_url", "MAPS_DB_URL", "Database connection URL", required=True, secret=True),
                 _field(s, "maps_broker_mode", "MAPS_BROKER_MODE", "Broker adapter: mock, kis, or kiwoom", required=True),
                 _field(s, "maps_live_trading_enabled", "MAPS_LIVE_TRADING_ENABLED", "Explicit live-order safety switch"),
+                _field(s, "maps_strategy_trade_enabled", "MAPS_STRATEGY_TRADE_ENABLED", "Master switch for watchlist bracket (strategy-trade) execution"),
                 _field(s, "maps_data_provider", "MAPS_DATA_PROVIDER", "Market data provider: pykrx or mock", required=True),
                 _field(s, "maps_scheduler_enabled", "MAPS_SCHEDULER_ENABLED", "Enable APScheduler jobs inside the API process"),
                 _field(s, "maps_scheduler_timezone", "MAPS_SCHEDULER_TIMEZONE", "Scheduler timezone", required=True),

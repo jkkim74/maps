@@ -132,3 +132,51 @@ def test_state_filter_after_patch(client) -> None:
     client.patch(f"/api/v1/analysis-picks/{pid}", json={"state": "BOUGHT"})
     assert client.get("/api/v1/analysis-picks?state=BOUGHT").json()["total"] == 1
     assert client.get("/api/v1/analysis-picks?state=WATCH").json()["total"] == 0
+
+
+def _new_pick(client, **overrides):
+    return client.post("/api/v1/analysis-picks", json={"picks": [_sample(**overrides)]}).json()["picks"][0]["id"]
+
+
+def test_arm_success(client) -> None:
+    pid = _new_pick(client)
+    r = client.post(f"/api/v1/analysis-picks/{pid}/arm")
+    assert r.status_code == 200
+    assert r.json()["state"] == "ARMED"
+    assert r.json()["strategy_trade_enabled"] is True
+
+
+def test_arm_requires_all_prices(client) -> None:
+    pid = _new_pick(client, target_price=None)
+    assert client.post(f"/api/v1/analysis-picks/{pid}/arm").status_code == 400
+
+
+def test_arm_rejects_bad_price_order(client) -> None:
+    # stop > buy → 정합성 위반
+    pid = _new_pick(client, buy_price=70000, stop_price=72000, target_price=80000)
+    assert client.post(f"/api/v1/analysis-picks/{pid}/arm").status_code == 400
+
+
+def test_arm_conflict_when_not_watch(client) -> None:
+    pid = _new_pick(client)
+    client.post(f"/api/v1/analysis-picks/{pid}/arm")
+    assert client.post(f"/api/v1/analysis-picks/{pid}/arm").status_code == 409
+
+
+def test_disarm_from_armed(client) -> None:
+    pid = _new_pick(client)
+    client.post(f"/api/v1/analysis-picks/{pid}/arm")
+    r = client.post(f"/api/v1/analysis-picks/{pid}/disarm")
+    assert r.status_code == 200
+    assert r.json()["state"] == "WATCH"
+    assert r.json()["strategy_trade_enabled"] is False
+
+
+def test_disarm_rejected_when_bought(client) -> None:
+    pid = _new_pick(client)
+    client.patch(f"/api/v1/analysis-picks/{pid}", json={"state": "BOUGHT"})
+    assert client.post(f"/api/v1/analysis-picks/{pid}/disarm").status_code == 409
+
+
+def test_arm_missing_404(client) -> None:
+    assert client.post("/api/v1/analysis-picks/9999/arm").status_code == 404

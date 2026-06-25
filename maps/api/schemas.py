@@ -630,6 +630,9 @@ class AnalysisPickItem(BaseModel):
     strategy_context: str | None = None
     strategy_trade_enabled: bool
     state: str
+    entry_order_id: str | None = None
+    exit_order_id: str | None = None
+    last_action_at: str | None = None
     rr_ratio: float | None = None          # 손익비 = (목표가-매수가)/(매수가-손절가)
     created_at: str
 

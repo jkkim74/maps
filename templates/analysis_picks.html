@@ -92,12 +92,8 @@ async function loadPicks() {
         <td class="ap-num mono">${fmtPrice(p.target_price)}</td>
         <td class="ap-num mono">${fmtPrice(p.stop_price)}</td>
         <td class="ap-num mono">${p.rr_ratio != null ? p.rr_ratio.toFixed(2) : '—'}</td>
-        <td>${stateBadge(p.state)}</td>
-        <td style="text-align:center">
-          <input type="checkbox" ${p.strategy_trade_enabled ? 'checked' : ''}
-                 title="전략매매 실행 엔진(Part B) 연동 예정 — 현재는 설정만 저장"
-                 onchange="toggleTrade(${p.id}, this.checked)">
-        </td>
+        <td title="${[p.entry_order_id ? 'entry=' + p.entry_order_id : '', p.exit_order_id ? 'exit=' + p.exit_order_id : ''].filter(Boolean).join(' ')}">${stateBadge(p.state)}</td>
+        <td style="text-align:center">${bracketCell(p)}</td>
         <td class="text-muted" style="font-size:.75rem">${p.source}</td>
         <td class="mono text-muted" style="font-size:.75rem">${toKST(p.created_at)}</td>
         <td><button class="topbar-btn" style="font-size:.72rem" onclick="deletePick(${p.id})">삭제</button></td>
@@ -106,7 +102,7 @@ async function loadPicks() {
       <table>
         <thead><tr>
           <th>종목</th><th>시장</th><th>매수가</th><th>목표가</th><th>손절가</th>
-          <th>손익비</th><th>상태</th><th>전략매매</th><th>소스</th><th>생성</th><th></th>
+          <th>손익비</th><th>상태</th><th>브래킷</th><th>소스</th><th>생성</th><th></th>
         </tr></thead>
         <tbody>${rows}</tbody>
       </table>`;
@@ -150,11 +146,27 @@ async function submitPick() {
   }
 }
 
-async function toggleTrade(id, checked) {
-  await fetch(`/api/v1/analysis-picks/${id}`, {
-    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ strategy_trade_enabled: checked }),
-  });
+function bracketCell(p) {
+  if (p.state === 'WATCH' || p.state === 'CANCELLED')
+    return `<button class="topbar-btn" style="font-size:.72rem" onclick="armPick(${p.id})">무장</button>`;
+  if (p.state === 'ARMED')
+    return `<button class="topbar-btn" style="font-size:.72rem" onclick="disarmPick(${p.id})">해제</button>`;
+  if (p.state === 'BOUGHT')
+    return `<span class="text-muted" style="font-size:.72rem">보유중</span>`;
+  return '—';
+}
+
+async function armPick(id) {
+  const res = await fetch(`/api/v1/analysis-picks/${id}/arm`, { method: 'POST' });
+  if (!res.ok) { alert('무장 실패: ' + (await res.text())); return; }
+  loadPicks();
+}
+
+async function disarmPick(id) {
+  if (!confirm('무장을 해제할까요?')) return;
+  const res = await fetch(`/api/v1/analysis-picks/${id}/disarm`, { method: 'POST' });
+  if (!res.ok) { alert('해제 실패: ' + (await res.text())); return; }
+  loadPicks();
 }
 
 async function deletePick(id) {

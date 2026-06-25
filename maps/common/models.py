@@ -506,9 +506,12 @@ class AnalysisPick(Base):
     regime: Mapped[str | None] = mapped_column(String(16), nullable=True)
     strategy_context: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
-    # 전략매매(브래킷 실행)용 — 본 단계에서는 보관만, Part B에서 사용
+    # 전략매매(브래킷 실행)용
     strategy_trade_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     state: Mapped[str] = mapped_column(String(16), nullable=False, default="WATCH")  # WATCH|ARMED|BOUGHT|CLOSED|CANCELLED
+    entry_order_id: Mapped[str | None] = mapped_column(String(64), nullable=True)   # 진입 주문 order_log 연결
+    exit_order_id: Mapped[str | None] = mapped_column(String(64), nullable=True)    # 청산(익절/손절) 주문 연결
+    last_action_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)  # 마지막 엔진 처리 시각
 
     updated_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, nullable=False,
