@@ -1,0 +1,22 @@
+{# ───────────────────────────────────────────────────────────────────────────
+   주식 종목 분석 딥다이브 — 모달 래퍼
+   워치리스트(analysis_picks.html 등) 하단에 1회 {% include %} 하고,
+   목록 행 클릭 시 openStockAnalysisModal('005930') 호출하면 모달이 열린다.
+
+   호스트 페이지 요구사항:
+     - extra_head: <link rel="stylesheet" href="/static/css/stock-analysis.css">
+                   <script src="https://cdn.jsdelivr.net/npm/marked@9/marked.min.js"></script>
+     - extra_scripts: <script src="/static/js/stock-analysis.js"></script>
+     - Plotly 는 base.html 전역 로드됨.
+   주의: 패널은 전역 ID를 쓰므로 이 모달(또는 패널)은 한 페이지에 1회만 include.
+   ─────────────────────────────────────────────────────────────────────────── #}
+<div id="sa-modal" class="sa-modal"
+     onclick="if (event.target === this) closeStockAnalysisModal()">
+  <div class="sa-modal-dialog">
+    <div class="sa-modal-header">
+      <span class="sa-modal-title">종목 분석 — <span id="sa-modal-ticker"></span></span>
+      <button class="sa-modal-close" onclick="closeStockAnalysisModal()" aria-label="닫기">×</button>
+    </div>
+    {% include "_stock_analysis_panel.html" %}
+  </div>
+</div>

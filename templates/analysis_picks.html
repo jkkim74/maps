@@ -1,0 +1,168 @@
+{% extends "base.html" %}
+{% block extra_head %}
+<link rel="stylesheet" href="/static/css/stock-analysis.css?v={{ static_ver }}">
+<script src="https://cdn.jsdelivr.net/npm/marked@9/marked.min.js"></script>
+<style>
+.ap-link{cursor:pointer;color:var(--text-primary)}
+.ap-link:hover{color:var(--accent);text-decoration:underline}
+.ap-form{background:var(--bg-card);border:1px solid var(--border);border-radius:10px;
+  padding:16px 20px;margin-bottom:20px;display:none}
+.ap-form.open{display:block}
+.ap-form-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:12px}
+.ap-form label{display:block;font-size:.72rem;color:var(--text-muted);margin-bottom:4px}
+.ap-form input,.ap-form select{width:100%;padding:7px 10px;border:1px solid var(--border);
+  border-radius:6px;background:var(--bg);color:var(--text-primary);font-size:.85rem}
+.ap-num{text-align:right;font-variant-numeric:tabular-nums}
+</style>
+{% endblock %}
+{% block topbar_actions %}
+<button class="topbar-btn" onclick="toggleAddForm()">＋ 수동 추가</button>
+{% endblock %}
+{% block content %}
+
+<!-- ── 수동 추가 폼 ── -->
+<div id="ap-form" class="ap-form">
+  <div class="ap-form-grid">
+    <div><label>종목코드 *</label><input id="f-ticker" placeholder="005930"></div>
+    <div><label>종목명</label><input id="f-name" placeholder="삼성전자"></div>
+    <div><label>시장</label>
+      <select id="f-market"><option value="">—</option><option>KOSPI</option><option>KOSDAQ</option></select>
+    </div>
+    <div><label>기준일</label><input id="f-refdate" type="date"></div>
+    <div><label>매수가</label><input id="f-buy" class="ap-num" type="number" step="any"></div>
+    <div><label>목표가</label><input id="f-target" class="ap-num" type="number" step="any"></div>
+    <div><label>손절가</label><input id="f-stop" class="ap-num" type="number" step="any"></div>
+    <div><label>수량</label><input id="f-qty" class="ap-num" type="number" step="1"></div>
+  </div>
+  <div style="margin-bottom:12px"><label style="font-size:.72rem;color:var(--text-muted)">메모</label>
+    <input id="f-rationale" placeholder="분석 근거 / 메모"></div>
+  <button class="topbar-btn" onclick="submitPick()">저장</button>
+  <span id="ap-form-msg" style="margin-left:10px;font-size:.8rem;color:var(--text-muted)"></span>
+</div>
+
+<div class="section-header"><span class="section-title">분석 워치리스트</span><hr></div>
+<div class="card"><div class="card-body" id="ap-list">
+  <div class="loading"><div class="spinner"></div></div>
+</div></div>
+
+{% include "_stock_analysis_modal.html" %}
+
+{% endblock %}
+{% block extra_scripts %}
+<script src="/static/js/stock-analysis.js?v={{ static_ver }}"></script>
+<script>
+function toggleAddForm() {
+  document.getElementById('ap-form').classList.toggle('open');
+}
+
+function fmtPrice(n) {
+  return (n === null || n === undefined) ? '—' : Number(n).toLocaleString('ko-KR') + '원';
+}
+function toKST(isoStr) {
+  if (!isoStr) return '—';
+  const s = isoStr.includes('Z') || isoStr.includes('+') ? isoStr : isoStr + 'Z';
+  return new Date(s).toLocaleString('sv-SE', { timeZone: 'Asia/Seoul' }).slice(0, 16).replace('T', ' ');
+}
+function stateBadge(st) {
+  const map = { WATCH:['관찰','info'], ARMED:['대기','warn'], BOUGHT:['보유','pass'],
+                CLOSED:['종료','info'], CANCELLED:['취소','fail'] };
+  const [label, cls] = map[st] || [st, 'info'];
+  return `<span class="badge badge-${cls}">${label}</span>`;
+}
+function esc(s) {
+  return (s == null ? '' : String(s)).replace(/'/g, "\\'").replace(/"/g, '&quot;');
+}
+
+async function loadPicks() {
+  const box = document.getElementById('ap-list');
+  try {
+    const d = await fetch('/api/v1/analysis-picks').then(r => r.json());
+    if (!d.picks || d.picks.length === 0) {
+      box.innerHTML = '<div class="empty-state"><div class="empty-icon">○</div>' +
+        '<div class="empty-text">워치리스트가 비어 있습니다 — ＋ 수동 추가 또는 /analyze 결과 적재</div></div>';
+      return;
+    }
+    const rows = d.picks.map(p => `
+      <tr>
+        <td><span class="ap-link" onclick="openStockAnalysisModal('${esc(p.ticker)}')">
+          ${p.name || p.ticker}<br><span class="mono text-muted" style="font-size:.75rem">${p.ticker}</span>
+        </span></td>
+        <td class="text-muted">${p.market || '—'}</td>
+        <td class="ap-num mono">${fmtPrice(p.buy_price)}</td>
+        <td class="ap-num mono">${fmtPrice(p.target_price)}</td>
+        <td class="ap-num mono">${fmtPrice(p.stop_price)}</td>
+        <td class="ap-num mono">${p.rr_ratio != null ? p.rr_ratio.toFixed(2) : '—'}</td>
+        <td>${stateBadge(p.state)}</td>
+        <td style="text-align:center">
+          <input type="checkbox" ${p.strategy_trade_enabled ? 'checked' : ''}
+                 title="전략매매 실행 엔진(Part B) 연동 예정 — 현재는 설정만 저장"
+                 onchange="toggleTrade(${p.id}, this.checked)">
+        </td>
+        <td class="text-muted" style="font-size:.75rem">${p.source}</td>
+        <td class="mono text-muted" style="font-size:.75rem">${toKST(p.created_at)}</td>
+        <td><button class="topbar-btn" style="font-size:.72rem" onclick="deletePick(${p.id})">삭제</button></td>
+      </tr>`).join('');
+    box.innerHTML = `
+      <table>
+        <thead><tr>
+          <th>종목</th><th>시장</th><th>매수가</th><th>목표가</th><th>손절가</th>
+          <th>손익비</th><th>상태</th><th>전략매매</th><th>소스</th><th>생성</th><th></th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+  } catch (e) {
+    box.innerHTML = `<div class="empty-state"><div class="empty-text">오류: ${e.message}</div></div>`;
+  }
+}
+
+async function submitPick() {
+  const ticker = document.getElementById('f-ticker').value.trim();
+  const msg = document.getElementById('ap-form-msg');
+  if (!ticker) { msg.textContent = '종목코드를 입력하세요.'; return; }
+  const numOrNull = id => {
+    const v = document.getElementById(id).value.trim();
+    return v === '' ? null : Number(v);
+  };
+  const pick = {
+    ticker,
+    name: document.getElementById('f-name').value.trim() || null,
+    market: document.getElementById('f-market').value || null,
+    source: 'manual',
+    ref_date: document.getElementById('f-refdate').value || null,
+    buy_price: numOrNull('f-buy'),
+    target_price: numOrNull('f-target'),
+    stop_price: numOrNull('f-stop'),
+    qty: numOrNull('f-qty'),
+    rationale: document.getElementById('f-rationale').value.trim() || null,
+  };
+  try {
+    const res = await fetch('/api/v1/analysis-picks', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ picks: [pick] }),
+    });
+    if (!res.ok) { msg.textContent = '저장 실패: ' + (await res.text()); return; }
+    msg.textContent = '';
+    ['f-ticker','f-name','f-buy','f-target','f-stop','f-qty','f-rationale'].forEach(id => document.getElementById(id).value = '');
+    document.getElementById('ap-form').classList.remove('open');
+    loadPicks();
+  } catch (e) {
+    msg.textContent = '오류: ' + e.message;
+  }
+}
+
+async function toggleTrade(id, checked) {
+  await fetch(`/api/v1/analysis-picks/${id}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ strategy_trade_enabled: checked }),
+  });
+}
+
+async function deletePick(id) {
+  if (!confirm('이 픽을 삭제할까요?')) return;
+  await fetch(`/api/v1/analysis-picks/${id}`, { method: 'DELETE' });
+  loadPicks();
+}
+
+document.addEventListener('DOMContentLoaded', loadPicks);
+</script>
+{% endblock %}
