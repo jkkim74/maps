@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 from maps.common.constants import STRATEGY_GROUP_MAP
 from maps.common.db import SessionLocal
 from maps.common.models import (
+    AnalysisPick,
     CandidateSnapshot,
     CollectionLog,
     HistoricalOHLCV,
@@ -41,6 +42,7 @@ from maps.common.exceptions import (
     BacktestError,
     BrokerAdapterError,
     DuplicateOrderError,
+    ExposureCapError,
     KillSwitchError,
     ValidationError,
 )
@@ -541,23 +543,37 @@ class OperationalPipeline:
                     market_open = False
 
             exit_monitor_active = live_enabled and market_open
+            strategy_trade_active = exit_monitor_active and self._settings.maps_strategy_trade_enabled
+            st_submitted = 0
+            st_closed = 0
             if exit_monitor_active:
                 # H-2: 손절 정확도 향상 — 장중 현재가로 price_feed 갱신
                 held_tickers = list(self._broker_position_details(broker).keys())
-                if held_tickers:
-                    intraday = self._fetch_intraday_prices(held_tickers)
-                    if intraday:
-                        broker.update_prices(intraday)
-                        logger.info("장중 현재가 갱신: %d/%d종목", len(intraday), len(held_tickers))
+                # 전략매매 무장/보유 종목도 현재가 갱신 대상에 포함 (armed는 미보유라도 필요)
+                st_picks = self._active_strategy_trade_picks(db) if strategy_trade_active else []
+                monitor_tickers = set(held_tickers) | {p.ticker for p in st_picks}
+                prices: dict[str, float] = {}
+                if monitor_tickers:
+                    prices = self._fetch_intraday_prices(list(monitor_tickers))
+                    if prices:
+                        broker.update_prices(prices)
+                        logger.info("장중 현재가 갱신: %d/%d종목", len(prices), len(monitor_tickers))
                     else:
-                        logger.warning("장중 현재가 조회 실패 — 손절 판단에 전일 종가 사용 (보유 %d종목)", len(held_tickers))
+                        logger.warning("장중 현재가 조회 실패 — 손절 판단에 전일 종가 사용 (대상 %d종목)", len(monitor_tickers))
+                # 브래킷이 관리하는 BOUGHT 종목은 전략 %/ATR 손절에서 제외(이중 매도 방지)
+                bracket_tickers = {p.ticker for p in st_picks if p.state == "BOUGHT"}
                 submitted_sell_orders, skipped_sell_orders, exit_tickers = self._submit_exit_orders(
                     db=db,
                     broker=broker,
                     manager=manager,
                     ref_date=ref_date,
+                    exclude_tickers=bracket_tickers,
                 )
-                if submitted_sell_orders:
+                if strategy_trade_active:
+                    st_submitted, st_closed = self._process_strategy_trades(
+                        db=db, broker=broker, manager=manager, picks=st_picks, prices=prices,
+                    )
+                if submitted_sell_orders or st_submitted or st_closed:
                     final_balance = broker.get_account_balance()
                     sync = {
                         **sync,
@@ -589,6 +605,9 @@ class OperationalPipeline:
                 "submitted_sell_orders": submitted_sell_orders,
                 "skipped_sell_orders": skipped_sell_orders,
                 "exit_tickers": sorted(exit_tickers),
+                "strategy_trade_active": strategy_trade_active,
+                "strategy_trades_submitted": st_submitted,
+                "strategy_trades_closed": st_closed,
             }
 
         return self._job("broker_sync", _run)
@@ -1701,8 +1720,12 @@ class OperationalPipeline:
         broker,
         manager: OrderManager,
         ref_date: dt.date,
+        exclude_tickers: set[str] | None = None,
     ) -> tuple[int, int, set[str]]:
         positions = self._broker_position_details(broker)
+        if exclude_tickers:
+            # 전략매매 브래킷이 직접 관리하는 종목은 전략 %/ATR 손절에서 제외 (이중 매도 방지)
+            positions = {t: p for t, p in positions.items() if t not in exclude_tickers}
         if not positions:
             return 0, 0, set()
 
@@ -1820,6 +1843,157 @@ class OperationalPipeline:
             )
 
         return submitted, skipped, exit_tickers
+
+    # ── 전략매매 브래킷 실행 엔진 (분석 워치리스트) ─────────────────────────
+    def _active_strategy_trade_picks(self, db: Session) -> list[AnalysisPick]:
+        """무장(ARMED) 또는 보유(BOUGHT) 상태의 전략매매 픽을 반환한다."""
+        return (
+            db.query(AnalysisPick)
+            .filter(AnalysisPick.strategy_trade_enabled.is_(True))
+            .filter(AnalysisPick.state.in_(["ARMED", "BOUGHT"]))
+            .all()
+        )
+
+    def _strategy_trade_qty(self, broker, pick: AnalysisPick) -> int:
+        """진입 수량을 산정한다. pick.qty 우선, 없으면 계좌 risk%(손절폭 기반).
+
+        risk% 산정값은 현금 상한과 **단일종목 노출 한도(max_single_exposure)** 로 함께
+        제한한다. 노출 한도를 적용하지 않으면 손절폭이 좁을 때 notional이 한도를 초과해
+        OrderManager.submit이 ExposureCapError로 매 사이클 거부한다 → 진입 불가.
+        """
+        if pick.qty and pick.qty > 0:
+            return int(pick.qty)
+        if not (pick.buy_price and pick.stop_price and pick.buy_price > pick.stop_price):
+            return 0
+        try:
+            account = broker.get_account_balance()
+        except (NotImplementedError, BrokerAdapterError):
+            return 0
+        risk_budget = account.total_value * self._settings.maps_strategy_trade_account_risk_pct
+        per_share_risk = pick.buy_price - pick.stop_price
+        qty = int(risk_budget // per_share_risk)
+        if account.cash and pick.buy_price > 0:  # 현금 상한
+            qty = min(qty, int(account.cash // pick.buy_price))
+        # 단일종목 노출 한도 상한 (RiskManager.check_before_order 거부 방지)
+        if account.total_value > 0 and pick.buy_price > 0:
+            exposure_cap = int((self._settings.max_single_exposure * account.total_value) // pick.buy_price)
+            qty = min(qty, exposure_cap)
+        return max(qty, 0)
+
+    def _process_strategy_trades(
+        self,
+        *,
+        db: Session,
+        broker,
+        manager: OrderManager,
+        picks: list[AnalysisPick],
+        prices: dict[str, float],
+    ) -> tuple[int, int]:
+        """무장된 워치리스트 픽에 대해 결정론적 브래킷(진입/익절/손절, OCO)을 집행한다.
+
+        반환: (신규 진입 제출 수, 익절·손절로 종료된 수).
+        한 픽의 주문 실패는 로깅 후 건너뛰어 broker_sync 잡 전체를 중단시키지 않는다.
+        """
+        if not picks:
+            return 0, 0
+        positions = self._broker_position_details(broker)
+        now = dt.datetime.now(dt.timezone.utc)
+        submitted = 0
+        closed = 0
+
+        def _current(ticker: str, pos: Position | None) -> float | None:
+            if pos is not None and pos.current_price and pos.current_price > 0:
+                return pos.current_price
+            val = prices.get(ticker)
+            return val if val and val > 0 else None
+
+        for pick in picks:
+            pos = positions.get(pick.ticker)
+
+            # ARMED → BOUGHT 정산: 진입 주문이 체결되어 포지션이 생겼다.
+            if pick.state == "ARMED" and pick.entry_order_id and pos is not None and pos.quantity > 0:
+                pick.state = "BOUGHT"
+                pick.last_action_at = now
+                db.commit()   # 브로커 체결과 즉시 동기화 (이후 단계 실패로 인한 롤백 desync 방지)
+
+            current = _current(pick.ticker, pos)
+            if current is None:
+                continue
+
+            if pick.state == "ARMED":
+                # 진입 주문이 체결 없이 종료(취소/만료/거부)되면 entry_order_id를 비워 재진입을 허용한다.
+                if pick.entry_order_id and (pos is None or pos.quantity <= 0):
+                    entry_log = (
+                        db.query(OrderLog)
+                        .filter(OrderLog.order_id == pick.entry_order_id)
+                        .first()
+                    )
+                    if entry_log is not None and entry_log.status in ("cancelled", "expired", "rejected"):
+                        logger.info(
+                            "전략매매 진입 주문 %s — 재진입 허용 [%s]", entry_log.status, pick.ticker
+                        )
+                        pick.entry_order_id = None
+                        db.commit()
+                # 현재가 ≤ 매수가 & 미제출 → 지정가 진입
+                if pick.entry_order_id is None and pick.buy_price and current <= pick.buy_price:
+                    qty = self._strategy_trade_qty(broker, pick)
+                    if qty <= 0:
+                        logger.warning("전략매매 진입 스킵 [%s]: 수량 0 (사이즈 산정 실패)", pick.ticker)
+                        continue
+                    order = Order(
+                        strategy_id="strategy_trade",
+                        ticker=pick.ticker,
+                        side=OrderSide.BUY,
+                        order_type=OrderType.LIMIT,
+                        quantity=qty,
+                        limit_price=pick.buy_price,
+                        current_price=current,
+                        memo=f"strategy_trade entry buy={pick.buy_price:.0f} cur={current:.0f}",
+                    )
+                    try:
+                        result = manager.submit(order)
+                    except (KillSwitchError, DuplicateOrderError, ExposureCapError, BrokerAdapterError) as exc:
+                        logger.warning("전략매매 진입 실패 [%s]: %s", pick.ticker, exc)
+                        continue
+                    pick.entry_order_id = result.order_id
+                    pick.last_action_at = now
+                    db.commit()   # 주문(이미 커밋된 OrderLog)과 entry_order_id를 즉시 동기화
+                    submitted += 1
+                    logger.info("전략매매 진입 제출 [%s] qty=%d @%.0f", pick.ticker, qty, pick.buy_price)
+                continue
+
+            # BOUGHT: 목표/손절 도달 시 시장가 청산 (OCO — 먼저 발생한 쪽)
+            if pick.state == "BOUGHT" and pos is not None and pos.quantity > 0:
+                take = pick.target_price is not None and current >= pick.target_price
+                stop = pick.stop_price is not None and current <= pick.stop_price
+                if not take and not stop:
+                    continue
+                reason = "take_profit" if take else "stop_loss"
+                order = Order(
+                    strategy_id="strategy_trade",
+                    ticker=pick.ticker,
+                    side=OrderSide.SELL,
+                    order_type=OrderType.MARKET,
+                    quantity=pos.quantity,
+                    current_price=current,
+                    memo=(
+                        f"strategy_trade {reason} cur={current:.0f} "
+                        f"target={pick.target_price or 0:.0f} stop={pick.stop_price or 0:.0f}"
+                    ),
+                )
+                try:
+                    result = manager.submit_exit(order)
+                except (DuplicateOrderError, BrokerAdapterError) as exc:
+                    logger.warning("전략매매 청산 실패 [%s] %s: %s", pick.ticker, reason, exc)
+                    continue
+                pick.exit_order_id = result.order_id
+                pick.state = "CLOSED"
+                pick.last_action_at = now
+                db.commit()   # 청산(이미 커밋된 OrderLog)과 CLOSED 상태를 즉시 동기화
+                closed += 1
+                logger.info("전략매매 청산 [%s] %s qty=%d @%.0f", pick.ticker, reason, pos.quantity, current)
+
+        return submitted, closed
 
     def _order_candidates(self, db: Session, ref_date: dt.date) -> list[CandidateSnapshot]:
         latest_date = (

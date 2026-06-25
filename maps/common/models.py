@@ -470,3 +470,51 @@ class CostModelAssumptions(Base):
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc)
     )
+
+
+# ---------------------------------------------------------------------------
+# AI 분석 워치리스트 (SCR-19) — 자동주문 파이프라인과 분리
+# ---------------------------------------------------------------------------
+class AnalysisPick(Base):
+    """analysis_pick — /analyze 등으로 선정한 종목의 워치리스트.
+
+    candidate_snapshot(검증 통과 전략 전용)과 분리된 별도 보관소다.
+    종목별 매수가/목표가/손절가와 분석 근거를 영속화하며, 화면에서 종목을
+    클릭하면 종합분석 딥다이브를 재실행하는 출발점이 된다.
+    strategy_trade_enabled/state는 향후 브래킷 실행 엔진(Part B)을 위한
+    필드로, 본 단계에서는 보관만 한다.
+    """
+
+    __tablename__ = "analysis_pick"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc)
+    )
+    ref_date: Mapped[datetime.date] = mapped_column(Date, nullable=False, index=True)
+    ticker: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    market: Mapped[str | None] = mapped_column(String(16), nullable=True)        # KOSPI | KOSDAQ
+    source: Mapped[str] = mapped_column(String(16), nullable=False, default="analyze")  # analyze | manual
+
+    buy_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    target_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    stop_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    qty: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
+    regime: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    strategy_context: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+    # 전략매매(브래킷 실행)용
+    strategy_trade_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    state: Mapped[str] = mapped_column(String(16), nullable=False, default="WATCH")  # WATCH|ARMED|BOUGHT|CLOSED|CANCELLED
+    entry_order_id: Mapped[str | None] = mapped_column(String(64), nullable=True)   # 진입 주문 order_log 연결
+    exit_order_id: Mapped[str | None] = mapped_column(String(64), nullable=True)    # 청산(익절/손절) 주문 연결
+    last_action_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)  # 마지막 엔진 처리 시각
+
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, nullable=False,
+        default=lambda: datetime.datetime.now(datetime.timezone.utc),
+        onupdate=lambda: datetime.datetime.now(datetime.timezone.utc),
+    )

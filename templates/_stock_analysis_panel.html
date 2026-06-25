@@ -1,0 +1,89 @@
+{# ───────────────────────────────────────────────────────────────────────────
+   주식 종목 분석 딥다이브 — 공유 패널 DOM
+   stock_analysis.html(단독 화면) + analysis_picks.html 모달에서 {% include %}.
+   전역 ID(sa-*, r-*, prog-*)를 사용하므로 한 페이지에 1회만 include 한다.
+   스타일은 /static/css/stock-analysis.css, 로직은 /static/js/stock-analysis.js.
+   ─────────────────────────────────────────────────────────────────────────── #}
+
+<!-- ── 진행률 패널 ── -->
+<div id="sa-progress" class="sa-progress-panel">
+  <div class="sa-progress-header">
+    <span class="sa-progress-title" id="prog-title">분석 준비 중…</span>
+    <span class="sa-progress-elapsed" id="prog-elapsed">0초</span>
+  </div>
+  <div class="sa-progress-step" id="prog-step"></div>
+  <div class="sa-progress-bar-wrap">
+    <div class="sa-progress-bar" id="prog-bar"></div>
+  </div>
+  <div class="sa-progress-pct" id="prog-pct">0%</div>
+  <div class="sa-step-list" id="prog-steps"></div>
+</div>
+
+<div id="sa-error" class="sa-err" style="display:none"></div>
+
+<!-- ── 결과 ── -->
+<div id="sa-result" class="sa-result">
+
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-body">
+      <div class="sa-hero">
+        <span class="sa-name" id="r-name"></span>
+        <span class="mono" id="r-code" style="font-size:.85rem;color:var(--text-muted)"></span>
+      </div>
+      <div style="display:flex;align-items:baseline;gap:16px">
+        <span class="sa-price" id="r-price"></span>
+        <span id="r-change"></span>
+        <span id="r-align-badge"></span>
+      </div>
+      <div style="font-size:.78rem;color:var(--text-muted);margin-top:6px" id="r-date"></div>
+    </div>
+  </div>
+
+  <div class="sa-grid2" style="margin-bottom:16px">
+    <div class="card">
+      <div class="card-body">
+        <div class="section-title" style="font-size:.85rem;margin-bottom:10px">가격 차트 (6개월)</div>
+        <div id="sa-chart"></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-body">
+        <div class="section-title" style="font-size:.85rem;margin-bottom:10px">기술적 지표</div>
+        <div id="r-technicals"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-body">
+      <div class="section-title" style="font-size:.85rem;margin-bottom:10px">이동평균선</div>
+      <div class="sa-grid4" id="r-ma"></div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-body">
+      <div class="section-title" style="font-size:.85rem;margin-bottom:10px">밸류에이션</div>
+      <div class="sa-grid4" id="r-valuation"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-body">
+      <div class="section-title" style="font-size:.85rem;margin-bottom:10px">재무제표 (3개년)</div>
+      <div id="r-financials"></div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ── AI 종합분석 ── -->
+<div class="card sa-ai-card" id="sa-ai-card">
+  <div class="card-body">
+    <div class="section-title" style="font-size:.85rem;margin-bottom:14px">
+      AI 종합분석
+      <span style="font-size:.75rem;color:var(--text-muted);font-weight:400;margin-left:6px">Claude Opus 4.8 · web_search</span>
+    </div>
+    <div class="sa-ai-body" id="sa-ai-body"></div>
+  </div>
+</div>

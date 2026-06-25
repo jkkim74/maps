@@ -610,3 +610,62 @@ class TradeReviewResponse(BaseModel):
     summary: TradeReviewSummary
     trades: list[TradeReviewItem]
     by_strategy: list[StrategyTradeStats]
+
+
+# ── SCR-19 Analysis Picks (분석 워치리스트) ──────────────────────────────────
+
+class AnalysisPickItem(BaseModel):
+    id: int
+    ref_date: str
+    ticker: str
+    name: str
+    market: str | None = None
+    source: str
+    buy_price: float | None = None
+    target_price: float | None = None
+    stop_price: float | None = None
+    qty: int | None = None
+    rationale: str | None = None
+    regime: str | None = None
+    strategy_context: str | None = None
+    strategy_trade_enabled: bool
+    state: str
+    entry_order_id: str | None = None
+    exit_order_id: str | None = None
+    last_action_at: str | None = None
+    rr_ratio: float | None = None          # 손익비 = (목표가-매수가)/(매수가-손절가)
+    created_at: str
+
+
+class AnalysisPicksResponse(BaseModel):
+    total: int
+    picks: list[AnalysisPickItem]
+
+
+class AnalysisPickCreate(BaseModel):
+    ticker: str
+    name: str | None = None
+    market: str | None = None
+    source: str = "analyze"
+    ref_date: str | None = None            # 미지정 시 오늘(KST 날짜)
+    buy_price: float | None = None
+    target_price: float | None = None
+    stop_price: float | None = None
+    qty: int | None = None
+    rationale: str | None = None
+    regime: str | None = None
+    strategy_context: str | None = None
+
+
+class AnalysisPickBatchCreate(BaseModel):
+    """단건 또는 배열 일괄 적재 — 항상 picks 리스트로 받는다."""
+    picks: list[AnalysisPickCreate]
+
+
+class AnalysisPickUpdate(BaseModel):
+    """가격/메모만 수정한다. state·strategy_trade_enabled는 arm/disarm 전용."""
+    buy_price: float | None = None
+    target_price: float | None = None
+    stop_price: float | None = None
+    qty: int | None = None
+    rationale: str | None = None

@@ -38,6 +38,7 @@ from maps.api.stock_report import router as stock_report_router
 from maps.api.mobile import router as mobile_router
 from maps.api.trade_review import router as trade_review_router
 from maps.api.stock_analysis import router as stock_analysis_router
+from maps.api.analysis_picks import router as analysis_picks_router
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +118,7 @@ app.include_router(stock_report_router)
 app.include_router(mobile_router)
 app.include_router(trade_review_router)
 app.include_router(stock_analysis_router)
+app.include_router(analysis_picks_router)
 
 
 # ── 헬스체크 ──────────────────────────────────────────────────────────────────
@@ -147,6 +149,7 @@ _SCREEN_MAP = {
     "ops-config":       "Ops Config",
     "trade-review":     "거래 리뷰",
     "stock-analysis":   "주식 종목 분석",
+    "analysis-picks":   "분석 워치리스트",
 }
 
 
@@ -258,3 +261,8 @@ async def trade_review_page(request: Request) -> HTMLResponse:
 @app.get("/stock-analysis", response_class=HTMLResponse)
 async def stock_analysis_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "stock_analysis.html", _ctx(request, "stock-analysis"))
+
+
+@app.get("/analysis-picks", response_class=HTMLResponse)
+async def analysis_picks_page(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(request, "analysis_picks.html", _ctx(request, "analysis-picks"))
