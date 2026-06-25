@@ -1139,12 +1139,41 @@ async function loadCostSensitivity() {
   }
 }
 
+const PREVIEW_SKIP_LABELS = {
+  gap_exceeded: 'GAP초과', insufficient_cash: '수량부족',
+  no_entry_signal: '진입신호없음', no_price: '가격없음',
+};
+function _previewSkipText(sk) {
+  return Object.entries(sk || {}).map(([k, v]) => `${PREVIEW_SKIP_LABELS[k] || k} ${v}`).join(', ');
+}
+
 function _renderOrderPreview(p) {
   if (!p || !p.data_available) {
     empty('orders-preview-kpi', '');
     empty('orders-preview-table', '후보 스냅샷 없음 — 데이터 수집 후 다시 확인하세요');
     return;
   }
+
+  // 신선도 게이트: 최신 거래일 후보가 아니면(생성 차단/정지) 옛 후보를 '예정 주문'으로 표시하지 않는다.
+  if (p.snapshot_stale) {
+    document.getElementById('orders-preview-kpi').innerHTML = `
+      <div class="kpi-grid">
+        <div class="kpi-card fail">
+          <div class="kpi-label">⚠ 최신 후보 미생성</div>
+          <div class="kpi-value" style="font-size:1rem">스냅샷 ${p.snapshot_date || '—'}</div>
+          <div class="kpi-sub">장세 ${(p.market_regime||'unknown').toUpperCase()} · 다음 거래일 ${p.next_trading_day}</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">mock 단계 종목</div>
+          <div class="kpi-value">${p.mock_candidate_count || 0}</div>
+          <div class="kpi-sub">주문 대상 아님</div>
+        </div>
+      </div>`;
+    empty('orders-preview-table',
+      `익일 예정 주문 없음 — ${p.snapshot_reason || '최신 후보가 생성되지 않았습니다.'}`);
+    return;
+  }
+
   const validItems = (p.items || []).filter(i => !i.skipped);
   const totalAmt = validItems.reduce((s, i) => s + i.estimated_amount, 0);
   const eligible = (p.eligible_strategies || []).join(', ') || '없음';
@@ -1185,26 +1214,28 @@ function _renderOrderPreview(p) {
       <div class="kpi-card">
         <div class="kpi-label">주문 가능 전략</div>
         <div class="kpi-value" style="font-size:0.9rem">${eligible}</div>
-        <div class="kpi-sub">mock/live candidate 이상</div>
+        <div class="kpi-sub">live_candidate 이상${p.mock_candidate_count?` · mock ${p.mock_candidate_count}종목`:''}</div>
       </div>
     </div>`;
 
-  if (!p.items || p.items.length === 0) {
-    empty('orders-preview-table', '예정 주문 없음');
+  const skTxt = _previewSkipText(p.skipped_summary);
+  const skipCount = Object.values(p.skipped_summary || {}).reduce((a, b) => a + b, 0);
+  const footerBits = [];
+  if (skipCount) footerBits.push(`스킵 ${skipCount}건 — ${skTxt}`);
+  if (p.mock_candidate_count) footerBits.push(`mock 단계 ${p.mock_candidate_count}종목(주문 대상 아님)`);
+  const footer = footerBits.length
+    ? `<div class="text-muted" style="margin-top:8px;font-size:.82rem">${footerBits.join(' · ')}</div>` : '';
+
+  if (validItems.length === 0) {
+    document.getElementById('orders-preview-table').innerHTML =
+      `<div class="empty-state"><div class="empty-text">예정 주문 없음</div></div>${footer}`;
     return;
   }
-  const rows = p.items.map((item, idx) => {
-    const gapCls = item.gap_exceeded ? 'text-fail' : item.gap_pct > 0.01 ? 'text-warn' : '';
-    const skipLabel = {
-      gap_exceeded: 'GAP초과',
-      insufficient_cash: '수량부족',
-      no_entry_signal: '진입신호없음',
-    }[item.skip_reason] || item.skip_reason || '스킵';
-    const statusBadge = item.skipped
-      ? badge(skipLabel, 'fail')
-      : badge('예정', 'pass');
+
+  const rows = validItems.map((item, idx) => {
+    const gapCls = item.gap_pct > 0.01 ? 'text-warn' : '';
     return `
-      <tr class="${item.skipped ? 'text-muted' : ''}">
+      <tr>
         <td class="mono">${idx + 1}</td>
         <td class="mono">${item.strategy_id}</td>
         <td class="mono">${item.ticker}</td>
@@ -1216,7 +1247,7 @@ function _renderOrderPreview(p) {
         <td class="mono">${item.limit_price.toLocaleString('ko-KR')}</td>
         <td class="mono">${item.estimated_qty}</td>
         <td class="mono">${fmt.krw(item.estimated_amount)}</td>
-        <td>${statusBadge}</td>
+        <td>${badge('예정', 'pass')}</td>
       </tr>`;
   }).join('');
   document.getElementById('orders-preview-table').innerHTML =
@@ -1224,7 +1255,7 @@ function _renderOrderPreview(p) {
       <th>#</th><th>전략</th><th>티커</th><th>종목명</th>
       <th>신호일</th><th>신호종가</th><th>현재종가</th><th>GAP</th>
       <th>예상주문가</th><th>예상수량</th><th>예상금액</th><th>상태</th>
-    </tr></thead><tbody>${rows}</tbody></table>`;
+    </tr></thead><tbody>${rows}</tbody></table>${footer}`;
 }
 
 async function loadOrders() {

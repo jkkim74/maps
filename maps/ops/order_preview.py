@@ -17,8 +17,10 @@ from maps.ops.scheduler import OperationalPipeline, _is_krx_market_day
 
 logger = logging.getLogger(__name__)
 
+# 실주문(scheduler._order_candidates)과 동일한 자격 — mock_candidate는 주문 대상이 아니므로 제외
 _MAX_ORDERS = 3
-_ELIGIBLE_STAGES = {"mock_candidate", "live_candidate", "live"}
+_ELIGIBLE_STAGES = {"live_candidate", "live"}
+_MOCK_STAGE = "mock_candidate"
 _LOOKAHEAD_DAYS = 14  # 최대 탐색 일수 (긴 연휴 대비)
 
 
@@ -32,6 +34,16 @@ def next_trading_day(from_date: dt.date) -> dt.date:
         if _is_krx_market_day(candidate):
             return candidate
         candidate += dt.timedelta(days=1)
+    return candidate
+
+
+def prev_trading_day(from_date: dt.date) -> dt.date:
+    """from_date 이전 날부터 KRX 거래일인 최초(가장 가까운 과거) 날짜를 반환한다."""
+    candidate = from_date - dt.timedelta(days=1)
+    for _ in range(_LOOKAHEAD_DAYS):
+        if _is_krx_market_day(candidate):
+            return candidate
+        candidate -= dt.timedelta(days=1)
     return candidate
 
 
@@ -92,8 +104,20 @@ def _get_order_candidates(db: Session, min_score: float = 0.0) -> list[Candidate
     return result
 
 
-def _has_candidate_snapshot(db: Session) -> bool:
-    return db.query(CandidateSnapshot.id).limit(1).scalar() is not None
+def _mock_candidate_count(db: Session, latest_date: dt.date, min_score: float) -> int:
+    """최신 스냅샷에서 mock_candidate 단계(주문 대상 아님)의 종목 수를 센다(중복 제거)."""
+    promotions = _latest_promotions(db)
+    mock_strategies = {s for s, stage in promotions.items() if stage == _MOCK_STAGE}
+    if not mock_strategies:
+        return 0
+    rows = (
+        db.query(CandidateSnapshot.ticker, CandidateSnapshot.strategy_id)
+        .filter(CandidateSnapshot.ref_date == latest_date)
+        .filter(CandidateSnapshot.weekly_pass.is_(True))
+        .filter(CandidateSnapshot.final_score >= min_score)
+        .all()
+    )
+    return len({t for t, s in rows if s in mock_strategies})
 
 
 def _latest_close(db: Session, ticker: str, ref_date: dt.date) -> float:
@@ -171,27 +195,74 @@ def build_order_preview(db: Session, settings: MapsSettings) -> OrderPreviewResp
         entry_limit_ratio = 0.5
     effective_max = max(1, math.ceil(_MAX_ORDERS * entry_limit_ratio))
 
-    candidates = _get_order_candidates(db, min_score=settings.maps_candidate_min_score)
-    data_available = _has_candidate_snapshot(db)
+    # 최신 스냅샷 날짜 (후보 필터 전 — stage 정렬로 candidates가 비어도 스냅샷 존재 여부는 별개)
+    latest_date = (
+        db.query(CandidateSnapshot.ref_date)
+        .order_by(CandidateSnapshot.ref_date.desc())
+        .limit(1)
+        .scalar()
+    )
+    data_available = latest_date is not None
+    snapshot_date = latest_date.isoformat() if latest_date else None
 
-    ref_date = candidates[0].ref_date if candidates else today
-
-    # 계좌 잔고 추정
+    # 계좌 잔고 추정 + 설정
     total_value, cash = _get_assumed_balance(db)
     slippage = settings.maps_order_slippage_pct
     max_gap = settings.maps_order_max_gap_pct
     max_exposure = settings.max_single_exposure
+    min_score = settings.maps_candidate_min_score
 
-    # 주문 가능 전략 목록
+    # 실주문 자격(live_candidate/live) 전략 + mock 단계 종목 수(주문 대상 아님)
     promotions = _latest_promotions(db)
-    eligible_strategies = sorted(
-        {s for s, stage in promotions.items() if stage in _ELIGIBLE_STAGES}
-    )
+    eligible_strategies = sorted({s for s, stage in promotions.items() if stage in _ELIGIBLE_STAGES})
+    mock_count = _mock_candidate_count(db, latest_date, min_score) if latest_date else 0
+
+    def _resp(items, skipped, *, ref, stale, reason) -> OrderPreviewResponse:
+        return OrderPreviewResponse(
+            next_trading_day=next_day.isoformat(),
+            as_of_date=ref,
+            assumed_total_value=total_value,
+            assumed_cash=cash,
+            max_orders=_MAX_ORDERS,
+            slippage_pct=slippage,
+            max_gap_pct=max_gap,
+            items=items,
+            eligible_strategies=eligible_strategies,
+            data_available=data_available,
+            market_regime=market_regime,
+            entry_limit_ratio=entry_limit_ratio,
+            weekly_trend=weekly_trend,
+            max_orders_effective=effective_max,
+            snapshot_date=snapshot_date,
+            snapshot_stale=stale,
+            snapshot_reason=reason,
+            skipped_summary=skipped,
+            mock_candidate_count=mock_count,
+        )
+
+    if not data_available:
+        return _resp([], {}, ref=today.isoformat(), stale=False, reason=None)
+
+    # 신선도 게이트: 최신 스냅샷이 직전 거래일보다 오래되면 옛 후보를 "예정 주문"으로 나열하지 않는다.
+    expected = prev_trading_day(today)
+    if latest_date < expected:
+        reason = (
+            f"최신 후보 미생성 — 사용 가능한 최신 스냅샷 {snapshot_date} "
+            f"(기대 {expected.isoformat()} 이후). 현재 장세 regime={market_regime}. 익일 예정 주문 없음."
+        )
+        return _resp([], {}, ref=snapshot_date, stale=True, reason=reason)
+
+    candidates = _get_order_candidates(db, min_score=min_score)
+    ref_date = candidates[0].ref_date if candidates else latest_date
 
     items: list[PreviewOrderItem] = []
+    skipped_summary: dict[str, int] = {}
     submitted = 0
     seen_tickers: set[str] = set()
     remaining_cash = cash
+
+    def _skip(reason: str) -> None:
+        skipped_summary[reason] = skipped_summary.get(reason, 0) + 1
 
     for candidate in candidates:
         if submitted >= effective_max:
@@ -201,6 +272,7 @@ def build_order_preview(db: Session, settings: MapsSettings) -> OrderPreviewResp
 
         signal_close = _latest_close(db, candidate.ticker, ref_date)
         if signal_close <= 0:
+            _skip("no_price")
             continue
 
         current_close = _latest_close(db, candidate.ticker, today)
@@ -208,71 +280,22 @@ def build_order_preview(db: Session, settings: MapsSettings) -> OrderPreviewResp
             current_close = signal_close
 
         gap_pct = (current_close - signal_close) / signal_close
-        gap_exceeded = gap_pct > max_gap
-
-        limit_price = round_up_krx_price(
-            current_close * (1 + slippage),
-            market=candidate.market,
-        )
+        limit_price = round_up_krx_price(current_close * (1 + slippage), market=candidate.market)
         remaining_slots = max(effective_max - submitted, 1)
 
-        # entry_signal 체크: 전략이 현재 날짜 기준 진입 신호를 발생시키지 않으면 스킵
+        # 진입신호 미발생 → 스킵 (행 대신 집계)
         sig = OperationalPipeline._latest_strategy_signal(
             db, ticker=candidate.ticker, strategy_id=candidate.strategy_id, ref_date=today
         )
         if sig is None or not sig.entry_signal:
-            items.append(PreviewOrderItem(
-                ticker=candidate.ticker,
-                name=candidate.name,
-                strategy_id=candidate.strategy_id,
-                signal_date=ref_date.isoformat(),
-                signal_close=signal_close,
-                current_close=current_close,
-                gap_pct=round(gap_pct, 4),
-                gap_exceeded=gap_exceeded,
-                limit_price=limit_price,
-                estimated_qty=0,
-                estimated_amount=0,
-                skipped=True,
-                skip_reason="no_entry_signal",
-            ))
+            _skip("no_entry_signal")
             continue
-
-        if gap_exceeded:
-            items.append(PreviewOrderItem(
-                ticker=candidate.ticker,
-                name=candidate.name,
-                strategy_id=candidate.strategy_id,
-                signal_date=ref_date.isoformat(),
-                signal_close=signal_close,
-                current_close=current_close,
-                gap_pct=round(gap_pct, 4),
-                gap_exceeded=True,
-                limit_price=limit_price,
-                estimated_qty=0,
-                estimated_amount=0,
-                skipped=True,
-                skip_reason="gap_exceeded",
-            ))
+        if gap_pct > max_gap:
+            _skip("gap_exceeded")
             continue
-
         qty = _estimated_qty(total_value, remaining_cash, limit_price, remaining_slots, max_exposure)
         if qty <= 0:
-            items.append(PreviewOrderItem(
-                ticker=candidate.ticker,
-                name=candidate.name,
-                strategy_id=candidate.strategy_id,
-                signal_date=ref_date.isoformat(),
-                signal_close=signal_close,
-                current_close=current_close,
-                gap_pct=round(gap_pct, 4),
-                gap_exceeded=False,
-                limit_price=limit_price,
-                estimated_qty=0,
-                estimated_amount=0,
-                skipped=True,
-                skip_reason="insufficient_cash",
-            ))
+            _skip("insufficient_cash")
             continue
 
         amount = limit_price * qty
@@ -295,19 +318,4 @@ def build_order_preview(db: Session, settings: MapsSettings) -> OrderPreviewResp
         submitted += 1
         remaining_cash = max(remaining_cash - amount, 0.0)
 
-    return OrderPreviewResponse(
-        next_trading_day=next_day.isoformat(),
-        as_of_date=ref_date.isoformat(),
-        assumed_total_value=total_value,
-        assumed_cash=cash,
-        max_orders=_MAX_ORDERS,
-        slippage_pct=slippage,
-        max_gap_pct=max_gap,
-        items=items,
-        eligible_strategies=eligible_strategies,
-        data_available=data_available,
-        market_regime=market_regime,
-        entry_limit_ratio=entry_limit_ratio,
-        weekly_trend=weekly_trend,
-        max_orders_effective=effective_max,
-    )
+    return _resp(items, skipped_summary, ref=ref_date.isoformat(), stale=False, reason=None)

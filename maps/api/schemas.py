@@ -208,6 +208,12 @@ class OrderPreviewResponse(BaseModel):
     entry_limit_ratio: float = 0.5
     weekly_trend: str = "unknown"
     max_orders_effective: int = 3
+    # 스냅샷 신선도/표시 정합성 (실주문 자격·최신성 반영)
+    snapshot_date: str | None = None         # 사용된 candidate_snapshot의 ref_date
+    snapshot_stale: bool = False             # 최신 거래일 후보가 아니면 True
+    snapshot_reason: str | None = None       # stale 사유(예: regime 차단으로 후보 미생성)
+    skipped_summary: dict[str, int] = {}     # 스킵 사유별 건수 (행 대신 집계)
+    mock_candidate_count: int = 0            # mock_candidate 단계 종목 수(주문 대상 아님)
 
 
 # ── SCR-06 Risk ───────────────────────────────────────────────────────────────
