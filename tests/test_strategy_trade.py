@@ -117,8 +117,19 @@ def test_oco_single_close(env):
 def test_qty_from_account_risk_when_unspecified(env):
     pipeline, broker, manager, db = env
     pick = _pick(db, qty=None, buy=70000, stop=66000)
-    # risk 1% of 1억 = 1,000,000 / (70000-66000)=4000 → 250주 (현금상한 1억//70000=1428 미달)
-    assert pipeline._strategy_trade_qty(broker, pick) == 250
+    # risk 1% of 1억 = 1,000,000 / 4000 = 250주이나, 단일종목 노출 한도 10%로 상한:
+    # 0.10 * 1억 // 70000 = 142주
+    assert pipeline._strategy_trade_qty(broker, pick) == 142
+
+
+def test_risk_sized_entry_respects_exposure_cap(env):
+    # qty=None + 타이트 손절이어도 노출 한도 내 수량으로 진입(ExposureCapError 거부 없음)
+    pipeline, broker, manager, db = env
+    pick = _pick(db, qty=None, buy=70000, target=80000, stop=68000)
+    submitted, closed = _run(pipeline, broker, manager, db, [pick], {"005930": 69000})
+    assert submitted == 1
+    qty = broker.get_positions()["005930"]
+    assert qty * 70000 <= 0.10 * 100_000_000   # notional ≤ 단일종목 노출 한도
 
 
 def test_qty_prefers_explicit(env):

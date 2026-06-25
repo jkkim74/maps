@@ -1855,7 +1855,12 @@ class OperationalPipeline:
         )
 
     def _strategy_trade_qty(self, broker, pick: AnalysisPick) -> int:
-        """진입 수량을 산정한다. pick.qty 우선, 없으면 계좌 risk%(손절폭 기반)."""
+        """진입 수량을 산정한다. pick.qty 우선, 없으면 계좌 risk%(손절폭 기반).
+
+        risk% 산정값은 현금 상한과 **단일종목 노출 한도(max_single_exposure)** 로 함께
+        제한한다. 노출 한도를 적용하지 않으면 손절폭이 좁을 때 notional이 한도를 초과해
+        OrderManager.submit이 ExposureCapError로 매 사이클 거부한다 → 진입 불가.
+        """
         if pick.qty and pick.qty > 0:
             return int(pick.qty)
         if not (pick.buy_price and pick.stop_price and pick.buy_price > pick.stop_price):
@@ -1869,6 +1874,10 @@ class OperationalPipeline:
         qty = int(risk_budget // per_share_risk)
         if account.cash and pick.buy_price > 0:  # 현금 상한
             qty = min(qty, int(account.cash // pick.buy_price))
+        # 단일종목 노출 한도 상한 (RiskManager.check_before_order 거부 방지)
+        if account.total_value > 0 and pick.buy_price > 0:
+            exposure_cap = int((self._settings.max_single_exposure * account.total_value) // pick.buy_price)
+            qty = min(qty, exposure_cap)
         return max(qty, 0)
 
     def _process_strategy_trades(
