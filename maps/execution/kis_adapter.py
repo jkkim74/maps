@@ -520,7 +520,10 @@ class KISAdapter(BrokerAdapter):
         attempts = max(1, self._settings.maps_order_retry_attempts)
         backoff = self._settings.maps_order_retry_backoff_seconds
         last_exc: Exception | None = None
-        for attempt in range(1, attempts + 1):
+        token_refreshed = False
+        attempt = 0
+        while attempt < attempts:
+            attempt += 1
             try:
                 response = self._http.request(
                     method,
@@ -532,7 +535,33 @@ class KISAdapter(BrokerAdapter):
                 )
                 if response.status_code not in {429, 500, 502, 503, 504}:
                     return response
-                last_exc = BrokerAdapterError(f"KIS transient HTTP {response.status_code}: {path}")
+                # KIS는 토큰 만료(EGW00123/90020000)를 HTTP 200이 아니라 5xx로 내려주기도 한다.
+                # 이 경우 _request의 토큰 재발급 분기(rt_cd 검사)에 도달하지 못하므로, 여기서
+                # 본문의 msg_cd를 직접 확인해 토큰을 재발급하고 1회 무료 재시도한다.
+                msg_cd = self._peek_msg_cd(response)
+                if msg_cd in _TOKEN_EXPIRED_CODES and not token_refreshed:
+                    token_refreshed = True
+                    attempt -= 1  # 토큰 재발급 재시도는 재시도 횟수에서 제외
+                    logger.warning(
+                        "KIS 토큰 만료가 HTTP %s로 반환됨 (%s) — 토큰 재발급 후 재시도: %s",
+                        response.status_code, msg_cd, path,
+                    )
+                    self._invalidate_token_cache()
+                    headers["authorization"] = f"Bearer {self._ensure_token()}"
+                    continue
+                # 그 외 429/5xx는 재시도 대상. KIS가 5xx 본문에 실어 보내는 진단 메시지와
+                # 추적키(gt_uid)를 남긴다(고객센터 접수·디버깅용).
+                gt_uid = response.headers.get("gt_uid", "")
+                body_snippet = (response.text or "")[:500]
+                logger.warning(
+                    "KIS transient HTTP %s: %s (attempt %d/%d) gt_uid=%s body=%s",
+                    response.status_code, path, attempt, attempts, gt_uid, body_snippet,
+                )
+                last_exc = BrokerAdapterError(
+                    f"KIS transient HTTP {response.status_code}: {path}"
+                    + (f" gt_uid={gt_uid}" if gt_uid else "")
+                    + (f" body={body_snippet}" if body_snippet else "")
+                )
             except requests.RequestException as exc:
                 last_exc = exc
             if attempt < attempts:
@@ -540,6 +569,17 @@ class KISAdapter(BrokerAdapter):
         if isinstance(last_exc, BrokerAdapterError):
             raise last_exc
         raise BrokerAdapterError(f"KIS request failed after {attempts} attempts: {last_exc}") from last_exc
+
+    @staticmethod
+    def _peek_msg_cd(response: requests.Response) -> str:
+        """응답 본문에서 KIS 오류코드(msg_cd)를 안전하게 추출한다(파싱 실패 시 빈 문자열)."""
+        try:
+            payload = response.json()
+        except ValueError:
+            return ""
+        if not isinstance(payload, dict):
+            return ""
+        return str(payload.get("msg_cd") or payload.get("error_code") or "")
 
     def _decode_response(self, response: requests.Response) -> dict[str, Any]:
         try:
