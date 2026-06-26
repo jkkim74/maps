@@ -549,11 +549,13 @@ class KISAdapter(BrokerAdapter):
                     self._invalidate_token_cache()
                     headers["authorization"] = f"Bearer {self._ensure_token()}"
                     continue
-                # 그 외 429/5xx는 재시도 대상. KIS가 5xx 본문에 실어 보내는 진단 메시지와
-                # 추적키(gt_uid)를 남긴다(고객센터 접수·디버깅용).
+                # 그 외 429/5xx는 재시도 대상. 대부분(예: EGW00201 초당 호출한도)은 재시도로
+                # 자가복구되므로 매 시도는 DEBUG로만 남겨 로그 노이즈를 줄이고, 모든 시도 소진
+                # 시에만 WARNING(아래)을 남긴다. KIS가 5xx 본문에 실어 보내는 진단 메시지와
+                # 추적키(gt_uid)는 예외 메시지에 보존한다(고객센터 접수·디버깅용).
                 gt_uid = response.headers.get("gt_uid", "")
                 body_snippet = (response.text or "")[:500]
-                logger.warning(
+                logger.debug(
                     "KIS transient HTTP %s: %s (attempt %d/%d) gt_uid=%s body=%s",
                     response.status_code, path, attempt, attempts, gt_uid, body_snippet,
                 )
@@ -566,6 +568,8 @@ class KISAdapter(BrokerAdapter):
                 last_exc = exc
             if attempt < attempts:
                 time.sleep(backoff * (2 ** (attempt - 1)))
+        # 모든 재시도 소진 = 실제 실패. 이때만 한 번 WARNING으로 남긴다(본문·gt_uid 포함).
+        logger.warning("KIS 요청 %d회 재시도 모두 실패: %s", attempts, last_exc)
         if isinstance(last_exc, BrokerAdapterError):
             raise last_exc
         raise BrokerAdapterError(f"KIS request failed after {attempts} attempts: {last_exc}") from last_exc
