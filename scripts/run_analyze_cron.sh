@@ -8,9 +8,10 @@
 # /etc/cron.d/maps-analyze 에서 호출:
 #   0 16 * * 1-5 ubuntu /opt/maps/scripts/run_analyze_cron.sh
 #
-# 필요 사전조건(운영서버 일회성):
-#   - Node.js + claude CLI 설치 (npm i -g @anthropic-ai/claude-code)
-#   - /etc/maps/anthropic.env 에 ANTHROPIC_API_KEY=... (root 600 권장)
+# 필요 사전조건(운영서버):
+#   - claude CLI 설치+인증 (운영서버는 ubuntu 사용자에 ~/.local/bin/claude, 구독 OAuth 로그인됨)
+#   - cron은 반드시 인증된 그 사용자(ubuntu)로 실행 → 기존 ~/.claude 인증 재사용(별도 API키 불필요)
+#   - (선택) API 키 방식을 쓰려면 /etc/maps/anthropic.env 에 ANTHROPIC_API_KEY=... 를 둔다
 set -uo pipefail
 
 APP_DIR="${MAPS_APP_DIR:-/opt/maps}"
@@ -20,8 +21,8 @@ LOG_DIR="$APP_DIR/logs"
 TS="$(date '+%Y%m%d_%H%M%S')"
 LOG="$LOG_DIR/analyze_cron_${TS}.log"
 
-# cron 최소 PATH 보강 (npm 전역 bin 등)
-export PATH="/usr/local/bin:/usr/bin:/bin:${PATH:-}"
+# cron 최소 PATH 보강 (claude는 ~/.local/bin, npm 전역 bin 등)
+export PATH="${HOME:-/home/ubuntu}/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
 
 mkdir -p "$LOG_DIR"
 cd "$APP_DIR" || { echo "APP_DIR 없음: $APP_DIR" >&2; exit 1; }
@@ -41,16 +42,14 @@ if ! python -c "import datetime; from maps.market.trading_rules import is_krx_cl
   log "오늘은 KRX 휴장 — /analyze 건너뜀"; exit 0
 fi
 
-# Anthropic API 키 (앱 .env와 분리 보관)
-if [ ! -f "$SECRETS_FILE" ]; then
-  log "시크릿 파일 없음: $SECRETS_FILE"; exit 1
-fi
-set -a
-# shellcheck disable=SC1090
-source "$SECRETS_FILE"
-set +a
-if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
-  log "ANTHROPIC_API_KEY 미설정 ($SECRETS_FILE)"; exit 1
+# 인증: 운영서버 claude는 구독 OAuth(~/.claude)로 인증돼 있어 별도 API 키가 필요 없다.
+# 단, API 키 방식을 쓰려면 $SECRETS_FILE(ANTHROPIC_API_KEY=...)을 두면 그때만 로드한다.
+if [ -f "$SECRETS_FILE" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$SECRETS_FILE"
+  set +a
+  log "시크릿 파일 로드: $SECRETS_FILE"
 fi
 
 if ! command -v "$CLAUDE_BIN" >/dev/null 2>&1; then
