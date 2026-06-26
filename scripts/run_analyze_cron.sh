@@ -31,6 +31,12 @@ log() { echo "[$(date '+%F %T %Z')] $*" | tee -a "$LOG"; }
 
 log "analyze cron 시작 (APP_DIR=$APP_DIR)"
 
+# 중복 실행 방지 — 직전 실행(또는 행)이 안 끝났으면 이번 회차는 건너뛴다.
+exec 9>"${MAPS_ANALYZE_LOCK:-/tmp/maps_analyze.lock}"
+if ! flock -n 9; then
+  log "직전 analyze 실행이 진행 중 — 이번 회차 건너뜀"; exit 0
+fi
+
 # venv 활성화 — 에이전트 Bash 호출의 pykrx/DART 의존성 + 거래일 가드 import에 필요
 # shellcheck disable=SC1091
 if ! source "$APP_DIR/.venv/bin/activate"; then
@@ -68,12 +74,17 @@ else
   log "권한 모드: allowedTools 화이트리스트 [$CLAUDE_ALLOWED_TOOLS]"
 fi
 
-# headless /analyze 실행 (명령은 고정 /analyze)
-log "claude -p /analyze 실행 시작"
-if "$CLAUDE_BIN" -p "/analyze" "${perm_args[@]}" >>"$LOG" 2>&1; then
+# headless /analyze 실행 (명령은 고정 /analyze). 무인 hang 방지를 위해 timeout 적용.
+ANALYZE_TIMEOUT="${ANALYZE_TIMEOUT:-1800}"
+log "claude -p /analyze 실행 시작 (timeout ${ANALYZE_TIMEOUT}s)"
+if timeout "${ANALYZE_TIMEOUT}s" "$CLAUDE_BIN" -p "/analyze" "${perm_args[@]}" >>"$LOG" 2>&1; then
   log "analyze cron 완료 (성공) — 로그: $LOG"
   exit 0
 fi
 rc=$?
-log "analyze cron 실패 (claude exit=$rc) — 로그 확인: $LOG"
+if [ "$rc" -eq 124 ]; then
+  log "analyze cron 시간초과(${ANALYZE_TIMEOUT}s) — claude 강제종료. 로그: $LOG"
+else
+  log "analyze cron 실패 (claude exit=$rc) — 로그 확인: $LOG"
+fi
 exit "$rc"
