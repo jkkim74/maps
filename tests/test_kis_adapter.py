@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -15,9 +16,16 @@ from maps.execution.kis_adapter import KISAdapter
 
 
 class FakeResponse:
-    def __init__(self, payload: dict[str, Any], status_code: int = 200) -> None:
+    def __init__(
+        self,
+        payload: dict[str, Any],
+        status_code: int = 200,
+        headers: dict[str, str] | None = None,
+    ) -> None:
         self._payload = payload
         self.status_code = status_code
+        self.headers = headers or {}
+        self.text = json.dumps(payload, ensure_ascii=False)
 
     def json(self) -> dict[str, Any]:
         return self._payload
@@ -60,6 +68,7 @@ class FakeSession:
             ],
         }
         self.fail_next_requests = 0
+        self.expire_token_500_next = 0
 
     def post(self, url: str, **kwargs: Any) -> FakeResponse:
         self.calls.append({"method": "POST", "url": url, **kwargs})
@@ -78,6 +87,13 @@ class FakeSession:
         if self.fail_next_requests > 0:
             self.fail_next_requests -= 1
             return FakeResponse({"rt_cd": "1", "msg_cd": "EGW00201", "msg1": "rate"}, status_code=503)
+        if url.endswith("/inquire-balance") and self.expire_token_500_next > 0:
+            # KIS가 토큰 만료(EGW00123)를 HTTP 200이 아니라 500으로 내려주는 케이스 재현
+            self.expire_token_500_next -= 1
+            return FakeResponse(
+                {"rt_cd": "1", "msg_cd": "EGW00123", "msg1": "기간이 만료된 token 입니다."},
+                status_code=500,
+            )
         if url.endswith("/inquire-balance"):
             return FakeResponse(self.balance_payload)
         if url.endswith("/inquire-daily-ccld"):
@@ -223,6 +239,24 @@ def test_request_retries_transient_http(settings: MapsSettings) -> None:
     assert balance.cash == 300_000
     balance_calls = [call for call in http.calls if call["url"].endswith("/inquire-balance")]
     assert len(balance_calls) == 2
+
+
+def test_request_refreshes_token_when_expiry_returned_as_http500(
+    settings: MapsSettings, caplog: pytest.LogCaptureFixture
+) -> None:
+    """KIS가 토큰 만료(EGW00123)를 HTTP 500으로 반환해도 토큰을 재발급하고 재시도한다."""
+    http = FakeSession()
+    http.expire_token_500_next = 1
+    settings = settings.model_copy(update={"maps_order_retry_backoff_seconds": 0.0})
+    broker = KISAdapter(settings, http=http)
+
+    with caplog.at_level("WARNING"):
+        balance = broker.get_account_balance()
+
+    assert balance.cash == 300_000  # 재발급 후 성공적으로 잔고 수신
+    assert any("토큰 재발급" in r.getMessage() for r in caplog.records)
+    balance_calls = [call for call in http.calls if call["url"].endswith("/inquire-balance")]
+    assert len(balance_calls) == 2  # 500(만료) → 재발급 → 재시도
 
 
 def test_cancel_order_uses_cancel_tr_id(settings: MapsSettings) -> None:
