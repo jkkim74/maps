@@ -11,6 +11,7 @@ import datetime
 import logging
 
 from fastapi import APIRouter, HTTPException, Query
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from maps.api.deps import DbDep
@@ -20,7 +21,7 @@ from maps.api.schemas import (
     AnalysisPicksResponse,
     AnalysisPickUpdate,
 )
-from maps.common.models import AnalysisPick
+from maps.common.models import AnalysisPick, HistoricalOHLCV
 from maps.common.settings import get_settings
 
 logger = logging.getLogger(__name__)
@@ -38,7 +39,39 @@ def _rr_ratio(buy: float | None, target: float | None, stop: float | None) -> fl
     return None
 
 
-def _to_item(p: AnalysisPick) -> AnalysisPickItem:
+def _current_prices(db: Session, tickers: list[str]) -> dict[str, float]:
+    """워치리스트 종목의 현재가(최신 일봉 종가 기준)를 구한다.
+
+    historical_ohlcv에서 티커별 최신 date의 종가를 반환한다. 장중 실시간 틱이 아니라
+    가장 최근 종가이며(매수가/목표가 대비 참고용), 일별 수집(16:10 KST) 이후엔 당일 종가가
+    된다. DB에 시세가 없는 티커는 생략한다(응답에서 current_price=None). 외부 네트워크 호출
+    없이 단일 그룹 쿼리로 처리해 목록 조회를 가볍게 유지한다.
+    """
+    unique = list({t for t in tickers if t})
+    if not unique:
+        return {}
+    latest = (
+        db.query(
+            HistoricalOHLCV.ticker.label("ticker"),
+            func.max(HistoricalOHLCV.date).label("d"),
+        )
+        .filter(HistoricalOHLCV.ticker.in_(unique))
+        .group_by(HistoricalOHLCV.ticker)
+        .subquery()
+    )
+    rows = (
+        db.query(HistoricalOHLCV.ticker, HistoricalOHLCV.close)
+        .join(
+            latest,
+            (HistoricalOHLCV.ticker == latest.c.ticker)
+            & (HistoricalOHLCV.date == latest.c.d),
+        )
+        .all()
+    )
+    return {ticker: float(close) for ticker, close in rows if close and close > 0}
+
+
+def _to_item(p: AnalysisPick, current_price: float | None = None) -> AnalysisPickItem:
     """ORM 모델을 응답 스키마로 변환한다."""
     return AnalysisPickItem(
         id=p.id,
@@ -46,6 +79,7 @@ def _to_item(p: AnalysisPick) -> AnalysisPickItem:
         ticker=p.ticker,
         name=p.name,
         market=p.market,
+        current_price=current_price,
         source=p.source,
         buy_price=p.buy_price,
         target_price=p.target_price,
@@ -77,7 +111,11 @@ def list_picks(
     if source:
         q = q.filter(AnalysisPick.source == source)
     rows = q.order_by(AnalysisPick.created_at.desc()).limit(500).all()
-    return AnalysisPicksResponse(total=len(rows), picks=[_to_item(r) for r in rows])
+    prices = _current_prices(db, [r.ticker for r in rows])
+    return AnalysisPicksResponse(
+        total=len(rows),
+        picks=[_to_item(r, prices.get(r.ticker)) for r in rows],
+    )
 
 
 @router.post("", response_model=AnalysisPicksResponse)

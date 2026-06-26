@@ -62,6 +62,29 @@ def test_list_empty(client) -> None:
     assert r.json() == {"total": 0, "picks": []}
 
 
+def test_list_current_price_from_latest_close(client) -> None:
+    import datetime as dt
+
+    from maps.common.models import HistoricalOHLCV
+
+    client.post("/api/v1/analysis-picks", json={"picks": [_sample(ticker="005930")]})
+    with client.session_factory() as s:
+        for d, close in [(dt.date(2026, 6, 24), 70000), (dt.date(2026, 6, 25), 71500)]:
+            s.add(HistoricalOHLCV(
+                ticker="005930", date=d, open=close, high=close, low=close,
+                close=close, volume=1000,
+            ))
+        s.commit()
+    item = client.get("/api/v1/analysis-picks").json()["picks"][0]
+    assert item["current_price"] == 71500  # 티커별 최신 date(6/25) 종가
+
+
+def test_list_current_price_none_without_ohlcv(client) -> None:
+    client.post("/api/v1/analysis-picks", json={"picks": [_sample(ticker="005930")]})
+    item = client.get("/api/v1/analysis-picks").json()["picks"][0]
+    assert item["current_price"] is None
+
+
 def test_create_single_and_rr_ratio(client) -> None:
     r = client.post("/api/v1/analysis-picks", json={"picks": [_sample()]})
     assert r.status_code == 200

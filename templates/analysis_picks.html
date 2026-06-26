@@ -95,6 +95,7 @@ async function loadPicks() {
           ${escHtml(p.name || p.ticker)}<br><span class="mono text-muted" style="font-size:.75rem">${escHtml(p.ticker)}</span>
         </span></td>
         <td class="text-muted">${escHtml(p.market || '—')}</td>
+        <td class="ap-num mono">${fmtPrice(p.current_price)}</td>
         <td class="ap-num mono">${fmtPrice(p.buy_price)}</td>
         <td class="ap-num mono">${fmtPrice(p.target_price)}</td>
         <td class="ap-num mono">${fmtPrice(p.stop_price)}</td>
@@ -108,8 +109,10 @@ async function loadPicks() {
     box.innerHTML = `
       <table>
         <thead><tr>
-          <th>종목</th><th>시장</th><th>매수가</th><th>목표가</th><th>손절가</th>
-          <th>손익비</th><th>상태</th><th>브래킷</th><th>소스</th><th>생성</th><th></th>
+          <th>종목</th><th>시장</th><th class="ap-num">현재가</th>
+          <th class="ap-num">매수가</th><th class="ap-num">목표가</th><th class="ap-num">손절가</th>
+          <th class="ap-num">손익비</th><th>상태</th>
+          <th style="text-align:center">브래킷</th><th>소스</th><th>생성</th><th></th>
         </tr></thead>
         <tbody>${rows}</tbody>
       </table>`;

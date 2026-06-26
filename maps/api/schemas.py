@@ -620,6 +620,7 @@ class AnalysisPickItem(BaseModel):
     ticker: str
     name: str
     market: str | None = None
+    current_price: float | None = None     # 현재가(최신 일봉 종가 기준, 수집 후 당일 종가)
     source: str
     buy_price: float | None = None
     target_price: float | None = None
