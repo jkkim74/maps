@@ -56,7 +56,7 @@ from maps.execution.order_manager import OrderManager
 from maps.market.breadth import classify_breadth, compute_pct_above_ma
 from maps.market.regime import RegimeResult, WeeklyTrendLabel, create_regime_analyzer
 from maps.market.sector_selector import SectorRegimeSelector, SectorSelector
-from maps.market.trading_rules import is_krx_closed_date, round_up_krx_price
+from maps.market.trading_rules import is_krx_closed_date, previous_trading_day, round_up_krx_price
 from maps.ops.notifications import SlackNotifier
 from maps.ops.order_state import claimed_candidate_tickers
 from maps.promotion.gate import PromotionGate, PromotionStage
@@ -2029,7 +2029,14 @@ class OperationalPipeline:
             .limit(1)
             .scalar()
         )
-        if latest_date is None:
+        # 신선도 가드: 최신 후보가 직전 거래 세션보다 오래되면(생성 실패·지연)
+        # 오래된 신호로 실매수가 나가지 않도록 후보를 비운다.
+        expected = previous_trading_day(ref_date, extra_closed_dates=self._settings.krx_closed_dates)
+        if latest_date is None or latest_date < expected:
+            logger.warning(
+                "후보 스냅샷 오래됨 (latest=%s, expected>=%s) — 매수 후보 없음",
+                latest_date, expected,
+            )
             return []
 
         min_score = self._settings.maps_candidate_min_score
@@ -2268,11 +2275,7 @@ class OperationalPipeline:
 
     def _expected_ohlcv_date(self, ref_date: dt.date) -> dt.date:
         """ref_date 기준으로 장 시작 전에 수집돼 있어야 할 가장 최근 KRX 거래일을 반환한다."""
-        expected = ref_date - dt.timedelta(days=1)
-        closed_dates = self._settings.krx_closed_dates
-        while is_krx_closed_date(expected, extra_closed_dates=closed_dates):
-            expected -= dt.timedelta(days=1)
-        return expected
+        return previous_trading_day(ref_date, extra_closed_dates=self._settings.krx_closed_dates)
 
     # 수집 실패로 일부 티커만 갱신된 경우를 걸러내기 위한 최소 티커 수 기준
     _MIN_FRESH_TICKERS: int = 50

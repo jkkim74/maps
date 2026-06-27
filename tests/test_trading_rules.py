@@ -6,6 +6,7 @@ from maps.market.trading_rules import (
     is_krx_closed_date,
     krx_tick_size,
     parse_closed_dates,
+    previous_trading_day,
     round_up_krx_price,
 )
 
@@ -22,6 +23,19 @@ def test_explicit_krx_closure_date_is_closed() -> None:
         dt.date(2026, 6, 3),
         extra_closed_dates={dt.date(2026, 6, 3)},
     )
+
+
+def test_previous_trading_day_skips_weekend() -> None:
+    # 2026-06-29는 월요일 → 직전 거래일은 금요일 2026-06-26
+    assert previous_trading_day(dt.date(2026, 6, 29)) == dt.date(2026, 6, 26)
+
+
+def test_previous_trading_day_skips_configured_closure() -> None:
+    # 2026-06-03(수) 기준, 전날 2026-06-02(화)가 휴장이면 2026-06-01(월)로
+    assert previous_trading_day(
+        dt.date(2026, 6, 3),
+        extra_closed_dates={dt.date(2026, 6, 2)},
+    ) == dt.date(2026, 6, 1)
 
 
 def test_krx_tick_size_for_kospi_and_kosdaq() -> None:

@@ -227,18 +227,20 @@ def test_order_cycle_skips_candidate_when_gap_exceeds_limit(monkeypatch) -> None
     pipeline = OperationalPipeline(settings=settings, session_factory=factory)
     _force_entry_signal(monkeypatch)
     _force_regime_pass(monkeypatch)
-    signal_date = dt.date(2026, 5, 5)
-    order_date  = dt.date(2026, 5, 8)   # 3일 후 — 3% 갭업
+    # 후보는 주문일 직전 거래일(5/7)에 생성 → 신선도 가드 통과.
+    # 주문 당일(5/8) 종가가 +3% 갭업하여 MAX_GAP(2%)을 초과하는 시나리오.
+    signal_date = dt.date(2026, 5, 7)   # previous_trading_day(5/8) — 신선
+    order_date  = dt.date(2026, 5, 8)
 
     db = factory()
     try:
-        # 신호 발생일 종가 10,000 (이 날짜는 신선도 체크 대상이 아님)
+        # 신호일(직전 거래일) 종가 10,000 + 신선도 충족용 더미 티커
+        _add_fresh_ohlcv(db, signal_date, ticker="AAAA", close=10_000.0)
+        # 주문 당일 최신 종가 10,300 (갭 +3% → MAX_GAP 2% 초과)
         db.add(HistoricalOHLCV(
-            ticker="AAAA", date=signal_date,
-            open=10_000, high=10_000, low=10_000, close=10_000, volume=100_000,
+            ticker="AAAA", date=order_date,
+            open=10_300, high=10_300, low=10_300, close=10_300, volume=100_000,
         ))
-        # 주문일 직전 최신 종가 10,300 (갭 +3% → MAX_GAP 2% 초과) + 신선도 충족용 더미 티커
-        _add_fresh_ohlcv(db, order_date - dt.timedelta(days=1), ticker="AAAA", close=10_300.0)
         db.add(CandidateSnapshot(
             ref_date=signal_date, strategy_id="pullback_v3", ticker="AAAA",
             name="AAAA", market="KOSPI", factor_score=90, trend_strength=80,
@@ -247,7 +249,7 @@ def test_order_cycle_skips_candidate_when_gap_exceeds_limit(monkeypatch) -> None
         db.add(PromotionHistory(
             strategy_id="pullback_v3", from_stage="mock_candidate",
             to_stage="live_candidate", tradeability_score=70, passed=True,
-            evaluated_at=dt.datetime(2026, 5, 5, 8, 0),
+            evaluated_at=dt.datetime(2026, 5, 7, 8, 0),
         ))
         db.commit()
     finally:

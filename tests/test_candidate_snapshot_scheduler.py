@@ -13,6 +13,44 @@ from maps.data.security_repo import Security
 from maps.ops.scheduler import OperationalPipeline
 
 
+def _memory_factory():
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    return engine, sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+
+def test_order_candidates_empty_when_snapshot_stale() -> None:
+    engine, factory = _memory_factory()
+    db = factory()
+    try:
+        pipeline = OperationalPipeline(session_factory=factory)
+        stale = dt.date.today() - dt.timedelta(days=30)
+        db.add(CandidateSnapshot(
+            ref_date=stale,
+            strategy_id="donchian_v2",
+            ticker="AAAA",
+            name="AAAA",
+            market="KOSPI",
+            factor_score=90,
+            trend_strength=80,
+            ts_bucket="S5",
+            final_score=95,
+            weekly_pass=True,
+        ))
+        db.commit()
+
+        # 직전 거래일보다 오래된 후보 → 신선도 가드로 빈 목록
+        assert pipeline._order_candidates(db, dt.date.today()) == []
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
 def test_save_candidate_snapshot_replaces_day_strategy_rows() -> None:
     engine = create_engine(
         "sqlite:///:memory:",

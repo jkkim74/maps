@@ -6,12 +6,13 @@ import datetime as dt
 import logging
 import math
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from maps.api.schemas import OrderPreviewResponse, PreviewOrderItem
 from maps.common.models import CandidateSnapshot, HistoricalOHLCV, PortfolioSnapshot, PromotionHistory
 from maps.common.settings import MapsSettings
-from maps.market.trading_rules import round_up_krx_price
+from maps.market.trading_rules import previous_trading_day, round_up_krx_price
 from maps.ops.order_state import claimed_candidate_tickers
 from maps.ops.scheduler import OperationalPipeline, _is_krx_market_day
 
@@ -171,10 +172,21 @@ def build_order_preview(db: Session, settings: MapsSettings) -> OrderPreviewResp
         entry_limit_ratio = 0.5
     effective_max = max(1, math.ceil(_MAX_ORDERS * entry_limit_ratio))
 
-    candidates = _get_order_candidates(db, min_score=settings.maps_candidate_min_score)
+    # 신선도 가드: 최신 후보가 다음 거래일 직전 세션보다 오래되면(생성 실패·지연)
+    # 오래된 후보를 "다음 거래일 예정"으로 노출하지 않는다.
+    latest_ref = db.query(func.max(CandidateSnapshot.ref_date)).scalar()
+    expected_ref = previous_trading_day(next_day, extra_closed_dates=settings.krx_closed_dates)
+    data_stale = latest_ref is not None and latest_ref < expected_ref
+
+    candidates = [] if data_stale else _get_order_candidates(db, min_score=settings.maps_candidate_min_score)
     data_available = _has_candidate_snapshot(db)
 
-    ref_date = candidates[0].ref_date if candidates else today
+    if data_stale:
+        ref_date = latest_ref            # 투명성: 마지막으로 생성된(오래된) 기준일을 노출
+    elif candidates:
+        ref_date = candidates[0].ref_date
+    else:
+        ref_date = today
 
     # 계좌 잔고 추정
     total_value, cash = _get_assumed_balance(db)
@@ -310,4 +322,6 @@ def build_order_preview(db: Session, settings: MapsSettings) -> OrderPreviewResp
         entry_limit_ratio=entry_limit_ratio,
         weekly_trend=weekly_trend,
         max_orders_effective=effective_max,
+        data_stale=data_stale,
+        expected_ref_date=expected_ref.isoformat(),
     )

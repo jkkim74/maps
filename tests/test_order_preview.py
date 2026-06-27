@@ -43,7 +43,8 @@ def _seed_candidate(db, *, ref_date: dt.date) -> None:
 
 
 def test_preview_hides_candidate_after_order_submission(db, monkeypatch) -> None:
-    ref_date = dt.date.today() - dt.timedelta(days=1)
+    # 신선도 가드를 통과하도록 오늘 날짜로 시드한다(직전 거래일 기준 stale 아님).
+    ref_date = dt.date.today()
     _seed_candidate(db, ref_date=ref_date)
     monkeypatch.setattr("maps.ops.order_preview.next_trading_day", lambda value: value + dt.timedelta(days=1))
 
@@ -65,6 +66,30 @@ def test_preview_hides_candidate_after_order_submission(db, monkeypatch) -> None
     after = build_order_preview(db, MapsSettings())
     assert after.data_available is True
     assert after.items == []
+
+
+def test_preview_marks_stale_when_candidates_old(db, monkeypatch) -> None:
+    stale_date = dt.date.today() - dt.timedelta(days=30)
+    _seed_candidate(db, ref_date=stale_date)
+    monkeypatch.setattr("maps.ops.order_preview.next_trading_day", lambda value: value + dt.timedelta(days=1))
+
+    resp = build_order_preview(db, MapsSettings())
+
+    assert resp.data_stale is True
+    assert resp.items == []
+    assert resp.expected_ref_date is not None
+    # 마지막으로 생성된(오래된) 기준일을 투명하게 노출한다.
+    assert resp.as_of_date == stale_date.isoformat()
+
+
+def test_preview_fresh_when_candidate_current(db, monkeypatch) -> None:
+    _seed_candidate(db, ref_date=dt.date.today())
+    monkeypatch.setattr("maps.ops.order_preview.next_trading_day", lambda value: value + dt.timedelta(days=1))
+
+    resp = build_order_preview(db, MapsSettings())
+
+    assert resp.data_stale is False
+    assert [item.ticker for item in resp.items] == ["AAAA"]
 
 
 def test_orders_read_does_not_expire_stale_pending_row(db) -> None:

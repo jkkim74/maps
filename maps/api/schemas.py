@@ -208,6 +208,8 @@ class OrderPreviewResponse(BaseModel):
     entry_limit_ratio: float = 0.5
     weekly_trend: str = "unknown"
     max_orders_effective: int = 3
+    data_stale: bool = False
+    expected_ref_date: str | None = None
 
 
 # ── SCR-06 Risk ───────────────────────────────────────────────────────────────

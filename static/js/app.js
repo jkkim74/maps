@@ -1145,6 +1145,24 @@ function _renderOrderPreview(p) {
     empty('orders-preview-table', '후보 스냅샷 없음 — 데이터 수집 후 다시 확인하세요');
     return;
   }
+  if (p.data_stale) {
+    document.getElementById('orders-preview-kpi').innerHTML = `
+      <div class="kpi-grid">
+        <div class="kpi-card info">
+          <div class="kpi-label">다음 거래일</div>
+          <div class="kpi-value">${p.next_trading_day}</div>
+          <div class="kpi-sub">마지막 생성 기준일 ${p.as_of_date}</div>
+        </div>
+        <div class="kpi-card warn">
+          <div class="kpi-label">후보 상태</div>
+          <div class="kpi-value">데이터 오래됨</div>
+          <div class="kpi-sub">기대 기준일 ${p.expected_ref_date} 이후 생성 없음</div>
+        </div>
+      </div>`;
+    empty('orders-preview-table',
+      `최신 후보 없음 — 데이터가 오래됨 (마지막 기준일 ${p.as_of_date}, 기대 ${p.expected_ref_date} 이후 생성 없음)`);
+    return;
+  }
   const validItems = (p.items || []).filter(i => !i.skipped);
   const totalAmt = validItems.reduce((s, i) => s + i.estimated_amount, 0);
   const eligible = (p.eligible_strategies || []).join(', ') || '없음';

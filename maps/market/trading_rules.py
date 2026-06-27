@@ -42,6 +42,14 @@ def is_krx_closed_date(target: dt.date, *, extra_closed_dates: Iterable[dt.date]
     return target in holidays.KR(years=[target.year])
 
 
+def previous_trading_day(ref_date: dt.date, *, extra_closed_dates: Iterable[dt.date] = ()) -> dt.date:
+    """Return the most recent KRX trading day strictly before ``ref_date``."""
+    candidate = ref_date - dt.timedelta(days=1)
+    while is_krx_closed_date(candidate, extra_closed_dates=extra_closed_dates):
+        candidate -= dt.timedelta(days=1)
+    return candidate
+
+
 def krx_tick_size(price: float, *, market: str = "KOSPI", security_type: str = "stock") -> int:
     """Return the KRX quotation-price unit for an equity-like instrument."""
     if security_type.upper() in {"ETF", "ETN", "ELW"}:
