@@ -104,7 +104,7 @@ app.add_middleware(
     secret_key=_session_secret,
     max_age=_settings.maps_session_max_age,
     same_site="lax",
-    https_only=False,
+    https_only=_settings.maps_session_https_only,
 )
 app.add_middleware(
     CORSMiddleware,

@@ -126,6 +126,7 @@ class MapsSettings(BaseSettings):
     maps_auth_password: str = ""                 # 비어 있으면 로그인 불가(모든 시도 거부)
     maps_session_secret_key: str = ""            # 세션 쿠키 서명 키(운영 필수, 미설정 시 프로세스마다 랜덤)
     maps_session_max_age: int = Field(default=60 * 60 * 24 * 14, ge=300)  # 세션 유지(초), 기본 14일
+    maps_session_https_only: bool = False        # True면 세션 쿠키에 Secure 플래그(HTTPS 전용). HTTPS 적용 후 운영에서 켠다.
 
     # 8단계: 테마·섹터·상관관계 노출 한도
     maps_theme_exposure_limit_enabled: bool = False
