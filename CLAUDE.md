@@ -171,10 +171,42 @@ Promotion thresholds: `mock_candidate=60`, `live_candidate=75` (fixed, independe
 |---|---|
 | Provider | AWS Lightsail (ap-northeast-2 / Seoul) |
 | Public IP | `3.37.117.246` |
+| Domain / URL | `https://magable.kr` (also `www.magable.kr`) |
 | SSH user | `ubuntu` |
 | SSH key | `D:\maps\LightsailDefaultKey-ap-northeast-2.pem` |
 | App root | `/opt/maps` |
 | Service | `maps` (systemd) |
+
+### Reverse proxy & HTTPS
+
+Public traffic terminates at **nginx**, which reverse-proxies to uvicorn on
+`127.0.0.1:8000`. HTTPS uses a **Let's Encrypt** cert (certbot, auto-renew via
+`certbot.timer`). HTTP (80) 301-redirects to HTTPS (443). HSTS header set on 443.
+
+- nginx site: `/etc/nginx/sites-enabled/maps` (server_name `magable.kr www.magable.kr`)
+- cert: `/etc/letsencrypt/live/magable.kr/` — renew test: `sudo certbot renew --dry-run`
+- Lightsail firewall must keep **80 + 443** open (80 = ACME challenge + redirect).
+- Cert/domain depends on a Lightsail **static IP** and a DNS A record → `3.37.117.246`.
+
+### Authentication (login)
+
+The dashboard is behind a single-shared-password login (`maps/api/auth.py`,
+session-cookie gate in `main.py`). Configured **only in the server `/opt/maps/.env`**
+(never commit these). Default username `admin`. Relevant vars:
+
+| Var | Purpose |
+|---|---|
+| `MAPS_AUTH_ENABLED` | `true` on prod; `false` (default) elsewhere. Off → no auth |
+| `MAPS_AUTH_USERNAME` / `MAPS_AUTH_PASSWORD` | login credentials |
+| `MAPS_SESSION_SECRET_KEY` | session-cookie signing key (random secret) |
+| `MAPS_SESSION_HTTPS_ONLY` | `true` on prod → cookie `Secure` (HTTPS only) |
+
+Tests force auth off via an autouse fixture (`tests/conftest.py`), so the server
+`.env` enabling auth never breaks the suite. To change the password: edit
+`/opt/maps/.env` `MAPS_AUTH_PASSWORD` then `sudo systemctl restart maps`.
+
+> **Deploy note:** when `requirements.txt` changes (e.g. `itsdangerous` for auth),
+> the deploy must run `pip install -r requirements.txt` before restart.
 
 ### SSH access
 
