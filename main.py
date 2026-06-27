@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import secrets
 import time
 from contextlib import asynccontextmanager
 
@@ -11,9 +12,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.sessions import SessionMiddleware
 
+from maps.api.auth import auth_gate_middleware
+from maps.api.auth import router as auth_router
 from maps.common.db import Base, engine
 from maps.common.logging_config import configure_logging
+from maps.common.settings import get_settings
 
 configure_logging()
 
@@ -85,6 +91,21 @@ app = FastAPI(
     lifespan=_lifespan,
 )
 
+# ── 미들웨어 ──────────────────────────────────────────────────────────────────
+# 마지막에 추가한 미들웨어가 가장 바깥에서 실행된다.
+# 실행 순서(바깥→안): CORS → Session → AuthGate → 라우트
+# (AuthGate가 request.session을 읽으므로 SessionMiddleware가 바깥에 있어야 한다.)
+_settings = get_settings()
+_session_secret = _settings.maps_session_secret_key or secrets.token_urlsafe(32)
+
+app.add_middleware(BaseHTTPMiddleware, dispatch=auth_gate_middleware)
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=_session_secret,
+    max_age=_settings.maps_session_max_age,
+    same_site="lax",
+    https_only=False,
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -119,6 +140,7 @@ app.include_router(mobile_router)
 app.include_router(trade_review_router)
 app.include_router(stock_analysis_router)
 app.include_router(analysis_picks_router)
+app.include_router(auth_router)
 
 
 # ── 헬스체크 ──────────────────────────────────────────────────────────────────

@@ -2,8 +2,15 @@
 'use strict';
 
 // ── API 헬퍼 ──────────────────────────────────────────────────────────────────
+// 인증 만료/미인증(401) 시 로그인 페이지로 보낸다.
+function _redirectToLogin() {
+  const next = encodeURIComponent(location.pathname + location.search);
+  window.location.href = '/login?next=' + next;
+}
+
 async function apiFetch(path) {
   const res = await fetch('/api/v1' + path);
+  if (res.status === 401) { _redirectToLogin(); throw new Error('unauthorized'); }
   if (!res.ok) throw new Error(`API ${path} → ${res.status}`);
   return res.json();
 }
@@ -14,6 +21,7 @@ async function apiPost(path, body) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
+  if (res.status === 401) { _redirectToLogin(); throw new Error('unauthorized'); }
   if (!res.ok) {
     let msg = `API POST ${path} → ${res.status}`;
     try { const j = await res.json(); msg = j.detail || msg; } catch (_) {}

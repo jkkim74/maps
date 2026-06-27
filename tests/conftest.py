@@ -28,6 +28,21 @@ from maps.common.db import Base
 import maps.common.models  # noqa: F401
 
 
+@pytest.fixture(autouse=True)
+def _auth_disabled_by_default(monkeypatch):
+    """운영자 .env가 로그인을 켜더라도 테스트 스위트는 인증 비활성으로 실행한다.
+
+    전용 인증 테스트(test_auth.py)는 자체 픽스처에서 명시적으로 활성화한다.
+    """
+    monkeypatch.setenv("MAPS_AUTH_ENABLED", "false")
+    from maps.common.settings import reload_settings
+
+    reload_settings()
+    yield
+    monkeypatch.setenv("MAPS_AUTH_ENABLED", "false")
+    reload_settings()
+
+
 @pytest.fixture(scope="function")
 def db() -> Session:
     """인메모리 SQLite 세션. 테스트마다 새 DB를 생성·삭제한다."""

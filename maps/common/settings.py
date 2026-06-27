@@ -119,6 +119,14 @@ class MapsSettings(BaseSettings):
     maps_breadth_ma_window: int = Field(default=20, ge=5, le=200)
     maps_breadth_weak_threshold: float = Field(default=0.40, ge=0.0, le=1.0)
 
+    # 로그인(단일 공용 비밀번호) — 기본 비활성(옵트인). 운영에서만 켠다.
+    # 활성화하면 모든 HTML 페이지/`/api/*`가 세션 쿠키를 요구한다.
+    maps_auth_enabled: bool = False
+    maps_auth_username: str = "admin"
+    maps_auth_password: str = ""                 # 비어 있으면 로그인 불가(모든 시도 거부)
+    maps_session_secret_key: str = ""            # 세션 쿠키 서명 키(운영 필수, 미설정 시 프로세스마다 랜덤)
+    maps_session_max_age: int = Field(default=60 * 60 * 24 * 14, ge=300)  # 세션 유지(초), 기본 14일
+
     # 8단계: 테마·섹터·상관관계 노출 한도
     maps_theme_exposure_limit_enabled: bool = False
     maps_sector_exposure_limit_enabled: bool = False
