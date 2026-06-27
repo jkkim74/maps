@@ -175,6 +175,50 @@ class StrategySignal:
     atr14: float | None = None
 
 
+def plan_exit_decision(
+    *,
+    current_price: float,
+    entry_price: float,
+    hwm: float,
+    emergency_stop: float | None,
+    technical_stop: float | None,
+    target: float | None,
+    fallback_stop: float | None,
+    strategy_exit: bool,
+    trail_activate_pct: float,
+    trail_stop_pct: float,
+) -> tuple[bool, str | None]:
+    """매매계획 기반 전량 청산 판정(순수 함수).
+
+    우선순위: 긴급손절 → 계획/폴백 손절 → 트레일링 → 목표 익절 → 전략 exit.
+    반환: (청산 여부, 사유). 가격이 유효하지 않으면 청산하지 않는다.
+    """
+    if current_price is None or current_price <= 0:
+        return False, None
+    # 1) 긴급 손절 (하드 플로어)
+    if emergency_stop and current_price <= emergency_stop:
+        return True, "emergency_stop"
+    # 2) 계획 손절(우선) 또는 기존 %/ATR 폴백
+    effective_stop = technical_stop if (technical_stop and technical_stop > 0) else fallback_stop
+    if effective_stop and current_price <= effective_stop:
+        return True, "plan_stop" if (technical_stop and technical_stop > 0) else "stop_loss"
+    # 3) 트레일링 스탑 — 수익 구간 진입(고점 ≥ 진입×(1+활성%)) 후 고점 대비 이탈
+    if (
+        entry_price > 0
+        and trail_stop_pct > 0
+        and hwm >= entry_price * (1.0 + trail_activate_pct)
+        and current_price <= hwm * (1.0 - trail_stop_pct)
+    ):
+        return True, "trailing_stop"
+    # 4) 목표 익절
+    if target and current_price >= target:
+        return True, "take_profit"
+    # 5) 전략 exit 신호
+    if strategy_exit:
+        return True, "strategy_exit"
+    return False, None
+
+
 class OperationalPipeline:
     """Runs the individual MAPS operational steps."""
 
@@ -1739,6 +1783,34 @@ class OperationalPipeline:
                 f"{value_target:,.0f}" if value_target else "N/A",
             )
 
+    def _entry_trade_plan(
+        self, db: Session, ticker: str, strategy_id: str, entry_date: dt.date
+    ) -> CandidateSnapshot | None:
+        """진입 시점에 해당하는 매매계획(candidate_snapshot)을 반환한다.
+
+        ticker+strategy_id로, 진입일 이하 가장 최근 ref_date 스냅샷을 사용한다.
+        """
+        return (
+            db.query(CandidateSnapshot)
+            .filter(CandidateSnapshot.ticker == ticker)
+            .filter(CandidateSnapshot.strategy_id == strategy_id)
+            .filter(CandidateSnapshot.ref_date <= entry_date)
+            .order_by(CandidateSnapshot.ref_date.desc())
+            .first()
+        )
+
+    def _high_water_mark(
+        self, db: Session, ticker: str, since_date: dt.date, fallback: float
+    ) -> float:
+        """진입일 이후 최고가(트레일링 스탑 기준). 데이터 없으면 fallback."""
+        row = (
+            db.query(func.max(HistoricalOHLCV.high))
+            .filter(HistoricalOHLCV.ticker == ticker)
+            .filter(HistoricalOHLCV.date >= since_date)
+            .scalar()
+        )
+        return float(row) if row and row > 0 else fallback
+
     def _submit_exit_orders(
         self,
         *,
@@ -1814,16 +1886,38 @@ class OperationalPipeline:
                 atr_stop_price(entry.strategy_id, entry_price, atr14)
                 or stop_loss_price(entry.strategy_id, entry_price)
             )
-            stop_triggered = (
-                stop_price is not None
-                and current_price > 0
-                and current_price <= stop_price
-            )
             strategy_exit = bool(signal and signal.exit_signal)
-            if not stop_triggered and not strategy_exit:
+
+            if self._settings.maps_plan_based_exits_enabled:
+                entry_date = entry.created_at.date() if entry.created_at else ref_date
+                plan = self._entry_trade_plan(db, ticker, entry.strategy_id, entry_date)
+                hwm = self._high_water_mark(
+                    db, ticker, entry_date, fallback=max(entry_price or 0.0, current_price)
+                )
+                should_exit, reason = plan_exit_decision(
+                    current_price=current_price,
+                    entry_price=entry_price or 0.0,
+                    hwm=hwm,
+                    emergency_stop=getattr(plan, "emergency_stop", None),
+                    technical_stop=getattr(plan, "technical_stop", None),
+                    target=(getattr(plan, "final_sell_price", None) or getattr(plan, "trading_target", None)),
+                    fallback_stop=stop_price,
+                    strategy_exit=strategy_exit,
+                    trail_activate_pct=self._settings.maps_trailing_activate_pct,
+                    trail_stop_pct=self._settings.maps_trailing_stop_pct,
+                )
+            else:
+                stop_triggered = (
+                    stop_price is not None
+                    and current_price > 0
+                    and current_price <= stop_price
+                )
+                should_exit = stop_triggered or strategy_exit
+                reason = "stop_loss" if stop_triggered else "strategy_exit"
+
+            if not should_exit:
                 continue
 
-            reason = "stop_loss" if stop_triggered else "strategy_exit"
             order = Order(
                 strategy_id=entry.strategy_id,
                 ticker=ticker,

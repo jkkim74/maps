@@ -128,6 +128,12 @@ class MapsSettings(BaseSettings):
     maps_session_max_age: int = Field(default=60 * 60 * 24 * 14, ge=300)  # 세션 유지(초), 기본 14일
     maps_session_https_only: bool = False        # True면 세션 쿠키에 Secure 플래그(HTTPS 전용). HTTPS 적용 후 운영에서 켠다.
 
+    # Tier 1a 청산 — 매매계획(목표가/계획손절) + 트레일링 스탑 기반 전량 청산.
+    # 기본 OFF(옵트인). 켜면 _submit_exit_orders가 candidate_snapshot의 계획 필드를 사용한다.
+    maps_plan_based_exits_enabled: bool = False
+    maps_trailing_activate_pct: float = Field(default=0.05, ge=0.0, le=1.0)  # 진입 대비 +5% 도달 후 트레일링 활성
+    maps_trailing_stop_pct: float = Field(default=0.08, ge=0.0, le=1.0)      # 고점 대비 -8% 이탈 시 청산
+
     # 8단계: 테마·섹터·상관관계 노출 한도
     maps_theme_exposure_limit_enabled: bool = False
     maps_sector_exposure_limit_enabled: bool = False
