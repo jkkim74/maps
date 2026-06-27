@@ -36,6 +36,13 @@ _YF_TICKERS: dict[str, str] = {
     "WTI":     "CL=F",
     "구리":    "HG=F",
 }
+# pykrx 지수 API 실패 시 사용하는 yfinance 폴백 티커.
+# KRX 지수 엔드포인트(get_index_ohlcv_by_date)가 빈 응답을 반환해도
+# 국내 지수가 국면 계산에서 누락되지 않도록 한다.
+_KRX_YF_FALLBACK: dict[str, str] = {
+    "KOSPI":  "^KS11",
+    "KOSDAQ": "^KQ11",
+}
 
 
 class RegimeLabel(str, Enum):
@@ -53,6 +60,15 @@ class VolRegimeLabel(str, Enum):
     LOW = "low"
     NORMAL = "normal"
     HIGH = "high"
+
+
+class BreadthLabel(str, Enum):
+    """시장폭(breadth) 국면 — 상승종목 비율 기반."""
+
+    STRONG = "strong"
+    NORMAL = "normal"
+    WEAK = "weak"
+    UNKNOWN = "unknown"   # 데이터 부족/미계산 → 가드 미적용(안전 기본값)
 
 
 class MarketModeLabel(str, Enum):
@@ -286,6 +302,10 @@ class RegimeResult:
     evaluated_at: datetime.datetime = field(default_factory=datetime.datetime.now)
     vol_regime: VolRegimeLabel = VolRegimeLabel.NORMAL  # 변동성 국면
     composite: MarketRegimeResult | None = None
+    # KOSPI 하한선으로 WEAK→MIXED 상향이 적용됐는지("빌려온 MIXED") 여부.
+    floor_applied: bool = False
+    # 시장폭 국면 — 후보 생성 단계에서 DB 기반으로 주입(미주입 시 UNKNOWN).
+    breadth: BreadthLabel = BreadthLabel.UNKNOWN
 
     # ── 한도 비율 테이블 (vol_regime 반영) ────────────────────────────────────
     # weekly_trend FAIL          → 0.0 (항상)
@@ -351,6 +371,23 @@ class RegimeResult:
                 entry_limit_ratio=0.0,
                 reason="weekly_trend_fail",
             )
+
+        # 시장폭(breadth) 가드: KOSPI 하한선으로 빌려온 MIXED("지수만 상승")이고
+        # 시장폭이 약하면(좁은 장) 추격성 모멘텀·돌파·추세추종은 보류하고
+        # 방어적 PULLBACK·CONTRARIAN_QUALITY만 통과시킨다. ratio는 0으로 만들지 않는다.
+        if self.floor_applied and self.breadth == BreadthLabel.WEAK:
+            if st in {
+                StrategyEntryType.BREAKOUT,
+                StrategyEntryType.MOMENTUM,
+                StrategyEntryType.MULTI_ASSET_TREND,
+            }:
+                return StrategyEntryPolicy(
+                    strategy_type=st.value,
+                    market_mode=market_mode,
+                    allowed=False,
+                    entry_limit_ratio=0.0,
+                    reason="narrow_breadth_blocks_momentum_breakout",
+                )
 
         if self.regime == RegimeLabel.WEAK and self.vol_regime == VolRegimeLabel.HIGH:
             if st == StrategyEntryType.CONTRARIAN_QUALITY and contrarian_enabled:
@@ -427,6 +464,20 @@ class CombinedWeeklyProvider:
         return []
 
     def _from_krx(self, asset_name: str, n_weeks: int) -> list[float]:
+        """pykrx 지수 데이터를 반환하되, 실패 시 yfinance 폴백을 사용한다."""
+        result = self._krx_index_weekly(asset_name, n_weeks)
+        if result:
+            return result
+        fallback = _KRX_YF_FALLBACK.get(asset_name)
+        if fallback:
+            logger.warning(
+                "KRX 지수 데이터 실패 [%s] — yfinance(%s) 폴백 사용", asset_name, fallback
+            )
+            return self._yf_weekly(fallback, n_weeks)
+        return []
+
+    def _krx_index_weekly(self, asset_name: str, n_weeks: int) -> list[float]:
+        """pykrx 지수 주봉 종가를 반환한다 (실패 시 빈 리스트)."""
         ticker = _KRX_TICKERS[asset_name]
         try:
             from pykrx import stock  # noqa: PLC0415
@@ -466,7 +517,10 @@ class CombinedWeeklyProvider:
         return [float(v) for v in weekly.tail(n_weeks).tolist()]
 
     def _from_yfinance(self, asset_name: str, n_weeks: int) -> list[float]:
-        ticker = _YF_TICKERS[asset_name]
+        return self._yf_weekly(_YF_TICKERS[asset_name], n_weeks)
+
+    def _yf_weekly(self, ticker: str, n_weeks: int) -> list[float]:
+        """yfinance 일봉을 주봉으로 변환한 종가 리스트를 반환한다."""
         try:
             import yfinance as yf  # noqa: PLC0415
         except ImportError:
@@ -485,7 +539,7 @@ class CombinedWeeklyProvider:
                 auto_adjust=True,
             )
         except Exception as exc:
-            logger.warning("yfinance data unavailable [%s]: %s", asset_name, exc)
+            logger.warning("yfinance data unavailable [%s]: %s", ticker, exc)
             return []
 
         if df is None or df.empty:
@@ -572,6 +626,7 @@ class MarketRegimeAnalyzer:
         up_count = 0
         total = 0
         kospi_ts: float | None = None
+        kospi_above_ma5w = False
 
         for name in self._ASSETS:
             closes = self._provider.get_weekly_closes(name, self._MA5W + 1)
@@ -590,6 +645,8 @@ class MarketRegimeAnalyzer:
             if name == "KOSPI" and ma5 > 0:
                 deviation = (last - ma5) / ma5
                 kospi_ts = round(max(0.0, min(100.0, 50.0 + deviation * 250)), 1)
+            if name == "KOSPI":
+                kospi_above_ma5w = above
 
             assets.append(AssetTrendInfo(name=name, direction=direction, value=last, above_ma5w=above))
             if direction == "up":
@@ -610,6 +667,21 @@ class MarketRegimeAnalyzer:
         weekly_trend = self._check_weekly_trend()
         vol_regime = self._compute_vol_regime()
 
+        # KOSPI 하한선(floor): 국내 대표지수가 5주MA 위(상승추세)이고 주간추세가
+        # 통과면, 글로벌 매크로 약세가 전체 국면을 WEAK로 끌어내리지 못하도록
+        # 최소 MIXED를 보장한다. (한국 시장을 트레이딩하므로 국내 추세를 우선)
+        floor_applied = False
+        if (
+            regime == RegimeLabel.WEAK
+            and kospi_above_ma5w
+            and weekly_trend == WeeklyTrendLabel.PASS
+        ):
+            logger.info(
+                "KOSPI 상승추세 + weekly_trend pass → 국면 하한선 적용 (weak→mixed)"
+            )
+            regime = RegimeLabel.MIXED
+            floor_applied = True
+
         result = RegimeResult(
             regime=regime,
             weekly_trend=weekly_trend,
@@ -617,6 +689,7 @@ class MarketRegimeAnalyzer:
             kospi_ts=kospi_ts,
             assets=assets,
             vol_regime=vol_regime,
+            floor_applied=floor_applied,
         )
         return self._with_composite(result)
 

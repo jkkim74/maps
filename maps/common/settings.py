@@ -113,6 +113,12 @@ class MapsSettings(BaseSettings):
     maps_sector_top_n: int = Field(default=5, ge=1, le=30)
     maps_sector_lookback_days: int = Field(default=20, ge=5, le=120)
 
+    # 시장폭(breadth) 가드 — KOSPI 하한선으로 빌려온 MIXED에서 좁은 장이면
+    # 추격성 모멘텀·돌파·추세추종 전략을 보류(방어/되돌림 전략만 허용).
+    maps_breadth_guard_enabled: bool = True
+    maps_breadth_ma_window: int = Field(default=20, ge=5, le=200)
+    maps_breadth_weak_threshold: float = Field(default=0.40, ge=0.0, le=1.0)
+
     # 8단계: 테마·섹터·상관관계 노출 한도
     maps_theme_exposure_limit_enabled: bool = False
     maps_sector_exposure_limit_enabled: bool = False

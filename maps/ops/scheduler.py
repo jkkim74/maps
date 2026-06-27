@@ -53,6 +53,7 @@ from maps.data.security_repo import HaltPeriod, ManagedPeriod, Security
 from maps.data_quality.universe_filter import DataQualityFilter, UniverseResult
 from maps.execution.broker_adapter import Order, OrderSide, OrderType, Position, get_broker
 from maps.execution.order_manager import OrderManager
+from maps.market.breadth import classify_breadth, compute_pct_above_ma
 from maps.market.regime import RegimeResult, WeeklyTrendLabel, create_regime_analyzer
 from maps.market.sector_selector import SectorRegimeSelector, SectorSelector
 from maps.market.trading_rules import is_krx_closed_date, round_up_krx_price
@@ -244,6 +245,28 @@ class OperationalPipeline:
 
             regime_label = regime.regime.value  # "strong" | "mixed" | "weak"
 
+            # 시장폭(breadth) 가드: 빌려온 MIXED + 좁은 장이면 추격성 전략 보류.
+            # 가드 비활성화 시 breadth는 UNKNOWN으로 남아 가드가 작동하지 않는다.
+            breadth_pct: float | None = None
+            if self._settings.maps_breadth_guard_enabled:
+                breadth_pct = compute_pct_above_ma(
+                    db,
+                    ref_date,
+                    ma_window=self._settings.maps_breadth_ma_window,
+                    min_tickers=self._MIN_FRESH_TICKERS,
+                )
+                regime.breadth = classify_breadth(
+                    breadth_pct,
+                    weak_threshold=self._settings.maps_breadth_weak_threshold,
+                )
+                if regime.floor_applied:
+                    logger.info(
+                        "시장폭 분석: pct=%s breadth=%s floor_applied=%s",
+                        f"{breadth_pct:.3f}" if breadth_pct is not None else "n/a",
+                        regime.breadth.value,
+                        regime.floor_applied,
+                    )
+
             # 업종 필터 (MAPS_SECTOR_FILTER_ENABLED=true 일 때만 적용)
             sector_filter_enabled = self._settings.maps_sector_filter_enabled
             filtered_universe = list(result.universe)
@@ -355,6 +378,9 @@ class OperationalPipeline:
                 "overheated_sectors": overheated_sectors,
                 "sector_selection_reason": sector_selection_reason,
                 "sector_filtered_count": len(filtered_universe),
+                "floor_applied": regime.floor_applied,
+                "breadth_pct": round(breadth_pct, 4) if breadth_pct is not None else None,
+                "breadth_label": regime.breadth.value,
                 "saved_count": saved_count,
                 "strategies_updated": active_strategies,
                 "strategies_blocked": blocked_strategies,
