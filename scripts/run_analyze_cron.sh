@@ -75,16 +75,33 @@ else
 fi
 
 # headless /analyze 실행 (명령은 고정 /analyze). 무인 hang 방지를 위해 timeout 적용.
+#
+# stream-json + --verbose 로 각 단계(에이전트 호출·도구 실행·텍스트·완료)를 실시간 이벤트로
+# 받아, scripts/analyze_stream_to_log.py가 사람이 읽는 진행로그로 변환해 $LOG에 남긴다.
+# 원본 JSON 이벤트는 디버깅용으로 $RAW_LOG에 그대로 보존한다.
 ANALYZE_TIMEOUT="${ANALYZE_TIMEOUT:-1800}"
-log "claude -p /analyze 실행 시작 (timeout ${ANALYZE_TIMEOUT}s)"
-if timeout "${ANALYZE_TIMEOUT}s" "$CLAUDE_BIN" -p "/analyze" "${perm_args[@]}" >>"$LOG" 2>&1; then
+RAW_LOG="$LOG_DIR/analyze_cron_${TS}.jsonl"
+log "claude -p /analyze 실행 시작 (timeout ${ANALYZE_TIMEOUT}s, 진행로그 스트리밍, raw=$RAW_LOG)"
+timeout "${ANALYZE_TIMEOUT}s" "$CLAUDE_BIN" -p "/analyze" "${perm_args[@]}" \
+    --verbose --output-format stream-json 2>>"$LOG" \
+  | tee -a "$RAW_LOG" \
+  | python "$APP_DIR/scripts/analyze_stream_to_log.py" "$LOG"
+rc=${PIPESTATUS[0]}  # claude의 종료코드 (tee/python이 아니라)
+if [ "$rc" -eq 0 ]; then
   log "analyze cron 완료 (성공) — 로그: $LOG"
   exit 0
 fi
-rc=$?
 if [ "$rc" -eq 124 ]; then
   log "analyze cron 시간초과(${ANALYZE_TIMEOUT}s) — claude 강제종료. 로그: $LOG"
+  fail_reason="timeout(${ANALYZE_TIMEOUT}s)"
 else
   log "analyze cron 실패 (claude exit=$rc) — 로그 확인: $LOG"
+  fail_reason="claude exit=$rc"
 fi
+
+# 실패 실행기록 — claude가 8단계까지 못 가 completed row를 못 남겼으므로, cron이
+# analysis_run에 status=failed 1건을 best-effort로 남긴다(0종목 정상완료와 구분).
+echo '{"trade_plan": []}' | python "$APP_DIR/scripts/load_analysis_picks.py" \
+    --allow-empty --status failed --error "$fail_reason" >>"$LOG" 2>&1 \
+  || log "failed-run 기록 실패(무시) — analysis_run 미기록"
 exit "$rc"

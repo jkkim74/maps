@@ -11,7 +11,7 @@ from sqlalchemy.pool import StaticPool
 
 import maps.common.models  # noqa: F401
 from maps.common.db import Base
-from maps.common.models import AnalysisPick
+from maps.common.models import AnalysisPick, AnalysisRun
 from scripts.load_analysis_picks import _build_rationale, _load_payload, load_picks
 
 _TODAY = datetime.date(2026, 6, 25)
@@ -39,7 +39,11 @@ def _load(plan, factory, **kw):
     return load_picks(
         plan, regime=kw.get("regime"), context=kw.get("context"),
         source=kw.get("source", "analyze"), ref_date=_TODAY,
-        dry_run=kw.get("dry_run", False), session_factory=factory,
+        dry_run=kw.get("dry_run", False),
+        status=kw.get("status", "completed"), note=kw.get("note"),
+        error_message=kw.get("error_message"),
+        candidates_count=kw.get("candidates_count"),
+        session_factory=factory,
     )
 
 
@@ -60,6 +64,14 @@ def test_load_payload_bare_array(tmp_path) -> None:
     f = tmp_path / "p.json"
     f.write_text(json.dumps(_PLAN), encoding="utf-8")
     assert len(_load_payload(str(f))) == 2
+
+
+def test_load_payload_empty_allowed(tmp_path) -> None:
+    f = tmp_path / "empty.json"
+    f.write_text("", encoding="utf-8")
+    assert _load_payload(str(f), allow_empty=True) == []
+    with pytest.raises(SystemExit):
+        _load_payload(str(f), allow_empty=False)
 
 
 def test_dry_run_does_not_write(factory) -> None:
@@ -85,6 +97,55 @@ def test_load_writes_and_maps_fields(factory) -> None:
         assert samsung.source == "analyze"
         assert samsung.state == "WATCH"
         assert "R:R 2.5" in samsung.rationale
+
+
+def test_load_records_analysis_run(factory) -> None:
+    """픽 적재 시 analysis_run 실행기록 1건(status=completed, picks_count=2)을 함께 남긴다."""
+    _load(_PLAN, factory, regime="mixed", context="pullback_v3 / 반도체",
+          candidates_count=14, note="정상 적재")
+    with factory() as s:
+        runs = s.query(AnalysisRun).all()
+        assert len(runs) == 1
+        run = runs[0]
+        assert run.status == "completed"
+        assert run.picks_count == 2
+        assert run.regime == "mixed"
+        assert run.strategy_context == "pullback_v3 / 반도체"
+        assert run.candidates_count == 14
+        assert run.note == "정상 적재"
+        assert run.ref_date == _TODAY
+
+
+def test_empty_plan_records_zero_pick_run(factory) -> None:
+    """빈 plan이어도 analysis_run에 picks_count=0 실행기록을 남기고 픽은 0건이다."""
+    result = _load([], factory, regime="weak", context="screen-test",
+                   candidates_count=14, note="R:R 게이트 전량 탈락")
+    assert result == []
+    with factory() as s:
+        assert s.query(AnalysisPick).count() == 0
+        runs = s.query(AnalysisRun).all()
+        assert len(runs) == 1
+        assert runs[0].status == "completed"
+        assert runs[0].picks_count == 0
+        assert runs[0].candidates_count == 14
+
+
+def test_failed_status_records_run(factory) -> None:
+    """status=failed 로 호출하면 실패 실행기록을 남긴다(에러 메시지 포함)."""
+    _load([], factory, status="failed", error_message="claude exit=124")
+    with factory() as s:
+        run = s.query(AnalysisRun).one()
+        assert run.status == "failed"
+        assert run.picks_count == 0
+        assert run.error_message == "claude exit=124"
+
+
+def test_dry_run_records_no_run(factory) -> None:
+    """dry_run이면 analysis_pick·analysis_run 둘 다 기록하지 않는다."""
+    _load(_PLAN, factory, dry_run=True)
+    with factory() as s:
+        assert s.query(AnalysisPick).count() == 0
+        assert s.query(AnalysisRun).count() == 0
 
 
 def test_skips_items_missing_prices(factory) -> None:

@@ -518,3 +518,32 @@ class AnalysisPick(Base):
         default=lambda: datetime.datetime.now(datetime.timezone.utc),
         onupdate=lambda: datetime.datetime.now(datetime.timezone.utc),
     )
+
+
+# ---------------------------------------------------------------------------
+# AI 분석 실행 감사 로그 (SCR-19) — 0종목 실행도 기록해 cron 실패와 구분
+# ---------------------------------------------------------------------------
+class AnalysisRun(Base):
+    """analysis_run — /analyze 파이프라인의 실행 이력 감사 로그.
+
+    완료된 실행은 항상 1건을 기록한다(픽이 0개여도 picks_count=0 row를 남긴다).
+    실패한 실행은 cron 래퍼가 status=failed 로 기록한다. row의 존재/상태로
+    '0종목 정상완료'와 'cron 실패(기록 없음)'를 구분할 수 있다.
+    """
+
+    __tablename__ = "analysis_run"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc)
+    )
+    ref_date: Mapped[datetime.date] = mapped_column(Date, nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="completed")
+    # completed | failed
+    source: Mapped[str] = mapped_column(String(16), nullable=False, default="analyze")
+    regime: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    strategy_context: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    picks_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    candidates_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
