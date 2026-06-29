@@ -99,7 +99,8 @@ h2 { margin: 0 0 12px; color: #b9c4c9; font-size: 13px; font-weight: 700; text-t
 .pick-head { display: flex; align-items: center; justify-content: space-between; }
 .pick-head strong { display: block; }
 .pick-head span { color: #84929a; font-size: 12px; }
-.pick-prices { margin: 8px 0 12px; color: #aab7bc; font-size: 13px; }
+.pick-prices { margin: 8px 0 8px; color: #aab7bc; font-size: 13px; }
+.pick-fill { margin: 0 0 12px; color: #66d19e; font-size: 13px; font-weight: 600; }
 .badge { padding: 3px 9px; border-radius: 999px; font-size: 11px; font-weight: 700; border: 1px solid; }
 .badge.watch { color: #9db3bd; background: #1b2329; border-color: #34424a; }
 .badge.armed { color: #e3b85f; background: #2a2413; border-color: #5c4d22; }

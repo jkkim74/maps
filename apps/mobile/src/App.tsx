@@ -221,6 +221,15 @@ function Watchlist({
                 매수 {won(p.buy_price)} · 목표 {won(p.target_price)} · 손절 {won(p.stop_price)}
                 {p.rr_ratio != null ? ` · R:R ${p.rr_ratio}` : ''}
               </div>
+              {p.fill_price != null ? (
+                <div className="pick-fill">
+                  체결 {won(p.fill_price)}
+                  {p.current_price != null ? ` · 현재 ${won(p.current_price)}` : ''}
+                  {p.fill_price && p.current_price != null
+                    ? ` (${p.current_price >= p.fill_price ? '+' : ''}${(((p.current_price - p.fill_price) / p.fill_price) * 100).toFixed(1)}%)`
+                    : ''}
+                </div>
+              ) : null}
               <div className="pick-actions">
                 <button type="button" disabled={busy || armed || bought} onClick={() => onArm(p)}>무장</button>
                 <button type="button" className="ghost" disabled={busy || p.state === 'WATCH' || bought} onClick={() => onDisarm(p)}>무장해제</button>

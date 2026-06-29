@@ -72,6 +72,7 @@ export type AnalysisPick = {
   state: string // WATCH | ARMED | BOUGHT | CLOSED | CANCELLED
   strategy_trade_enabled: boolean
   buy_price: number | null
+  fill_price: number | null // 실제 진입 체결가(보유/체결 시)
   target_price: number | null
   stop_price: number | null
   current_price: number | null
