@@ -1497,7 +1497,9 @@ async function loadTradeReview() {
       empty('trade-review-table', '거래 이력 없음');
     } else {
       const rows = d.trades.map(t => {
-        const pnlCls = t.pnl == null ? '' : t.pnl >= 0 ? 'text-pass' : 'text-fail';
+        // 보유중(미매도) 행은 청산 관련 칸(매도가/손익/수익률)을 비운다 — 미실현 손익은 상단 KPI에서만 표시.
+        const isOpen = t.status === 'open';
+        const pnlCls = (isOpen || t.pnl == null) ? '' : t.pnl >= 0 ? 'text-pass' : 'text-fail';
         const statusBadge = (statusLabel[t.status] || (() => badge(t.status, 'warn')))(t);
         return `<tr>
           <td>${statusBadge}</td>
@@ -1509,9 +1511,9 @@ async function loadTradeReview() {
           <td class="mono">${t.qty}</td>
           <td class="mono">${fmt.krw(t.entry_cost)}</td>
           <td class="mono">${t.exit_date ? fmt.date(t.exit_date) : '—'}</td>
-          <td class="mono">${t.exit_price ? t.exit_price.toLocaleString('ko-KR') : '—'}</td>
-          <td class="mono ${pnlCls}">${t.pnl != null ? fmt.krw(t.pnl) : '—'}</td>
-          <td class="mono ${pnlCls}">${t.pnl_pct != null ? fmt.pct(t.pnl_pct / 100) : '—'}</td>
+          <td class="mono">${(!isOpen && t.exit_price) ? t.exit_price.toLocaleString('ko-KR') : '—'}</td>
+          <td class="mono ${pnlCls}">${(!isOpen && t.pnl != null) ? fmt.krw(t.pnl) : '—'}</td>
+          <td class="mono ${pnlCls}">${(!isOpen && t.pnl_pct != null) ? fmt.pct(t.pnl_pct / 100) : '—'}</td>
           <td class="mono text-muted">${t.hold_days != null ? t.hold_days + '일' : '—'}</td>
           <td class="text-muted" style="font-size:0.75rem">${t.note || ''}</td>
         </tr>`;

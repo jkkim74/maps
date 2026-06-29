@@ -111,7 +111,7 @@ def get_trade_review(db: Session = Depends(get_db)) -> TradeReviewResponse:
             pnl_pct = pnl / total_cost if total_cost > 0 else None
             hold_days = (today - entry_date).days
             status = "open"
-            note = "보유 중 (미실현 손익)"
+            note = "보유 중"
             exit_date_str = None
 
         else:
