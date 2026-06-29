@@ -92,3 +92,20 @@ h2 { margin: 0 0 12px; color: #b9c4c9; font-size: 13px; font-weight: 700; text-t
   border-radius: 8px; font-weight: 700; font-size: 15px;
 }
 .login-btn:disabled { opacity: .6; }
+
+/* 워치리스트 픽 */
+.action-msg { margin-bottom: 12px; padding: 9px 12px; border-radius: 8px; background: #14251f; border: 1px solid #275743; color: #9fe3c2; font-size: 13px; }
+.pick { padding: 14px; background: #151b1f; border: 1px solid #2b373e; border-radius: 10px; }
+.pick-head { display: flex; align-items: center; justify-content: space-between; }
+.pick-head strong { display: block; }
+.pick-head span { color: #84929a; font-size: 12px; }
+.pick-prices { margin: 8px 0 12px; color: #aab7bc; font-size: 13px; }
+.badge { padding: 3px 9px; border-radius: 999px; font-size: 11px; font-weight: 700; border: 1px solid; }
+.badge.watch { color: #9db3bd; background: #1b2329; border-color: #34424a; }
+.badge.armed { color: #e3b85f; background: #2a2413; border-color: #5c4d22; }
+.badge.bought { color: #66d19e; background: #14251f; border-color: #275743; }
+.badge.closed, .badge.cancelled { color: #8a969c; background: #191e22; border-color: #2b373e; }
+.pick-actions { display: flex; gap: 10px; }
+.pick-actions button { flex: 1; padding: 10px; border-radius: 8px; font-weight: 700; font-size: 14px; color: #101418; background: #e3b85f; border: 0; }
+.pick-actions button.ghost { color: #ff8d87; background: transparent; border: 1px solid #673638; }
+.pick-actions button:disabled { opacity: .4; }

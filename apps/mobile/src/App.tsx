@@ -11,11 +11,19 @@ import {
   RefreshCw,
   ShieldCheck,
   ShieldX,
+  Target,
 } from 'lucide-react'
-import { fetchSummary, type MobileSummary } from './api'
+import {
+  armPick,
+  disarmPick,
+  fetchPicks,
+  fetchSummary,
+  type AnalysisPick,
+  type MobileSummary,
+} from './api'
 import { AuthError, clearToken, login } from './auth'
 
-type Tab = 'home' | 'orders' | 'risk' | 'alerts'
+type Tab = 'home' | 'orders' | 'risk' | 'watchlist' | 'alerts'
 
 const money = (value: number) => `${Math.round(value).toLocaleString('ko-KR')}원`
 const pct = (value: number) => `${value >= 0 ? '+' : ''}${(value * 100).toFixed(1)}%`
@@ -167,12 +175,68 @@ function Login({ onSuccess }: { onSuccess: () => void }) {
   )
 }
 
+const STATE_LABEL: Record<string, string> = {
+  WATCH: '관망', ARMED: '무장', BOUGHT: '보유', CLOSED: '청산', CANCELLED: '취소',
+}
+const won = (value: number | null) => (value == null ? '—' : `${Math.round(value).toLocaleString('ko-KR')}`)
+
+function Watchlist({
+  picks, loading, error, busyId, message, onArm, onDisarm, onReload,
+}: {
+  picks: AnalysisPick[]
+  loading: boolean
+  error: string
+  busyId: number | null
+  message: string
+  onArm: (pick: AnalysisPick) => void
+  onDisarm: (pick: AnalysisPick) => void
+  onReload: () => void
+}) {
+  return (
+    <section>
+      <h2>분석 워치리스트</h2>
+      {message ? <div className="action-msg">{message}</div> : null}
+      {error ? <div className="error"><AlertTriangle size={20} />{error}<button type="button" onClick={onReload}>다시 시도</button></div> : null}
+      {loading && !picks.length ? <Empty text="불러오는 중…" /> : null}
+      {!loading && !picks.length && !error ? <Empty text="워치리스트가 비어 있습니다." /> : null}
+      <div className="rows">
+        {picks.map((p) => {
+          const busy = busyId === p.id
+          const armed = p.state === 'ARMED'
+          const bought = p.state === 'BOUGHT'
+          return (
+            <article className="pick" key={p.id}>
+              <div className="pick-head">
+                <div><strong>{p.name}</strong><span>{p.ticker}</span></div>
+                <span className={`badge ${p.state.toLowerCase()}`}>{STATE_LABEL[p.state] ?? p.state}</span>
+              </div>
+              <div className="pick-prices">
+                매수 {won(p.buy_price)} · 목표 {won(p.target_price)} · 손절 {won(p.stop_price)}
+                {p.rr_ratio != null ? ` · R:R ${p.rr_ratio}` : ''}
+              </div>
+              <div className="pick-actions">
+                <button type="button" disabled={busy || armed || bought} onClick={() => onArm(p)}>무장</button>
+                <button type="button" className="ghost" disabled={busy || p.state === 'WATCH' || bought} onClick={() => onDisarm(p)}>무장해제</button>
+              </div>
+            </article>
+          )
+        })}
+      </div>
+    </section>
+  )
+}
+
 export function App() {
   const [tab, setTab] = useState<Tab>('home')
   const [data, setData] = useState<MobileSummary>()
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
   const [needLogin, setNeedLogin] = useState(false)
+  const [picks, setPicks] = useState<AnalysisPick[]>([])
+  const [picksLoading, setPicksLoading] = useState(false)
+  const [picksError, setPicksError] = useState('')
+  const [actionBusyId, setActionBusyId] = useState<number | null>(null)
+  const [actionMsg, setActionMsg] = useState('')
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -191,9 +255,58 @@ export function App() {
     }
   }, [])
 
+  const loadPicks = useCallback(async () => {
+    setPicksLoading(true)
+    setPicksError('')
+    try {
+      setPicks(await fetchPicks())
+    } catch (reason) {
+      if (reason instanceof AuthError) {
+        setNeedLogin(true)
+      } else {
+        setPicksError(reason instanceof Error ? reason.message : '워치리스트를 불러오지 못했습니다.')
+      }
+    } finally {
+      setPicksLoading(false)
+    }
+  }, [])
+
+  const runAction = useCallback(
+    async (pick: AnalysisPick, action: 'arm' | 'disarm') => {
+      setActionBusyId(pick.id)
+      setActionMsg('')
+      try {
+        if (action === 'arm') await armPick(pick.id)
+        else await disarmPick(pick.id)
+        setActionMsg(`${pick.name} ${action === 'arm' ? '무장됨' : '무장해제됨'}`)
+        await loadPicks()
+      } catch (reason) {
+        if (reason instanceof AuthError) setNeedLogin(true)
+        else setActionMsg(`실패: ${reason instanceof Error ? reason.message : '요청 오류'}`)
+      } finally {
+        setActionBusyId(null)
+      }
+    },
+    [loadPicks],
+  )
+
+  const onArm = useCallback(
+    (pick: AnalysisPick) => {
+      if (window.confirm(`${pick.name}을(를) 무장하면 자동매수가 활성화됩니다. 계속할까요?`)) {
+        void runAction(pick, 'arm')
+      }
+    },
+    [runAction],
+  )
+  const onDisarm = useCallback((pick: AnalysisPick) => void runAction(pick, 'disarm'), [runAction])
+
   useEffect(() => {
     void refresh()
   }, [refresh])
+
+  useEffect(() => {
+    if (tab === 'watchlist') void loadPicks()
+  }, [tab, loadPicks])
 
   if (needLogin) {
     return <Login onSuccess={() => void refresh()} />
@@ -210,8 +323,8 @@ export function App() {
       <header>
         <div><span className="brand">MAPS</span><p>Mobile Operations</p></div>
         <div className="header-actions">
-          <button className="icon-btn" type="button" onClick={() => void refresh()} aria-label="새로고침" title="새로고침">
-            <RefreshCw size={19} className={loading ? 'spin' : ''} />
+          <button className="icon-btn" type="button" onClick={() => { void refresh(); if (tab === 'watchlist') void loadPicks() }} aria-label="새로고침" title="새로고침">
+            <RefreshCw size={19} className={loading || picksLoading ? 'spin' : ''} />
           </button>
           <button className="icon-btn" type="button" onClick={logout} aria-label="로그아웃" title="로그아웃">
             <LogOut size={19} />
@@ -224,12 +337,20 @@ export function App() {
         {data && tab === 'home' ? <Home data={data} /> : null}
         {data && tab === 'orders' ? <Orders data={data} /> : null}
         {data && tab === 'risk' ? <Risk data={data} /> : null}
+        {tab === 'watchlist' ? (
+          <Watchlist
+            picks={picks} loading={picksLoading} error={picksError}
+            busyId={actionBusyId} message={actionMsg}
+            onArm={onArm} onDisarm={onDisarm} onReload={() => void loadPicks()}
+          />
+        ) : null}
         {data && tab === 'alerts' ? <section><h2>알림</h2><Alerts items={data.alerts} /></section> : null}
       </main>
       <nav className="bottom-nav">
         <button className={tab === 'home' ? 'active' : ''} onClick={() => setTab('home')}><House size={20} /><span>홈</span></button>
         <button className={tab === 'orders' ? 'active' : ''} onClick={() => setTab('orders')}><ListOrdered size={20} /><span>주문</span></button>
         <button className={tab === 'risk' ? 'active' : ''} onClick={() => setTab('risk')}><Gauge size={20} /><span>리스크</span></button>
+        <button className={tab === 'watchlist' ? 'active' : ''} onClick={() => setTab('watchlist')}><Target size={20} /><span>워치</span></button>
         <button className={tab === 'alerts' ? 'active' : ''} onClick={() => setTab('alerts')}><Bell size={20} /><span>알림</span></button>
       </nav>
     </div>

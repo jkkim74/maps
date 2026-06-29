@@ -64,18 +64,71 @@ export type MobileSummary = {
 import { AuthError, clearToken, getToken } from './auth'
 import { API_BASE } from './config'
 
-export async function fetchSummary(signal?: AbortSignal): Promise<MobileSummary> {
-  const token = getToken()
-  const headers: Record<string, string> = {}
-  if (token) headers.Authorization = `Bearer ${token}`
+// 분석 워치리스트(SCR-19) 픽 — 서버 AnalysisPickItem의 앱 사용 필드.
+export type AnalysisPick = {
+  id: number
+  ticker: string
+  name: string
+  state: string // WATCH | ARMED | BOUGHT | CLOSED | CANCELLED
+  strategy_trade_enabled: boolean
+  buy_price: number | null
+  target_price: number | null
+  stop_price: number | null
+  current_price: number | null
+  rr_ratio: number | null
+}
 
-  const response = await fetch(`${API_BASE}/api/v1/mobile/summary`, { signal, headers })
-  if (response.status === 401) {
+type PicksResponse = { total: number; picks: AnalysisPick[] }
+
+/** 토큰을 주입하고 401을 AuthError로 변환하는 공통 fetch. */
+async function authedFetch(path: string, init?: RequestInit): Promise<Response> {
+  const token = getToken()
+  const headers: Record<string, string> = { ...((init?.headers as Record<string, string>) ?? {}) }
+  if (token) headers.Authorization = `Bearer ${token}`
+  const res = await fetch(`${API_BASE}${path}`, { ...init, headers })
+  if (res.status === 401) {
     clearToken()
     throw new AuthError('로그인이 필요합니다.')
   }
+  return res
+}
+
+/** POST 액션 — 실패 시 서버 detail 메시지를 그대로 던진다(예: "무장 불가 상태"). */
+async function postAction(path: string): Promise<void> {
+  const res = await authedFetch(path, { method: 'POST' })
+  if (!res.ok) {
+    let detail = `요청 실패 (${res.status})`
+    try {
+      const body = (await res.json()) as { detail?: string }
+      if (body?.detail) detail = body.detail
+    } catch {
+      /* JSON 아님 — 기본 메시지 유지 */
+    }
+    throw new Error(detail)
+  }
+}
+
+export async function fetchSummary(signal?: AbortSignal): Promise<MobileSummary> {
+  const response = await authedFetch('/api/v1/mobile/summary', { signal })
   if (!response.ok) {
     throw new Error(`서버 응답 오류 (${response.status})`)
   }
   return response.json() as Promise<MobileSummary>
+}
+
+export async function fetchPicks(signal?: AbortSignal): Promise<AnalysisPick[]> {
+  const response = await authedFetch('/api/v1/analysis-picks', { signal })
+  if (!response.ok) {
+    throw new Error(`서버 응답 오류 (${response.status})`)
+  }
+  const data = (await response.json()) as PicksResponse
+  return data.picks
+}
+
+export async function armPick(id: number): Promise<void> {
+  await postAction(`/api/v1/analysis-picks/${id}/arm`)
+}
+
+export async function disarmPick(id: number): Promise<void> {
+  await postAction(`/api/v1/analysis-picks/${id}/disarm`)
 }
