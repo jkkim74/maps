@@ -38,6 +38,21 @@ from sqlalchemy.orm import Session
 
 from maps.common.db import SessionLocal
 from maps.common.models import AnalysisPick, AnalysisRun
+from maps.market.trading_rules import round_to_krx_tick, round_up_krx_price
+
+
+def _snap_price(value: Any, market: str | None, *, kind: str) -> Any:
+    """가격을 KRX 호가 단위로 스냅한다. 숫자가 아니거나 0 이하면 원값 유지.
+
+    trade-planner(LLM)가 호가 단위를 어긋나게 낸 값(예: 54912)을 결정론적으로 정규화한다.
+    매수가는 올림(체결 우선, 자동 파이프라인 plan_buy와 일관), 목표가·손절가는 최근접 호가.
+    """
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0:
+        return value
+    mkt = (market or "KOSPI").upper()
+    if kind == "buy":
+        return round_up_krx_price(float(value), market=mkt)
+    return round_to_krx_tick(float(value), market=mkt)
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
@@ -136,6 +151,11 @@ def load_picks(
         if entry is None or target is None or stop is None:
             print(f"  [skip] {ticker}: entry/target/stop_loss 누락", file=sys.stderr)
             continue
+        # LLM이 호가 단위를 어긋나게 낸 가격(예: 목표가 54912)을 KRX 호가 그리드로 정규화한다.
+        market = item.get("market")
+        entry = _snap_price(entry, market, kind="buy")
+        target = _snap_price(target, market, kind="target")
+        stop = _snap_price(stop, market, kind="stop")
         prepared.append(
             {"ticker": ticker, "name": item.get("name") or ticker,
              "buy_price": entry, "target_price": target, "stop_price": stop}

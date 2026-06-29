@@ -7,6 +7,7 @@ from maps.market.trading_rules import (
     krx_tick_size,
     parse_closed_dates,
     previous_trading_day,
+    round_to_krx_tick,
     round_up_krx_price,
 )
 
@@ -47,3 +48,19 @@ def test_krx_tick_size_for_kospi_and_kosdaq() -> None:
 def test_round_up_krx_price_uses_valid_tick() -> None:
     assert round_up_krx_price(2_356_330, market="KOSPI") == 2_357_000
     assert round_up_krx_price(320_170, market="KOSPI") == 320_500
+
+
+def test_round_to_krx_tick_snaps_to_nearest() -> None:
+    # 54,912 → 호가단위 100원 구간(50,000~99,999) → 최근접 54,900
+    assert round_to_krx_tick(54_912, market="KOSPI") == 54_900
+    assert round_to_krx_tick(54_960, market="KOSPI") == 55_000
+    # 1만원 미만 구간(5,000~9,999) → 10원 단위
+    assert round_to_krx_tick(7_434, market="KOSDAQ") == 7_430
+    # 10만원 이상: KOSPI=500, KOSDAQ=100
+    assert round_to_krx_tick(320_170, market="KOSPI") == 320_000
+    assert round_to_krx_tick(320_170, market="KOSDAQ") == 320_200
+
+
+def test_round_to_krx_tick_handles_nonpositive() -> None:
+    assert round_to_krx_tick(0) == 0
+    assert round_to_krx_tick(-5) == -5

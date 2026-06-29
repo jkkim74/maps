@@ -56,7 +56,12 @@ from maps.execution.order_manager import OrderManager
 from maps.market.breadth import classify_breadth, compute_pct_above_ma
 from maps.market.regime import RegimeResult, WeeklyTrendLabel, create_regime_analyzer
 from maps.market.sector_selector import SectorRegimeSelector, SectorSelector
-from maps.market.trading_rules import is_krx_closed_date, previous_trading_day, round_up_krx_price
+from maps.market.trading_rules import (
+    is_krx_closed_date,
+    previous_trading_day,
+    round_to_krx_tick,
+    round_up_krx_price,
+)
 from maps.ops.notifications import SlackNotifier
 from maps.ops.order_state import claimed_candidate_tickers
 from maps.promotion.gate import PromotionGate, PromotionStage
@@ -1408,12 +1413,28 @@ class OperationalPipeline:
                 valid_stops = [v for v in stop_candidates if v is not None]
                 plan_stop = min(valid_stops) if valid_stops else None
                 if plan_stop is not None:
-                    plan_target = round(plan_buy + (plan_buy - plan_stop) * rr, 0)
+                    plan_stop = float(round_to_krx_tick(plan_stop, market=stock.market))
+                    plan_target = float(
+                        round_to_krx_tick(plan_buy + (plan_buy - plan_stop) * rr, market=stock.market)
+                    )
 
-            # AI 우선, None이면 rule-based 폴백
-            final_buy = (round(ai_result.ai_buy_price, 0) if ai_result and ai_result.ai_buy_price else None) or plan_buy
-            final_stop = (round(ai_result.ai_stop_price, 0) if ai_result and ai_result.ai_stop_price else None) or plan_stop
-            final_target = (round(ai_result.ai_target_price, 0) if ai_result and ai_result.ai_target_price else None) or plan_target
+            # AI 우선, None이면 rule-based 폴백. AI가 낸 가격도 KRX 호가 단위로 스냅한다
+            # (매수가는 올림으로 plan_buy와 일관, 목표가·손절가는 최근접 호가).
+            ai_buy = (
+                float(round_up_krx_price(ai_result.ai_buy_price, market=stock.market))
+                if ai_result and ai_result.ai_buy_price else None
+            )
+            ai_stop = (
+                float(round_to_krx_tick(ai_result.ai_stop_price, market=stock.market))
+                if ai_result and ai_result.ai_stop_price else None
+            )
+            ai_target = (
+                float(round_to_krx_tick(ai_result.ai_target_price, market=stock.market))
+                if ai_result and ai_result.ai_target_price else None
+            )
+            final_buy = ai_buy or plan_buy
+            final_stop = ai_stop or plan_stop
+            final_target = ai_target or plan_target
 
             # 7단계: AI 역발상 검증 (contrarian_check_enabled 시에만 실행)
             contrarian_result = None

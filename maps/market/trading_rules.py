@@ -75,3 +75,17 @@ def round_up_krx_price(price: float, *, market: str = "KOSPI", security_type: st
     """Round a buy limit price up to the next valid KRX quotation unit."""
     tick = krx_tick_size(price, market=market, security_type=security_type)
     return int(math.ceil(price / tick) * tick)
+
+
+def round_to_krx_tick(price: float, *, market: str = "KOSPI", security_type: str = "stock") -> int:
+    """Round a price to the nearest valid KRX quotation unit.
+
+    Unlike :func:`round_up_krx_price` (ceil, for buy limits), this snaps to the
+    closest tick and is suited to display/target/stop prices where a raw value
+    such as 54,912 must land on a valid grid point (54,900). Non-positive prices
+    are returned as an int unchanged.
+    """
+    if price <= 0:
+        return int(price)
+    tick = krx_tick_size(price, market=market, security_type=security_type)
+    return int(round(price / tick) * tick)

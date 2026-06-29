@@ -52,6 +52,18 @@ def test_build_rationale() -> None:
     assert _build_rationale({"ticker": "x"}) is None
 
 
+def test_load_picks_snaps_prices_to_krx_tick(factory) -> None:
+    # trade-planner(LLM)가 호가단위 어긋난 값을 줘도 저장 시 KRX 호가로 정규화한다.
+    plan = [{"ticker": "035720", "name": "카카오", "market": "KOSPI",
+             "entry": 54912, "target": 61137, "stop_loss": 49988}]
+    _load(plan, factory)
+    with factory() as s:
+        pick = s.query(AnalysisPick).filter_by(ticker="035720").one()
+    assert pick.buy_price == 55000   # 54912 → 매수가 올림(호가 100원)
+    assert pick.target_price == 61100  # 61137 → 최근접 61,100
+    assert pick.stop_price == 50000   # 49988 → 최근접 50,000
+
+
 def test_load_payload_trade_plan_wrapper(tmp_path) -> None:
     import json
     f = tmp_path / "p.json"
