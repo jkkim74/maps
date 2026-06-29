@@ -92,6 +92,10 @@ class MapsSettings(BaseSettings):
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
     telegram_webhook_secret: str = ""
+    # 비운영(MAPS_ENV != production) 환경에서 텔레그램 실발송을 막는 안전 가드.
+    # 로컬/테스트가 운영 봇 토큰을 가진 .env로 실행돼도 운영 채팅에 더미 픽이 새지 않게 한다.
+    # 운영이 아닌 곳에서 일부러 발송하려면 이 값을 true로 명시한다.
+    maps_telegram_allow_nonprod: bool = False
 
     # AWS Bedrock (Claude AI 분석)
     aws_access_key_id: str = ""
@@ -336,6 +340,7 @@ def get_config_status(settings: MapsSettings | None = None) -> list[ConfigSectio
                 _field(s, "telegram_bot_token", "TELEGRAM_BOT_TOKEN", "Telegram bot token for analyze-result alerts", secret=True),
                 _field(s, "telegram_chat_id", "TELEGRAM_CHAT_ID", "Telegram chat id that receives alerts and may trigger arm/disarm"),
                 _field(s, "telegram_webhook_secret", "TELEGRAM_WEBHOOK_SECRET", "Secret token validating inbound Telegram webhook calls", secret=True),
+                _field(s, "maps_telegram_allow_nonprod", "MAPS_TELEGRAM_ALLOW_NONPROD", "Allow real Telegram sends when MAPS_ENV is not production (default off)"),
             ],
         ),
     ]

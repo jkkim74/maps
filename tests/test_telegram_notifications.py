@@ -80,7 +80,10 @@ def test_notifier_disabled_when_token_empty(monkeypatch) -> None:
 def test_notifier_send_analysis_picks_payload(monkeypatch) -> None:
     from maps.ops.notifications import TelegramNotifier
 
-    settings = _settings_with(monkeypatch, TELEGRAM_BOT_TOKEN="t0ken", TELEGRAM_CHAT_ID="999")
+    settings = _settings_with(
+        monkeypatch, TELEGRAM_BOT_TOKEN="t0ken", TELEGRAM_CHAT_ID="999",
+        MAPS_TELEGRAM_ALLOW_NONPROD="true",
+    )
     http = _FakeHttp()
     tg = TelegramNotifier(settings=settings, http=http)
     assert tg.enabled is True
@@ -101,7 +104,10 @@ def test_notifier_send_analysis_picks_payload(monkeypatch) -> None:
 def test_notifier_http_failure_is_swallowed(monkeypatch) -> None:
     from maps.ops.notifications import TelegramNotifier
 
-    settings = _settings_with(monkeypatch, TELEGRAM_BOT_TOKEN="t0ken", TELEGRAM_CHAT_ID="999")
+    settings = _settings_with(
+        monkeypatch, TELEGRAM_BOT_TOKEN="t0ken", TELEGRAM_CHAT_ID="999",
+        MAPS_TELEGRAM_ALLOW_NONPROD="true",
+    )
 
     class _Boom:
         def post(self, *a, **k):
@@ -109,6 +115,42 @@ def test_notifier_http_failure_is_swallowed(monkeypatch) -> None:
 
     tg = TelegramNotifier(settings=settings, http=_Boom())
     assert tg.send_message("hi") is False  # 예외를 삼키고 False
+
+
+def test_nonprod_blocks_real_send_even_with_token(monkeypatch) -> None:
+    """비운영 환경에서는 운영 봇 토큰이 있어도 실발송을 막는다(더미 픽 유출 방지)."""
+    from maps.ops.notifications import TelegramNotifier
+
+    settings = _settings_with(
+        monkeypatch, MAPS_ENV="development",
+        TELEGRAM_BOT_TOKEN="t0ken", TELEGRAM_CHAT_ID="999",
+    )
+    http = _FakeHttp()
+    tg = TelegramNotifier(settings=settings, http=http)
+    assert tg.enabled is False
+    # enabled를 우회하는 경로(명시적 chat_id)까지 _call에서 차단되는지
+    assert tg.send_message("hi", chat_id="999") is False
+    assert tg.send_analysis_picks(
+        [{"id": 1, "ticker": "005930", "name": "삼성전자",
+          "buy_price": 70000, "target_price": 80000, "stop_price": 66000}]
+    ) is False
+    assert tg.answer_callback("cb1", "x") is False
+    assert http.calls == []  # 어떤 HTTP도 발생하지 않음
+
+
+def test_production_allows_real_send(monkeypatch) -> None:
+    """운영 환경에서는 별도 플래그 없이 정상 발송한다."""
+    from maps.ops.notifications import TelegramNotifier
+
+    settings = _settings_with(
+        monkeypatch, MAPS_ENV="production",
+        TELEGRAM_BOT_TOKEN="t0ken", TELEGRAM_CHAT_ID="999",
+    )
+    http = _FakeHttp()
+    tg = TelegramNotifier(settings=settings, http=http)
+    assert tg.enabled is True
+    assert tg.send_message("hi") is True
+    assert len(http.calls) == 1
 
 
 # ── 웹훅 라우터 ────────────────────────────────────────────────────────────────

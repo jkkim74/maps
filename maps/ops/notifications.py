@@ -187,11 +187,33 @@ class TelegramNotifier:
         self._timeout = timeout
 
     @property
+    def _nonprod_blocked(self) -> bool:
+        """운영(MAPS_ENV=production)이 아니면서 명시적 허용도 없으면 실발송을 막는다.
+
+        로컬/테스트가 운영 봇 토큰이 든 .env로 돌아가도 운영 텔레그램 채팅에
+        더미 픽이 새지 않게 하는 안전 가드. 비운영에서 일부러 보내려면
+        MAPS_TELEGRAM_ALLOW_NONPROD=true 를 설정한다.
+        """
+        s = self._settings
+        return s.maps_env != "production" and not s.maps_telegram_allow_nonprod
+
+    @property
     def enabled(self) -> bool:
+        if self._nonprod_blocked:
+            return False
         return bool(self._settings.telegram_bot_token and self._settings.telegram_chat_id)
 
     def _call(self, method: str, payload: dict[str, Any]) -> bool:
         """Bot API 메서드를 호출한다. 실패해도 파이프라인을 막지 않는다."""
+        # 환경 가드: enabled를 우회하는 경로(answer_callback, edit_message_text,
+        # 명시적 chat_id를 준 send_message)까지 단일 HTTP 통로에서 차단한다.
+        if self._nonprod_blocked:
+            logger.warning(
+                "Telegram %s blocked: MAPS_ENV=%s is not production "
+                "(set MAPS_TELEGRAM_ALLOW_NONPROD=true to override)",
+                method, self._settings.maps_env,
+            )
+            return False
         if not self._settings.telegram_bot_token:
             logger.debug("Telegram disabled; %s skipped", method)
             return False
