@@ -21,8 +21,10 @@ from maps.api.schemas import (
     AnalysisPicksResponse,
     AnalysisPickUpdate,
 )
+from maps.common.exceptions import BrokerAdapterError
 from maps.common.models import AnalysisPick, HistoricalOHLCV
 from maps.common.settings import get_settings
+from maps.execution.broker_adapter import get_broker
 
 logger = logging.getLogger(__name__)
 
@@ -39,13 +41,47 @@ def _rr_ratio(buy: float | None, target: float | None, stop: float | None) -> fl
     return None
 
 
-def _current_prices(db: Session, tickers: list[str]) -> dict[str, float]:
-    """워치리스트 종목의 현재가(최신 일봉 종가 기준)를 구한다.
+def _broker_live_prices(tickers: list[str]) -> dict[str, float]:
+    """브로커 보유 포지션의 라이브 현재가를 구한다(리스크 모니터 보유종목과 동일 소스).
 
-    historical_ohlcv에서 티커별 최신 date의 종가를 반환한다. 장중 실시간 틱이 아니라
-    가장 최근 종가이며(매수가/목표가 대비 참고용), 일별 수집(16:10 KST) 이후엔 당일 종가가
-    된다. DB에 시세가 없는 티커는 생략한다(응답에서 current_price=None). 외부 네트워크 호출
-    없이 단일 그룹 쿼리로 처리해 목록 조회를 가볍게 유지한다.
+    KIS 등 실거래 브로커는 잔고 조회 시 종목별 현재가(prpr)를 함께 반환한다. 보유 중인
+    티커에 한해 그 값을 사용하면 장중 실시간 시세가 반영된다. 미보유 종목은 브로커가
+    시세를 주지 않으므로 결과에서 빠진다(상위에서 일봉 종가로 폴백). 브로커 조회 실패는
+    로깅 후 빈 딕셔너리로 흡수해 목록 조회가 죽지 않게 한다.
+    """
+    target = {t for t in tickers if t}
+    if not target:
+        return {}
+    try:
+        broker = get_broker()
+        fetch = getattr(broker, "_fetch_positions_and_balance", None)
+        if callable(fetch):
+            position_map, _balance = fetch()
+        else:
+            position_map = {
+                ticker: broker.get_position(ticker)
+                for ticker in target
+            }
+    except (BrokerAdapterError, NotImplementedError, ValueError) as exc:
+        logger.warning("워치리스트 브로커 현재가 조회 실패: %s", exc)
+        return {}
+    prices: dict[str, float] = {}
+    for ticker, position in position_map.items():
+        if ticker not in target or position is None:
+            continue
+        price = position.current_price
+        if price is not None and price > 0:
+            prices[ticker] = float(price)
+    return prices
+
+
+def _current_prices(db: Session, tickers: list[str]) -> dict[str, float]:
+    """워치리스트 종목의 현재가를 구한다.
+
+    보유(BOUGHT) 종목은 리스크 모니터 보유종목과 동일하게 브로커 라이브 현재가를 우선
+    사용하고(`_broker_live_prices`), 미보유 종목은 historical_ohlcv의 티커별 최신 date 종가로
+    폴백한다. 일봉 종가는 장중 실시간 틱이 아니라 일별 수집(16:10 KST) 시점 값이다. 어느
+    소스에도 시세가 없는 티커는 생략한다(응답에서 current_price=None).
     """
     unique = list({t for t in tickers if t})
     if not unique:
@@ -68,7 +104,10 @@ def _current_prices(db: Session, tickers: list[str]) -> dict[str, float]:
         )
         .all()
     )
-    return {ticker: float(close) for ticker, close in rows if close and close > 0}
+    prices = {ticker: float(close) for ticker, close in rows if close and close > 0}
+    # 보유 종목은 브로커 라이브 현재가로 덮어쓴다(장중 실시간 반영).
+    prices.update(_broker_live_prices(unique))
+    return prices
 
 
 def _to_item(p: AnalysisPick, current_price: float | None = None) -> AnalysisPickItem:

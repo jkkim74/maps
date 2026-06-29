@@ -85,6 +85,33 @@ def test_list_current_price_none_without_ohlcv(client) -> None:
     assert item["current_price"] is None
 
 
+def test_list_current_price_prefers_broker_live(client, monkeypatch) -> None:
+    """보유 종목은 브로커 라이브 현재가가 일봉 종가를 덮어쓴다(리스크 모니터와 동일 소스)."""
+    import datetime as dt
+
+    from maps.common.models import HistoricalOHLCV
+    from maps.execution.broker_adapter import Order, OrderSide, OrderType
+    from maps.execution.mock_broker import MockBroker
+
+    client.post("/api/v1/analysis-picks", json={"picks": [_sample(ticker="005930")]})
+    with client.session_factory() as s:
+        s.add(HistoricalOHLCV(
+            ticker="005930", date=dt.date(2026, 6, 25), open=71500, high=71500,
+            low=71500, close=71500, volume=1000,
+        ))
+        s.commit()
+
+    broker = MockBroker(price_feed={"005930": 72800})
+    broker.place_order(Order(  # 보유 포지션 생성
+        strategy_id="t", ticker="005930", side=OrderSide.BUY,
+        order_type=OrderType.LIMIT, quantity=10, limit_price=70000,
+    ))
+    monkeypatch.setattr("maps.api.analysis_picks.get_broker", lambda *a, **k: broker)
+
+    item = client.get("/api/v1/analysis-picks").json()["picks"][0]
+    assert item["current_price"] == 72800  # 일봉 종가(71500)가 아니라 라이브 시세
+
+
 def test_create_single_and_rr_ratio(client) -> None:
     r = client.post("/api/v1/analysis-picks", json={"picks": [_sample()]})
     assert r.status_code == 200
