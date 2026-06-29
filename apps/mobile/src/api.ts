@@ -94,8 +94,13 @@ async function authedFetch(path: string, init?: RequestInit): Promise<Response> 
 }
 
 /** POST 액션 — 실패 시 서버 detail 메시지를 그대로 던진다(예: "무장 불가 상태"). */
-async function postAction(path: string): Promise<void> {
-  const res = await authedFetch(path, { method: 'POST' })
+async function postAction(path: string, body?: unknown): Promise<void> {
+  const init: RequestInit = { method: 'POST' }
+  if (body !== undefined) {
+    init.body = JSON.stringify(body)
+    init.headers = { 'Content-Type': 'application/json' }
+  }
+  const res = await authedFetch(path, init)
   if (!res.ok) {
     let detail = `요청 실패 (${res.status})`
     try {
@@ -108,12 +113,34 @@ async function postAction(path: string): Promise<void> {
   }
 }
 
+const SUMMARY_CACHE_KEY = 'maps.cache.summary'
+
+/** 마지막 성공 요약을 보관해 콜드스타트 즉시 표시·오프라인 폴백에 쓴다. */
+export function loadCachedSummary(): MobileSummary | undefined {
+  try {
+    const raw = localStorage.getItem(SUMMARY_CACHE_KEY)
+    return raw ? (JSON.parse(raw) as MobileSummary) : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function saveCachedSummary(summary: MobileSummary): void {
+  try {
+    localStorage.setItem(SUMMARY_CACHE_KEY, JSON.stringify(summary))
+  } catch {
+    /* 용량 초과 등 무시 */
+  }
+}
+
 export async function fetchSummary(signal?: AbortSignal): Promise<MobileSummary> {
   const response = await authedFetch('/api/v1/mobile/summary', { signal })
   if (!response.ok) {
     throw new Error(`서버 응답 오류 (${response.status})`)
   }
-  return response.json() as Promise<MobileSummary>
+  const summary = (await response.json()) as MobileSummary
+  saveCachedSummary(summary)
+  return summary
 }
 
 export async function fetchPicks(signal?: AbortSignal): Promise<AnalysisPick[]> {
@@ -131,4 +158,44 @@ export async function armPick(id: number): Promise<void> {
 
 export async function disarmPick(id: number): Promise<void> {
   await postAction(`/api/v1/analysis-picks/${id}/disarm`)
+}
+
+// Kill-Switch (실거래 모니터) — 청산 승인 / 해제 대기 항목.
+export type KillSwitchEntry = {
+  strategy_id: string | null
+  reason: string
+  event_type: string
+  created_at: string
+}
+
+type LiveMonitorResp = {
+  pending_approvals?: KillSwitchEntry[]
+  pending_releases?: KillSwitchEntry[]
+}
+
+export type KillSwitches = { approvals: KillSwitchEntry[]; releases: KillSwitchEntry[] }
+
+export async function fetchKillSwitches(signal?: AbortSignal): Promise<KillSwitches> {
+  const res = await authedFetch('/api/v1/live-monitor', { signal })
+  if (!res.ok) {
+    throw new Error(`서버 응답 오류 (${res.status})`)
+  }
+  const d = (await res.json()) as LiveMonitorResp
+  return { approvals: d.pending_approvals ?? [], releases: d.pending_releases ?? [] }
+}
+
+/** 보유 포지션 청산 승인 (고위험 — 실매도). */
+export async function approveLiquidation(strategyId: string, approvedBy: string): Promise<void> {
+  await postAction(
+    `/api/v1/live-monitor/${encodeURIComponent(strategyId)}/approve-liquidation`,
+    { approved_by: approvedBy },
+  )
+}
+
+/** Kill-Switch 완전 해제 (신규 진입 재개). */
+export async function releaseKillSwitch(strategyId: string, approvedBy: string): Promise<void> {
+  await postAction(
+    `/api/v1/live-monitor/${encodeURIComponent(strategyId)}/release`,
+    { approved_by: approvedBy },
+  )
 }

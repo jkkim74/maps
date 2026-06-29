@@ -7,9 +7,19 @@
 import { API_BASE } from './config'
 
 const TOKEN_KEY = 'maps.auth.token'
+const USER_KEY = 'maps.auth.user'
 
 /** 401(인증 필요)을 일반 오류와 구분하기 위한 전용 에러. */
 export class AuthError extends Error {}
+
+/** 로그인한 사용자명(감사용 approved_by 등). 미저장 시 'mobile'. */
+export function getUsername(): string {
+  try {
+    return localStorage.getItem(USER_KEY) || 'mobile'
+  } catch {
+    return 'mobile'
+  }
+}
 
 export function getToken(): string | null {
   try {
@@ -30,6 +40,7 @@ export function setToken(token: string): void {
 export function clearToken(): void {
   try {
     localStorage.removeItem(TOKEN_KEY)
+    localStorage.removeItem(USER_KEY)
   } catch {
     /* ignore */
   }
@@ -50,4 +61,9 @@ export async function login(username: string, password: string): Promise<void> {
   }
   const data = (await res.json()) as { token: string; username: string }
   setToken(data.token)
+  try {
+    localStorage.setItem(USER_KEY, data.username)
+  } catch {
+    /* ignore */
+  }
 }

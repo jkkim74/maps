@@ -109,3 +109,13 @@ h2 { margin: 0 0 12px; color: #b9c4c9; font-size: 13px; font-weight: 700; text-t
 .pick-actions button { flex: 1; padding: 10px; border-radius: 8px; font-weight: 700; font-size: 14px; color: #101418; background: #e3b85f; border: 0; }
 .pick-actions button.ghost { color: #ff8d87; background: transparent; border: 1px solid #673638; }
 .pick-actions button:disabled { opacity: .4; }
+
+/* Kill-Switch */
+.ks { padding: 14px; background: #151b1f; border: 1px solid #2b373e; border-radius: 10px; }
+.ks.danger { border-color: #673638; background: #21171a; }
+.ks-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.ks-head strong { display: block; }
+.ks-head span { color: #84929a; font-size: 12px; }
+.ks button { width: 100%; padding: 11px; border-radius: 8px; font-weight: 700; font-size: 14px; color: #101418; background: #e3b85f; border: 0; }
+.ks button.danger-btn { color: #fff; background: #c0392b; }
+.ks button:disabled { opacity: .45; }

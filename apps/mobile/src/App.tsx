@@ -14,14 +14,19 @@ import {
   Target,
 } from 'lucide-react'
 import {
+  approveLiquidation,
   armPick,
   disarmPick,
+  fetchKillSwitches,
   fetchPicks,
   fetchSummary,
+  loadCachedSummary,
+  releaseKillSwitch,
   type AnalysisPick,
+  type KillSwitches,
   type MobileSummary,
 } from './api'
-import { AuthError, clearToken, login } from './auth'
+import { AuthError, clearToken, getUsername, login } from './auth'
 
 type Tab = 'home' | 'orders' | 'risk' | 'watchlist' | 'alerts'
 
@@ -77,7 +82,7 @@ function Home({ data }: { data: MobileSummary }) {
 }
 
 function Orders({ data }: { data: MobileSummary }) {
-  const orders = [...data.orders.pending, ...data.orders.fills_today]
+  const orders = [...data.orders.pending, ...data.orders.fills_today, ...data.orders.expired]
   return (
     <section>
       <h2>주문 및 체결</h2>
@@ -101,6 +106,8 @@ function Risk({ data }: { data: MobileSummary }) {
       <section className="kpi-grid">
         <Kpi label="일간 위험" value={absPct(data.risk.short_term_risk)} />
         <Kpi label="위험 한도" value={absPct(data.risk.short_term_limit)} tone="info" />
+        <Kpi label="장기 위험" value={absPct(data.risk.long_term_risk)} />
+        <Kpi label="장기 한도" value={absPct(data.risk.long_term_limit)} tone="info" />
         <Kpi label="최대 노출" value={absPct(data.risk.max_exposure_pct)} />
         <Kpi label="보유 종목" value={`${data.risk.position_count}개`} />
       </section>
@@ -226,9 +233,62 @@ function Watchlist({
   )
 }
 
+function KillSwitch({
+  data, loading, error, busyId, message, onApprove, onRelease,
+}: {
+  data: KillSwitches
+  loading: boolean
+  error: string
+  busyId: string | null
+  message: string
+  onApprove: (strategyId: string) => void
+  onRelease: (strategyId: string) => void
+}) {
+  const empty = !data.approvals.length && !data.releases.length
+  return (
+    <section>
+      <h2>Kill-Switch</h2>
+      {message ? <div className="action-msg">{message}</div> : null}
+      {error ? <div className="error"><AlertTriangle size={20} />{error}</div> : null}
+      {loading && empty ? <Empty text="불러오는 중…" /> : null}
+      {!loading && empty && !error ? <Empty text="대기 중인 Kill-Switch 작업이 없습니다." /> : null}
+      <div className="rows">
+        {data.approvals.filter((k) => k.strategy_id).map((k) => (
+          <article className="ks danger" key={`a-${k.strategy_id}`}>
+            <div className="ks-head">
+              <div><strong>{k.strategy_id}</strong><span>{k.reason || '발동됨'}</span></div>
+              <span className="badge armed">청산 승인 대기</span>
+            </div>
+            <button
+              type="button" className="danger-btn"
+              disabled={busyId === k.strategy_id}
+              onClick={() => onApprove(k.strategy_id as string)}
+            >보유 포지션 청산 승인</button>
+          </article>
+        ))}
+        {data.releases.filter((k) => k.strategy_id).map((k) => (
+          <article className="ks" key={`r-${k.strategy_id}`}>
+            <div className="ks-head">
+              <div><strong>{k.strategy_id}</strong><span>청산 완료 — 해제 대기</span></div>
+              <span className="badge bought">해제 대기</span>
+            </div>
+            <button
+              type="button"
+              disabled={busyId === k.strategy_id}
+              onClick={() => onRelease(k.strategy_id as string)}
+            >Kill-Switch 해제(신규 진입 재개)</button>
+          </article>
+        ))}
+      </div>
+    </section>
+  )
+}
+
+const POLL_INTERVAL = 30000 // 30초 자동 갱신
+
 export function App() {
   const [tab, setTab] = useState<Tab>('home')
-  const [data, setData] = useState<MobileSummary>()
+  const [data, setData] = useState<MobileSummary | undefined>(() => loadCachedSummary())
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
   const [needLogin, setNeedLogin] = useState(false)
@@ -237,6 +297,11 @@ export function App() {
   const [picksError, setPicksError] = useState('')
   const [actionBusyId, setActionBusyId] = useState<number | null>(null)
   const [actionMsg, setActionMsg] = useState('')
+  const [ks, setKs] = useState<KillSwitches>({ approvals: [], releases: [] })
+  const [ksLoading, setKsLoading] = useState(false)
+  const [ksError, setKsError] = useState('')
+  const [ksBusyId, setKsBusyId] = useState<string | null>(null)
+  const [ksMsg, setKsMsg] = useState('')
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -300,13 +365,84 @@ export function App() {
   )
   const onDisarm = useCallback((pick: AnalysisPick) => void runAction(pick, 'disarm'), [runAction])
 
+  const loadKillSwitches = useCallback(async () => {
+    setKsLoading(true)
+    setKsError('')
+    try {
+      setKs(await fetchKillSwitches())
+    } catch (reason) {
+      if (reason instanceof AuthError) setNeedLogin(true)
+      else setKsError(reason instanceof Error ? reason.message : 'Kill-Switch 현황을 불러오지 못했습니다.')
+    } finally {
+      setKsLoading(false)
+    }
+  }, [])
+
+  const onApprove = useCallback(
+    (strategyId: string) => {
+      const ok = window.confirm(
+        `⚠️ 실거래 경고\n\n[${strategyId}] 보유 포지션을 시장가로 청산 승인합니다.\n` +
+        `이 작업은 되돌릴 수 없습니다. 정말 진행할까요?`,
+      )
+      if (!ok) return
+      setKsBusyId(strategyId)
+      setKsMsg('')
+      approveLiquidation(strategyId, getUsername())
+        .then(() => { setKsMsg(`${strategyId} 청산 승인됨`); return loadKillSwitches() })
+        .catch((e) => {
+          if (e instanceof AuthError) setNeedLogin(true)
+          else setKsMsg(`실패: ${e instanceof Error ? e.message : '요청 오류'}`)
+        })
+        .finally(() => setKsBusyId(null))
+    },
+    [loadKillSwitches],
+  )
+
+  const onRelease = useCallback(
+    (strategyId: string) => {
+      const ok = window.confirm(
+        `[${strategyId}] Kill-Switch를 해제하면 신규 진입이 재개됩니다.\n청산이 완료됐는지 확인했나요?`,
+      )
+      if (!ok) return
+      setKsBusyId(strategyId)
+      setKsMsg('')
+      releaseKillSwitch(strategyId, getUsername())
+        .then(() => { setKsMsg(`${strategyId} Kill-Switch 해제됨`); return loadKillSwitches() })
+        .catch((e) => {
+          if (e instanceof AuthError) setNeedLogin(true)
+          else setKsMsg(`실패: ${e instanceof Error ? e.message : '요청 오류'}`)
+        })
+        .finally(() => setKsBusyId(null))
+    },
+    [loadKillSwitches],
+  )
+
   useEffect(() => {
     void refresh()
   }, [refresh])
 
   useEffect(() => {
     if (tab === 'watchlist') void loadPicks()
-  }, [tab, loadPicks])
+    if (tab === 'risk') void loadKillSwitches()
+  }, [tab, loadPicks, loadKillSwitches])
+
+  // 30초 자동 폴링 — 백그라운드(숨김)에서는 멈추고, 화면 복귀 시 즉시 갱신한다.
+  useEffect(() => {
+    if (needLogin) return
+    const tick = () => {
+      if (document.hidden) return
+      void refresh()
+      if (tab === 'watchlist') void loadPicks()
+      if (tab === 'risk') void loadKillSwitches()
+    }
+    const timer = window.setInterval(tick, POLL_INTERVAL)
+    const onVisible = () => { if (!document.hidden) tick() }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
+  }, [needLogin, tab, refresh, loadPicks, loadKillSwitches])
 
   if (needLogin) {
     return <Login onSuccess={() => void refresh()} />
@@ -336,7 +472,16 @@ export function App() {
         {error ? <div className="error"><AlertTriangle size={20} />{error}<button type="button" onClick={() => void refresh()}>다시 시도</button></div> : null}
         {data && tab === 'home' ? <Home data={data} /> : null}
         {data && tab === 'orders' ? <Orders data={data} /> : null}
-        {data && tab === 'risk' ? <Risk data={data} /> : null}
+        {data && tab === 'risk' ? (
+          <>
+            <Risk data={data} />
+            <KillSwitch
+              data={ks} loading={ksLoading} error={ksError}
+              busyId={ksBusyId} message={ksMsg}
+              onApprove={onApprove} onRelease={onRelease}
+            />
+          </>
+        ) : null}
         {tab === 'watchlist' ? (
           <Watchlist
             picks={picks} loading={picksLoading} error={picksError}
