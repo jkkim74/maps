@@ -22,6 +22,7 @@ env/
 *.db
 *.sqlite
 *.sqlite3
+*.db.bak_*
 
 # IDE
 .vscode/
@@ -38,6 +39,7 @@ htmlcov/
 
 # Logs
 *.log
+logs/
 logs/.kis_token_cache.json
 
 # Node / hybrid mobile app
