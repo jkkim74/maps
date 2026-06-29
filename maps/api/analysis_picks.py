@@ -22,7 +22,7 @@ from maps.api.schemas import (
     AnalysisPickUpdate,
 )
 from maps.common.exceptions import BrokerAdapterError
-from maps.common.models import AnalysisPick, HistoricalOHLCV
+from maps.common.models import AnalysisPick, HistoricalOHLCV, OrderLog
 from maps.common.settings import get_settings
 from maps.execution.broker_adapter import get_broker
 
@@ -110,7 +110,39 @@ def _current_prices(db: Session, tickers: list[str]) -> dict[str, float]:
     return prices
 
 
-def _to_item(p: AnalysisPick, current_price: float | None = None) -> AnalysisPickItem:
+def _fill_prices(db: Session, picks: list[AnalysisPick]) -> dict[int, float]:
+    """진입 주문이 있는 픽의 실 진입 체결가를 구한다(pick.id → 체결가).
+
+    pick.entry_order_id 로 order_log 를 단일 배치 조회해, 리스크 모니터 보유종목과 동일하게
+    실제 체결가(fill_price)를 우선 쓰고 없으면 계획가(order_price)로 폴백한다. 미체결(WATCH/
+    ARMED)이나 진입 주문이 없는 픽은 결과에서 빠진다(응답에서 fill_price=None). 외부 브로커
+    호출 없이 DB 쿼리만으로 처리한다.
+    """
+    order_ids = {p.entry_order_id for p in picks if p.entry_order_id}
+    if not order_ids:
+        return {}
+    rows = (
+        db.query(OrderLog.order_id, OrderLog.fill_price, OrderLog.order_price)
+        .filter(OrderLog.order_id.in_(order_ids))
+        .all()
+    )
+    by_order: dict[str, float] = {}
+    for order_id, fill_price, order_price in rows:
+        price = fill_price if fill_price and fill_price > 0 else order_price
+        if price and price > 0:
+            by_order[order_id] = float(price)
+    return {
+        p.id: by_order[p.entry_order_id]
+        for p in picks
+        if p.entry_order_id and p.entry_order_id in by_order
+    }
+
+
+def _to_item(
+    p: AnalysisPick,
+    current_price: float | None = None,
+    fill_price: float | None = None,
+) -> AnalysisPickItem:
     """ORM 모델을 응답 스키마로 변환한다."""
     return AnalysisPickItem(
         id=p.id,
@@ -121,6 +153,7 @@ def _to_item(p: AnalysisPick, current_price: float | None = None) -> AnalysisPic
         current_price=current_price,
         source=p.source,
         buy_price=p.buy_price,
+        fill_price=fill_price,
         target_price=p.target_price,
         stop_price=p.stop_price,
         qty=p.qty,
@@ -151,9 +184,10 @@ def list_picks(
         q = q.filter(AnalysisPick.source == source)
     rows = q.order_by(AnalysisPick.created_at.desc()).limit(500).all()
     prices = _current_prices(db, [r.ticker for r in rows])
+    fills = _fill_prices(db, rows)
     return AnalysisPicksResponse(
         total=len(rows),
-        picks=[_to_item(r, prices.get(r.ticker)) for r in rows],
+        picks=[_to_item(r, prices.get(r.ticker), fills.get(r.id)) for r in rows],
     )
 
 

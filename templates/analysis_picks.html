@@ -97,6 +97,7 @@ async function loadPicks() {
         <td class="text-muted">${escHtml(p.market || '—')}</td>
         <td class="ap-num mono">${fmtPrice(p.current_price)}</td>
         <td class="ap-num mono">${fmtPrice(p.buy_price)}</td>
+        <td class="ap-num mono">${fmtPrice(p.fill_price)}</td>
         <td class="ap-num mono">${fmtPrice(p.target_price)}</td>
         <td class="ap-num mono">${fmtPrice(p.stop_price)}</td>
         <td class="ap-num mono">${p.rr_ratio != null ? p.rr_ratio.toFixed(2) : '—'}</td>
@@ -110,7 +111,7 @@ async function loadPicks() {
       <table>
         <thead><tr>
           <th>종목</th><th>시장</th><th class="ap-num">현재가</th>
-          <th class="ap-num">매수가</th><th class="ap-num">목표가</th><th class="ap-num">손절가</th>
+          <th class="ap-num">매수가</th><th class="ap-num">체결가</th><th class="ap-num">목표가</th><th class="ap-num">손절가</th>
           <th class="ap-num">손익비</th><th>상태</th>
           <th style="text-align:center">브래킷</th><th>소스</th><th>생성</th><th></th>
         </tr></thead>

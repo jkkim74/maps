@@ -625,6 +625,7 @@ class AnalysisPickItem(BaseModel):
     current_price: float | None = None     # 현재가(최신 일봉 종가 기준, 수집 후 당일 종가)
     source: str
     buy_price: float | None = None
+    fill_price: float | None = None        # 실 진입 체결가(entry_order_id→OrderLog.fill_price)
     target_price: float | None = None
     stop_price: float | None = None
     qty: int | None = None

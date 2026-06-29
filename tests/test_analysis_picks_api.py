@@ -112,6 +112,43 @@ def test_list_current_price_prefers_broker_live(client, monkeypatch) -> None:
     assert item["current_price"] == 72800  # 일봉 종가(71500)가 아니라 라이브 시세
 
 
+def _seed_bought_pick_with_order(client, *, fill_price, order_price, status="filled"):
+    """BOUGHT 픽 + 연결된 진입 OrderLog를 시드하고 pick_id를 반환한다."""
+    from maps.common.models import AnalysisPick, OrderLog
+
+    pid = client.post("/api/v1/analysis-picks", json={"picks": [_sample(ticker="005930")]}).json()["picks"][0]["id"]
+    with client.session_factory() as s:
+        pick = s.get(AnalysisPick, pid)
+        pick.state = "BOUGHT"
+        pick.entry_order_id = "ord-005930-1"
+        s.add(OrderLog(
+            order_id="ord-005930-1", strategy_id="strategy_trade", ticker="005930",
+            side="buy", qty=10, order_price=order_price, fill_price=fill_price,
+            fill_qty=10, status=status,
+        ))
+        s.commit()
+    return pid
+
+
+def test_fill_price_from_order_log(client) -> None:
+    _seed_bought_pick_with_order(client, fill_price=70150, order_price=70000)
+    item = client.get("/api/v1/analysis-picks").json()["picks"][0]
+    assert item["fill_price"] == 70150  # 실제 체결가
+    assert item["buy_price"] == 70000   # 계획 매수가는 유지
+
+
+def test_fill_price_falls_back_to_order_price(client) -> None:
+    _seed_bought_pick_with_order(client, fill_price=None, order_price=70000)
+    item = client.get("/api/v1/analysis-picks").json()["picks"][0]
+    assert item["fill_price"] == 70000  # fill_price 없으면 order_price 폴백
+
+
+def test_fill_price_none_without_entry_order(client) -> None:
+    client.post("/api/v1/analysis-picks", json={"picks": [_sample(ticker="005930")]})
+    item = client.get("/api/v1/analysis-picks").json()["picks"][0]
+    assert item["fill_price"] is None  # 미체결(WATCH, 진입주문 없음)
+
+
 def test_create_single_and_rr_ratio(client) -> None:
     r = client.post("/api/v1/analysis-picks", json={"picks": [_sample()]})
     assert r.status_code == 200
