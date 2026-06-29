@@ -7,11 +7,13 @@ import {
   Gauge,
   House,
   ListOrdered,
+  LogOut,
   RefreshCw,
   ShieldCheck,
   ShieldX,
 } from 'lucide-react'
 import { fetchSummary, type MobileSummary } from './api'
+import { AuthError, clearToken, login } from './auth'
 
 type Tab = 'home' | 'orders' | 'risk' | 'alerts'
 
@@ -126,19 +128,64 @@ function Alerts({ items }: { items: MobileSummary['alerts'] }) {
   )
 }
 
+function Login({ onSuccess }: { onSuccess: () => void }) {
+  const [username, setUsername] = useState('admin')
+  const [password, setPassword] = useState('')
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault()
+    setBusy(true)
+    setError('')
+    try {
+      await login(username, password)
+      onSuccess()
+    } catch (reason) {
+      setError(reason instanceof AuthError ? reason.message : '로그인에 실패했습니다.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="login-shell">
+      <form className="login-card" onSubmit={submit}>
+        <div className="login-brand"><span className="brand">MAPS</span><p>Mobile Operations</p></div>
+        <label>아이디
+          <input value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" />
+        </label>
+        <label>비밀번호
+          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" />
+        </label>
+        {error ? <div className="login-error">{error}</div> : null}
+        <button type="submit" className="login-btn" disabled={busy}>
+          {busy ? '로그인 중…' : '로그인'}
+        </button>
+      </form>
+    </div>
+  )
+}
+
 export function App() {
   const [tab, setTab] = useState<Tab>('home')
   const [data, setData] = useState<MobileSummary>()
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
+  const [needLogin, setNeedLogin] = useState(false)
 
   const refresh = useCallback(async () => {
     setLoading(true)
     setError('')
     try {
       setData(await fetchSummary())
+      setNeedLogin(false)
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '데이터를 불러오지 못했습니다.')
+      if (reason instanceof AuthError) {
+        setNeedLogin(true)
+      } else {
+        setError(reason instanceof Error ? reason.message : '데이터를 불러오지 못했습니다.')
+      }
     } finally {
       setLoading(false)
     }
@@ -148,13 +195,28 @@ export function App() {
     void refresh()
   }, [refresh])
 
+  if (needLogin) {
+    return <Login onSuccess={() => void refresh()} />
+  }
+
+  const logout = () => {
+    clearToken()
+    setData(undefined)
+    setNeedLogin(true)
+  }
+
   return (
     <div className="app-shell">
       <header>
         <div><span className="brand">MAPS</span><p>Mobile Operations</p></div>
-        <button className="icon-btn" type="button" onClick={() => void refresh()} aria-label="새로고침" title="새로고침">
-          <RefreshCw size={19} className={loading ? 'spin' : ''} />
-        </button>
+        <div className="header-actions">
+          <button className="icon-btn" type="button" onClick={() => void refresh()} aria-label="새로고침" title="새로고침">
+            <RefreshCw size={19} className={loading ? 'spin' : ''} />
+          </button>
+          <button className="icon-btn" type="button" onClick={logout} aria-label="로그아웃" title="로그아웃">
+            <LogOut size={19} />
+          </button>
+        </div>
       </header>
       <main>
         {loading && !data ? <div className="loading"><RefreshCw className="spin" />운영 데이터를 불러오는 중입니다.</div> : null}

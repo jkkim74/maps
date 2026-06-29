@@ -61,10 +61,20 @@ export type MobileSummary = {
   alerts: Alert[]
 }
 
+import { AuthError, clearToken, getToken } from './auth'
+
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? ''
 
 export async function fetchSummary(signal?: AbortSignal): Promise<MobileSummary> {
-  const response = await fetch(`${API_BASE}/api/v1/mobile/summary`, { signal })
+  const token = getToken()
+  const headers: Record<string, string> = {}
+  if (token) headers.Authorization = `Bearer ${token}`
+
+  const response = await fetch(`${API_BASE}/api/v1/mobile/summary`, { signal, headers })
+  if (response.status === 401) {
+    clearToken()
+    throw new AuthError('로그인이 필요합니다.')
+  }
   if (!response.ok) {
     throw new Error(`서버 응답 오류 (${response.status})`)
   }

@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import datetime as dt
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from maps.api.auth import check_credentials, make_mobile_token
 from maps.api.dashboard import get_dashboard
 from maps.api.deps import get_db
 from maps.api.live_monitor import get_live_monitor
@@ -25,8 +26,19 @@ from maps.api.schemas import (
     OrdersResponse,
     RiskResponse,
 )
+from maps.common.settings import get_settings
 
 router = APIRouter(prefix="/api/v1/mobile", tags=["Mobile"])
+
+
+class MobileLoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class MobileLoginResponse(BaseModel):
+    token: str
+    username: str
 
 
 class MobileSummaryResponse(BaseModel):
@@ -36,6 +48,20 @@ class MobileSummaryResponse(BaseModel):
     risk: RiskResponse
     live_monitor: LiveMonitorResponse
     alerts: list[AlertItem]
+
+
+@router.post("/login", response_model=MobileLoginResponse)
+def mobile_login(body: MobileLoginRequest) -> MobileLoginResponse:
+    """공유 비밀번호를 검증하고 Bearer 토큰을 발급한다(앱 전용).
+
+    인증 비활성 환경에서도 올바른 자격증명이면 토큰을 발급하며, 자격증명이
+    틀리거나 비밀번호 미설정이면 401. 앱은 401 응답으로 로그인 실패를 구분한다.
+    """
+    settings = get_settings()
+    if not check_credentials(settings, body.username, body.password):
+        raise HTTPException(status_code=401, detail="아이디 또는 비밀번호가 올바르지 않습니다.")
+    username = body.username or settings.maps_auth_username
+    return MobileLoginResponse(token=make_mobile_token(username, settings), username=username)
 
 
 @router.get("/summary", response_model=MobileSummaryResponse)
