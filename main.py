@@ -45,6 +45,7 @@ from maps.api.mobile import router as mobile_router
 from maps.api.trade_review import router as trade_review_router
 from maps.api.stock_analysis import router as stock_analysis_router
 from maps.api.analysis_picks import router as analysis_picks_router
+from maps.api.telegram import router as telegram_router
 
 logger = logging.getLogger(__name__)
 
@@ -140,6 +141,7 @@ app.include_router(mobile_router)
 app.include_router(trade_review_router)
 app.include_router(stock_analysis_router)
 app.include_router(analysis_picks_router)
+app.include_router(telegram_router)
 app.include_router(auth_router)
 
 

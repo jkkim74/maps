@@ -88,6 +88,11 @@ class MapsSettings(BaseSettings):
     dart_api_key: str = ""
     slack_webhook_url: str = ""
 
+    # Telegram 봇 알림 + 무장/무장해제 인라인 버튼 콜백
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
+    telegram_webhook_secret: str = ""
+
     # AWS Bedrock (Claude AI 분석)
     aws_access_key_id: str = ""
     aws_secret_access_key: str = ""
@@ -328,6 +333,9 @@ def get_config_status(settings: MapsSettings | None = None) -> list[ConfigSectio
             "Notifications",
             [
                 _field(s, "slack_webhook_url", "SLACK_WEBHOOK_URL", "Optional Slack incoming webhook for alerts", secret=True),
+                _field(s, "telegram_bot_token", "TELEGRAM_BOT_TOKEN", "Telegram bot token for analyze-result alerts", secret=True),
+                _field(s, "telegram_chat_id", "TELEGRAM_CHAT_ID", "Telegram chat id that receives alerts and may trigger arm/disarm"),
+                _field(s, "telegram_webhook_secret", "TELEGRAM_WEBHOOK_SECRET", "Secret token validating inbound Telegram webhook calls", secret=True),
             ],
         ),
     ]

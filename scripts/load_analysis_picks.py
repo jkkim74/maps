@@ -77,6 +77,10 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--candidates-count", type=int, default=None, help="스크리닝 후보 수(선택적 퍼널 메모).",
     )
+    parser.add_argument(
+        "--no-telegram", action="store_true",
+        help="텔레그램 편입 알림을 보내지 않는다(수동 적재·테스트용).",
+    )
     return parser.parse_args(argv)
 
 
@@ -131,6 +135,8 @@ def load_picks(
     error_message: str | None = None,
     candidates_count: int | None = None,
     session_factory: Callable[[], Session] = SessionLocal,
+    notify_telegram: bool = True,
+    notifier: Any | None = None,
 ) -> list[dict[str, Any]]:
     """종목 배열을 analysis_pick 으로 적재한다. 적재된(또는 예정) 항목 요약을 반환한다.
 
@@ -202,6 +208,21 @@ def load_picks(
             prep["id"] = pick.id
     finally:
         session.close()
+
+    # 편입 결과를 텔레그램으로 푸시(무장/무장해제 버튼 포함). best-effort —
+    # 전송 실패가 적재 성공을 무효화하지 않는다. completed + 1종목 이상일 때만.
+    if notify_telegram and status == "completed" and prepared:
+        try:
+            tg = notifier
+            if tg is None:
+                from maps.ops.notifications import get_telegram_notifier
+                tg = get_telegram_notifier()
+            tg.send_analysis_picks(
+                prepared, regime=regime, context=context, ref_date=ref_date.isoformat()
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"  [warn] 텔레그램 알림 실패(무시): {exc}", file=sys.stderr)
+
     return prepared
 
 
@@ -223,6 +244,7 @@ def main(argv: list[str]) -> int:
         note=args.note,
         error_message=args.error,
         candidates_count=args.candidates_count,
+        notify_telegram=not args.no_telegram,
     )
     verb = "적재 대상" if args.dry_run else "적재 완료"
     print(f"{verb}: {len(result)}건 (ref_date={ref_date.isoformat()}, source={args.source})")

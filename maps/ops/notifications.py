@@ -159,3 +159,153 @@ def get_notifier() -> SlackNotifier:
     if _notifier is None:
         _notifier = SlackNotifier()
     return _notifier
+
+
+def _esc(text: object) -> str:
+    """텔레그램 HTML parse_mode 용 최소 이스케이프."""
+    return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+class TelegramNotifier:
+    """Telegram Bot API 클라이언트.
+
+    `telegram_bot_token` 또는 `telegram_chat_id` 가 비어있으면 모든 호출이 no-op이라
+    로컬 개발·테스트에서는 조용히 넘어간다(SlackNotifier와 동일 패턴).
+    """
+
+    _API = "https://api.telegram.org/bot{token}/{method}"
+
+    def __init__(
+        self,
+        settings: MapsSettings | None = None,
+        *,
+        http: HttpPoster | None = None,
+        timeout: float = 5.0,
+    ) -> None:
+        self._settings = settings or get_settings()
+        self._http = http or requests
+        self._timeout = timeout
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self._settings.telegram_bot_token and self._settings.telegram_chat_id)
+
+    def _call(self, method: str, payload: dict[str, Any]) -> bool:
+        """Bot API 메서드를 호출한다. 실패해도 파이프라인을 막지 않는다."""
+        if not self._settings.telegram_bot_token:
+            logger.debug("Telegram disabled; %s skipped", method)
+            return False
+        url = self._API.format(token=self._settings.telegram_bot_token, method=method)
+        try:
+            response = self._http.post(url, json=payload, timeout=self._timeout)
+            status_code = getattr(response, "status_code", 200)
+            if status_code >= 400:
+                logger.warning("Telegram %s failed: HTTP %s", method, status_code)
+                return False
+            return True
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Telegram %s failed: %s", method, exc)
+            return False
+
+    def send_message(
+        self,
+        text: str,
+        *,
+        buttons: list[list[dict[str, str]]] | None = None,
+        parse_mode: str = "HTML",
+        chat_id: str | None = None,
+    ) -> bool:
+        """텍스트 메시지를 보낸다. buttons는 inline_keyboard 행 리스트."""
+        if not self.enabled and chat_id is None:
+            logger.debug("Telegram disabled; message skipped")
+            return False
+        payload: dict[str, Any] = {
+            "chat_id": chat_id or self._settings.telegram_chat_id,
+            "text": text,
+            "parse_mode": parse_mode,
+            "disable_web_page_preview": True,
+        }
+        if buttons:
+            payload["reply_markup"] = {"inline_keyboard": buttons}
+        return self._call("sendMessage", payload)
+
+    def answer_callback(self, callback_query_id: str, text: str = "") -> bool:
+        """인라인 버튼 콜백에 대한 토스트 응답."""
+        payload: dict[str, Any] = {"callback_query_id": callback_query_id}
+        if text:
+            payload["text"] = text
+        return self._call("answerCallbackQuery", payload)
+
+    def edit_message_text(
+        self,
+        *,
+        chat_id: str | int,
+        message_id: int,
+        text: str,
+        buttons: list[list[dict[str, str]]] | None = None,
+        parse_mode: str = "HTML",
+    ) -> bool:
+        """이미 보낸 메시지의 본문/버튼을 갱신한다(상태 반영)."""
+        payload: dict[str, Any] = {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": text,
+            "parse_mode": parse_mode,
+            "disable_web_page_preview": True,
+        }
+        payload["reply_markup"] = {"inline_keyboard": buttons or []}
+        return self._call("editMessageText", payload)
+
+    def send_analysis_picks(
+        self,
+        picks: list[dict[str, Any]],
+        *,
+        regime: str | None = None,
+        context: str | None = None,
+        ref_date: str | None = None,
+    ) -> bool:
+        """편입 종목을 요약 헤더 1건 + 종목별 메시지(무장/무장해제 버튼)로 푸시한다.
+
+        `picks`의 각 항목은 load_analysis_picks 의 prepared dict
+        (id, ticker, name, buy_price, target_price, stop_price)를 기대한다.
+        """
+        if not self.enabled:
+            logger.debug("Telegram disabled; analysis picks skipped")
+            return False
+        if not picks:
+            return False
+
+        header_lines = [f"📈 <b>MAPS 편입 {len(picks)}종목</b>"]
+        if ref_date:
+            header_lines.append(f"기준일 {_esc(ref_date)}")
+        meta = " · ".join(p for p in (regime, context) if p)
+        if meta:
+            header_lines.append(_esc(meta))
+        ok = self.send_message("\n".join(header_lines))
+
+        for pick in picks:
+            pid = pick.get("id")
+            lines = [
+                f"<b>{_esc(pick.get('name') or pick.get('ticker'))}</b> "
+                f"(<code>{_esc(pick.get('ticker'))}</code>)",
+                f"매수 {_esc(pick.get('buy_price'))} / 목표 {_esc(pick.get('target_price'))} "
+                f"/ 손절 {_esc(pick.get('stop_price'))}",
+            ]
+            buttons: list[list[dict[str, str]]] | None = None
+            if pid is not None:
+                buttons = [[
+                    {"text": "🔫 무장", "callback_data": f"arm:{pid}"},
+                    {"text": "🛑 무장해제", "callback_data": f"disarm:{pid}"},
+                ]]
+            ok = self.send_message("\n".join(lines), buttons=buttons) and ok
+        return ok
+
+
+_telegram_notifier: TelegramNotifier | None = None
+
+
+def get_telegram_notifier() -> TelegramNotifier:
+    global _telegram_notifier
+    if _telegram_notifier is None:
+        _telegram_notifier = TelegramNotifier()
+    return _telegram_notifier

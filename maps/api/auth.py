@@ -25,7 +25,9 @@ templates = Jinja2Templates(directory="templates")
 SESSION_USER_KEY = "user"
 
 # 인증 없이 접근 가능한 경로(접두사 포함).
-_PUBLIC_PATHS: frozenset[str] = frozenset({"/login", "/logout", "/health", "/favicon.ico"})
+_PUBLIC_PATHS: frozenset[str] = frozenset(
+    {"/login", "/logout", "/health", "/favicon.ico", "/api/telegram/webhook"}
+)
 _PUBLIC_PREFIXES: tuple[str, ...] = ("/static/",)
 
 
