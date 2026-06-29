@@ -2038,7 +2038,45 @@ class OperationalPipeline:
 
             current = _current(pick.ticker, pos)
             if current is None:
+                logger.info(
+                    "전략매매 추적 [%s] %s: 현재가 없음 (장중 시세·포지션 모두 조회 실패)",
+                    pick.ticker,
+                    pick.state,
+                )
                 continue
+
+            # 매 사이클 추적 로그: 현재가가 목표/손절(또는 진입가)에 얼마나 가까운지 기록한다.
+            # 주문이 나가지 않는 사이클에도 추적 경과를 남겨 운영 중 가시성을 확보한다.
+            if pick.state == "ARMED" and pick.buy_price:
+                gap_pct = (current - pick.buy_price) / pick.buy_price * 100.0
+                logger.info(
+                    "전략매매 추적 [%s] ARMED: 현재가=%.0f 매수가=%.0f (%+.2f%%, %s)",
+                    pick.ticker,
+                    current,
+                    pick.buy_price,
+                    gap_pct,
+                    "진입대기" if current > pick.buy_price else "진입조건 충족",
+                )
+            elif pick.state == "BOUGHT":
+                to_target = (
+                    (pick.target_price - current) / current * 100.0
+                    if pick.target_price
+                    else None
+                )
+                to_stop = (
+                    (current - pick.stop_price) / current * 100.0
+                    if pick.stop_price
+                    else None
+                )
+                logger.info(
+                    "전략매매 추적 [%s] BOUGHT: 현재가=%.0f 목표가=%s(%s) 손절가=%s(%s)",
+                    pick.ticker,
+                    current,
+                    f"{pick.target_price:.0f}" if pick.target_price else "n/a",
+                    f"+{to_target:.2f}%" if to_target is not None else "n/a",
+                    f"{pick.stop_price:.0f}" if pick.stop_price else "n/a",
+                    f"-{to_stop:.2f}%" if to_stop is not None else "n/a",
+                )
 
             if pick.state == "ARMED":
                 # 진입 주문이 체결 없이 종료(취소/만료/거부)되면 entry_order_id를 비워 재진입을 허용한다.
