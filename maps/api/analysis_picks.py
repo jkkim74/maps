@@ -130,7 +130,7 @@ def _fill_prices(db: Session, picks: list[AnalysisPick]) -> dict[int, float]:
     for order_id, fill_price, order_price in rows:
         price = fill_price if fill_price and fill_price > 0 else order_price
         if price and price > 0:
-            by_order[order_id] = float(price)
+            by_order[order_id] = float(round(price))  # 체결가는 원 단위 정수로 표시
     return {
         p.id: by_order[p.entry_order_id]
         for p in picks
@@ -165,7 +165,8 @@ def _to_item(
         entry_order_id=p.entry_order_id,
         exit_order_id=p.exit_order_id,
         last_action_at=p.last_action_at.isoformat() if p.last_action_at else None,
-        rr_ratio=_rr_ratio(p.buy_price, p.target_price, p.stop_price),
+        # 손익비는 체결가 우선(실제 진입가) — 미체결이면 계획 매수가 기준.
+        rr_ratio=_rr_ratio(fill_price or p.buy_price, p.target_price, p.stop_price),
         created_at=p.created_at.isoformat() if p.created_at else "",
     )
 

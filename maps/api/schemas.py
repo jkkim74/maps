@@ -637,7 +637,7 @@ class AnalysisPickItem(BaseModel):
     entry_order_id: str | None = None
     exit_order_id: str | None = None
     last_action_at: str | None = None
-    rr_ratio: float | None = None          # 손익비 = (목표가-매수가)/(매수가-손절가)
+    rr_ratio: float | None = None          # 손익비 = (목표가-진입가)/(진입가-손절가), 진입가=체결가 우선
     created_at: str
 
 

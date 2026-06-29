@@ -135,6 +135,22 @@ def test_fill_price_from_order_log(client) -> None:
     item = client.get("/api/v1/analysis-picks").json()["picks"][0]
     assert item["fill_price"] == 70150  # 실제 체결가
     assert item["buy_price"] == 70000   # 계획 매수가는 유지
+    # 손익비는 체결가(70150) 기준: (80000-70150)/(70150-66000) = 9850/4150 ≈ 2.37
+    assert item["rr_ratio"] == 2.37
+
+
+def test_fill_price_dropped_decimals(client) -> None:
+    _seed_bought_pick_with_order(client, fill_price=70150.7, order_price=70000)
+    item = client.get("/api/v1/analysis-picks").json()["picks"][0]
+    assert item["fill_price"] == 70151  # 소수점 반올림 → 정수
+
+
+def test_rr_ratio_uses_planned_buy_when_unfilled(client) -> None:
+    # 미체결(WATCH) 픽은 계획 매수가(70000) 기준: (80000-70000)/(70000-66000)=2.5
+    client.post("/api/v1/analysis-picks", json={"picks": [_sample(ticker="005930")]})
+    item = client.get("/api/v1/analysis-picks").json()["picks"][0]
+    assert item["fill_price"] is None
+    assert item["rr_ratio"] == 2.5
 
 
 def test_fill_price_falls_back_to_order_price(client) -> None:
