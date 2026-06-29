@@ -34,8 +34,13 @@ from scripts.load_analysis_picks import _snap_price
 _PROTECTED_STATES = {"ARMED", "BOUGHT"}
 
 
-def normalize(*, apply: bool) -> int:
-    """모든 analysis_pick 가격을 호가 단위로 스냅한다. 변경(또는 예정) 건수를 반환한다."""
+def normalize(*, apply: bool, include_protected: bool = False) -> int:
+    """모든 analysis_pick 가격을 호가 단위로 스냅한다. 변경(또는 예정) 건수를 반환한다.
+
+    include_protected=True면 ARMED/BOUGHT 픽도 함께 정규화한다. 보유 픽의 목표·손절가는
+    코드가 매 사이클 평가하는 값일 뿐 대기 주문이 아니므로(고아 주문 위험 없음) 스냅은
+    안전하지만, 라이브 포지션을 건드리므로 명시적으로만 허용한다.
+    """
     session = SessionLocal()
     changed = 0
     skipped_protected = 0
@@ -47,12 +52,12 @@ def normalize(*, apply: bool) -> int:
             new_stop = _snap_price(p.stop_price, p.market, kind="stop")
             if (new_buy, new_target, new_stop) == (p.buy_price, p.target_price, p.stop_price):
                 continue  # 이미 호가 그리드 위 — 변경 없음
-            if p.state in _PROTECTED_STATES:
+            if p.state in _PROTECTED_STATES and not include_protected:
                 skipped_protected += 1
                 print(
                     f"  [skip:{p.state}] #{p.id} {p.ticker} "
                     f"매수 {p.buy_price}→{new_buy} / 목표 {p.target_price}→{new_target} / "
-                    f"손절 {p.stop_price}→{new_stop}  (무장·보유: disarm 후 수동 처리)",
+                    f"손절 {p.stop_price}→{new_stop}  (무장·보유: --include-protected 로만 처리)",
                     file=sys.stderr,
                 )
                 continue
@@ -82,8 +87,12 @@ def main(argv: list[str]) -> int:
     """엔트리포인트."""
     parser = argparse.ArgumentParser(description="기존 analysis_pick 가격 호가단위 정규화")
     parser.add_argument("--apply", action="store_true", help="실제 DB 반영(기본=dry-run).")
+    parser.add_argument(
+        "--include-protected", action="store_true",
+        help="ARMED/BOUGHT(무장·보유) 픽도 정규화(기본=건너뜀).",
+    )
     args = parser.parse_args(argv)
-    normalize(apply=args.apply)
+    normalize(apply=args.apply, include_protected=args.include_protected)
     return 0
 
 

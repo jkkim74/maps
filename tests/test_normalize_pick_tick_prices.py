@@ -77,6 +77,17 @@ def test_protected_states_skipped(factory, monkeypatch) -> None:
     assert p.target_price == 61137  # 변경 없음
 
 
+def test_include_protected_normalizes_bought(factory, monkeypatch) -> None:
+    pid = _seed(factory, state="BOUGHT")
+    monkeypatch.setattr("scripts.normalize_pick_tick_prices.SessionLocal", factory)
+    from scripts.normalize_pick_tick_prices import normalize
+
+    assert normalize(apply=True, include_protected=True) == 1
+    with factory() as s:
+        p = s.get(AnalysisPick, pid)
+    assert p.target_price == 61100  # BOUGHT도 스냅됨
+
+
 def test_already_on_grid_no_change(factory, monkeypatch) -> None:
     _seed(factory, ticker="005930", buy_price=70000, target_price=80000, stop_price=66000)
     monkeypatch.setattr("scripts.normalize_pick_tick_prices.SessionLocal", factory)
