@@ -4,8 +4,9 @@
 // 토큰 저장은 현재 localStorage(웹/웹뷰 모두 동작). 네이티브 단계에서 @capacitor/preferences
 // 같은 보안 저장소로 교체할 수 있도록 storage 접근을 이 모듈로 격리한다.
 
+import { API_BASE } from './config'
+
 const TOKEN_KEY = 'maps.auth.token'
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? ''
 
 /** 401(인증 필요)을 일반 오류와 구분하기 위한 전용 에러. */
 export class AuthError extends Error {}
