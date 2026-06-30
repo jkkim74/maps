@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from maps.backtest.cost_model import (
-    BROKER_FEE_ROUNDTRIP,
+    BROKER_FEE_PER_SIDE,
     LARGE_CAP_THRESHOLD,
     SLIPPAGE_LARGE_CAP,
     SLIPPAGE_SMALL_CAP,
@@ -60,6 +60,14 @@ def test_small_cap_slippage():
     val = small.trade_value
     slip_diff = (SLIPPAGE_SMALL_CAP - SLIPPAGE_LARGE_CAP) * 2 * val
     assert abs((small_cost - large_cost) - slip_diff) < 1e-6
+
+
+def test_commission_charged_on_both_legs():
+    """수수료는 매수·매도 양측에 부과된다 (편도율 × (매수금액+매도금액))."""
+    model = CostModel(slippage_large=0.0, slippage_small=0.0, tax_sell=0.0, vol_multiplier=1.0)
+    trade = _trade(entry_price=10_000, exit_price=11_000, qty=100)
+    expected_fee = (10_000 * 100 + 11_000 * 100) * BROKER_FEE_PER_SIDE
+    assert abs(model.total_cost(trade) - expected_fee) < 1e-6
 
 
 def test_sensitivity_higher_than_apply():

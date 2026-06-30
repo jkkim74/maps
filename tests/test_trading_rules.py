@@ -40,9 +40,20 @@ def test_previous_trading_day_skips_configured_closure() -> None:
 
 
 def test_krx_tick_size_for_kospi_and_kosdaq() -> None:
+    # 2023-01-25 개편으로 코스피·코스닥 호가단위 통일 (200,000~500,000 → 500)
     assert krx_tick_size(317_000, market="KOSPI") == 500
-    assert krx_tick_size(317_000, market="KOSDAQ") == 100
+    assert krx_tick_size(317_000, market="KOSDAQ") == 500
     assert krx_tick_size(2_333_000, market="KOSPI") == 1_000
+
+
+def test_krx_tick_size_post_2023_bands() -> None:
+    # 개편 핵심 구간: 1,000~2,000→1, 10,000~20,000→10, 100,000~200,000→100
+    assert krx_tick_size(1_500) == 1
+    assert krx_tick_size(15_000) == 10
+    assert krx_tick_size(150_000) == 100
+    # 변경 없는 구간
+    assert krx_tick_size(3_000) == 5
+    assert krx_tick_size(30_000) == 50
 
 
 def test_round_up_krx_price_uses_valid_tick() -> None:
@@ -56,9 +67,9 @@ def test_round_to_krx_tick_snaps_to_nearest() -> None:
     assert round_to_krx_tick(54_960, market="KOSPI") == 55_000
     # 1만원 미만 구간(5,000~9,999) → 10원 단위
     assert round_to_krx_tick(7_434, market="KOSDAQ") == 7_430
-    # 10만원 이상: KOSPI=500, KOSDAQ=100
+    # 200,000~500,000: 개편 후 코스피·코스닥 모두 500원 단위
     assert round_to_krx_tick(320_170, market="KOSPI") == 320_000
-    assert round_to_krx_tick(320_170, market="KOSDAQ") == 320_200
+    assert round_to_krx_tick(320_170, market="KOSDAQ") == 320_000
 
 
 def test_round_to_krx_tick_handles_nonpositive() -> None:

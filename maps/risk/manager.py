@@ -19,8 +19,8 @@ from maps.common.exceptions import (
     KillSwitchError,
     UnauthorizedLiquidationError,  # noqa: F401
 )
-from maps.common.models import KillSwitchLog
-from maps.execution.broker_adapter import AccountBalance, BrokerAdapter, Order
+from maps.common.models import KillSwitchLog, OrderLog
+from maps.execution.broker_adapter import AccountBalance, BrokerAdapter, Order, OrderSide
 from maps.ops.notifications import SlackNotifier
 
 logger = logging.getLogger(__name__)
@@ -56,6 +56,7 @@ class RiskConfig:
     daily_loss_limit: float = 0.015     # 일일 손실 한도 (1.5%)
     mdd_limit: float = 0.15             # 포트폴리오 MDD 한도 (15%)
     position_size_limit: float = 0.10   # 단일 종목 최대 비중 (10%)
+    max_portfolio_exposure: float = 1.0  # 포트폴리오 총 노출 합산 한도 (100% = 현금초과 매수 금지)
     # 8단계: 테마·섹터 노출 한도
     sector_exposure_limit: float = 0.25         # 단일 섹터 최대 비중 (25%)
     theme_exposure_limit: float = 0.35          # 단일 테마 최대 비중 (35%)
@@ -90,6 +91,9 @@ class RiskManager:
         self._notifier = notifier or SlackNotifier()
         self._killed: dict[str, KillSwitchEvent] = {}
         self._failure_counts: dict[str, int] = {}
+        # 재시작 후 연속실패 카운트는 메모리에서 소실되므로, 전략별 최초 접근 시
+        # order_log 감사 로그에서 1회 복원한다(M-2). 복원 완료 전략을 기록.
+        self._failure_loaded: set[str] = set()
 
     # ------------------------------------------------------------------
     # 신규: 주문 전 체크
@@ -140,6 +144,30 @@ class RiskManager:
             if exposure > self._cfg.position_size_limit:
                 raise ExposureCapError(order.ticker, exposure)
 
+        # C-3: 신규 매수는 가용 현금·포트폴리오 총 노출도 함께 검증한다.
+        # total_value 기준 단일 노출 검사만으로는 보유 평가액이 커질수록 현금이 거의
+        # 없어도 "총자산의 10%" 주문이 통과되어, 누적 주문이 가용 현금을 초과할 수 있다.
+        is_buy = getattr(order, "side", OrderSide.BUY) == OrderSide.BUY
+        if is_buy and effective_price and effective_price > 0:
+            order_value = order.quantity * effective_price
+            if order_value > account.cash:
+                raise ExposureCapError(
+                    order.ticker,
+                    order_value / account.total_value if account.total_value > 0 else None,
+                    f"가용 현금 부족: 주문 {order_value:,.0f}원 > 현금 {account.cash:,.0f}원",
+                )
+            if account.total_value > 0:
+                portfolio_exposure = (
+                    account.positions_value + order_value
+                ) / account.total_value
+                if portfolio_exposure > self._cfg.max_portfolio_exposure:
+                    raise ExposureCapError(
+                        order.ticker,
+                        portfolio_exposure,
+                        f"포트폴리오 총 노출 {portfolio_exposure:.1%} > 한도 "
+                        f"{self._cfg.max_portfolio_exposure:.1%}",
+                    )
+
         # 8단계: 섹터·테마 노출 한도 체크 (활성화된 경우)
         if effective_price and effective_price > 0 and account.total_value > 0:
             self._check_exposure_limits(order, account, effective_price)
@@ -151,6 +179,33 @@ class RiskManager:
     def on_order_success(self, strategy_id: str) -> None:
         """주문 성공 시 연속 실패 카운터를 리셋한다."""
         self._failure_counts[strategy_id] = 0
+        self._failure_loaded.add(strategy_id)
+
+    def _restore_failure_count(self, strategy_id: str) -> int:
+        """재시작 후 order_log에서 마지막 성공 이후 연속 REJECTED 수를 복원한다.
+
+        in-memory 카운터는 프로세스 재시작 시 0으로 초기화되므로, 감사 로그(order_log)의
+        최근 주문 결과로 연속 실패 횟수를 보수적으로 재구성한다. REJECTED만 실패로 계수하고
+        그 외 상태(FILLED/CANCELLED/PARTIAL 등)를 만나면 중단한다(=성공 시 리셋과 동일 의미).
+        예외성 실패(로그 미기록)는 복원 불가하나, 과소계상은 안전한 방향이다.
+        """
+        try:
+            rows = (
+                self._db.query(OrderLog.status)
+                .filter(OrderLog.strategy_id == strategy_id)
+                .order_by(OrderLog.created_at.desc())
+                .limit(_CONSEC_FAILURE_THRESHOLD)
+                .all()
+            )
+        except Exception:
+            return 0
+        count = 0
+        for (status,) in rows:
+            if status == "REJECTED":
+                count += 1
+            else:
+                break
+        return count
 
     def on_order_failure(self, strategy_id: str, reason: str = "") -> KillSwitchEvent | None:
         """주문 실패 시 카운터를 증가시키고, 5회 시 Kill Switch를 자동 발동한다.
@@ -163,6 +218,14 @@ class RiskManager:
         Returns:
             Kill Switch 발동 시 KillSwitchEvent, 아니면 None.
         """
+        # 재시작 직후라면 order_log에서 연속 실패 수를 1회 복원해 카운터를 시드한다(M-2).
+        if strategy_id not in self._failure_loaded:
+            restored = self._restore_failure_count(strategy_id)
+            self._failure_counts[strategy_id] = max(
+                self._failure_counts.get(strategy_id, 0), restored
+            )
+            self._failure_loaded.add(strategy_id)
+
         self._failure_counts[strategy_id] = (
             self._failure_counts.get(strategy_id, 0) + 1
         )

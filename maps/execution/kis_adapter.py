@@ -22,6 +22,7 @@ import requests
 
 from maps.common.exceptions import BrokerAdapterError
 from maps.common.settings import MapsSettings, get_settings
+from maps.market.trading_rules import is_krx_closed_date, krx_tick_size
 from maps.execution.broker_adapter import (
     AccountBalance,
     BrokerAdapter,
@@ -291,7 +292,8 @@ class KISAdapter(BrokerAdapter):
 
     def is_market_open(self) -> bool:
         now = dt.datetime.now(_KST)
-        if now.weekday() >= 5:
+        # 주말 + 한국 공휴일(holidays.KR) + 고정 휴장일을 모두 반영한다.
+        if is_krx_closed_date(now.date()):
             return False
         return _MARKET_OPEN <= now.time() <= _MARKET_CLOSE
 
@@ -620,20 +622,12 @@ class KISAdapter(BrokerAdapter):
 
     @staticmethod
     def _tick_size(price: float) -> int:
-        """KIS 국내주식 호가단위 (유가증권/코스닥 동일 기준)."""
-        if price < 1_000:
-            return 1
-        if price < 5_000:
-            return 5
-        if price < 10_000:
-            return 10
-        if price < 50_000:
-            return 50
-        if price < 100_000:
-            return 100
-        if price < 500_000:
-            return 500
-        return 1_000
+        """KRX 국내주식 호가단위.
+
+        2023-01-25 개편 반영 공용 규칙(`maps.market.trading_rules.krx_tick_size`)을
+        재사용해 백테스트·주문·미리보기 전반에서 단일 기준을 유지한다.
+        """
+        return krx_tick_size(price)
 
     def _resolve_order_price(self, order: Order) -> int:
         if order.order_type == OrderType.MARKET:

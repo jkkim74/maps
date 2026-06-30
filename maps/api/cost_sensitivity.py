@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from maps.api.deps import get_db
 from maps.api.schemas import CostAssumption, CostScenarioItem, CostSensitivityResponse
-from maps.backtest.cost_model import BROKER_FEE_ROUNDTRIP, SLIPPAGE_LARGE_CAP, SLIPPAGE_SMALL_CAP, TRANSACTION_TAX_SELL
+from maps.backtest.cost_model import BROKER_FEE_PER_SIDE, SLIPPAGE_LARGE_CAP, SLIPPAGE_SMALL_CAP, TRANSACTION_TAX_SELL
 from maps.common.constants import ALLOWED_MDD, STRATEGY_GROUP_MAP, WEIGHT_PRESETS
 from maps.common.models import (
     CostModelAssumptions,
@@ -117,7 +117,7 @@ def _cost_assumption(db: Session) -> CostAssumption:
 
     return CostAssumption(
         tax_rate=TRANSACTION_TAX_SELL,
-        commission_rate=BROKER_FEE_ROUNDTRIP,
+        commission_rate=BROKER_FEE_PER_SIDE,
         slippage_large=SLIPPAGE_LARGE_CAP,
         slippage_mid_small=SLIPPAGE_SMALL_CAP,
         effective_at=dt.date.today().isoformat(),

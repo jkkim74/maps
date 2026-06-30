@@ -5,11 +5,17 @@
 
 from __future__ import annotations
 
+import datetime as dt
 from unittest.mock import MagicMock
 
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
+from maps.common.db import Base
 from maps.common.exceptions import ExposureCapError, KillSwitchError
+from maps.common.models import OrderLog
 from maps.execution.broker_adapter import AccountBalance, Order, OrderSide, OrderType
 from maps.risk.manager import KillSwitchReason, RiskConfig, RiskManager
 
@@ -129,3 +135,95 @@ def test_exposure_cap_within_limit_ok(manager: RiskManager) -> None:
     order = _order(qty=50, price=10_000)
     account = _account(cash=10_000_000)
     manager.check_before_order(order, account)  # 예외 없음
+
+
+# ---------------------------------------------------------------------------
+# 5. C-3: 가용 현금 / 포트폴리오 총 노출 한도
+# ---------------------------------------------------------------------------
+
+def test_cash_insufficient_blocks_order(manager: RiskManager) -> None:
+    """단일 종목 비중은 10% 이내라도 가용 현금이 부족하면 차단한다."""
+    # 보유 평가액이 커서 total_value가 큼 → 단일 10% 검사만으론 통과되지만 현금 부족
+    # total_value = 1_000_000 + 99_000_000 = 100_000_000, 10% = 10_000_000
+    # 주문: 900주 @ 10_000 = 9_000_000 (9% < 10%) 이지만 현금 1_000_000 < 9_000_000
+    order = _order(qty=900, price=10_000)
+    account = _account(cash=1_000_000, positions=99_000_000)
+
+    with pytest.raises(ExposureCapError, match="현금"):
+        manager.check_before_order(order, account)
+
+
+def test_portfolio_total_exposure_cap(manager: RiskManager) -> None:
+    """현금이 충분해도 포트폴리오 총 노출 한도를 넘으면 차단한다."""
+    cfg = RiskConfig(position_size_limit=0.10, max_portfolio_exposure=0.80)
+    mgr = RiskManager(broker=MagicMock(), db=MagicMock(), config=cfg)
+    # total_value = 2_500_000 + 7_500_000 = 10_000_000, 한도 80% = 8_000_000
+    # 주문: 80주 @ 10_000 = 800_000 (8% < 10%, 현금 2_500_000 충분)
+    # 보유 7_500_000 + 800_000 = 8_300_000 > 8_000_000 → 차단
+    order = _order(qty=80, price=10_000)
+    account = _account(cash=2_500_000, positions=7_500_000)
+
+    with pytest.raises(ExposureCapError, match="총 노출"):
+        mgr.check_before_order(order, account)
+
+
+# ---------------------------------------------------------------------------
+# 6. M-2: 재시작 후 order_log에서 연속실패 카운트 복원
+# ---------------------------------------------------------------------------
+
+def test_failure_count_restored_from_order_log() -> None:
+    """재시작(메모리 카운터 0)이라도 order_log의 최근 연속 REJECTED를 복원한다."""
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+    base = dt.datetime(2026, 6, 30, 1, 0, 0)
+    # 오래된 FILLED 1건(리셋 경계) + 최근 REJECTED 4건
+    db.add(OrderLog(order_id="o0", strategy_id="strat_a", ticker="AAAA", side="BUY",
+                    qty=1, status="FILLED", fill_qty=1, created_at=base))
+    for i in range(4):
+        db.add(OrderLog(order_id=f"r{i}", strategy_id="strat_a", ticker="AAAA", side="BUY",
+                        qty=1, status="REJECTED", fill_qty=0,
+                        created_at=base + dt.timedelta(minutes=i + 1)))
+    db.commit()
+
+    mgr = RiskManager(broker=MagicMock(), db=db, config=RiskConfig(), notifier=MagicMock())
+    # 첫 실패에서 복원(4) + 1 = 5회째 → Kill Switch 자동 발동
+    event = mgr.on_order_failure("strat_a", reason="broker rejected")
+    assert event is not None
+    assert event.reason == KillSwitchReason.CONSECUTIVE_FAILURE
+    assert mgr.is_new_entry_blocked("strat_a")
+
+    db.close()
+    engine.dispose()
+
+
+def test_failure_count_restore_stops_at_success() -> None:
+    """최근 성공(FILLED) 이후의 REJECTED만 계수한다 (그 이전은 무시)."""
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+    base = dt.datetime(2026, 6, 30, 1, 0, 0)
+    # REJECTED(오래됨) → FILLED → REJECTED 2건(최근): 복원값은 2여야 함
+    db.add(OrderLog(order_id="r_old", strategy_id="strat_b", ticker="BBBB", side="BUY",
+                    qty=1, status="REJECTED", fill_qty=0, created_at=base))
+    db.add(OrderLog(order_id="f1", strategy_id="strat_b", ticker="BBBB", side="BUY",
+                    qty=1, status="FILLED", fill_qty=1, created_at=base + dt.timedelta(minutes=1)))
+    for i in range(2):
+        db.add(OrderLog(order_id=f"rn{i}", strategy_id="strat_b", ticker="BBBB", side="BUY",
+                        qty=1, status="REJECTED", fill_qty=0,
+                        created_at=base + dt.timedelta(minutes=2 + i)))
+    db.commit()
+
+    mgr = RiskManager(broker=MagicMock(), db=db, config=RiskConfig(), notifier=MagicMock())
+    assert mgr._restore_failure_count("strat_b") == 2
+
+    db.close()
+    engine.dispose()

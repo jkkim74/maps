@@ -122,7 +122,7 @@ class SecurityRepository:
             existing.listing_date = meta.listing_date
             existing.delisting_date = meta.delisting_date
             existing.has_adjusted_price = meta.has_adjusted_price
-            existing.updated_at = datetime.datetime.utcnow()
+            existing.updated_at = datetime.datetime.now(datetime.timezone.utc)
         else:
             self._db.add(meta)
         self._db.commit()

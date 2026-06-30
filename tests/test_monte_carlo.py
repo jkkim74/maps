@@ -32,3 +32,16 @@ def test_low_vol_strategy_passes_pullback_limit(validator: MonteCarloValidator) 
     result = validator.validate("s1", "pullback_short", returns)
     # 저변동 수익률이면 MDD p95 < 18% 통과 기대
     assert result.mdd_p95 < result.mdd_limit or not result.passed  # 구조 확인
+
+
+def test_block_bootstrap_estimate_is_conservative() -> None:
+    """게이트 입력 MDD p95는 i.i.d. 단독보다 작지 않아야 한다 (H-2 보수화)."""
+    rng = np.random.default_rng(7)
+    returns = list(rng.normal(0.0005, 0.02, 252))
+    conservative = MonteCarloValidator(n_simulations=500, seed=42, block_bootstrap=True)
+    iid_only = MonteCarloValidator(n_simulations=500, seed=42, block_bootstrap=False)
+
+    r_cons = conservative.validate("s1", "pullback_short", returns)
+    r_iid = iid_only.validate("s1", "pullback_short", returns)
+
+    assert r_cons.mdd_p95 >= r_iid.mdd_p95

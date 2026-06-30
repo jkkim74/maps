@@ -15,6 +15,7 @@ import pandas as pd
 
 from maps.backtest.cost_model import VOL_MULTIPLIER_MAP, CostModel, Trade
 from maps.common.exceptions import BacktestError
+from maps.common.sizing import risk_based_qty
 from maps.strategy.base import BaseStrategy
 
 logger = logging.getLogger(__name__)
@@ -100,16 +101,16 @@ class PositionSizingEngine:
         """주문 수량을 계산한다.
 
         수량 = (계좌 × risk) / (진입가 - 손절가)
-        단일 종목 노출 상한(10%) 적용.
+        단일 종목 노출 상한(10%) 적용. 실거래 주문 경로와 동일한 공용 사이징
+        (`maps.common.sizing.risk_based_qty`)을 사용해 백테스트=실거래 정합 유지(C-2).
         """
-        risk_amount = equity * self._risk
-        per_share_risk = entry_price - stop_price
-        if per_share_risk <= 0:
-            return 0
-
-        qty_by_risk = int(risk_amount / per_share_risk)
-        max_qty = int(equity * self._max_exp / entry_price)
-        return max(0, min(qty_by_risk, max_qty))
+        return risk_based_qty(
+            equity=equity,
+            entry_price=entry_price,
+            stop_price=stop_price,
+            account_risk=self._risk,
+            max_exposure=self._max_exp,
+        )
 
 
 class BacktestEngine:
@@ -122,10 +123,13 @@ class BacktestEngine:
         self,
         cost_model: CostModel | None = None,
         initial_capital: float = 100_000_000,
+        risk_free_rate: float = 0.03,
     ) -> None:
         self._cost = cost_model or CostModel(vol_multiplier=VOL_MULTIPLIER_MAP["normal"])
         self._capital = initial_capital
         self._sizer = PositionSizingEngine()
+        # 연 무위험수익률. Sharpe 계산 시 초과수익(excess return) 기준으로 보정한다(H-4).
+        self._rf = risk_free_rate
 
     def run(
         self,
@@ -158,6 +162,31 @@ class BacktestEngine:
         df = strategy.generate_signals(data.copy(), params)
         atr_series = _compute_atr14(df)
 
+        # 체결 타이밍 (look-ahead 제거):
+        #   신호(entry/exit)는 t일 종가로 생성되지만, 종가가 확정되는 순간 장은 이미
+        #   끝났으므로 그 종가로 체결할 수 없다. 따라서 신호를 한 칸 시프트해 신호 발생
+        #   봉의 "다음 봉 시가(open)"에서 체결한다. 손절은 장중 도달(low ≤ stop) 시
+        #   갭하락이면 시가, 아니면 손절가로 체결해 보수화한다. 실거래(익일 지정가 주문)와
+        #   정합한 체결 모델.
+        false_series = pd.Series(False, index=df.index)
+        entry_fill = (
+            df["entry_signal"].shift(1, fill_value=False)
+            if "entry_signal" in df.columns
+            else false_series
+        )
+        exit_fill = (
+            df["exit_signal"].shift(1, fill_value=False)
+            if "exit_signal" in df.columns
+            else false_series
+        )
+        # 진입 손절가/ATR도 신호 봉(t) 기준값을 사용한다 (체결은 t+1 시가).
+        stop_src = (
+            df["stop_price"].shift(1)
+            if "stop_price" in df.columns
+            else pd.Series(np.nan, index=df.index)
+        )
+        atr_src = atr_series.shift(1)
+
         equity = self._capital
         position: dict = {}       # {"qty": int, "entry_price": float, "entry_date": date, "stop": float}
         equity_curve: list[float] = [equity]
@@ -168,19 +197,27 @@ class BacktestEngine:
         for i, dt in enumerate(dates):
             row = df.loc[dt]
             ref_date = dt.date() if hasattr(dt, "date") else dt
+            bar_open = float(row.get("open", row["close"]))
+            bar_low = float(row.get("low", row["close"]))
+            bar_close = float(row["close"])
+            exited_this_bar = False
 
-            # ── 보유 중: 청산/손절 체크 ──
+            # ── 보유 중: 청산/손절 체크 (체결은 당일 시가 또는 손절가) ──
             if position:
                 exit_reason = None
-                exit_price = float(row["close"])
+                exit_price = bar_close
 
-                if float(row["close"]) <= position["stop"]:
-                    exit_reason = "stop_loss"
-                    exit_price = position["stop"]
-                elif bool(row.get("exit_signal", False)):
+                if bool(exit_fill.get(dt, False)):
+                    # 전일 종가 기준 청산 신호 → 당일 시가 체결
                     exit_reason = "signal"
+                    exit_price = bar_open
+                elif bar_low <= position["stop"]:
+                    # 장중 손절 도달 → 갭하락 시 시가, 아니면 손절가 체결 (보수적)
+                    exit_reason = "stop_loss"
+                    exit_price = min(position["stop"], bar_open)
                 elif i == len(dates) - 1:
                     exit_reason = "end_of_period"
+                    exit_price = bar_close
 
                 if exit_reason:
                     trade = Trade(
@@ -208,14 +245,19 @@ class BacktestEngine:
                         )
                     )
                     position = {}
+                    exited_this_bar = True
 
-            # ── 미보유: 진입 체크 ──
-            if not position and bool(row.get("entry_signal", False)):
-                entry_price = float(row["close"])
-                stop_from_signal = float(row.get("stop_price", entry_price * 0.95))
+            # ── 미보유: 진입 체크 (전일 종가 신호 → 당일 시가 체결) ──
+            # 같은 봉에서 손절 청산 후 즉시 재진입하지 않는다 (exited_this_bar 가드).
+            if not position and not exited_this_bar and bool(entry_fill.get(dt, False)):
+                entry_price = bar_open
+                default_stop = entry_price * 0.95
+                stop_from_signal = float(stop_src.get(dt, default_stop))
+                if not np.isfinite(stop_from_signal):
+                    stop_from_signal = default_stop
                 # ATR 기반 손절: 변동성 장세에서 고정% 손절보다 넓은 쪽을 선택
                 # 넓은 손절 → 포지션 크기 자동 감소 (계좌 위험 0.5% 고정 원칙 유지)
-                atr_val = float(atr_series.get(dt, 0.0) or 0.0)
+                atr_val = float(atr_src.get(dt, 0.0) or 0.0)
                 if atr_val > 0:
                     atr_stop = entry_price - _ATR_STOP_MULTIPLIER * atr_val
                     stop_price = min(stop_from_signal, atr_stop)  # 더 낮은(넓은) 손절 선택
@@ -232,7 +274,7 @@ class BacktestEngine:
                     equity -= entry_price * qty
 
             # 포지션 평가액 포함한 총 자산
-            mark = equity + (position["qty"] * float(row["close"]) if position else 0)
+            mark = equity + (position["qty"] * bar_close if position else 0)
             equity_curve.append(mark)
 
         return self._compute_metrics(strategy.strategy_id, data, equity_curve, trade_list)
@@ -247,7 +289,17 @@ class BacktestEngine:
         arr = np.array(equity_curve, dtype=float)
         daily_rets = np.diff(arr) / arr[:-1]
 
-        years = len(arr) / 252
+        start = data.index[0].date() if hasattr(data.index[0], "date") else data.index[0]
+        end = data.index[-1].date() if hasattr(data.index[-1], "date") else data.index[-1]
+
+        # 연수는 실제 달력일 기반으로 산정한다. 거래일 수/252 는 거래일이 적은 fold에서
+        # CAGR을 왜곡한다(H-4). 달력 정보를 못 구하면 거래일 수/252 로 폴백.
+        try:
+            span_days = (end - start).days
+        except TypeError:
+            span_days = 0
+        years = span_days / 365.25 if span_days > 0 else len(arr) / 252
+
         final = arr[-1]
         cagr = (final / self._capital) ** (1 / max(years, 1e-6)) - 1
 
@@ -255,8 +307,10 @@ class BacktestEngine:
         dd = (arr - peak) / peak
         mdd = float(dd.min())
 
+        # 무위험수익률을 차감한 초과수익 기준 Sharpe (rf=0 가정은 과대평가, H-4).
+        rf_daily = self._rf / 252.0
         sharpe = (
-            float(daily_rets.mean() / daily_rets.std() * np.sqrt(252))
+            float((daily_rets.mean() - rf_daily) / daily_rets.std() * np.sqrt(252))
             if daily_rets.std() > 0
             else 0.0
         )
@@ -267,9 +321,6 @@ class BacktestEngine:
 
         wins = sum(1 for t in trade_list if t.net_pnl > 0)
         win_rate = wins / len(trade_list) if trade_list else 0.0
-
-        start = data.index[0].date() if hasattr(data.index[0], "date") else data.index[0]
-        end = data.index[-1].date() if hasattr(data.index[-1], "date") else data.index[-1]
 
         return BacktestResult(
             strategy_id=strategy_id,

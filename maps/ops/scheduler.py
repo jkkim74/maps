@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 
 from maps.common.constants import STRATEGY_GROUP_MAP
 from maps.common.db import SessionLocal
+from maps.common.sizing import risk_based_qty
 from maps.common.models import (
     AnalysisPick,
     CandidateSnapshot,
@@ -2010,16 +2011,16 @@ class OperationalPipeline:
             account = broker.get_account_balance()
         except (NotImplementedError, BrokerAdapterError):
             return 0
-        risk_budget = account.total_value * self._settings.maps_strategy_trade_account_risk_pct
-        per_share_risk = pick.buy_price - pick.stop_price
-        qty = int(risk_budget // per_share_risk)
-        if account.cash and pick.buy_price > 0:  # 현금 상한
-            qty = min(qty, int(account.cash // pick.buy_price))
-        # 단일종목 노출 한도 상한 (RiskManager.check_before_order 거부 방지)
-        if account.total_value > 0 and pick.buy_price > 0:
-            exposure_cap = int((self._settings.max_single_exposure * account.total_value) // pick.buy_price)
-            qty = min(qty, exposure_cap)
-        return max(qty, 0)
+        # 백테스트와 동일한 공용 계좌-위험 사이징 사용(C-2). 현금 상한·단일종목
+        # 노출 상한을 함께 적용해 OrderManager.submit의 ExposureCapError 거부를 예방한다.
+        return risk_based_qty(
+            equity=account.total_value,
+            entry_price=pick.buy_price,
+            stop_price=pick.stop_price,
+            account_risk=self._settings.maps_strategy_trade_account_risk_pct,
+            max_exposure=self._settings.max_single_exposure,
+            available_cash=account.cash if account.cash else None,
+        )
 
     def _process_strategy_trades(
         self,
@@ -2321,13 +2322,34 @@ class OperationalPipeline:
         price: float,
         remaining_slots: int,
     ) -> int:
+        # 고정비중 예산: 단일종목 노출 상한과 잔여현금/슬롯 공정배분 중 작은 값.
+        # 여러 후보 동시 진입 시 현금 고갈을 막는 상한으로 계속 사용한다.
         max_position_value = total_value * self._settings.max_single_exposure
         cash_budget = remaining_cash / max(remaining_slots, 1)
         budget = min(max_position_value, cash_budget)
-        max_qty = int(budget // price)
+        fixed_qty = int(budget // price) if price > 0 else 0
+
+        # C-2: 백테스트와 동일한 계좌-위험 사이징을 우선 적용한다(손절폭 기반).
+        # 손절가는 전략별 고정% 손절(live_rules)에서 유도하며, 손절 정보가 없는
+        # 전략이면 고정비중으로 폴백한다. risk 기반 수량은 고정비중 예산을 상한으로
+        # 두어 슬롯·현금 공정배분을 유지한다.
+        stop = stop_loss_price(candidate.strategy_id, price)
+        if stop is not None and 0 < stop < price:
+            risk_qty = risk_based_qty(
+                equity=total_value,
+                entry_price=price,
+                stop_price=stop,
+                account_risk=self._settings.account_risk_per_trade,
+                max_exposure=self._settings.max_single_exposure,
+                available_cash=remaining_cash,
+            )
+            qty = min(risk_qty, fixed_qty) if fixed_qty > 0 else risk_qty
+        else:
+            qty = fixed_qty
+
         if candidate.estimated_qty and candidate.estimated_qty > 0:
-            return min(int(candidate.estimated_qty), max_qty)
-        return max_qty
+            return min(int(candidate.estimated_qty), qty)
+        return qty
 
     def _analyze_regime(self) -> RegimeResult:
         """현재 시황을 분석한다. 실패 시 WEAK+FAIL로 진입을 차단한다."""

@@ -51,20 +51,26 @@ def previous_trading_day(ref_date: dt.date, *, extra_closed_dates: Iterable[dt.d
 
 
 def krx_tick_size(price: float, *, market: str = "KOSPI", security_type: str = "stock") -> int:
-    """Return the KRX quotation-price unit for an equity-like instrument."""
+    """Return the KRX quotation-price unit for an equity-like instrument.
+
+    2023-01-25 호가가격단위 개편을 반영한다. 동 개편으로 코스피·코스닥 주식의
+    호가단위가 동일하게 통일되었으므로 ``market`` 인자는 주식에서 더 이상 분기하지
+    않는다(호출부 시그니처 호환성을 위해 유지). ETF/ETN/ELW 는 5원 고정.
+
+    구간(원): <2,000→1, ~5,000→5, ~20,000→10, ~50,000→50, ~200,000→100,
+    ~500,000→500, 500,000 이상→1,000.
+    """
     if security_type.upper() in {"ETF", "ETN", "ELW"}:
         return 5
-    if price < 1_000:
+    if price < 2_000:
         return 1
     if price < 5_000:
         return 5
-    if price < 10_000:
+    if price < 20_000:
         return 10
     if price < 50_000:
         return 50
-    if price < 100_000:
-        return 100
-    if market.upper() == "KOSDAQ":
+    if price < 200_000:
         return 100
     if price < 500_000:
         return 500

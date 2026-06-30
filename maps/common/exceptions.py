@@ -25,13 +25,21 @@ class DuplicateOrderError(MAPSError):
 class ExposureCapError(MAPSError):
     """단일 종목 노출 한도(10%) 초과."""
 
-    def __init__(self, ticker: str, exposure: float | None = None) -> None:
+    def __init__(
+        self,
+        ticker: str,
+        exposure: float | None = None,
+        detail: str | None = None,
+    ) -> None:
         msg = f"Exposure cap exceeded for {ticker}"
         if exposure is not None:
             msg += f" ({exposure:.1%})"
+        if detail:
+            msg += f" — {detail}"
         super().__init__(msg)
         self.ticker = ticker
         self.exposure = exposure
+        self.detail = detail
 
 
 class ResearchStrategyError(MAPSError):

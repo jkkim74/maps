@@ -12,7 +12,7 @@ from dataclasses import dataclass
 # ---------------------------------------------------------------------------
 TRANSACTION_TAX_SELL: float = 0.0018    # 코스피·코스닥 매도 거래세
 TRANSACTION_TAX_ETF: float = 0.0        # ETF 거래세 면제
-BROKER_FEE_ROUNDTRIP: float = 0.00015   # 편도 수수료 (매수+매도 합산)
+BROKER_FEE_PER_SIDE: float = 0.00015    # 편도 수수료율 (매수·매도 각 1회 부과 → 왕복은 ×2)
 SLIPPAGE_LARGE_CAP: float = 0.0005      # 시총 >= 5천억 슬리피지
 SLIPPAGE_SMALL_CAP: float = 0.0015      # 시총 < 5천억 슬리피지
 
@@ -56,7 +56,7 @@ class CostModel:
 
     def __init__(
         self,
-        broker_fee: float = BROKER_FEE_ROUNDTRIP,
+        broker_fee: float = BROKER_FEE_PER_SIDE,
         slippage_large: float = SLIPPAGE_LARGE_CAP,
         slippage_small: float = SLIPPAGE_SMALL_CAP,
         tax_sell: float = TRANSACTION_TAX_SELL,
@@ -110,7 +110,9 @@ class CostModel:
         )
         tax = 0.0 if trade.is_etf else self._tax
 
-        fee_cost = val * self._fee                                  # 편도 수수료 × 2 (매수+매도)
+        # 수수료는 매수·매도 양측에 부과한다 (편도율 × (매수금액 + 매도금액)).
+        exit_value = trade.exit_price * trade.qty
+        fee_cost = (val + exit_value) * self._fee
         slip_cost = val * slippage_rate * 2 * self._vol_multiplier  # 슬리피지 왕복 (변동성 배율 적용)
         tax_cost = trade.exit_price * trade.qty * tax
 

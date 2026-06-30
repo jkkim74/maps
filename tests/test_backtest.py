@@ -9,6 +9,7 @@ import pandas as pd
 import pytest
 
 from maps.backtest.engine import BacktestEngine
+from maps.strategy.base import BaseStrategy
 from maps.strategy.multi_asset_trend_v1 import MultiAssetTrendV1Strategy
 from maps.strategy.pullback_v3 import PullbackV3Strategy
 
@@ -122,3 +123,105 @@ def test_backtest_result_has_trade_list():
     assert isinstance(result.trade_list, list)
     assert hasattr(result, "equity_curve")
     assert len(result.equity_curve) > 0
+
+
+# ---------------------------------------------------------------------------
+# 5. 체결 모델 (C-1): t+1 시가 체결 / 손절 갭 / 동일봉 재진입 금지
+# ---------------------------------------------------------------------------
+class _ScriptedStrategy(BaseStrategy):
+    """신호 컬럼이 미리 채워진 DataFrame을 그대로 돌려주는 테스트용 전략.
+
+    엔진의 체결 타이밍만 독립적으로 검증하기 위해 신호 생성을 우회한다.
+    """
+
+    strategy_id = "scripted_test"
+    strategy_group = "pullback_short"
+
+    def generate_signals(self, data: pd.DataFrame, params: dict) -> pd.DataFrame:
+        return data
+
+    def param_grid(self) -> list[dict]:
+        return [{}]
+
+    @property
+    def default_params(self) -> dict:
+        return {}
+
+
+def _scripted_df(spec: dict, n: int) -> pd.DataFrame:
+    """date 인덱스 + 명시적 신호 컬럼을 가진 OHLCV DataFrame을 만든다."""
+    dates = pd.date_range(start="2020-01-02", periods=n, freq="B")
+    base = {"volume": [1_000] * n}
+    base.update(spec)
+    return pd.DataFrame(base, index=dates)
+
+
+def test_entry_fills_next_bar_open():
+    """t일 종가 신호 → t+1일 시가로 체결된다 (동일봉 체결 아님)."""
+    df = _scripted_df(
+        {
+            "open": [100, 100, 100, 110, 120, 120],
+            "high": [101, 101, 101, 111, 121, 121],
+            "low": [99, 99, 99, 109, 119, 119],
+            "close": [100, 100, 100, 110, 120, 120],
+            "entry_signal": [False, False, True, False, False, False],
+            "exit_signal": [False] * 6,
+            "stop_price": [95.0] * 6,
+        },
+        n=6,
+    )
+    engine = BacktestEngine(initial_capital=10_000_000)
+    result = engine.run(_ScriptedStrategy(), {}, df)
+
+    assert result.trade_list, "체결된 거래가 없습니다"
+    trade = result.trade_list[0]
+    # 신호는 index 2(종가 100)에서 발생, 체결은 index 3 시가 110
+    assert trade.entry_price == 110.0
+    assert trade.entry_date == df.index[3].date()
+
+
+def test_stop_fills_with_gap():
+    """갭하락으로 시가가 손절가보다 낮으면 손절가가 아닌 시가로 체결된다."""
+    df = _scripted_df(
+        {
+            "open": [100, 100, 100, 100, 80, 80],   # index 4 갭하락 시가 80
+            "high": [101, 101, 101, 101, 82, 82],
+            "low": [99, 99, 99, 99, 78, 78],
+            "close": [100, 100, 100, 100, 79, 79],
+            "entry_signal": [False, False, True, False, False, False],
+            "exit_signal": [False] * 6,
+            "stop_price": [90.0] * 6,
+        },
+        n=6,
+    )
+    engine = BacktestEngine(initial_capital=10_000_000)
+    result = engine.run(_ScriptedStrategy(), {}, df)
+
+    assert result.trade_list
+    trade = result.trade_list[0]
+    assert trade.exit_reason == "stop_loss"
+    # 손절가 90이 아니라 갭하락 시가 80에 체결되어야 보수적
+    assert trade.exit_price == 80.0
+
+
+def test_no_same_bar_reentry():
+    """손절 청산이 일어난 봉에서는 같은 봉에 재진입하지 않는다."""
+    df = _scripted_df(
+        {
+            "open": [100, 100, 100, 100, 80, 80, 80],
+            "high": [101, 101, 101, 101, 82, 82, 82],
+            "low": [99, 99, 99, 99, 78, 78, 78],
+            "close": [100, 100, 100, 100, 79, 79, 79],
+            # index 1 신호 → index 2 체결; index 3 신호 → index 4(손절봉) 체결 시도
+            "entry_signal": [False, True, False, True, False, False, False],
+            "exit_signal": [False] * 7,
+            "stop_price": [90.0] * 7,
+        },
+        n=7,
+    )
+    engine = BacktestEngine(initial_capital=10_000_000)
+    result = engine.run(_ScriptedStrategy(), {}, df)
+
+    # 손절봉(index 4)에서 청산만 일어나고 재진입은 차단 → 거래 1건
+    assert len(result.trade_list) == 1
+    assert result.trade_list[0].exit_reason == "stop_loss"

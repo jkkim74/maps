@@ -49,9 +49,22 @@ class SequenceTestResult:
 class MonteCarloValidator:
     """Monte Carlo 시뮬레이션으로 MDD p95가 전략군별 허용 한도 이내인지 검증한다."""
 
-    def __init__(self, n_simulations: int = 10_000, seed: int | None = 42) -> None:
+    def __init__(
+        self,
+        n_simulations: int = 10_000,
+        seed: int | None = 42,
+        *,
+        block_bootstrap: bool = True,
+        block_sizes: list[int] | None = None,
+    ) -> None:
         self._n = n_simulations
+        self._seed = seed
         self._rng = np.random.default_rng(seed)
+        # 게이트 MDD 한도 검증을 보수화한다. i.i.d. 부트스트랩만으로는 변동성 군집
+        # (연속 하락)이 깨져 실제보다 MDD가 작게 나오므로, 자기상관을 보존하는 블록
+        # 부트스트랩과 비교해 악화 시나리오를 채택한다 (H-2).
+        self._block_bootstrap = block_bootstrap
+        self._block_sizes = block_sizes or [5, 10, 20]
 
     def validate(
         self,
@@ -81,17 +94,22 @@ class MonteCarloValidator:
         if len(arr) < 30:
             raise ValidationError("Monte Carlo에는 최소 30개 이상의 일별 수익률이 필요합니다.")
 
-        mdd_p95 = self._simulate(arr)
+        iid_p95 = self._simulate(arr)
+        block_p95 = self._block_p95(arr) if self._block_bootstrap else 0.0
+        # 둘 중 더 보수적(큰) MDD를 게이트 입력으로 채택한다.
+        mdd_p95 = max(iid_p95, block_p95)
         passed = mdd_p95 <= limit
         fail_reason = (
             f"MDD p95={mdd_p95:.2%} > 허용 한도={limit:.2%}" if not passed else ""
         )
 
         logger.info(
-            "MC [%s/%s]: mdd_p95=%.2f%%, limit=%.2f%%, passed=%s",
+            "MC [%s/%s]: mdd_p95=%.2f%% (iid=%.2f%%, block=%.2f%%), limit=%.2f%%, passed=%s",
             strategy_id,
             strategy_group,
             mdd_p95 * 100,
+            iid_p95 * 100,
+            block_p95 * 100,
             limit * 100,
             passed,
         )
@@ -119,6 +137,21 @@ class MonteCarloValidator:
 
         # mdds는 음수값 목록. p5(최악 5%)를 절댓값으로 반환해야 limit 비교가 올바름
         return abs(float(np.percentile(mdds, 5)))
+
+    def _block_p95(self, returns: np.ndarray) -> float:
+        """블록 부트스트랩 MDD p95 (block_sizes 중 최악)을 양수 절댓값으로 반환한다.
+
+        자기상관/변동성 군집을 보존하므로 i.i.d. 대비 MDD를 보수적으로 추정한다.
+        """
+        tester = BlockBootstrapTester(
+            block_sizes=self._block_sizes,
+            n_simulations=self._n,
+            seed=self._seed,
+        )
+        results = tester.run(returns.tolist())
+        if not results:
+            return 0.0
+        return max(r.mdd_p95 for r in results.values())
 
 
 # ---------------------------------------------------------------------------

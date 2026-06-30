@@ -15,6 +15,19 @@ def _make_result(folds: list[FoldResult]) -> WalkForwardResult:
     return r
 
 
+def test_selection_score_prefers_consistency_on_tie() -> None:
+    """H-1: Sharpe가 같으면 gain-to-pain 높은 파라미터의 견고성 점수가 높다."""
+    import math
+
+    s = WalkForwardAnalyzer._selection_score
+    assert s(1.0, 2.0) > s(1.0, 1.0)
+    # 무손실 시 g2p=inf 는 상한(3.0)으로 캡되어 유한 점수
+    assert math.isfinite(s(1.0, float("inf")))
+    assert s(1.0, float("inf")) == s(1.0, 3.0)
+    # Sharpe 차이가 g2p 최대 기여(0.5×3.0=1.5)보다 크면 Sharpe가 지배적
+    assert s(3.0, 0.0) > s(1.0, 3.0)
+
+
 def _fold(oos_sharpe: float, is_sharpe: float = 1.0) -> FoldResult:
     return FoldResult(
         fold_idx=0,

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+import math
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -31,6 +32,11 @@ from maps.common.exceptions import ValidationError
 from maps.strategy.base import BaseStrategy
 
 logger = logging.getLogger(__name__)
+
+# H-1: IS 파라미터 선택 견고성 점수 가중치. Sharpe 단일 피크 과최적화를 완화하기 위해
+# gain-to-pain(일관성)을 보조 가중한다. g2p는 무손실 시 inf가 되므로 상한으로 캡한다.
+_GAIN_TO_PAIN_SELECT_WEIGHT = 0.5
+_GAIN_TO_PAIN_CAP = 3.0
 
 
 @dataclass
@@ -226,22 +232,46 @@ class WalkForwardAnalyzer:
         is_data: pd.DataFrame,
         param_grid: list[dict],
     ) -> tuple[dict, float, float]:
-        """IS 데이터에서 Sharpe 최고 파라미터를 선택한다."""
+        """IS 데이터에서 가장 견고한 파라미터를 선택한다.
+
+        IS Sharpe 단일 최대 선택은 과최적화(fragile peak)에 취약하므로, 위험조정수익
+        (Sharpe)에 일관성 지표(gain-to-pain)를 가중 합산한 견고성 점수로 선택한다(H-1).
+        반환하는 sharpe/g2p는 선택된 파라미터의 실측값이다(폴드 메트릭 일관성 유지).
+        """
         best_params = param_grid[0] if param_grid else strategy.default_params
+        best_score = float("-inf")
         best_sharpe = float("-inf")
         best_g2p = 0.0
 
         for params in param_grid:
             try:
                 bt = engine.run(strategy, params, is_data)
-                if bt.sharpe > best_sharpe:
-                    best_sharpe = bt.sharpe
-                    best_g2p = bt.gain_to_pain
-                    best_params = params
             except Exception as exc:
                 logger.debug("IS 백테스트 오류 (params=%s): %s", params, exc)
+                continue
+            score = self._selection_score(bt.sharpe, bt.gain_to_pain)
+            if score > best_score:
+                best_score = score
+                best_sharpe = bt.sharpe
+                best_g2p = bt.gain_to_pain
+                best_params = params
 
         return best_params, best_sharpe, best_g2p
+
+    @staticmethod
+    def _selection_score(sharpe: float, gain_to_pain: float) -> float:
+        """파라미터 선택용 견고성 점수.
+
+        Sharpe(위험조정수익)에 gain-to-pain(이익/손실 비율, 일관성)을 가중 합산한다.
+        g2p는 무손실 시 inf가 될 수 있어 상한으로 캡한다. Sharpe가 비슷한 후보 중
+        더 일관적인(손실 대비 이익이 큰) 파라미터를 선호해 IS 과최적화를 완화한다.
+        """
+        g2p_capped = (
+            min(gain_to_pain, _GAIN_TO_PAIN_CAP)
+            if math.isfinite(gain_to_pain)
+            else _GAIN_TO_PAIN_CAP
+        )
+        return sharpe + _GAIN_TO_PAIN_SELECT_WEIGHT * g2p_capped
 
     def _run_stress_folds(
         self,
