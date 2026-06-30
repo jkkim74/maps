@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MAPS 8개 전략 프로세스 인포그래픽</title>
+<style>
+  :root{
+    --bg:#f5f7fb; --ink:#162033; --muted:#5e6b7c; --line:#d8dfeb;
+    --card:#ffffff; --blue:#2563eb; --green:#0f9f6e; --orange:#f59e0b; --red:#dc2626;
+    --purple:#7c3aed; --teal:#0891b2; --gray:#64748b; --dark:#0f172a;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans KR",Roboto,Arial,sans-serif;line-height:1.55}
+  .page{max-width:1320px;margin:0 auto;padding:34px 28px 60px}
+  .hero{background:linear-gradient(135deg,#101827,#243b6b 54%,#0f766e);border-radius:28px;color:white;padding:34px 38px;box-shadow:0 22px 48px rgba(15,23,42,.20);position:relative;overflow:hidden}
+  .hero:after{content:"";position:absolute;right:-130px;top:-120px;width:360px;height:360px;border-radius:50%;background:rgba(255,255,255,.08)}
+  .eyebrow{font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:#a7f3d0;font-size:13px;margin-bottom:8px}
+  h1{margin:0;font-size:38px;line-height:1.15;letter-spacing:-.04em}
+  .subtitle{margin-top:12px;color:#dbeafe;font-size:17px;max-width:900px}
+  .chips{display:flex;gap:10px;flex-wrap:wrap;margin-top:20px}
+  .chip{border:1px solid rgba(255,255,255,.25);background:rgba(255,255,255,.12);border-radius:999px;padding:7px 12px;font-size:13px;color:#eff6ff}
+  .section-title{margin:34px 0 14px;display:flex;align-items:flex-end;justify-content:space-between;gap:18px}
+  .section-title h2{margin:0;font-size:25px;letter-spacing:-.03em}
+  .section-title p{margin:0;color:var(--muted);font-size:14px}
+  .flow{display:grid;grid-template-columns:repeat(7,1fr);gap:12px;align-items:stretch}
+  .flow-card{background:var(--card);border:1px solid var(--line);border-radius:20px;padding:16px 14px;position:relative;min-height:150px;box-shadow:0 8px 24px rgba(15,23,42,.05)}
+  .flow-card:not(:last-child):after{content:"→";position:absolute;right:-12px;top:50%;transform:translateY(-50%);font-weight:900;color:#94a3b8;background:var(--bg);border-radius:50%;width:24px;height:24px;text-align:center;line-height:23px;z-index:2}
+  .num{width:30px;height:30px;border-radius:10px;background:#e0e7ff;color:#3730a3;display:flex;align-items:center;justify-content:center;font-weight:900;margin-bottom:10px}
+  .flow-card h3{font-size:15px;margin:0 0 6px;letter-spacing:-.02em}
+  .flow-card p{font-size:12.5px;color:var(--muted);margin:0}
+  .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-top:14px}
+  .strategy{background:var(--card);border:1px solid var(--line);border-radius:24px;padding:20px;box-shadow:0 10px 26px rgba(15,23,42,.055);position:relative;overflow:hidden}
+  .strategy:before{content:"";position:absolute;left:0;right:0;top:0;height:6px;background:var(--accent)}
+  .strategy .top{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;margin-bottom:12px}
+  .strategy h3{font-size:20px;margin:0;letter-spacing:-.03em;line-height:1.2}
+  .id{font-size:11px;color:var(--muted);margin-top:4px;word-break:break-word}
+  .badge{border-radius:999px;padding:5px 9px;font-size:11px;font-weight:800;color:white;background:var(--accent);white-space:nowrap}
+  .meta{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:14px}
+  .pill{background:#f1f5f9;color:#334155;border:1px solid #e2e8f0;border-radius:999px;padding:4px 8px;font-size:11.5px;font-weight:700}
+  .mini-flow{display:grid;gap:8px;margin-top:10px}
+  .step{border-left:4px solid var(--accent);background:#fbfdff;border-radius:12px;padding:9px 10px;border-top:1px solid #eef2f7;border-right:1px solid #eef2f7;border-bottom:1px solid #eef2f7}
+  .step b{display:block;font-size:12px;color:#0f172a;margin-bottom:2px}
+  .step span{font-size:12px;color:#536176}
+  .risk{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px}
+  .risk div{background:#f8fafc;border:1px solid #e5e7eb;border-radius:12px;padding:9px 10px;font-size:12px;color:#334155}
+  .risk b{display:block;color:#0f172a;font-size:11px;margin-bottom:2px}
+  .matrix{background:var(--card);border:1px solid var(--line);border-radius:24px;padding:20px;box-shadow:0 10px 26px rgba(15,23,42,.05);overflow:auto}
+  table{width:100%;border-collapse:collapse;font-size:13px;min-width:920px}
+  th{text-align:left;background:#f8fafc;color:#334155;font-size:12px;padding:11px;border-bottom:1px solid var(--line)}
+  td{padding:11px;border-bottom:1px solid #eef2f7;vertical-align:top;color:#263344}
+  tr:last-child td{border-bottom:0}
+  .type-dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--accent);margin-right:6px;vertical-align:middle}
+  .note{background:#fff7ed;border:1px solid #fed7aa;border-radius:20px;padding:18px 20px;color:#7c2d12;margin-top:18px}
+  .note b{color:#9a3412}
+  .footer{margin-top:26px;color:#64748b;font-size:12px}
+  .pb{--accent:#0f9f6e}.ath{--accent:#2563eb}.ma{--accent:#7c3aed}.don{--accent:#0891b2}.ct{--accent:#f59e0b}
+  @media(max-width:1100px){.flow{grid-template-columns:repeat(2,1fr)}.flow-card:after{display:none}.grid{grid-template-columns:repeat(2,1fr)}}
+  @media(max-width:680px){.page{padding:20px 14px}.hero{padding:26px 22px}h1{font-size:28px}.flow,.grid{grid-template-columns:1fr}.section-title{display:block}.section-title p{margin-top:4px}}
+  @media print{body{background:white}.page{max-width:none;padding:0}.hero,.strategy,.flow-card,.matrix{box-shadow:none}.strategy{break-inside:avoid}.grid{grid-template-columns:repeat(2,1fr)}.flow{grid-template-columns:repeat(4,1fr)}.flow-card:after{display:none}}
+</style>
+</head>
+<body>
+<div class="page">
+  <p style="margin:0 0 14px"><a href="/dashboard" style="color:var(--blue);text-decoration:none;font-weight:600;font-size:14px">← 대시보드로 돌아가기</a></p>
+  <section class="hero">
+    <div class="eyebrow">MAPS Strategy Engine</div>
+    <h1>8개 매매전략 프로세스 인포그래픽</h1>
+    <div class="subtitle">각 전략은 동일한 전략 베이스 구조에서 <b>entry_signal</b>, <b>exit_signal</b>, <b>stop_price</b>를 생성하고, 운영 파이프라인이 후보 점수화·가격계획·승격 게이트·실행/청산을 연결한다.</div>
+    <div class="chips">
+      <span class="chip">Pullback 2개</span><span class="chip">ATH Breakout 2개</span><span class="chip">Multi-Asset Trend 1개</span><span class="chip">Donchian 2개</span><span class="chip">Contrarian Quality 1개</span>
+    </div>
+  </section>
+
+  <div class="section-title">
+    <h2>공통 운영 프로세스</h2>
+    <p>전략별 신호는 다르지만, 실제 운용은 동일한 7단계 흐름으로 합쳐진다.</p>
+  </div>
+  <section class="flow">
+    <div class="flow-card"><div class="num">1</div><h3>시장 국면 판단</h3><p>STRONG / MIXED / WEAK, KOSPI floor, breadth guard로 전략군 허용 여부 결정.</p></div>
+    <div class="flow-card"><div class="num">2</div><h3>유니버스 정제</h3><p>거래정지·관리종목·데이터 누락·유동성 부족 종목을 사전 제거.</p></div>
+    <div class="flow-card"><div class="num">3</div><h3>전략별 신호</h3><p>OHLCV로 entry_signal, exit_signal, stop_price를 생성.</p></div>
+    <div class="flow-card"><div class="num">4</div><h3>후보 점수화</h3><p>유동성, 추세강도, 가치 안전마진, AI 기술점수로 final_score 산출.</p></div>
+    <div class="flow-card"><div class="num">5</div><h3>가격 계획</h3><p>매수가, 기술적 손절가, 목표가, ATR/호가단위 보정으로 주문계획 생성.</p></div>
+    <div class="flow-card"><div class="num">6</div><h3>승격 게이트</h3><p>Research → Alert → Mock → Live Candidate → Live 단계로 검증 통과.</p></div>
+    <div class="flow-card"><div class="num">7</div><h3>실행·청산</h3><p>ARMED/BOUGHT 상태 추적, 긴급손절 → 계획손절 → 트레일링 → 익절 → 전략청산 순서 적용.</p></div>
+  </section>
+
+  <div class="section-title">
+    <h2>8개 전략 카드</h2>
+    <p>한 장씩 보면 전략의 ‘언제 사고, 언제 팔고, 무엇을 조심하는지’가 보인다.</p>
+  </div>
+  <section class="grid">
+    <article class="strategy pb">
+      <div class="top"><div><h3>Pullback V3</h3><div class="id">pullback_v3 · pullback_short</div></div><span class="badge">눌림목 정밀형</span></div>
+      <div class="meta"><span class="pill">Regime: Strong/Mixed</span><span class="pill">Stop -5%</span><span class="pill">RSI(2)</span></div>
+      <div class="mini-flow"><div class="step"><b>진입</b><span>MA5 &gt; MA_long + MA_long 20봉 상승 + RSI2 과매도 + 전일 저가 이탈</span></div><div class="step"><b>청산</b><span>종가가 MA5 아래에서 위로 회복하는 크로스업 순간</span></div><div class="step"><b>의도</b><span>상승장 안의 짧은 공포 눌림만 매수하고 베어마켓 반등은 차단</span></div></div>
+      <div class="risk"><div><b>기본값</b>RSI 10 / MA 20</div><div><b>그리드</b>9조합</div></div>
+    </article>
+
+    <article class="strategy pb">
+      <div class="top"><div><h3>Pullback V2</h3><div class="id">pullback_v2 · pullback_short</div></div><span class="badge">눌림목 확률형</span></div>
+      <div class="meta"><span class="pill">Regime: Strong/Mixed</span><span class="pill">Stop -6%</span><span class="pill">Stochastic</span></div>
+      <div class="mini-flow"><div class="step"><b>진입</b><span>MA5 &gt; MA_long + Stochastic %K 과매도 + 전일 저가 이탈</span></div><div class="step"><b>청산</b><span>종가가 MA5 기준을 회복하면 단기 반등 완료로 판단</span></div><div class="step"><b>의도</b><span>단기 과매도에서 빠른 평균회귀를 노리는 스윙형 전략</span></div></div>
+      <div class="risk"><div><b>기본값</b>K 9 / MA 30 / 임계 25</div><div><b>그리드</b>12조합</div></div>
+    </article>
+
+    <article class="strategy ath">
+      <div class="top"><div><h3>ATH Breakout V1</h3><div class="id">ath_breakout_v1 · ath_outlier</div></div><span class="badge">신고가 기본형</span></div>
+      <div class="meta"><span class="pill">Regime: Strong</span><span class="pill">Stop -10%</span><span class="pill">N일 신고가</span></div>
+      <div class="mini-flow"><div class="step"><b>진입</b><span>당일 종가가 전일까지 N일 최고 종가를 돌파</span></div><div class="step"><b>청산</b><span>종가가 exit_ma 아래로 내려오면 추세 훼손</span></div><div class="step"><b>의도</b><span>시장의 주도주·강한 모멘텀을 단순하게 포착</span></div></div>
+      <div class="risk"><div><b>기본값</b>200일 돌파 / 30MA</div><div><b>그리드</b>9조합</div></div>
+    </article>
+
+    <article class="strategy ath">
+      <div class="top"><div><h3>ATH Breakout V2</h3><div class="id">ath_breakout_v2 · ath_outlier</div></div><span class="badge">신고가 검증형</span></div>
+      <div class="meta"><span class="pill">Regime: Strong</span><span class="pill">Stop -12%</span><span class="pill">Volume Filter</span></div>
+      <div class="mini-flow"><div class="step"><b>진입</b><span>신고가 돌파 + 거래량 급증 + exit_ma 20봉 상승</span></div><div class="step"><b>청산</b><span>exit_ma 이탈, 운영 엔진의 트레일링/계획청산 보조</span></div><div class="step"><b>의도</b><span>거래량과 상승 국면을 확인해 거짓 돌파를 줄임</span></div></div>
+      <div class="risk"><div><b>기본값</b>200일 / 거래량 1.5배 / 20MA</div><div><b>그리드</b>8조합</div></div>
+    </article>
+
+    <article class="strategy ma">
+      <div class="top"><div><h3>Multi-Asset Trend V1</h3><div class="id">multi_asset_trend_v1 · multi_asset</div></div><span class="badge">추세추종형</span></div>
+      <div class="meta"><span class="pill">Regime: All</span><span class="pill">Stop -8%</span><span class="pill">Dual MA</span></div>
+      <div class="mini-flow"><div class="step"><b>진입</b><span>Fast MA 골든크로스 + 종가가 Fast MA 위 + Slow MA 20봉 상승</span></div><div class="step"><b>청산</b><span>데드크로스 또는 종가가 Fast MA 아래로 이탈</span></div><div class="step"><b>의도</b><span>자산군·업종 추세가 살아날 때 안정적으로 탑승</span></div></div>
+      <div class="risk"><div><b>기본값</b>Fast 15 / Slow 60</div><div><b>그리드</b>9조합</div></div>
+    </article>
+
+    <article class="strategy don">
+      <div class="top"><div><h3>Donchian V1</h3><div class="id">donchian_v1 · donchian_research</div></div><span class="badge">채널 돌파 기본형</span></div>
+      <div class="meta"><span class="pill">Regime: Strong/Mixed</span><span class="pill">Stop -8%</span><span class="pill">Channel</span></div>
+      <div class="mini-flow"><div class="step"><b>진입</b><span>종가가 전일까지의 상단 채널을 돌파</span></div><div class="step"><b>청산</b><span>종가가 전일까지의 하단 채널을 이탈</span></div><div class="step"><b>의도</b><span>고전적인 추세 시작 신호를 단순·명확하게 추적</span></div></div>
+      <div class="risk"><div><b>기본값</b>상단 40 / 하단 15</div><div><b>그리드</b>9조합</div></div>
+    </article>
+
+    <article class="strategy don">
+      <div class="top"><div><h3>Donchian V2</h3><div class="id">donchian_v2 · donchian_research</div></div><span class="badge">채널 돌파 개선형</span></div>
+      <div class="meta"><span class="pill">Regime: Strong/Mixed</span><span class="pill">Stop -10%</span><span class="pill">ROC + MA40</span></div>
+      <div class="mini-flow"><div class="step"><b>진입</b><span>상단 채널 돌파 + ROC &gt; 0 + MA40 20봉 상승</span></div><div class="step"><b>청산</b><span>하단 채널 이탈, 청산 채널은 진입 채널의 50%</span></div><div class="step"><b>의도</b><span>모멘텀과 국면 필터로 횡보장 휩쏘를 줄임</span></div></div>
+      <div class="risk"><div><b>기본값</b>채널 40 / ROC 10</div><div><b>그리드</b>9조합</div></div>
+    </article>
+
+    <article class="strategy ct">
+      <div class="top"><div><h3>Contrarian Quality</h3><div class="id">contrarian_quality_accumulation_v1</div></div><span class="badge">코스톨라니형</span></div>
+      <div class="meta"><span class="pill">Regime: Weak/Mixed</span><span class="pill">Stage Buy</span><span class="pill">Value Margin</span></div>
+      <div class="mini-flow"><div class="step"><b>진입</b><span>52주 고점 대비 충분한 하락 + 거래량 생존 + RSI14 과매도 + MA20 아래</span></div><div class="step"><b>분할</b><span>1차 25%, 추가 하락/지지 35%, MA20 회복 40%</span></div><div class="step"><b>의도</b><span>공포 구간에서 안전마진 있는 우량주를 단계적으로 축적</span></div></div>
+      <div class="risk"><div><b>기본값</b>RSI 40 / 고점 대비 -20%</div><div><b>그리드</b>9조합</div></div>
+    </article>
+  </section>
+
+  <div class="section-title">
+    <h2>전략 비교 매트릭스</h2>
+    <p>어떤 장세에서 어떤 전략을 우선 볼지 빠르게 판단하는 표.</p>
+  </div>
+  <section class="matrix">
+    <table>
+      <thead><tr><th>전략</th><th>유형</th><th>주로 맞는 장세</th><th>핵심 진입 필터</th><th>청산/손절</th><th>운영상 해석</th></tr></thead>
+      <tbody>
+        <tr class="pb"><td><span class="type-dot"></span>Pullback V3</td><td>눌림목</td><td>상승·혼합장</td><td>MA 상승 국면 + RSI2 극단 과매도 + 추가 눌림</td><td>MA5 회복 / -5%</td><td>현재 MAPS의 가장 정교한 단기 눌림목 파일럿</td></tr>
+        <tr class="pb"><td><span class="type-dot"></span>Pullback V2</td><td>눌림목</td><td>상승·혼합장</td><td>MA5&gt;장기MA + Stoch 과매도 + 저가 이탈</td><td>MA5 회복 / -6%</td><td>V3보다 단순한 평균회귀형 보조 전략</td></tr>
+        <tr class="ath"><td><span class="type-dot"></span>ATH V1</td><td>신고가 돌파</td><td>강세장</td><td>N일 최고가 돌파</td><td>exit_ma 이탈 / -10%</td><td>주도주 포착, 단 거짓 돌파 방어는 약함</td></tr>
+        <tr class="ath"><td><span class="type-dot"></span>ATH V2</td><td>신고가 돌파</td><td>강세장</td><td>신고가 + 거래량 급증 + 상승 국면</td><td>exit_ma·트레일링 / -12%</td><td>V1보다 신호는 적지만 질을 높인 버전</td></tr>
+        <tr class="ma"><td><span class="type-dot"></span>Multi-Asset Trend</td><td>추세추종</td><td>전 국면, 단 상승 필터 필요</td><td>골든크로스 + 가격 위치 + Slow MA 상승</td><td>데드크로스·Fast MA 이탈 / -8%</td><td>시장·섹터 추세 전환 확인용 코어 전략</td></tr>
+        <tr class="don"><td><span class="type-dot"></span>Donchian V1</td><td>채널 돌파</td><td>상승·혼합장</td><td>상단 채널 돌파</td><td>하단 채널 이탈 / -8%</td><td>리서치 성격의 클래식 돌파 전략</td></tr>
+        <tr class="don"><td><span class="type-dot"></span>Donchian V2</td><td>채널+모멘텀</td><td>상승·혼합장</td><td>상단 채널 + ROC 양수 + MA40 상승</td><td>하단 채널 이탈 / -10%</td><td>V1의 횡보장 휩쏘를 줄이는 개선형</td></tr>
+        <tr class="ct"><td><span class="type-dot"></span>Contrarian Quality</td><td>역발상 축적</td><td>약세·혼합장</td><td>고점 대비 하락 + RSI 과매도 + 가치 안전마진</td><td>Thesis stop·긴급손절·MA20 회복</td><td>코스톨라니식 공포장 분할매수 전용</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <div class="note"><b>핵심 해석:</b> MAPS는 “신호가 뜨면 바로 산다”가 아니라, 전략 신호 → 후보 점수 → 가격 계획 → 승격 게이트 → 리스크 관리 순으로 여러 안전장치를 거친다. 따라서 전략을 이해할 때는 개별 진입조건뿐 아니라 <b>어떤 국면에서 허용되는지</b>와 <b>손절/청산 우선순위</b>를 함께 봐야 한다.</div>
+  <div class="footer">Generated from repository analysis: jkkim74/maps · 기준일: 2026-06-30</div>
+</div>
+</body>
+</html>

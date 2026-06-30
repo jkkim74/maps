@@ -174,6 +174,7 @@ _SCREEN_MAP = {
     "trade-review":     "거래 리뷰",
     "stock-analysis":   "주식 종목 분석",
     "analysis-picks":   "분석 워치리스트",
+    "maps-intro":       "MAPS 소개",
 }
 
 
@@ -290,3 +291,9 @@ async def stock_analysis_page(request: Request) -> HTMLResponse:
 @app.get("/analysis-picks", response_class=HTMLResponse)
 async def analysis_picks_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "analysis_picks.html", _ctx(request, "analysis-picks"))
+
+
+@app.get("/maps-intro", response_class=HTMLResponse)
+async def maps_intro_page(request: Request) -> HTMLResponse:
+    """MAPS 소개 — 8개 전략 프로세스 인포그래픽 (standalone)."""
+    return templates.TemplateResponse(request, "maps_strategy_infographic.html", _ctx(request, "maps-intro"))
