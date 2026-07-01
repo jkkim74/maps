@@ -14,6 +14,9 @@ export type Order = {
   order_price: number | null
   status: string
   created_at: string
+  // 체결(fills_today) 항목에만 존재하는 선택 필드 — 드릴다운 상세에서 사용.
+  fill_price?: number | null
+  fill_qty?: number | null
 }
 
 export type Holding = {

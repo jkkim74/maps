@@ -111,6 +111,31 @@ h2 { margin: 0 0 12px; color: #b9c4c9; font-size: 13px; font-weight: 700; text-t
 .pick-actions button.ghost { color: #ff8d87; background: transparent; border: 1px solid #673638; }
 .pick-actions button:disabled { opacity: .4; }
 
+/* 드릴다운 상세 (주문/워치) */
+.tappable { cursor: pointer; }
+.row.tappable:active, .pick-head.tappable:active { background: #1f272d; }
+.detail { display: flex; flex-direction: column; gap: 14px; }
+.detail-back {
+  align-self: flex-start; display: inline-flex; align-items: center; gap: 6px;
+  padding: 8px 12px; color: #dce5e9; background: #1b2329; border: 1px solid #303c43;
+  border-radius: 8px; font-size: 13px; font-weight: 600;
+}
+.detail-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px; background: #151b1f; border: 1px solid #2b373e; border-radius: 10px;
+}
+.detail-head strong { display: block; color: #e8edf0; font-size: 16px; }
+.detail-head span { display: block; margin-top: 4px; color: #84929a; font-size: 12px; }
+.detail-list { border: 1px solid #29343b; border-radius: 8px; overflow: hidden; background: #192126; }
+.detail-list div { display: flex; justify-content: space-between; gap: 12px; padding: 13px 14px; border-bottom: 1px solid #29343b; }
+.detail-list div:last-child { border-bottom: 0; }
+.detail-list span { color: #839098; font-size: 12px; }
+.detail-list b { color: #eef3f5; font-size: 13px; text-align: right; overflow-wrap: anywhere; }
+.detail-list b.detail-mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospace; font-size: 12px; }
+.detail-list b.detail-up { color: #66d19e; }
+.detail-list b.detail-down { color: #ff8d87; }
+.detail-actions { margin-top: 2px; }
+
 /* Kill-Switch */
 .ks { padding: 14px; background: #151b1f; border: 1px solid #2b373e; border-radius: 10px; }
 .ks.danger { border-color: #673638; background: #21171a; }

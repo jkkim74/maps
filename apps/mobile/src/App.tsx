@@ -1,496 +1,53 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
-  Activity,
   AlertTriangle,
   Bell,
-  CircleDollarSign,
   Gauge,
   House,
   ListOrdered,
   LogOut,
   RefreshCw,
-  ShieldCheck,
-  ShieldX,
   Target,
 } from 'lucide-react'
-import {
-  approveLiquidation,
-  armPick,
-  disarmPick,
-  fetchKillSwitches,
-  fetchPicks,
-  fetchPortfolioHistory,
-  fetchSummary,
-  loadCachedHistory,
-  loadCachedSummary,
-  releaseKillSwitch,
-  type AnalysisPick,
-  type KillSwitches,
-  type MobileSummary,
-  type PortfolioHistory,
-} from './api'
-import { AuthError, clearToken, getUsername, login } from './auth'
+import type { AnalysisPick, Order } from './api'
+import { clearToken } from './auth'
 import { disablePushNotifications, initPushNotifications } from './push'
+import { useAuth } from './hooks/useAuth'
+import { useSummary } from './hooks/useSummary'
+import { useHistory } from './hooks/useHistory'
+import { usePicks } from './hooks/usePicks'
+import { useKillSwitches } from './hooks/useKillSwitches'
+import { usePolling } from './hooks/usePolling'
+import { HomeScreen } from './screens/HomeScreen'
+import { OrdersScreen } from './screens/OrdersScreen'
+import { RiskScreen } from './screens/RiskScreen'
+import { WatchlistScreen } from './screens/WatchlistScreen'
+import { AlertsScreen } from './screens/AlertsScreen'
+import { LoginScreen } from './screens/LoginScreen'
+import { KillSwitchPanel } from './components/KillSwitchPanel'
+import { OrderDetail } from './OrderDetail'
+import { HoldingDetail } from './HoldingDetail'
 
 type Tab = 'home' | 'orders' | 'risk' | 'watchlist' | 'alerts'
 
-const money = (value: number) => `${Math.round(value).toLocaleString('ko-KR')}원`
-const pct = (value: number) => `${value >= 0 ? '+' : ''}${(value * 100).toFixed(1)}%`
-const absPct = (value: number) => `${(Math.abs(value) * 100).toFixed(1)}%`
-
-function Kpi({ label, value, tone = 'default' }: { label: string; value: string; tone?: string }) {
-  return (
-    <div className={`kpi ${tone}`}>
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </div>
-  )
-}
-
-function Empty({ text }: { text: string }) {
-  return <div className="empty">{text}</div>
-}
-
-/** 의존성 없는 SVG 스파크라인. 상승=녹색, 하락=적색으로 면적+라인을 그린다. */
-function Sparkline({ values }: { values: number[] }) {
-  if (values.length < 2) return null
-  const w = 300
-  const h = 64
-  const pad = 4
-  const min = Math.min(...values)
-  const max = Math.max(...values)
-  const span = max - min || 1
-  const stepX = (w - pad * 2) / (values.length - 1)
-  const coords = values.map((v, i): [number, number] => [
-    pad + i * stepX,
-    pad + (h - pad * 2) * (1 - (v - min) / span),
-  ])
-  const line = coords.map(([x, y], i) => `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`).join(' ')
-  const area = `${line} L${coords[coords.length - 1][0].toFixed(1)},${h - pad} L${coords[0][0].toFixed(1)},${h - pad} Z`
-  const up = values[values.length - 1] >= values[0]
-  const stroke = up ? '#22c55e' : '#ef4444'
-  const fill = up ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.15)'
-  return (
-    <svg className="sparkline" viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" role="img" aria-label="자산 추이 차트">
-      <path d={area} fill={fill} stroke="none" />
-      <path d={line} fill="none" stroke={stroke} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
-    </svg>
-  )
-}
-
-function TrendChart({ history }: { history?: PortfolioHistory }) {
-  const points = history?.points ?? []
-  const last = points[points.length - 1]
-  const cumulative = history?.cumulative_pct ?? 0
-  return (
-    <section>
-      <h2>자산 추이{points.length ? ` · 최근 ${points.length}일` : ''}</h2>
-      {points.length < 2 || !last ? (
-        <Empty text="추이 데이터가 아직 없습니다." />
-      ) : (
-        <div className="trend">
-          <div className="trend-head">
-            <strong>{money(last.total_value)}</strong>
-            <span className={cumulative >= 0 ? 'text-up' : 'text-down'}>{pct(cumulative)} <small>기간 누적</small></span>
-          </div>
-          <Sparkline values={points.map((p) => p.total_value)} />
-        </div>
-      )}
-    </section>
-  )
-}
-
-function Home({ data, history }: { data: MobileSummary; history?: PortfolioHistory }) {
-  const blocked = !data.orders.auto_order_active
-  return (
-    <>
-      <section className={`status-banner ${blocked ? 'danger' : 'ok'}`}>
-        {blocked ? <ShieldX size={22} /> : <ShieldCheck size={22} />}
-        <div>
-          <strong>{blocked ? '자동 주문 차단됨' : '자동 주문 정상'}</strong>
-          <span>{blocked ? 'Kill Switch 상태를 확인하세요.' : '운영 상태가 정상입니다.'}</span>
-        </div>
-      </section>
-      <section className="kpi-grid">
-        <Kpi label="총 자산" value={money(data.dashboard.total_assets)} />
-        <Kpi label="현재 MDD" value={absPct(data.dashboard.current_mdd)} tone={data.dashboard.current_mdd < -0.2 ? 'danger' : 'info'} />
-        <Kpi label="YTD 수익률" value={pct(data.dashboard.ytd_cagr)} tone="good" />
-        <Kpi label="활성 전략" value={`${data.dashboard.active_strategies}개`} />
-      </section>
-      <TrendChart history={history} />
-      <section>
-        <h2>오늘의 운영</h2>
-        <div className="metric-list">
-          <div><span>미체결 주문</span><b>{data.orders.pending.length}</b></div>
-          <div><span>오늘 체결</span><b>{data.orders.fills_today.length}</b></div>
-          <div><span>보유 종목</span><b>{data.risk.position_count}</b></div>
-          <div><span>청산 승인 대기</span><b className={data.live_monitor.pending_approval_count ? 'text-danger' : ''}>{data.live_monitor.pending_approval_count}</b></div>
-        </div>
-      </section>
-      <section>
-        <h2>최근 알림</h2>
-        <Alerts items={data.alerts.slice(0, 3)} />
-      </section>
-    </>
-  )
-}
-
-function Orders({ data }: { data: MobileSummary }) {
-  const orders = [...data.orders.pending, ...data.orders.fills_today, ...data.orders.expired]
-  return (
-    <section>
-      <h2>주문 및 체결</h2>
-      {orders.length === 0 ? <Empty text="표시할 주문 내역이 없습니다." /> : (
-        <div className="rows">
-          {orders.map((order) => (
-            <article className="row" key={`${order.order_id}-${order.status}`}>
-              <div><strong>{order.name || order.ticker}</strong><span>{order.ticker} · {order.strategy_id || 'broker'}</span></div>
-              <div className="row-end"><b>{order.side} {order.qty}</b><span className={`pill ${order.status.toLowerCase()}`}>{order.status}</span></div>
-            </article>
-          ))}
-        </div>
-      )}
-    </section>
-  )
-}
-
-function Risk({ data }: { data: MobileSummary }) {
-  return (
-    <>
-      <section className="kpi-grid">
-        <Kpi label="일간 위험" value={absPct(data.risk.short_term_risk)} />
-        <Kpi label="위험 한도" value={absPct(data.risk.short_term_limit)} tone="info" />
-        <Kpi label="장기 위험" value={absPct(data.risk.long_term_risk)} />
-        <Kpi label="장기 한도" value={absPct(data.risk.long_term_limit)} tone="info" />
-        <Kpi label="최대 노출" value={absPct(data.risk.max_exposure_pct)} />
-        <Kpi label="보유 종목" value={`${data.risk.position_count}개`} />
-      </section>
-      <section>
-        <h2>보유 현황</h2>
-        {data.risk.holdings.length === 0 ? <Empty text="현재 보유 종목이 없습니다." /> : (
-          <div className="rows">
-            {data.risk.holdings.map((holding) => (
-              <article className="row" key={holding.ticker}>
-                <div><strong>{holding.ticker}</strong><span>{holding.strategy_id}</span></div>
-                <div className="row-end"><b>{absPct(holding.exposure_pct)}</b><span>노출 비중</span></div>
-              </article>
-            ))}
-          </div>
-        )}
-      </section>
-    </>
-  )
-}
-
-function Alerts({ items }: { items: MobileSummary['alerts'] }) {
-  if (!items.length) return <Empty text="최근 알림이 없습니다." />
-  return (
-    <div className="alerts">
-      {items.map((alert, index) => (
-        <article className="alert" key={`${alert.message}-${index}`}>
-          {alert.level === 'WARN' || alert.level === 'ERROR' ? <AlertTriangle size={18} /> : <Activity size={18} />}
-          <div><strong>{alert.level}</strong><p>{alert.message}</p></div>
-          <time>{alert.timestamp}</time>
-        </article>
-      ))}
-    </div>
-  )
-}
-
-function Login({ onSuccess }: { onSuccess: () => void }) {
-  const [username, setUsername] = useState('admin')
-  const [password, setPassword] = useState('')
-  const [error, setError] = useState('')
-  const [busy, setBusy] = useState(false)
-
-  const submit = async (event: React.FormEvent) => {
-    event.preventDefault()
-    setBusy(true)
-    setError('')
-    try {
-      await login(username, password)
-      onSuccess()
-    } catch (reason) {
-      setError(reason instanceof AuthError ? reason.message : '로그인에 실패했습니다.')
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  return (
-    <div className="login-shell">
-      <form className="login-card" onSubmit={submit}>
-        <div className="login-brand"><span className="brand">MAPS</span><p>Mobile Operations</p></div>
-        <label>아이디
-          <input value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" />
-        </label>
-        <label>비밀번호
-          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" />
-        </label>
-        {error ? <div className="login-error">{error}</div> : null}
-        <button type="submit" className="login-btn" disabled={busy}>
-          {busy ? '로그인 중…' : '로그인'}
-        </button>
-      </form>
-    </div>
-  )
-}
-
-const STATE_LABEL: Record<string, string> = {
-  WATCH: '관망', ARMED: '무장', BOUGHT: '보유', CLOSED: '청산', CANCELLED: '취소',
-}
-const won = (value: number | null) => (value == null ? '—' : `${Math.round(value).toLocaleString('ko-KR')}`)
-
-function Watchlist({
-  picks, loading, error, busyId, message, onArm, onDisarm, onReload,
-}: {
-  picks: AnalysisPick[]
-  loading: boolean
-  error: string
-  busyId: number | null
-  message: string
-  onArm: (pick: AnalysisPick) => void
-  onDisarm: (pick: AnalysisPick) => void
-  onReload: () => void
-}) {
-  return (
-    <section>
-      <h2>분석 워치리스트</h2>
-      {message ? <div className="action-msg">{message}</div> : null}
-      {error ? <div className="error"><AlertTriangle size={20} />{error}<button type="button" onClick={onReload}>다시 시도</button></div> : null}
-      {loading && !picks.length ? <Empty text="불러오는 중…" /> : null}
-      {!loading && !picks.length && !error ? <Empty text="워치리스트가 비어 있습니다." /> : null}
-      <div className="rows">
-        {picks.map((p) => {
-          const busy = busyId === p.id
-          const armed = p.state === 'ARMED'
-          const bought = p.state === 'BOUGHT'
-          return (
-            <article className="pick" key={p.id}>
-              <div className="pick-head">
-                <div><strong>{p.name}</strong><span>{p.ticker}</span></div>
-                <span className={`badge ${p.state.toLowerCase()}`}>{STATE_LABEL[p.state] ?? p.state}</span>
-              </div>
-              <div className="pick-prices">
-                매수 {won(p.buy_price)} · 목표 {won(p.target_price)} · 손절 {won(p.stop_price)}
-                {p.rr_ratio != null ? ` · R:R ${p.rr_ratio}` : ''}
-              </div>
-              {p.fill_price != null ? (
-                <div className="pick-fill">
-                  체결 {won(p.fill_price)}
-                  {p.current_price != null ? ` · 현재 ${won(p.current_price)}` : ''}
-                  {p.fill_price && p.current_price != null
-                    ? ` (${p.current_price >= p.fill_price ? '+' : ''}${(((p.current_price - p.fill_price) / p.fill_price) * 100).toFixed(1)}%)`
-                    : ''}
-                </div>
-              ) : null}
-              <div className="pick-actions">
-                <button type="button" disabled={busy || armed || bought} onClick={() => onArm(p)}>무장</button>
-                <button type="button" className="ghost" disabled={busy || p.state === 'WATCH' || bought} onClick={() => onDisarm(p)}>무장해제</button>
-              </div>
-            </article>
-          )
-        })}
-      </div>
-    </section>
-  )
-}
-
-function KillSwitch({
-  data, loading, error, busyId, message, onApprove, onRelease,
-}: {
-  data: KillSwitches
-  loading: boolean
-  error: string
-  busyId: string | null
-  message: string
-  onApprove: (strategyId: string) => void
-  onRelease: (strategyId: string) => void
-}) {
-  const empty = !data.approvals.length && !data.releases.length
-  return (
-    <section>
-      <h2>Kill-Switch</h2>
-      {message ? <div className="action-msg">{message}</div> : null}
-      {error ? <div className="error"><AlertTriangle size={20} />{error}</div> : null}
-      {loading && empty ? <Empty text="불러오는 중…" /> : null}
-      {!loading && empty && !error ? <Empty text="대기 중인 Kill-Switch 작업이 없습니다." /> : null}
-      <div className="rows">
-        {data.approvals.filter((k) => k.strategy_id).map((k) => (
-          <article className="ks danger" key={`a-${k.strategy_id}`}>
-            <div className="ks-head">
-              <div><strong>{k.strategy_id}</strong><span>{k.reason || '발동됨'}</span></div>
-              <span className="badge armed">청산 승인 대기</span>
-            </div>
-            <button
-              type="button" className="danger-btn"
-              disabled={busyId === k.strategy_id}
-              onClick={() => onApprove(k.strategy_id as string)}
-            >보유 포지션 청산 승인</button>
-          </article>
-        ))}
-        {data.releases.filter((k) => k.strategy_id).map((k) => (
-          <article className="ks" key={`r-${k.strategy_id}`}>
-            <div className="ks-head">
-              <div><strong>{k.strategy_id}</strong><span>청산 완료 — 해제 대기</span></div>
-              <span className="badge bought">해제 대기</span>
-            </div>
-            <button
-              type="button"
-              disabled={busyId === k.strategy_id}
-              onClick={() => onRelease(k.strategy_id as string)}
-            >Kill-Switch 해제(신규 진입 재개)</button>
-          </article>
-        ))}
-      </div>
-    </section>
-  )
-}
-
-const POLL_INTERVAL = 30000 // 30초 자동 갱신
-
 export function App() {
   const [tab, setTab] = useState<Tab>('home')
-  const [data, setData] = useState<MobileSummary | undefined>(() => loadCachedSummary())
-  const [history, setHistory] = useState<PortfolioHistory | undefined>(() => loadCachedHistory())
-  const [error, setError] = useState('')
-  const [loading, setLoading] = useState(true)
-  const [needLogin, setNeedLogin] = useState(false)
-  const [picks, setPicks] = useState<AnalysisPick[]>([])
-  const [picksLoading, setPicksLoading] = useState(false)
-  const [picksError, setPicksError] = useState('')
-  const [actionBusyId, setActionBusyId] = useState<number | null>(null)
-  const [actionMsg, setActionMsg] = useState('')
-  const [ks, setKs] = useState<KillSwitches>({ approvals: [], releases: [] })
-  const [ksLoading, setKsLoading] = useState(false)
-  const [ksError, setKsError] = useState('')
-  const [ksBusyId, setKsBusyId] = useState<string | null>(null)
-  const [ksMsg, setKsMsg] = useState('')
+  const { needLogin, requireLogin, clearRequireLogin } = useAuth()
+  const { data, error, loading, refresh, clear: clearSummary } = useSummary(requireLogin, clearRequireLogin)
+  const { history, loadHistory } = useHistory(requireLogin)
+  const {
+    picks, loading: picksLoading, error: picksError,
+    busyId: actionBusyId, message: actionMsg,
+    load: loadPicks, onArm, onDisarm,
+  } = usePicks(requireLogin)
+  const {
+    data: ks, loading: ksLoading, error: ksError,
+    busyId: ksBusyId, message: ksMsg,
+    load: loadKillSwitches, onApprove, onRelease,
+  } = useKillSwitches(requireLogin)
+  const [selectedOrder, setSelectedOrder] = useState<Order | null>(null)
+  const [selectedPick, setSelectedPick] = useState<AnalysisPick | null>(null)
   const pushInitRef = useRef(false)
-
-  const refresh = useCallback(async () => {
-    setLoading(true)
-    setError('')
-    try {
-      setData(await fetchSummary())
-      setNeedLogin(false)
-    } catch (reason) {
-      if (reason instanceof AuthError) {
-        setNeedLogin(true)
-      } else {
-        setError(reason instanceof Error ? reason.message : '데이터를 불러오지 못했습니다.')
-      }
-    } finally {
-      setLoading(false)
-    }
-  }, [])
-
-  // 추이 차트는 보조 정보 — 실패해도 화면을 막지 않고 캐시를 유지한다.
-  const loadHistory = useCallback(async () => {
-    try {
-      setHistory(await fetchPortfolioHistory())
-    } catch (reason) {
-      if (reason instanceof AuthError) setNeedLogin(true)
-      /* 그 외 오류는 무시하고 마지막 캐시를 유지 */
-    }
-  }, [])
-
-  const loadPicks = useCallback(async () => {
-    setPicksLoading(true)
-    setPicksError('')
-    try {
-      setPicks(await fetchPicks())
-    } catch (reason) {
-      if (reason instanceof AuthError) {
-        setNeedLogin(true)
-      } else {
-        setPicksError(reason instanceof Error ? reason.message : '워치리스트를 불러오지 못했습니다.')
-      }
-    } finally {
-      setPicksLoading(false)
-    }
-  }, [])
-
-  const runAction = useCallback(
-    async (pick: AnalysisPick, action: 'arm' | 'disarm') => {
-      setActionBusyId(pick.id)
-      setActionMsg('')
-      try {
-        if (action === 'arm') await armPick(pick.id)
-        else await disarmPick(pick.id)
-        setActionMsg(`${pick.name} ${action === 'arm' ? '무장됨' : '무장해제됨'}`)
-        await loadPicks()
-      } catch (reason) {
-        if (reason instanceof AuthError) setNeedLogin(true)
-        else setActionMsg(`실패: ${reason instanceof Error ? reason.message : '요청 오류'}`)
-      } finally {
-        setActionBusyId(null)
-      }
-    },
-    [loadPicks],
-  )
-
-  const onArm = useCallback(
-    (pick: AnalysisPick) => {
-      if (window.confirm(`${pick.name}을(를) 무장하면 자동매수가 활성화됩니다. 계속할까요?`)) {
-        void runAction(pick, 'arm')
-      }
-    },
-    [runAction],
-  )
-  const onDisarm = useCallback((pick: AnalysisPick) => void runAction(pick, 'disarm'), [runAction])
-
-  const loadKillSwitches = useCallback(async () => {
-    setKsLoading(true)
-    setKsError('')
-    try {
-      setKs(await fetchKillSwitches())
-    } catch (reason) {
-      if (reason instanceof AuthError) setNeedLogin(true)
-      else setKsError(reason instanceof Error ? reason.message : 'Kill-Switch 현황을 불러오지 못했습니다.')
-    } finally {
-      setKsLoading(false)
-    }
-  }, [])
-
-  const onApprove = useCallback(
-    (strategyId: string) => {
-      const ok = window.confirm(
-        `⚠️ 실거래 경고\n\n[${strategyId}] 보유 포지션을 시장가로 청산 승인합니다.\n` +
-        `이 작업은 되돌릴 수 없습니다. 정말 진행할까요?`,
-      )
-      if (!ok) return
-      setKsBusyId(strategyId)
-      setKsMsg('')
-      approveLiquidation(strategyId, getUsername())
-        .then(() => { setKsMsg(`${strategyId} 청산 승인됨`); return loadKillSwitches() })
-        .catch((e) => {
-          if (e instanceof AuthError) setNeedLogin(true)
-          else setKsMsg(`실패: ${e instanceof Error ? e.message : '요청 오류'}`)
-        })
-        .finally(() => setKsBusyId(null))
-    },
-    [loadKillSwitches],
-  )
-
-  const onRelease = useCallback(
-    (strategyId: string) => {
-      const ok = window.confirm(
-        `[${strategyId}] Kill-Switch를 해제하면 신규 진입이 재개됩니다.\n청산이 완료됐는지 확인했나요?`,
-      )
-      if (!ok) return
-      setKsBusyId(strategyId)
-      setKsMsg('')
-      releaseKillSwitch(strategyId, getUsername())
-        .then(() => { setKsMsg(`${strategyId} Kill-Switch 해제됨`); return loadKillSwitches() })
-        .catch((e) => {
-          if (e instanceof AuthError) setNeedLogin(true)
-          else setKsMsg(`실패: ${e instanceof Error ? e.message : '요청 오류'}`)
-        })
-        .finally(() => setKsBusyId(null))
-    },
-    [loadKillSwitches],
-  )
 
   useEffect(() => {
     void refresh()
@@ -509,35 +66,31 @@ export function App() {
     if (tab === 'risk') void loadKillSwitches()
   }, [tab, loadPicks, loadKillSwitches])
 
-  // 30초 자동 폴링 — 백그라운드(숨김)에서는 멈추고, 화면 복귀 시 즉시 갱신한다.
+  // 탭 전환 시 열려 있던 드릴다운 상세 화면을 닫는다.
   useEffect(() => {
-    if (needLogin) return
-    const tick = () => {
-      if (document.hidden) return
-      void refresh()
-      if (tab === 'home') void loadHistory()
-      if (tab === 'watchlist') void loadPicks()
-      if (tab === 'risk') void loadKillSwitches()
-    }
-    const timer = window.setInterval(tick, POLL_INTERVAL)
-    const onVisible = () => { if (!document.hidden) tick() }
-    document.addEventListener('visibilitychange', onVisible)
-    return () => {
-      window.clearInterval(timer)
-      document.removeEventListener('visibilitychange', onVisible)
-    }
-  }, [needLogin, tab, refresh, loadHistory, loadPicks, loadKillSwitches])
+    setSelectedOrder(null)
+    setSelectedPick(null)
+  }, [tab])
+
+  // 30초 자동 폴링 — 백그라운드(숨김)에서는 멈추고, 화면 복귀 시 즉시 갱신한다.
+  const pollTick = useCallback(() => {
+    void refresh()
+    if (tab === 'home') void loadHistory()
+    if (tab === 'watchlist') void loadPicks()
+    if (tab === 'risk') void loadKillSwitches()
+  }, [tab, refresh, loadHistory, loadPicks, loadKillSwitches])
+  usePolling(pollTick, !needLogin)
 
   if (needLogin) {
-    return <Login onSuccess={() => { void refresh(); void loadHistory() }} />
+    return <LoginScreen onSuccess={() => { void refresh(); void loadHistory() }} />
   }
 
   const logout = () => {
     void disablePushNotifications()
     pushInitRef.current = false
     clearToken()
-    setData(undefined)
-    setNeedLogin(true)
+    clearSummary()
+    requireLogin()
   }
 
   return (
@@ -556,12 +109,16 @@ export function App() {
       <main>
         {loading && !data ? <div className="loading"><RefreshCw className="spin" />운영 데이터를 불러오는 중입니다.</div> : null}
         {error ? <div className="error"><AlertTriangle size={20} />{error}<button type="button" onClick={() => void refresh()}>다시 시도</button></div> : null}
-        {data && tab === 'home' ? <Home data={data} history={history} /> : null}
-        {data && tab === 'orders' ? <Orders data={data} /> : null}
+        {data && tab === 'home' ? <HomeScreen data={data} history={history} /> : null}
+        {data && tab === 'orders' ? (
+          selectedOrder
+            ? <OrderDetail order={selectedOrder} onBack={() => setSelectedOrder(null)} />
+            : <OrdersScreen data={data} onSelect={setSelectedOrder} />
+        ) : null}
         {data && tab === 'risk' ? (
           <>
-            <Risk data={data} />
-            <KillSwitch
+            <RiskScreen data={data} />
+            <KillSwitchPanel
               data={ks} loading={ksLoading} error={ksError}
               busyId={ksBusyId} message={ksMsg}
               onApprove={onApprove} onRelease={onRelease}
@@ -569,13 +126,21 @@ export function App() {
           </>
         ) : null}
         {tab === 'watchlist' ? (
-          <Watchlist
-            picks={picks} loading={picksLoading} error={picksError}
-            busyId={actionBusyId} message={actionMsg}
-            onArm={onArm} onDisarm={onDisarm} onReload={() => void loadPicks()}
-          />
+          selectedPick
+            ? <HoldingDetail
+                pick={picks.find((p) => p.id === selectedPick.id) ?? selectedPick}
+                busy={actionBusyId === selectedPick.id}
+                onBack={() => setSelectedPick(null)}
+                onArm={onArm} onDisarm={onDisarm}
+              />
+            : <WatchlistScreen
+                picks={picks} loading={picksLoading} error={picksError}
+                busyId={actionBusyId} message={actionMsg}
+                onArm={onArm} onDisarm={onDisarm} onReload={() => void loadPicks()}
+                onSelect={setSelectedPick}
+              />
         ) : null}
-        {data && tab === 'alerts' ? <section><h2>알림</h2><Alerts items={data.alerts} /></section> : null}
+        {data && tab === 'alerts' ? <AlertsScreen items={data.alerts} /> : null}
       </main>
       <nav className="bottom-nav">
         <button className={tab === 'home' ? 'active' : ''} onClick={() => setTab('home')}><House size={20} /><span>홈</span></button>
