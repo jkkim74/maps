@@ -63,8 +63,12 @@
 
 ## Next Steps (미착수 후속 후보)
 
-1. **APK 산출물 관리/배포** — 현재 debug APK는 로컬 빌드물(`apps/mobile/android/app/build/outputs/apk/debug/`).
-   사내 배포/스토어용 release 서명 APK는 미구현(서명키 필요).
+1. ~~**APK 산출물 관리/배포**~~ — **release 서명 빌드 설정 완료**(`apps/mobile/RELEASE.md`).
+   `keystore.properties.example` 템플릿 + `scripts/apply-release-signing.mjs`(생성된
+   `android/app/build.gradle`에 서명 config 주입, 멱등) + `scripts/gradle-release.mjs`(JDK21
+   `assembleRelease`) + `npm run build:apk:release` 원커맨드. **남은 것: 사용자가 실제 keystore
+   (`maps-release.jks`)와 store/key 비밀번호를 `apps/mobile/keystore.properties`에 채우기**(gitignore됨).
+   산출물: `apps/mobile/android/app/build/outputs/apk/release/app-release.apk`.
 2. **Phase 4 FCM 푸시** — 텔레그램으로 충족 중. 네이티브 푸시 원하면 Firebase 프로젝트+`google-services.json`+
    서버 FCM 키, 디바이스 토큰 등록 API, `notifications.py`에 `FcmNotifier` 필요.
 3. **추이 차트** — 모바일 summary에 시계열 없음 → `portfolio_snapshot` 기반 시계열 엔드포인트(서버) 선행 필요.

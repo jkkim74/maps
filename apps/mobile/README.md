@@ -33,3 +33,14 @@ npm run cap:sync
 ```
 
 Use `npm run cap:add:ios` on macOS for an iOS project.
+
+## Signed release APK
+
+For a signed release build (internal / store distribution), see
+[`RELEASE.md`](./RELEASE.md). Short version, from `apps/mobile/`:
+
+```powershell
+Copy-Item keystore.properties.example keystore.properties   # then fill in real values
+npm run build:apk:release
+# -> android/app/build/outputs/apk/release/app-release.apk
+```
