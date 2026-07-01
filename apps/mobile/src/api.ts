@@ -81,6 +81,19 @@ export type AnalysisPick = {
 
 type PicksResponse = { total: number; picks: AnalysisPick[] }
 
+// 추이 차트(SCR home) — portfolio_snapshot 기반 일별 자산 시계열.
+export type PortfolioHistoryPoint = {
+  date: string // YYYY-MM-DD
+  total_value: number // 해당일 총 자산(원)
+  pnl_pct: number // 전일 대비 수익률(소수)
+}
+
+export type PortfolioHistory = {
+  days: number
+  cumulative_pct: number // 기간 누적 수익률(소수)
+  points: PortfolioHistoryPoint[]
+}
+
 /** 토큰을 주입하고 401을 AuthError로 변환하는 공통 fetch. */
 async function authedFetch(path: string, init?: RequestInit): Promise<Response> {
   const token = getToken()
@@ -142,6 +155,39 @@ export async function fetchSummary(signal?: AbortSignal): Promise<MobileSummary>
   const summary = (await response.json()) as MobileSummary
   saveCachedSummary(summary)
   return summary
+}
+
+const HISTORY_CACHE_KEY = 'maps.cache.portfolio_history'
+
+/** 마지막 성공 추이를 보관해 콜드스타트 즉시 표시·오프라인 폴백에 쓴다. */
+export function loadCachedHistory(): PortfolioHistory | undefined {
+  try {
+    const raw = localStorage.getItem(HISTORY_CACHE_KEY)
+    return raw ? (JSON.parse(raw) as PortfolioHistory) : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function saveCachedHistory(history: PortfolioHistory): void {
+  try {
+    localStorage.setItem(HISTORY_CACHE_KEY, JSON.stringify(history))
+  } catch {
+    /* 용량 초과 등 무시 */
+  }
+}
+
+export async function fetchPortfolioHistory(
+  days = 30,
+  signal?: AbortSignal,
+): Promise<PortfolioHistory> {
+  const response = await authedFetch(`/api/v1/mobile/portfolio-history?days=${days}`, { signal })
+  if (!response.ok) {
+    throw new Error(`서버 응답 오류 (${response.status})`)
+  }
+  const history = (await response.json()) as PortfolioHistory
+  saveCachedHistory(history)
+  return history
 }
 
 export async function fetchPicks(signal?: AbortSignal): Promise<AnalysisPick[]> {

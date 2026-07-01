@@ -9,12 +9,12 @@ from __future__ import annotations
 
 import datetime as dt
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from maps.api.auth import check_credentials, make_mobile_token
-from maps.api.dashboard import get_dashboard
+from maps.api.dashboard import get_daily_pnl, get_dashboard
 from maps.api.deps import get_db
 from maps.api.live_monitor import get_live_monitor
 from maps.api.orders import get_orders
@@ -24,6 +24,8 @@ from maps.api.schemas import (
     DashboardResponse,
     LiveMonitorResponse,
     OrdersResponse,
+    PortfolioHistoryPoint,
+    PortfolioHistoryResponse,
     RiskResponse,
 )
 from maps.common.settings import get_settings
@@ -75,4 +77,31 @@ def get_mobile_summary(db: Session = Depends(get_db)) -> MobileSummaryResponse:
         risk=get_risk(db),
         live_monitor=get_live_monitor(db),
         alerts=dashboard.alerts[:10],
+    )
+
+
+@router.get("/portfolio-history", response_model=PortfolioHistoryResponse)
+def get_mobile_portfolio_history(
+    days: int = Query(default=30, ge=1, le=365, description="조회 일수 (최대 365일)"),
+    db: Session = Depends(get_db),
+) -> PortfolioHistoryResponse:
+    """앱 추이 차트용 포트폴리오 자산 시계열을 반환한다.
+
+    별도의 데이터를 생성하지 않고, 대시보드 일별 손익(`get_daily_pnl`)이 이미
+    `PortfolioSnapshot(source='broker')`의 일별 총 자산으로부터 계산한 시계열을
+    그대로 재사용한다. 스냅샷이 없으면 빈 시계열을 반환한다(값을 지어내지 않음).
+    """
+    pnl = get_daily_pnl(days=days, db=db)
+    points = [
+        PortfolioHistoryPoint(
+            date=item.date,
+            total_value=item.total_assets,
+            pnl_pct=item.pnl_pct,
+        )
+        for item in pnl.items
+    ]
+    return PortfolioHistoryResponse(
+        days=pnl.days,
+        cumulative_pct=pnl.cumulative_pct,
+        points=points,
     )

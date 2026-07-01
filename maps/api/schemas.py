@@ -561,6 +561,24 @@ class DailyPnlResponse(BaseModel):
     items: list[DailyReturnItem]
 
 
+# ── Mobile Portfolio History (추이 차트) ───────────────────────────────────────
+
+class PortfolioHistoryPoint(BaseModel):
+    """모바일 추이 차트의 한 시점(일별) 값."""
+
+    date: str            # ISO date (YYYY-MM-DD)
+    total_value: float   # 해당일 총 자산(원)
+    pnl_pct: float       # 전일 대비 수익률 (소수, 예: 0.012 = +1.2%)
+
+
+class PortfolioHistoryResponse(BaseModel):
+    """모바일 자산 추이 차트용 시계열 응답."""
+
+    days: int
+    cumulative_pct: float                  # 기간 전체 누적 수익률
+    points: list[PortfolioHistoryPoint]
+
+
 # ── SCR-17 Trade Review ───────────────────────────────────────────────────────
 
 class TradeReviewItem(BaseModel):

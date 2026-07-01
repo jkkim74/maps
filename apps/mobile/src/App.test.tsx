@@ -43,4 +43,37 @@ describe('<App />', () => {
     render(<App />)
     expect(await screen.findByText('총 자산')).toBeInTheDocument()
   })
+
+  it('추이 시계열이 있으면 자산 추이 차트를 렌더한다', async () => {
+    localStorage.setItem('maps.auth.token', 'tok')
+    const history = {
+      days: 30,
+      cumulative_pct: 0.045,
+      points: [
+        { date: '2026-06-27', total_value: 1000000, pnl_pct: 0 },
+        { date: '2026-06-28', total_value: 1100000, pnl_pct: 0.1 },
+        { date: '2026-06-29', total_value: 1045000, pnl_pct: -0.05 },
+      ],
+    }
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) =>
+        jsonResponse(url.includes('portfolio-history') ? history : fullSummary()),
+      ),
+    )
+    render(<App />)
+    expect(await screen.findByLabelText('자산 추이 차트')).toBeInTheDocument()
+  })
+
+  it('추이 요청이 실패해도 대시보드는 정상 렌더한다', async () => {
+    localStorage.setItem('maps.auth.token', 'tok')
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) =>
+        url.includes('portfolio-history') ? jsonResponse({ detail: 'boom' }, 500) : jsonResponse(fullSummary()),
+      ),
+    )
+    render(<App />)
+    expect(await screen.findByText('총 자산')).toBeInTheDocument()
+  })
 })
