@@ -11,7 +11,9 @@
     "test:watch": "vitest",
     "cap:sync": "npm run build && cap sync",
     "cap:add:android": "cap add android",
-    "cap:add:ios": "cap add ios"
+    "cap:add:ios": "cap add ios",
+    "signing:apply": "node scripts/apply-release-signing.mjs",
+    "build:apk:release": "npm run build && cap sync android && node scripts/apply-release-signing.mjs && node scripts/gradle-release.mjs"
   },
   "dependencies": {
     "@capacitor/android": "^7.6.5",

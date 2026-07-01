@@ -49,6 +49,11 @@ apps/mobile/android/
 apps/mobile/ios/
 *.tsbuildinfo
 
+# Android release signing secrets — NEVER commit
+apps/mobile/keystore.properties
+*.jks
+*.keystore
+
 # OS
 .DS_Store
 Thumbs.db
