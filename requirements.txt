@@ -15,6 +15,9 @@ aiofiles>=23.2.1
 # Scheduler
 apscheduler>=3.10.4
 
+# Push (FCM HTTP v1 — 서비스 계정 OAuth2). notifications.FcmNotifier에서 지연 임포트.
+google-auth>=2.28.0
+
 # Data
 pandas>=2.2.0
 numpy>=1.26.0

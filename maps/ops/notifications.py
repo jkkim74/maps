@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -331,3 +332,184 @@ def get_telegram_notifier() -> TelegramNotifier:
     if _telegram_notifier is None:
         _telegram_notifier = TelegramNotifier()
     return _telegram_notifier
+
+
+class FcmNotifier:
+    """Firebase Cloud Messaging(FCM) HTTP v1 API 클라이언트.
+
+    서비스 계정(JSON 키)으로 OAuth2 액세스 토큰을 발급받아, 등록된 기기 토큰으로
+    네이티브 푸시를 보낸다. `maps_fcm_service_account_path` 또는
+    `maps_fcm_project_id` 가 비어있으면 모든 호출이 no-op이라 로컬 개발·테스트는
+    조용히 넘어간다(TelegramNotifier와 동일 패턴).
+
+    google-auth는 지연 임포트하며, 테스트는 `token_provider`(액세스 토큰 콜러블)와
+    `http`를 주입해 실제 자격증명 없이 발송 경로를 검증한다.
+    """
+
+    _ENDPOINT = "https://fcm.googleapis.com/v1/projects/{project_id}/messages:send"
+    _SCOPE = "https://www.googleapis.com/auth/firebase.messaging"
+
+    def __init__(
+        self,
+        settings: MapsSettings | None = None,
+        *,
+        http: HttpPoster | None = None,
+        token_provider: Callable[[], str | None] | None = None,
+        timeout: float = 10.0,
+    ) -> None:
+        self._settings = settings or get_settings()
+        self._http = http or requests
+        self._token_provider = token_provider
+        self._timeout = timeout
+
+    @property
+    def _nonprod_blocked(self) -> bool:
+        """운영(MAPS_ENV=production)이 아니면서 명시적 허용도 없으면 실발송을 막는다.
+
+        로컬/테스트가 운영 서비스 계정이 든 .env로 돌아가도 실제 기기에 더미 알림이
+        새지 않게 하는 안전 가드(TelegramNotifier와 동일). 비운영에서 일부러 보내려면
+        MAPS_FCM_ALLOW_NONPROD=true 를 설정한다.
+        """
+        s = self._settings
+        return s.maps_env != "production" and not s.maps_fcm_allow_nonprod
+
+    @property
+    def enabled(self) -> bool:
+        if self._nonprod_blocked:
+            return False
+        return bool(
+            self._settings.maps_fcm_project_id
+            and self._settings.maps_fcm_service_account_path
+        )
+
+    def _access_token(self) -> str | None:
+        """서비스 계정으로 FCM 스코프의 OAuth2 액세스 토큰을 발급한다.
+
+        테스트/주입 편의를 위해 `token_provider`가 있으면 그 결과를 우선 사용한다.
+        google-auth는 여기서만 지연 임포트하며, 어떤 실패도 로깅 후 None으로 흡수해
+        발송 파이프라인을 막지 않는다.
+        """
+        if self._token_provider is not None:
+            return self._token_provider()
+        path = self._settings.maps_fcm_service_account_path
+        if not path:
+            return None
+        try:
+            from google.auth.transport.requests import Request as GoogleAuthRequest
+            from google.oauth2 import service_account
+
+            credentials = service_account.Credentials.from_service_account_file(
+                path, scopes=[self._SCOPE]
+            )
+            credentials.refresh(GoogleAuthRequest())
+            return credentials.token
+        except Exception as exc:  # noqa: BLE001 — 자격증명/네트워크 오류를 흡수
+            logger.warning("FCM 액세스 토큰 발급 실패: %s", exc)
+            return None
+
+    def send_to_token(
+        self,
+        token: str,
+        *,
+        title: str,
+        body: str,
+        data: dict[str, str] | None = None,
+    ) -> bool:
+        """단일 기기 토큰으로 알림을 보낸다. 실패해도 파이프라인을 막지 않는다."""
+        # 환경 가드: enabled를 우회하는 경로까지 단일 HTTP 통로에서 차단한다.
+        if self._nonprod_blocked:
+            logger.warning(
+                "FCM send blocked: MAPS_ENV=%s is not production "
+                "(set MAPS_FCM_ALLOW_NONPROD=true to override)",
+                self._settings.maps_env,
+            )
+            return False
+        if not (self._settings.maps_fcm_project_id and token):
+            logger.debug("FCM disabled or empty token; send skipped")
+            return False
+        access_token = self._access_token()
+        if not access_token:
+            logger.debug("FCM access token unavailable; send skipped")
+            return False
+
+        url = self._ENDPOINT.format(project_id=self._settings.maps_fcm_project_id)
+        message: dict[str, Any] = {
+            "token": token,
+            "notification": {"title": title, "body": body},
+        }
+        if data:
+            # FCM v1 data 값은 모두 문자열이어야 한다.
+            message["data"] = {k: str(v) for k, v in data.items()}
+        payload = {"message": message}
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+        }
+        try:
+            response = self._http.post(
+                url, json=payload, headers=headers, timeout=self._timeout
+            )
+            status_code = getattr(response, "status_code", 200)
+            if status_code >= 400:
+                logger.warning("FCM send failed: HTTP %s", status_code)
+                return False
+            return True
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("FCM send failed: %s", exc)
+            return False
+
+    def send_to_tokens(
+        self,
+        tokens: list[str],
+        *,
+        title: str,
+        body: str,
+        data: dict[str, str] | None = None,
+    ) -> int:
+        """여러 기기 토큰으로 알림을 보내고 성공 건수를 반환한다."""
+        if not tokens:
+            return 0
+        sent = 0
+        for token in tokens:
+            if token and self.send_to_token(token, title=title, body=body, data=data):
+                sent += 1
+        return sent
+
+    def send_analysis_picks(
+        self,
+        tokens: list[str],
+        picks: list[dict[str, Any]],
+        *,
+        regime: str | None = None,
+        ref_date: str | None = None,
+    ) -> int:
+        """편입 종목 요약을 등록 기기들로 푸시하고 성공 건수를 반환한다.
+
+        `picks`의 각 항목은 load_analysis_picks 의 prepared dict를 기대한다.
+        본문은 종목명 요약이며, data 페이로드로 type/ref_date/count를 함께 전달해
+        앱이 딥링크(워치리스트 이동)에 활용할 수 있게 한다.
+        """
+        if not picks or not tokens:
+            return 0
+        names = ", ".join(str(p.get("name") or p.get("ticker") or "") for p in picks[:5])
+        if len(picks) > 5:
+            names += " 외"
+        title = f"MAPS 편입 {len(picks)}종목"
+        meta = " · ".join(p for p in (regime, ref_date) if p)
+        body = f"{names}" + (f"\n{meta}" if meta else "")
+        data = {
+            "type": "analysis_picks",
+            "count": str(len(picks)),
+            **({"ref_date": ref_date} if ref_date else {}),
+        }
+        return self.send_to_tokens(tokens, title=title, body=body, data=data)
+
+
+_fcm_notifier: FcmNotifier | None = None
+
+
+def get_fcm_notifier() -> FcmNotifier:
+    global _fcm_notifier
+    if _fcm_notifier is None:
+        _fcm_notifier = FcmNotifier()
+    return _fcm_notifier
