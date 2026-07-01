@@ -547,3 +547,32 @@ class AnalysisRun(Base):
     candidates_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+# ---------------------------------------------------------------------------
+# 모바일 네이티브 푸시(FCM) 디바이스 토큰 등록 (Phase 4)
+# ---------------------------------------------------------------------------
+class DeviceToken(Base):
+    """device_token — FCM 네이티브 푸시를 받을 모바일 기기 등록 토큰.
+
+    앱이 로그인 후 획득한 FCM 등록 토큰을 저장한다. FcmNotifier는 active=True인
+    토큰으로만 발송한다. 토큰은 기기/앱 재설치 시 바뀌므로 unique 제약으로 upsert하고,
+    로그아웃/해지 시 active=False로 비활성화한다(행 삭제 대신 감사 흔적 보존).
+    """
+
+    __tablename__ = "device_token"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc)
+    )
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, nullable=False,
+        default=lambda: datetime.datetime.now(datetime.timezone.utc),
+        onupdate=lambda: datetime.datetime.now(datetime.timezone.utc),
+    )
+    token: Mapped[str] = mapped_column(String(512), nullable=False, unique=True, index=True)
+    platform: Mapped[str] = mapped_column(String(16), nullable=False, default="android")  # android | ios | web
+    username: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    last_seen_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)

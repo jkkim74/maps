@@ -161,6 +161,22 @@ export async function disarmPick(id: number): Promise<void> {
   await postAction(`/api/v1/analysis-picks/${id}/disarm`)
 }
 
+// FCM 네이티브 푸시 — 기기 등록 토큰 등록/해지.
+/** 로그인 후 획득한 FCM 토큰을 서버에 등록한다. */
+export async function registerDeviceToken(token: string, platform: string): Promise<void> {
+  await postAction('/api/v1/mobile/device-token', { token, platform })
+}
+
+/** 로그아웃/해지 시 토큰을 비활성화한다. */
+export async function deregisterDeviceToken(token: string): Promise<void> {
+  const res = await authedFetch('/api/v1/mobile/device-token', {
+    method: 'DELETE',
+    body: JSON.stringify({ token }),
+    headers: { 'Content-Type': 'application/json' },
+  })
+  if (!res.ok) throw new Error(`요청 실패 (${res.status})`)
+}
+
 // Kill-Switch (실거래 모니터) — 청산 승인 / 해제 대기 항목.
 export type KillSwitchEntry = {
   strategy_id: string | null

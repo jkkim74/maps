@@ -97,6 +97,16 @@ class MapsSettings(BaseSettings):
     # 운영이 아닌 곳에서 일부러 발송하려면 이 값을 true로 명시한다.
     maps_telegram_allow_nonprod: bool = False
 
+    # FCM(Firebase Cloud Messaging) 네이티브 푸시 — HTTP v1 API + 서비스 계정 인증.
+    # 사용자가 Firebase 리소스를 제공하기 전까지는 비어 있어 모든 발송이 no-op이다.
+    #  - maps_fcm_service_account_path: 서비스 계정 JSON 키 파일 경로(운영 서버 로컬 경로).
+    #  - maps_fcm_project_id: Firebase 프로젝트 ID(예: maps-12345).
+    maps_fcm_service_account_path: str = ""
+    maps_fcm_project_id: str = ""
+    # 비운영 환경에서 FCM 실발송을 막는 안전 가드(텔레그램과 동일 패턴).
+    # 로컬/테스트가 운영 서비스 계정이 든 .env로 실행돼도 실제 기기에 더미 알림이 새지 않게 한다.
+    maps_fcm_allow_nonprod: bool = False
+
     # AWS Bedrock (Claude AI 분석)
     aws_access_key_id: str = ""
     aws_secret_access_key: str = ""
@@ -341,6 +351,9 @@ def get_config_status(settings: MapsSettings | None = None) -> list[ConfigSectio
                 _field(s, "telegram_chat_id", "TELEGRAM_CHAT_ID", "Telegram chat id that receives alerts and may trigger arm/disarm"),
                 _field(s, "telegram_webhook_secret", "TELEGRAM_WEBHOOK_SECRET", "Secret token validating inbound Telegram webhook calls", secret=True),
                 _field(s, "maps_telegram_allow_nonprod", "MAPS_TELEGRAM_ALLOW_NONPROD", "Allow real Telegram sends when MAPS_ENV is not production (default off)"),
+                _field(s, "maps_fcm_service_account_path", "MAPS_FCM_SERVICE_ACCOUNT_PATH", "Path to the Firebase service-account JSON key for FCM HTTP v1 push", secret=True),
+                _field(s, "maps_fcm_project_id", "MAPS_FCM_PROJECT_ID", "Firebase project id that owns the FCM app"),
+                _field(s, "maps_fcm_allow_nonprod", "MAPS_FCM_ALLOW_NONPROD", "Allow real FCM sends when MAPS_ENV is not production (default off)"),
             ],
         ),
     ]

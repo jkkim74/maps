@@ -19,6 +19,7 @@
     "@capacitor/android": "^7.6.5",
     "@capacitor/core": "^7.6.5",
     "@capacitor/ios": "^7.6.5",
+    "@capacitor/push-notifications": "^7.0.0",
     "lucide-react": "^0.468.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   Activity,
   AlertTriangle,
@@ -27,6 +27,7 @@ import {
   type MobileSummary,
 } from './api'
 import { AuthError, clearToken, getUsername, login } from './auth'
+import { disablePushNotifications, initPushNotifications } from './push'
 
 type Tab = 'home' | 'orders' | 'risk' | 'watchlist' | 'alerts'
 
@@ -311,6 +312,7 @@ export function App() {
   const [ksError, setKsError] = useState('')
   const [ksBusyId, setKsBusyId] = useState<string | null>(null)
   const [ksMsg, setKsMsg] = useState('')
+  const pushInitRef = useRef(false)
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -430,6 +432,13 @@ export function App() {
     void refresh()
   }, [refresh])
 
+  // 로그인(인증 확립) 이후 1회 네이티브 푸시를 초기화한다(웹은 push.ts에서 no-op).
+  useEffect(() => {
+    if (needLogin || pushInitRef.current) return
+    pushInitRef.current = true
+    void initPushNotifications()
+  }, [needLogin])
+
   useEffect(() => {
     if (tab === 'watchlist') void loadPicks()
     if (tab === 'risk') void loadKillSwitches()
@@ -458,6 +467,8 @@ export function App() {
   }
 
   const logout = () => {
+    void disablePushNotifications()
+    pushInitRef.current = false
     clearToken()
     setData(undefined)
     setNeedLogin(true)
