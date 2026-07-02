@@ -80,6 +80,32 @@ def test_preview_marks_stale_when_candidates_old(db, monkeypatch) -> None:
     assert resp.expected_ref_date is not None
     # 마지막으로 생성된(오래된) 기준일을 투명하게 노출한다.
     assert resp.as_of_date == stale_date.isoformat()
+    # OHLCV도 함께 오래됐으므로 수집 실패로 판별한다.
+    assert resp.stale_reason == "data_collection_failed"
+    assert resp.latest_ohlcv_date == stale_date.isoformat()
+
+
+def test_preview_stale_reason_regime_blocked_when_ohlcv_fresh(db, monkeypatch) -> None:
+    stale_date = dt.date.today() - dt.timedelta(days=30)
+    _seed_candidate(db, ref_date=stale_date)
+    # 수집은 정상: 최신 OHLCV가 존재하지만 후보 스냅샷만 생성되지 않은 상황
+    db.add(HistoricalOHLCV(
+        ticker="BBBB",
+        date=dt.date.today(),
+        open=10_000,
+        high=10_000,
+        low=10_000,
+        close=10_000,
+        volume=100_000,
+    ))
+    db.commit()
+    monkeypatch.setattr("maps.ops.order_preview.next_trading_day", lambda value: value + dt.timedelta(days=1))
+
+    resp = build_order_preview(db, MapsSettings())
+
+    assert resp.data_stale is True
+    assert resp.stale_reason == "regime_blocked"
+    assert resp.latest_ohlcv_date == dt.date.today().isoformat()
 
 
 def test_preview_fresh_when_candidate_current(db, monkeypatch) -> None:
@@ -89,6 +115,7 @@ def test_preview_fresh_when_candidate_current(db, monkeypatch) -> None:
     resp = build_order_preview(db, MapsSettings())
 
     assert resp.data_stale is False
+    assert resp.stale_reason is None
     assert [item.ticker for item in resp.items] == ["AAAA"]
 
 

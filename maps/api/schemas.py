@@ -210,6 +210,8 @@ class OrderPreviewResponse(BaseModel):
     max_orders_effective: int = 3
     data_stale: bool = False
     expected_ref_date: str | None = None
+    stale_reason: str | None = None
+    latest_ohlcv_date: str | None = None
 
 
 # ── SCR-06 Risk ───────────────────────────────────────────────────────────────

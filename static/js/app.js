@@ -1154,21 +1154,29 @@ function _renderOrderPreview(p) {
     return;
   }
   if (p.data_stale) {
+    const regimeBlocked = p.stale_reason === 'regime_blocked';
+    const statusCard = regimeBlocked ? `
+        <div class="kpi-card info">
+          <div class="kpi-label">후보 상태</div>
+          <div class="kpi-value">장세 차단</div>
+          <div class="kpi-sub">데이터 수집 정상 (OHLCV ${p.latest_ohlcv_date || '—'}) — 장세(${(p.market_regime || 'unknown').toUpperCase()})로 전 전략 진입 차단 중</div>
+        </div>` : `
+        <div class="kpi-card warn">
+          <div class="kpi-label">후보 상태</div>
+          <div class="kpi-value">데이터 오래됨</div>
+          <div class="kpi-sub">기대 기준일 ${p.expected_ref_date} 이후 생성 없음</div>
+        </div>`;
     document.getElementById('orders-preview-kpi').innerHTML = `
       <div class="kpi-grid">
         <div class="kpi-card info">
           <div class="kpi-label">다음 거래일</div>
           <div class="kpi-value">${p.next_trading_day}</div>
           <div class="kpi-sub">마지막 생성 기준일 ${p.as_of_date}</div>
-        </div>
-        <div class="kpi-card warn">
-          <div class="kpi-label">후보 상태</div>
-          <div class="kpi-value">데이터 오래됨</div>
-          <div class="kpi-sub">기대 기준일 ${p.expected_ref_date} 이후 생성 없음</div>
-        </div>
+        </div>${statusCard}
       </div>`;
-    empty('orders-preview-table',
-      `최신 후보 없음 — 데이터가 오래됨 (마지막 기준일 ${p.as_of_date}, 기대 ${p.expected_ref_date} 이후 생성 없음)`);
+    empty('orders-preview-table', regimeBlocked
+      ? `신규 후보 없음 — 약세장으로 후보 생성이 차단됨 (수집은 정상, 마지막 후보 기준일 ${p.as_of_date})`
+      : `최신 후보 없음 — 데이터가 오래됨 (마지막 기준일 ${p.as_of_date}, 기대 ${p.expected_ref_date} 이후 생성 없음)`);
     return;
   }
   const validItems = (p.items || []).filter(i => !i.skipped);
