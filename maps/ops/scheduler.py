@@ -2657,7 +2657,11 @@ class MapsOperationalScheduler:
     def _record(self, name: str, fn: Callable[[], JobRun]) -> JobRun:
         run = fn()
         self._last_runs[name] = run
-        logger.info("Scheduler job %s: %s %s", name, run.status, json.dumps(run.details, ensure_ascii=False))
+        details = json.dumps(run.details, ensure_ascii=False)
+        if run.status == "failed":
+            logger.error("Scheduler job %s: failed error=%s %s", name, run.message, details)
+        else:
+            logger.info("Scheduler job %s: %s %s", name, run.status, details)
         return run
 
     @staticmethod
