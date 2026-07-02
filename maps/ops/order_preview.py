@@ -178,13 +178,16 @@ def build_order_preview(db: Session, settings: MapsSettings) -> OrderPreviewResp
     expected_ref = previous_trading_day(next_day, extra_closed_dates=settings.krx_closed_dates)
     data_stale = latest_ref is not None and latest_ref < expected_ref
 
-    # stale 사유 판별: OHLCV가 최신이면 수집은 정상 — 후보 생성이 장세 차단 등으로
-    # 스냅샷을 저장하지 않은 것. OHLCV까지 오래됐으면 수집 자체가 실패한 것.
+    # stale 사유 판별: OHLCV가 직전 완료 세션까지 수집돼 있으면 수집은 정상 —
+    # 후보 생성이 장세 차단 등으로 스냅샷을 저장하지 않은 것. 기준을 expected_ref가
+    # 아닌 previous_trading_day(today)로 잡는 이유: 당일분 OHLCV는 16:40 수집
+    # 전까지 존재할 수 없어 장중에는 expected_ref 비교가 항상 실패하기 때문.
     stale_reason: str | None = None
     latest_ohlcv_date: dt.date | None = None
     if data_stale:
         latest_ohlcv_date = db.query(func.max(HistoricalOHLCV.date)).scalar()
-        if latest_ohlcv_date is not None and latest_ohlcv_date >= expected_ref:
+        last_completed = previous_trading_day(today, extra_closed_dates=settings.krx_closed_dates)
+        if latest_ohlcv_date is not None and latest_ohlcv_date >= last_completed:
             stale_reason = "regime_blocked"
         else:
             stale_reason = "data_collection_failed"

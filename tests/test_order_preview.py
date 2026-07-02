@@ -6,6 +6,7 @@ from maps.common.models import CandidateSnapshot, HistoricalOHLCV, OrderLog, Pro
 from maps.common.settings import MapsSettings
 from maps.execution.broker_adapter import OrderSide, OrderStatus
 from maps.api.orders import get_orders
+from maps.market.trading_rules import previous_trading_day
 from maps.ops.order_preview import build_order_preview
 
 
@@ -88,10 +89,12 @@ def test_preview_marks_stale_when_candidates_old(db, monkeypatch) -> None:
 def test_preview_stale_reason_regime_blocked_when_ohlcv_fresh(db, monkeypatch) -> None:
     stale_date = dt.date.today() - dt.timedelta(days=30)
     _seed_candidate(db, ref_date=stale_date)
-    # 수집은 정상: 최신 OHLCV가 존재하지만 후보 스냅샷만 생성되지 않은 상황
+    # 수집은 정상(장중 시점): 직전 완료 세션까지 OHLCV가 존재하지만
+    # 후보 스냅샷만 생성되지 않은 상황 (당일분은 16:40 수집 전이라 없음)
+    last_session = previous_trading_day(dt.date.today())
     db.add(HistoricalOHLCV(
         ticker="BBBB",
-        date=dt.date.today(),
+        date=last_session,
         open=10_000,
         high=10_000,
         low=10_000,
@@ -105,7 +108,7 @@ def test_preview_stale_reason_regime_blocked_when_ohlcv_fresh(db, monkeypatch) -
 
     assert resp.data_stale is True
     assert resp.stale_reason == "regime_blocked"
-    assert resp.latest_ohlcv_date == dt.date.today().isoformat()
+    assert resp.latest_ohlcv_date == last_session.isoformat()
 
 
 def test_preview_fresh_when_candidate_current(db, monkeypatch) -> None:
