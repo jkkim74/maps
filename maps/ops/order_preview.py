@@ -14,13 +14,14 @@ from maps.common.models import CandidateSnapshot, HistoricalOHLCV, PortfolioSnap
 from maps.common.settings import MapsSettings
 from maps.market.trading_rules import previous_trading_day, round_up_krx_price
 from maps.ops.order_state import claimed_candidate_tickers
-from maps.ops.scheduler import OperationalPipeline, _is_krx_market_day
+from maps.ops.scheduler import OperationalPipeline, _RUNNABLE_STRATEGIES, _is_krx_market_day
 
 logger = logging.getLogger(__name__)
 
 _MAX_ORDERS = 3
 _ELIGIBLE_STAGES = {"mock_candidate", "live_candidate", "live"}
 _LOOKAHEAD_DAYS = 14  # 최대 탐색 일수 (긴 연휴 대비)
+_MAX_PREVIEW_ITEMS = 10  # 차단 사유 행 포함 미리보기 최대 표시 건수
 
 
 # ── 핵심 계산 함수 ────────────────────────────────────────────────────────────
@@ -157,20 +158,35 @@ def build_order_preview(db: Session, settings: MapsSettings) -> OrderPreviewResp
     today = dt.date.today()
     next_day = next_trading_day(today)
 
-    # 장세 분석
+    # 장세 분석 — 스케줄러 주문 경로와 동일하게 설정 오버라이드를 존중한다.
+    regime_result = None
     try:
-        from maps.market.regime import MarketRegimeAnalyzer
-        from maps.api.market import _CombinedWeeklyProvider
-        _regime = MarketRegimeAnalyzer(_CombinedWeeklyProvider()).analyze()
-        market_regime = _regime.regime.value
-        weekly_trend = _regime.weekly_trend.value
-        entry_limit_ratio = _regime.entry_limit_ratio
+        from maps.market.regime import RegimeLabel, create_regime_analyzer
+        from maps.market.regime_history import latest_applied_regime
+        regime_result = create_regime_analyzer(settings).analyze()
+        # 스케줄러가 기록한 최근 판정(히스테리시스 적용)이 있으면 우선 사용한다.
+        # 오버라이드가 걸려 있으면 오버라이드를 존중한다.
+        if settings.maps_market_regime_override == "auto":
+            log_row = latest_applied_regime(db, today)
+            if log_row is not None:
+                regime_result.regime = RegimeLabel(log_row.applied_regime)
+                regime_result.floor_applied = bool(log_row.floor_applied)
+        market_regime = regime_result.regime.value
+        weekly_trend = regime_result.weekly_trend.value
+        entry_limit_ratio = regime_result.entry_limit_ratio
     except Exception as _e:
         logger.warning("장세 분석 실패, 기본값 사용: %s", _e)
         market_regime = "unknown"
         weekly_trend = "unknown"
         entry_limit_ratio = 0.5
-    effective_max = max(1, math.ceil(_MAX_ORDERS * entry_limit_ratio))
+    # 주문 경로(_submit_candidate_orders)와 동일한 상한 계산을 미러링한다.
+    max_policy_ratio = max(
+        entry_limit_ratio,
+        settings.maps_contrarian_max_entry_ratio
+        if settings.maps_contrarian_accumulation_enabled
+        else 0.0,
+    )
+    effective_max = max(1, round(_MAX_ORDERS * max_policy_ratio))
 
     # 신선도 가드: 최신 후보가 다음 거래일 직전 세션보다 오래되면(생성 실패·지연)
     # 오래된 후보를 "다음 거래일 예정"으로 노출하지 않는다.
@@ -222,6 +238,8 @@ def build_order_preview(db: Session, settings: MapsSettings) -> OrderPreviewResp
     for candidate in candidates:
         if submitted >= effective_max:
             break
+        if len(items) >= _MAX_PREVIEW_ITEMS:
+            break
         if candidate.ticker in seen_tickers:
             continue
 
@@ -241,6 +259,39 @@ def build_order_preview(db: Session, settings: MapsSettings) -> OrderPreviewResp
             market=candidate.market,
         )
         remaining_slots = max(effective_max - submitted, 1)
+
+        # 장세 게이트 미러링: 주문 경로와 동일하게 preferred_regimes + entry_policy를
+        # 재검사하고, 차단 후보는 사유와 함께 표시한다 (관측·주문 분리).
+        regime_block_reason: str | None = None
+        strategy_cls = _RUNNABLE_STRATEGIES.get(candidate.strategy_id)
+        if regime_result is not None and strategy_cls is not None:
+            if market_regime not in strategy_cls.preferred_regimes:
+                regime_block_reason = f"preferred_regime_mismatch:{market_regime}"
+            else:
+                policy = regime_result.entry_policy_for_strategy(
+                    getattr(strategy_cls, "strategy_type", None),
+                    contrarian_enabled=settings.maps_contrarian_accumulation_enabled,
+                    contrarian_entry_limit_ratio=settings.maps_contrarian_max_entry_ratio,
+                )
+                if not policy.allowed:
+                    regime_block_reason = policy.reason
+        if regime_block_reason is not None:
+            items.append(PreviewOrderItem(
+                ticker=candidate.ticker,
+                name=candidate.name,
+                strategy_id=candidate.strategy_id,
+                signal_date=ref_date.isoformat(),
+                signal_close=signal_close,
+                current_close=current_close,
+                gap_pct=round(gap_pct, 4),
+                gap_exceeded=gap_exceeded,
+                limit_price=limit_price,
+                estimated_qty=0,
+                estimated_amount=0,
+                skipped=True,
+                skip_reason=regime_block_reason,
+            ))
+            continue
 
         # entry_signal 체크: 전략이 현재 날짜 기준 진입 신호를 발생시키지 않으면 스킵
         sig = OperationalPipeline._latest_strategy_signal(

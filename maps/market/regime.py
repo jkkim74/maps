@@ -306,6 +306,11 @@ class RegimeResult:
     floor_applied: bool = False
     # 시장폭 국면 — 후보 생성 단계에서 DB 기반으로 주입(미주입 시 UNKNOWN).
     breadth: BreadthLabel = BreadthLabel.UNKNOWN
+    # 히스테리시스·floor 판정 근거 (오버라이드/스텁 시 None)
+    up_count: int | None = None
+    total_assets: int | None = None
+    kospi_above_ma5w: bool | None = None
+    kospi_above_ma10w: bool | None = None
 
     # ── 한도 비율 테이블 (vol_regime 반영) ────────────────────────────────────
     # weekly_trend FAIL          → 0.0 (항상)
@@ -556,6 +561,9 @@ class MarketRegimeAnalyzer:
     """MarketRegime × WeeklyTrend × VolRegime 매트릭스를 계산한다."""
 
     _ASSETS = ["KOSPI", "KOSDAQ", "S&P 500", "NASDAQ", "USD/KRW", "금", "WTI", "구리"]
+    # 위험회피 자산: 가격 상승이 한국 주식 관점에서 risk-off 신호인 자산.
+    # up_ratio 집계 시 above_ma5w의 반대를 risk-on으로 카운트한다 (표시 방향은 유지).
+    _RISK_OFF_ASSETS = {"USD/KRW"}
     _MA5W = 5   # 5주 이동평균
     _MA10W = 10
     _MA20W = 20
@@ -627,9 +635,12 @@ class MarketRegimeAnalyzer:
         total = 0
         kospi_ts: float | None = None
         kospi_above_ma5w = False
+        kospi_above_ma10w = False
 
         for name in self._ASSETS:
-            closes = self._provider.get_weekly_closes(name, self._MA5W + 1)
+            # KOSPI는 floor 판정용 MA10W 계산을 위해 더 긴 주봉을 가져온다.
+            n_weeks = (self._MA10W + 1) if name == "KOSPI" else (self._MA5W + 1)
+            closes = self._provider.get_weekly_closes(name, n_weeks)
             if len(closes) < self._MA5W:
                 assets.append(AssetTrendInfo(name=name, direction="flat"))
                 continue
@@ -647,9 +658,14 @@ class MarketRegimeAnalyzer:
                 kospi_ts = round(max(0.0, min(100.0, 50.0 + deviation * 250)), 1)
             if name == "KOSPI":
                 kospi_above_ma5w = above
+                if len(closes) >= self._MA10W:
+                    ma10 = float(np.array(closes[-self._MA10W:], dtype=float).mean())
+                    kospi_above_ma10w = last > ma10
 
             assets.append(AssetTrendInfo(name=name, direction=direction, value=last, above_ma5w=above))
-            if direction == "up":
+            # 위험회피 자산(USD/KRW 등)은 하락이 risk-on — 카운트만 반전, 표시 방향은 그대로.
+            counts_up = (not above) if name in self._RISK_OFF_ASSETS else above
+            if counts_up:
                 up_count += 1
             total += 1
 
@@ -670,14 +686,18 @@ class MarketRegimeAnalyzer:
         # KOSPI 하한선(floor): 국내 대표지수가 5주MA 위(상승추세)이고 주간추세가
         # 통과면, 글로벌 매크로 약세가 전체 국면을 WEAK로 끌어내리지 못하도록
         # 최소 MIXED를 보장한다. (한국 시장을 트레이딩하므로 국내 추세를 우선)
+        # MA5W 하루 회복만으로 발동하면 국면이 매일 뒤집히므로 MA10W 동반 회복을
+        # 요구한다. MA10W 아래인 경우의 "2일 연속 MA5W 위" 확인은 판정 이력이
+        # 필요해 apply_hysteresis(maps.market.regime_history)에서 수행한다.
         floor_applied = False
         if (
             regime == RegimeLabel.WEAK
             and kospi_above_ma5w
+            and kospi_above_ma10w
             and weekly_trend == WeeklyTrendLabel.PASS
         ):
             logger.info(
-                "KOSPI 상승추세 + weekly_trend pass → 국면 하한선 적용 (weak→mixed)"
+                "KOSPI 상승추세(MA5W+MA10W) + weekly_trend pass → 국면 하한선 적용 (weak→mixed)"
             )
             regime = RegimeLabel.MIXED
             floor_applied = True
@@ -690,6 +710,10 @@ class MarketRegimeAnalyzer:
             assets=assets,
             vol_regime=vol_regime,
             floor_applied=floor_applied,
+            up_count=up_count,
+            total_assets=total,
+            kospi_above_ma5w=kospi_above_ma5w,
+            kospi_above_ma10w=kospi_above_ma10w,
         )
         return self._with_composite(result)
 

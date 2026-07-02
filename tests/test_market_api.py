@@ -24,7 +24,8 @@ def test_market_api_uses_weekly_index_provider(monkeypatch) -> None:
     assert response.weekly_trend == "pass"
     assert response.limit_ratio == 0.5
     assert assets["KOSPI"].direction == "up"
-    assert assets["KOSPI"].value == 105.0
+    # KOSPI는 floor 판정용 MA10W 계산을 위해 11주를 요청한다 → 마지막 값 110
+    assert assets["KOSPI"].value == 110.0
     assert assets["KOSDAQ"].direction == "down"
     assert assets["KOSDAQ"].value == 95.0
     assert assets["S&P 500"].direction == "flat"

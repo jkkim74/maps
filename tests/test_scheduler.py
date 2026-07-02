@@ -1421,3 +1421,82 @@ def test_save_candidate_snapshot_falls_back_when_insufficient_ohlcv() -> None:
         db2.close()
         Base.metadata.drop_all(engine)
         engine.dispose()
+
+
+def test_generate_candidates_saves_snapshots_even_when_regime_blocks_entry() -> None:
+    """weak 장세에서도 스냅샷은 저장되고(관측 지속) 진입만 차단되는지 검증."""
+    engine, factory = _session_factory()
+    settings = MapsSettings(
+        maps_broker_mode="mock",
+        maps_data_provider="mock",
+        maps_live_trading_enabled=False,
+        maps_market_regime_override="weak",
+    )
+    pipeline = OperationalPipeline(settings=settings, session_factory=factory)
+
+    pipeline.collect_data()
+    run = pipeline.generate_candidates()
+
+    assert run.status == "success"
+    assert run.details["saved_count"] > 0
+    blocked_ids = {b["strategy_id"] for b in run.details["strategies_blocked"]}
+    assert "pullback_v3" in blocked_ids  # weak는 pullback preferred_regimes에 없음
+    assert "pullback_v3" not in run.details["strategies_updated"]
+
+    db = factory()
+    try:
+        # 차단된 전략의 스냅샷도 저장되어야 한다.
+        assert (
+            db.query(CandidateSnapshot)
+            .filter(CandidateSnapshot.strategy_id == "pullback_v3")
+            .count()
+            > 0
+        )
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def test_order_cycle_skips_buy_when_regime_not_preferred(monkeypatch) -> None:
+    """스냅샷이 존재해도 주문 시점 장세가 preferred_regimes에 없으면 매수를 스킵한다."""
+    engine, factory = _session_factory()
+    settings = MapsSettings(
+        maps_broker_mode="mock",
+        maps_data_provider="mock",
+        maps_live_trading_enabled=True,
+        maps_market_regime_override="weak",
+    )
+    pipeline = OperationalPipeline(settings=settings, session_factory=factory)
+    _force_entry_signal(monkeypatch)
+    ref_date = dt.date(2026, 5, 5)
+
+    db = factory()
+    try:
+        _add_fresh_ohlcv(db, ref_date, ticker="AAAA", close=10_000.0)
+        db.add(CandidateSnapshot(
+            ref_date=ref_date, strategy_id="pullback_v3", ticker="AAAA",
+            name="AAAA", market="KOSPI", factor_score=90, trend_strength=80,
+            ts_bucket="S5", final_score=95, weekly_pass=True,
+        ))
+        db.add(PromotionHistory(
+            strategy_id="pullback_v3", from_stage="mock_candidate",
+            to_stage="live_candidate", tradeability_score=70, passed=True,
+            evaluated_at=dt.datetime(2026, 5, 5, 8, 0),
+        ))
+        db.commit()
+    finally:
+        db.close()
+
+    run = pipeline.run_order_cycle(ref_date)
+
+    assert run.status == "success"
+    assert run.details["submitted_buy_orders"] == 0
+
+    db = factory()
+    try:
+        assert db.query(OrderLog).filter(OrderLog.side == "buy").count() == 0
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()

@@ -56,6 +56,7 @@ from maps.execution.broker_adapter import Order, OrderSide, OrderType, Position,
 from maps.execution.order_manager import OrderManager
 from maps.market.breadth import classify_breadth, compute_pct_above_ma
 from maps.market.regime import RegimeResult, WeeklyTrendLabel, create_regime_analyzer
+from maps.market.regime_history import apply_hysteresis
 from maps.market.sector_selector import SectorRegimeSelector, SectorSelector
 from maps.market.trading_rules import (
     is_krx_closed_date,
@@ -293,8 +294,6 @@ class OperationalPipeline:
                 weekly_pass,
             )
 
-            regime_label = regime.regime.value  # "strong" | "mixed" | "weak"
-
             # 시장폭(breadth) 가드: 빌려온 MIXED + 좁은 장이면 추격성 전략 보류.
             # 가드 비활성화 시 breadth는 UNKNOWN으로 남아 가드가 작동하지 않는다.
             breadth_pct: float | None = None
@@ -316,6 +315,14 @@ class OperationalPipeline:
                         regime.breadth.value,
                         regime.floor_applied,
                     )
+
+            # 히스테리시스: buffer band·전일 유지·floor 2일 확인을 적용하고 이력을 기록한다.
+            regime = apply_hysteresis(
+                db, regime, ref_date,
+                source="candidate_generation",
+                breadth_pct=breadth_pct,
+            )
+            regime_label = regime.regime.value  # "strong" | "mixed" | "weak"
 
             # 업종 필터 (MAPS_SECTOR_FILTER_ENABLED=true 일 때만 적용)
             sector_filter_enabled = self._settings.maps_sector_filter_enabled
@@ -369,41 +376,40 @@ class OperationalPipeline:
                         pre_count, len(filtered_universe), strong_sectors,
                     )
 
+            # 관측·주문 분리: 스냅샷은 장세와 무관하게 항상 저장한다(관측 지속).
+            # 진입 차단(preferred_regimes·entry_policy)은 blocked_strategies로 기록하고
+            # 실제 주문 차단은 order_cycle의 주문 시점 재검사에서 수행한다.
             saved_count = 0
             active_strategies: list[str] = []
             blocked_strategies: list[dict[str, str]] = []
             for strategy_id, strategy_cls in _RUNNABLE_STRATEGIES.items():
+                entry_block_reason: str | None = None
                 if regime_label not in strategy_cls.preferred_regimes:
-                    logger.info("전략 스킵 [%s]: 시황=%s", strategy_id, regime_label)
+                    entry_block_reason = f"preferred_regime_mismatch:{regime_label}"
                     blocked_strategies.append({
                         "strategy_id": strategy_id,
                         "strategy_type": getattr(getattr(strategy_cls, "strategy_type", None), "value", "MOMENTUM"),
-                        "reason": f"preferred_regime_mismatch:{regime_label}",
+                        "reason": entry_block_reason,
                     })
-                    continue
-                policy = regime.entry_policy_for_strategy(
-                    getattr(strategy_cls, "strategy_type", None),
-                    contrarian_enabled=self._settings.maps_contrarian_accumulation_enabled,
-                    contrarian_entry_limit_ratio=self._settings.maps_contrarian_max_entry_ratio,
-                )
-                if not policy.allowed:
-                    logger.info(
-                        "전략 스킵 [%s]: strategy_type=%s market_mode=%s reason=%s",
-                        strategy_id,
-                        policy.strategy_type,
-                        policy.market_mode.value,
-                        policy.reason,
+                else:
+                    policy = regime.entry_policy_for_strategy(
+                        getattr(strategy_cls, "strategy_type", None),
+                        contrarian_enabled=self._settings.maps_contrarian_accumulation_enabled,
+                        contrarian_entry_limit_ratio=self._settings.maps_contrarian_max_entry_ratio,
                     )
-                    blocked_strategies.append({
-                        "strategy_id": strategy_id,
-                        "strategy_type": policy.strategy_type,
-                        "reason": policy.reason,
-                    })
-                    # weekly_trend_fail은 스냅샷을 weekly_pass=False로 저장하고
-                    # 진입만 차단한다. 리포트에서 후보 목록이 보여야 하기 때문.
-                    # 장세/변동성 불일치(contrarian 외 WEAK+HIGH 등)는 스킵.
-                    if policy.reason != "weekly_trend_fail":
-                        continue
+                    if not policy.allowed:
+                        entry_block_reason = policy.reason
+                        blocked_strategies.append({
+                            "strategy_id": strategy_id,
+                            "strategy_type": policy.strategy_type,
+                            "reason": policy.reason,
+                        })
+                if entry_block_reason is not None:
+                    logger.info(
+                        "전략 진입 차단 [%s]: %s — 스냅샷은 저장(관측 지속)",
+                        strategy_id,
+                        entry_block_reason,
+                    )
                 saved_count += self._save_candidate_snapshot(
                     db,
                     ref_date,
@@ -412,7 +418,8 @@ class OperationalPipeline:
                     weekly_pass=weekly_pass,
                     excluded_reason_by_ticker=sector_excluded_reason_by_ticker,
                 )
-                active_strategies.append(strategy_id)
+                if entry_block_reason is None:
+                    active_strategies.append(strategy_id)
             self._last_universe = result
             return {
                 "ref_date": ref_date.isoformat(),
@@ -432,6 +439,7 @@ class OperationalPipeline:
                 "breadth_pct": round(breadth_pct, 4) if breadth_pct is not None else None,
                 "breadth_label": regime.breadth.value,
                 "saved_count": saved_count,
+                "strategies_saved": list(_RUNNABLE_STRATEGIES.keys()),
                 "strategies_updated": active_strategies,
                 "strategies_blocked": blocked_strategies,
                 "strategies_skipped_regime": [
@@ -1599,6 +1607,7 @@ class OperationalPipeline:
     ) -> tuple[int, int]:
         # ── C-2/C-3: 시황 분석 → 진입 한도 비율 적용 ─────────────────────────
         regime = self._analyze_regime()
+        regime = apply_hysteresis(db, regime, ref_date, source="order_cycle")
         limit_ratio = regime.entry_limit_ratio
         candidates = self._order_candidates(db, ref_date)
         if limit_ratio == 0.0:
@@ -1631,7 +1640,20 @@ class OperationalPipeline:
         slippage_pct = self._settings.maps_order_slippage_pct
         max_gap_pct = self._settings.maps_order_max_gap_pct
 
+        order_regime_label = regime.regime.value
         for candidate in candidates:
+            # 스냅샷은 장세와 무관하게 항상 생성되므로(관측·주문 분리),
+            # 생성 시점 게이트였던 preferred_regimes를 주문 시점 장세로 재검사한다.
+            strategy_cls = _RUNNABLE_STRATEGIES.get(candidate.strategy_id)
+            if strategy_cls is not None and order_regime_label not in strategy_cls.preferred_regimes:
+                logger.info(
+                    "Order skipped [%s %s]: preferred_regime_mismatch:%s",
+                    candidate.strategy_id,
+                    candidate.ticker,
+                    order_regime_label,
+                )
+                skipped += 1
+                continue
             strategy_type = self._strategy_type_for_id(candidate.strategy_id)
             policy = regime.entry_policy_for_strategy(
                 strategy_type,

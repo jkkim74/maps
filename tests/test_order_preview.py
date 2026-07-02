@@ -122,6 +122,21 @@ def test_preview_fresh_when_candidate_current(db, monkeypatch) -> None:
     assert [item.ticker for item in resp.items] == ["AAAA"]
 
 
+def test_preview_marks_regime_blocked_candidate_with_reason(db, monkeypatch) -> None:
+    """장세가 전략 preferred_regimes에 없으면 후보를 차단 사유와 함께 표시한다."""
+    _seed_candidate(db, ref_date=dt.date.today())  # donchian_v2: strong/mixed 선호
+    monkeypatch.setattr("maps.ops.order_preview.next_trading_day", lambda value: value + dt.timedelta(days=1))
+
+    resp = build_order_preview(db, MapsSettings(maps_market_regime_override="weak"))
+
+    assert resp.data_stale is False
+    assert len(resp.items) == 1
+    item = resp.items[0]
+    assert item.skipped is True
+    assert item.skip_reason == "preferred_regime_mismatch:weak"
+    assert item.estimated_qty == 0
+
+
 def test_orders_read_does_not_expire_stale_pending_row(db) -> None:
     db.add(OrderLog(
         order_id="stale-pending",

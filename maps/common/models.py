@@ -576,3 +576,40 @@ class DeviceToken(Base):
     username: Mapped[str | None] = mapped_column(String(128), nullable=True)
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     last_seen_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+# ---------------------------------------------------------------------------
+# 장세 판정 이력 — 히스테리시스(전일 판정 유지)와 floor 2일 확인의 근거 데이터
+# ---------------------------------------------------------------------------
+class MarketRegimeLog(Base):
+    """market_regime_log — 일별 장세 판정 결과 기록.
+
+    raw_regime은 당일 지표만으로 계산한 국면, applied_regime은 히스테리시스
+    (buffer band·전일 유지·floor 2일 확인)를 적용한 최종 국면이다.
+    스케줄러(candidate_generation·order_cycle)가 upsert하며, 주문 미리보기는
+    최근 행의 applied_regime을 우선 사용한다.
+    """
+
+    __tablename__ = "market_regime_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ref_date: Mapped[datetime.date] = mapped_column(Date, nullable=False, unique=True, index=True)
+    raw_regime: Mapped[str] = mapped_column(String(16), nullable=False)      # strong | mixed | weak
+    applied_regime: Mapped[str] = mapped_column(String(16), nullable=False)  # 히스테리시스 적용 후
+    up_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_assets: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    weekly_trend: Mapped[str] = mapped_column(String(8), nullable=False, default="pass")
+    vol_regime: Mapped[str] = mapped_column(String(8), nullable=False, default="normal")
+    floor_applied: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    breadth_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    kospi_above_ma5w: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    kospi_above_ma10w: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    source: Mapped[str] = mapped_column(String(32), nullable=False, default="scheduler")
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc)
+    )
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, nullable=False,
+        default=lambda: datetime.datetime.now(datetime.timezone.utc),
+        onupdate=lambda: datetime.datetime.now(datetime.timezone.utc),
+    )

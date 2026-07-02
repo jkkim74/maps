@@ -1229,13 +1229,19 @@ function _renderOrderPreview(p) {
   }
   const rows = p.items.map((item, idx) => {
     const gapCls = item.gap_exceeded ? 'text-fail' : item.gap_pct > 0.01 ? 'text-warn' : '';
+    const isRegimeBlock = (item.skip_reason || '').startsWith('preferred_regime_mismatch')
+      || (item.skip_reason || '').includes('weak_high_vol')
+      || item.skip_reason === 'weekly_trend_fail';
     const skipLabel = {
       gap_exceeded: 'GAP초과',
       insufficient_cash: '수량부족',
       no_entry_signal: '진입신호없음',
-    }[item.skip_reason] || item.skip_reason || '스킵';
+      weekly_trend_fail: '주간추세 미달',
+    }[item.skip_reason]
+      || (isRegimeBlock ? '장세 차단' : null)
+      || item.skip_reason || '스킵';
     const statusBadge = item.skipped
-      ? badge(skipLabel, 'fail')
+      ? badge(skipLabel, isRegimeBlock ? 'warn' : 'fail')
       : badge('예정', 'pass');
     return `
       <tr class="${item.skipped ? 'text-muted' : ''}">
