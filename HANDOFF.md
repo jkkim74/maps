@@ -1,86 +1,77 @@
 # HANDOFF
 
-> 작성일: 2026-06-29 (KST) · 작성자: 이전 세션 에이전트
-> 주제: ① 텔레그램 /analyze 알림 + 무장/무장해제 ② 모바일 앱 개선 로드맵(Phase 0~5)
+> 작성일: 2026-07-04 (토, KST) · 작성자: 이전 세션 에이전트
+> 주제: 운영 오류(KIS 접속 실패) 원인 규명 + 리스크 보유종목 미표시 수정 3종 배포
+> 이전 핸드오프(텔레그램/모바일 앱): git 이력 `d5f2fa8` 이전의 HANDOFF.md 참고.
 
-## Goal
+## 운영 환경 (재확인됨)
 
-두 가지 묶음 작업을 완료했다.
-1. **텔레그램 봇**: 매 거래일 16:00 cron의 `/analyze` 편입 결과를 텔레그램으로 푸시하고,
-   각 종목 메시지의 **[무장][무장해제] 인라인 버튼**으로 arm/disarm을 원격 트리거.
-2. **모바일 앱(`apps/mobile`) 실사용화**: "읽기 전용 MVP"를 인증·조작 가능한 실사용 앱으로.
-   로드맵 Phase 0(인증)→1(네이티브/APK)→2(자동갱신)→3(워치/Kill-Switch)→5(테스트), Phase 4(푸시)는
-   텔레그램으로 충족.
+배포 서버: AWS Lightsail `3.37.117.246`, `/opt/maps`, systemd `maps`, 도메인 `https://magable.kr`.
+**SSH 키 실제 경로는 `D:\maps\LightsailDefaultKey-ap-northeast-2.pem`** (이전 핸드오프의
+`D:\ssh_maps\`는 현재 존재하지 않음 — CLAUDE.md가 맞다). 운영 DB는 PostgreSQL
+(`sudo -u postgres psql -d maps`). 운영 `.env`: `MAPS_ENV=production`, `MAPS_AUTH_ENABLED=true`,
+브로커는 **KIS 모의투자(VTS)** 계좌 `50185813`.
 
-## Current Progress (전부 master 푸시 + 운영 반영 완료)
+## 이번 세션에서 규명한 사실
 
-배포 서버: AWS Lightsail `3.37.117.246`, `/opt/maps`, systemd `maps`. **SSH 키 실제 경로
-`D:\ssh_maps\LightsailDefaultKey-ap-northeast-2.pem`**(CLAUDE.md의 `D:\maps\`는 틀림). 운영 DB는
-**PostgreSQL**(`sudo -u postgres psql -d maps`). 운영 `.env`는 `MAPS_ENV=production`, `MAPS_AUTH_ENABLED=true`.
+1. **"Broker account balance unavailable" 알림** = KIS 모의투자 서버
+   (`openapivts.koreainvestment.com:29443`) 접속 실패. 금 7/3 19:03까지는 응답했고
+   (그때는 EGW00201 레이트리밋), **토 7/4 11:35부터 Connection refused** → 주말 서버 중단.
+   시스템 문제 아님. 평일 장중 자동 회복.
+2. **세방전지(004490) 보유종목 미표시** = 위와 같은 원인. 리스크·모니터 보유종목은
+   KIS 잔고 API 실시간 조회였는데, 실패 시 예외를 삼키고 빈 목록을 반환했음
+   (`risk.py` 구 `_broker_holdings`). 004490은 7/3 15시부터 전략매매 엔진이
+   BOUGHT로 정상 추적 중(analysis_pick).
+3. **대시보드 "최근 알림 (24H)"** 라벨과 달리 kill_switch_log 최신 5건을 시간 필터
+   없이 표시 → 오래된 donchian_v2 알림이 계속 노출되고 있었음.
+4. **EGW00201(초당 호출한도)** 이 평일에도 간헐 발생(7/1·7/2·7/3 각 1~2회):
+   리스크 페이지 1회 로드가 inquire-balance 2회 + 대시보드 1회 → 모의투자 한도(2/s) 초과.
 
-커밋(시간순):
-1. `94470e0` 텔레그램 알림+웹훅 — `TelegramNotifier`(`maps/ops/notifications.py`), 웹훅
-   `POST /api/telegram/webhook`(`maps/api/telegram.py`, secret+chat 검증 후 기존 arm/disarm 재사용),
-   `load_analysis_picks.py` 적재 후 푸시, `scripts/setup_telegram_webhook.py`.
-2. `d8efaa1` 텔레그램 비운영 발송 가드 — `MAPS_ENV!=production`이면 실발송 차단(`maps_telegram_allow_nonprod`로 우회).
-   **운영은 production이라 정상 발송.**
-3. `3100b01` Phase 0 — 모바일 Bearer 토큰 인증(`maps/api/auth.py` `make/verify_mobile_token`, 게이트가
-   세션 OR Bearer 허용), 공개 `POST /api/v1/mobile/login`. 앱 `auth.ts`/로그인 화면.
-4. `1dc06c5` Phase 1 — 앱 프로덕션 API 베이스(`src/config.ts`: dev=프록시, prod=`https://magable.kr`).
-5. `d50d1b2` Phase 3-a — 워치리스트 탭(무장/무장해제, 기존 `analysis-picks` 엔드포인트 재사용).
-6. `0090bfb` Phase 3-b/2/5 — Kill-Switch 청산승인/해제(`live-monitor` 엔드포인트), 30초 자동폴링+요약
-   캐시+미활용필드, **vitest 앱 단위 테스트 10건**.
-7. `c39f99f` 버그픽스 — 워치리스트 **보유종목 체결가 표시**(앱 타입/화면이 `fill_price` 누락했던 것).
+## 적용·배포된 수정 (커밋 `df44d04`, 운영 반영 완료)
 
-테스트: 백엔드 **352 passed**, 앱 **vitest 10 passed**. 폰에서 로그인·무장/무장해제·체결가 표시 실동작 확인됨.
+1. **브로커 실패 폴백** — `maps/api/risk.py`: `_broker_holdings`가 5-튜플
+   `(holdings, max_exposure, count, broker_status, broker_error)` 반환.
+   실패 시 `_fallback_holdings()`(analysis_pick state=BOUGHT, 진입가는 entry 주문
+   체결가 우선, 현재가는 최신 OHLCV 종가, exposure=0.0)로 폴백.
+   `RiskResponse`에 `broker_status`(ok|fallback|unavailable)/`broker_error` 추가.
+   `static/js/app.js` loadRisk가 경고 배너 표시(+`esc()` HTML 이스케이프 헬퍼 추가).
+2. **KIS 잔고 5초 캐시** — `maps/execution/kis_adapter.py`: 모듈 레벨
+   `_BALANCE_CACHE`(키는 토큰 캐시와 동일, TTL 5s, `time.monotonic`).
+   `place_order`/`cancel_order` 후 `_invalidate_balance_cache()`.
+   어댑터가 `get_broker()`마다 새로 생성되므로 **인스턴스가 아닌 모듈 레벨**이어야 함.
+3. **알림 24H 필터** — `maps/api/dashboard.py` `_dashboard_alerts`: `created_at >=
+   now(UTC)-24h` 필터, 타임스탬프 `%m-%d %H:%M`.
 
-### 텔레그램 운영 설정 (이미 적용됨)
-- 봇 `@maps9352_bot`, **chat_id `8149176134`**(처음에 봇이름으로 잘못 들어가 chat not found → 교정).
-- 웹훅 `https://magable.kr/api/telegram/webhook`(allowed_updates=callback_query), secret은 `/opt/maps/.env`.
-- 변경 시: 토큰/chat/secret은 운영 `.env`에만, 웹훅 재등록은 서버에서 `python scripts/setup_telegram_webhook.py`.
+테스트: 신규 5건 포함 **371 passed** (아래 '주의'의 네트워크 의존 2파일 제외).
+`tests/test_kis_adapter.py`의 `settings` 픽스처가 `_BALANCE_CACHE.clear()`도 수행.
 
-## What Worked
+## What Worked / 주의
 
-- **기존 서버 로직 재사용**: arm/disarm(`analysis_picks.py`), kill-switch(`live_monitor.py` approve-liquidation/release),
-  summary(`mobile.py`)를 그대로 호출 → 앱·텔레그램은 호출만, 서버 변경 최소.
-- **세션 쿠키 대신 Bearer 토큰**: `same_site=lax`라 다른 오리진 앱은 쿠키 전송 불가 → `itsdangerous`(세션
-  서명키 재사용) 토큰으로 우회. 게이트가 둘 다 허용.
-- **APK 빌드**: JDK 21 설치(winget `EclipseAdoptium.Temurin.21.JDK`, 경로
-  `C:\Program Files\Eclipse Adoptium\jdk-21.0.11.10-hotspot`). 빌드는 **bash에서 `export JAVA_HOME=...` +
-  unix `./gradlew assembleDebug --no-daemon`**이 안정적.
-- **운영 DB 직접 조회로 근거 확정** 후 수정(체결가 버그: order_log fill_price=48783 확인 → 앱 표시만 누락이었음).
-- **정직한 범위 판단**: FCM/차트는 외부 의존(Firebase/서버 시계열)이라 가짜 코드 대신 보류·문서화.
+- **운영 로그가 근거**: `sudo journalctl -u maps` grep으로 오류 시작 시점·원인 코드
+  (Connection refused vs EGW00201)를 구분해 확정. 로컬 `logs/maps.log`는 pytest가
+  오염시키므로 운영 진단에 쓰지 말 것.
+- **`tests/test_analysis_picks_api.py`·`tests/test_mobile_auth.py`는 실 KIS API에
+  의존** → KIS 모의서버가 내려간 주말/야간엔 ConnectTimeout으로 12건 실패(코드 무관).
+  후속: mock 처리 권장. `!deploy`의 "테스트 실패 시 중단" 판단 시 이 2파일은
+  환경 요인임을 감안할 것.
+- `apps/mobile/google-services.json`이 untracked로 존재(Firebase 키 포함) —
+  **커밋 금지**. `git add -u`만 사용.
+- 자동 승인 모드에서 운영 서버 SSH/psql은 정책상 차단될 수 있음 — journalctl 로그
+  조회는 허용됐고, DB 직접 조회는 사용자 승인 필요.
 
-## What Didn't Work / 주의
+## Next Steps
 
-- **`cmd //c "set JAVA_HOME=... && gradlew.bat"`는 불안정**(release 21 에러 재발). → bash export + unix gradlew 사용.
-- **`.env.*`는 `.gitignore`로 무시**(루트·`apps/mobile/.env.production` 포함, `apps/mobile/.env.example`만 예외).
-  프로덕션 API 베이스는 `.env.production` 대신 **커밋 가능한 `src/config.ts`**로 처리.
-- **`apps/mobile/android/`는 gitignore**(생성물). 커밋 안 함 — `npx cap add android`로 재생성.
-- 텔레그램 chat_id는 **봇 이름이 아니라 숫자 ID**. 웹훅 활성 중엔 `getUpdates`가 비어 메시지 못 읽음 →
-  `deleteWebhook` 후 사용자가 봇에 메시지 보내야 chat_id 획득 가능.
-- 윈도우 Git Bash `curl -d`에 **한글 직접 입력은 cp949로 깨짐**(서버는 정상). 테스트 시 ASCII/파일 사용.
+1. **월요일 장중 확인**: 리스크·모니터 보유종목이 실시간(broker_status=ok)으로
+   세방전지를 표시하는지, EGW00201 재발이 사라졌는지 운영 로그로 확인.
+2. **네트워크 의존 테스트 mock 처리** — test_analysis_picks_api / test_mobile_auth가
+   실 KIS 호출 없이 돌도록 (conftest에서 broker mock 강제 등).
+3. **펀더멘털 백필 재개 예정일 2026-06-22이 이미 지남** — 상태 확인 필요(메모리 노트 참고).
 
-## Next Steps (미착수 후속 후보)
+## 핵심 파일 맵 (이번 변경)
 
-1. ~~**APK 산출물 관리/배포**~~ — **release 서명 빌드 설정 완료**(`apps/mobile/RELEASE.md`).
-   `keystore.properties.example` 템플릿 + `scripts/apply-release-signing.mjs`(생성된
-   `android/app/build.gradle`에 서명 config 주입, 멱등) + `scripts/gradle-release.mjs`(JDK21
-   `assembleRelease`) + `npm run build:apk:release` 원커맨드. **남은 것: 사용자가 실제 keystore
-   (`maps-release.jks`)와 store/key 비밀번호를 `apps/mobile/keystore.properties`에 채우기**(gitignore됨).
-   산출물: `apps/mobile/android/app/build/outputs/apk/release/app-release.apk`.
-2. **Phase 4 FCM 푸시** — 텔레그램으로 충족 중. 네이티브 푸시 원하면 Firebase 프로젝트+`google-services.json`+
-   서버 FCM 키, 디바이스 토큰 등록 API, `notifications.py`에 `FcmNotifier` 필요.
-3. **추이 차트** — 모바일 summary에 시계열 없음 → `portfolio_snapshot` 기반 시계열 엔드포인트(서버) 선행 필요.
-4. **드릴다운 상세화면** — 주문/종목 클릭 시 상세. 현재는 목록만.
-5. **앱 코드 품질** — `App.tsx` 단일 파일에 컴포넌트·상태 집중 → 화면/훅 분리 여지.
-
-## 핵심 파일 맵
-
-- 텔레그램: `maps/ops/notifications.py`(`TelegramNotifier`), `maps/api/telegram.py`(웹훅),
-  `scripts/setup_telegram_webhook.py`, `scripts/load_analysis_picks.py`(편입 후 푸시).
-- 모바일 인증: `maps/api/auth.py`(토큰·게이트), `maps/api/mobile.py`(`/login`, `/summary`).
-- 앱: `apps/mobile/src/` — `App.tsx`(탭5: 홈/주문/리스크/워치/알림), `api.ts`(authedFetch·picks·kill-switch·캐시),
-  `auth.ts`(토큰/username), `config.ts`(API 베이스), `*.test.tsx`(vitest), `vite.config.ts`(test 블록).
-- 앱 빌드: `npm run build`(웹) → `npx cap sync android` → JDK21로 `./gradlew assembleDebug`.
-- 조작 엔드포인트(재사용): `analysis_picks.py`(arm/disarm), `live_monitor.py`(approve-liquidation/release).
+- `maps/api/risk.py` — `_broker_holdings`(5-튜플), `_fallback_holdings`, `_latest_close`
+- `maps/api/schemas.py` — `RiskResponse.broker_status/broker_error`
+- `maps/api/dashboard.py` — `_dashboard_alerts` 24h 컷오프
+- `maps/execution/kis_adapter.py` — `_BALANCE_CACHE`/`_invalidate_balance_cache`
+- `static/js/app.js` — `esc()`, loadRisk 브로커 배너
+- 테스트: `tests/test_risk_api.py`, `tests/test_dashboard_api.py`, `tests/test_kis_adapter.py`
