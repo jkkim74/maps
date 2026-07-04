@@ -243,6 +243,8 @@ class RiskResponse(BaseModel):
     position_count: int
     gauges: list[RiskGaugeItem]
     holdings: list[HoldingItem]
+    broker_status: str = "ok"           # ok | fallback | unavailable
+    broker_error: str | None = None
 
 
 # ── SCR-07 Backtest ───────────────────────────────────────────────────────────

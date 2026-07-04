@@ -8,10 +8,13 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+import datetime as dt
+
 import maps.common.models  # noqa: F401
 from maps.api import risk
 from maps.common.db import Base
-from maps.common.models import OrderLog
+from maps.common.exceptions import BrokerAdapterError
+from maps.common.models import AnalysisPick, HistoricalOHLCV, OrderLog
 from maps.execution.broker_adapter import AccountBalance, Position
 
 
@@ -131,9 +134,11 @@ def test_broker_holdings_infers_strategy_from_matching_buy_order(db, monkeypatch
 
     monkeypatch.setattr(risk, "get_broker", lambda: FakeBroker())
 
-    holdings, _max_exposure, count = risk._broker_holdings(db)
+    holdings, _max_exposure, count, status, error = risk._broker_holdings(db)
 
     assert count == 1
+    assert status == "ok"
+    assert error is None
     assert holdings[0].strategy_id == "donchian_v2"
     assert holdings[0].stop_price == 317_250.0
 
@@ -170,10 +175,61 @@ def test_broker_holdings_includes_stop_triggered_position_when_still_held(db, mo
 
     monkeypatch.setattr(risk, "get_broker", lambda: FakeBroker())
 
-    holdings, max_exposure, count = risk._broker_holdings(db)
+    holdings, max_exposure, count, _status, _error = risk._broker_holdings(db)
 
     assert count == 1
     assert max_exposure == 7_252_000 / 8_152_000
     assert holdings[0].ticker == "009150"
     assert holdings[0].strategy_id == "donchian_v2"
     assert holdings[0].stop_price == 1_860_300.0
+
+
+class _FailingBroker:
+    def get_account_balance(self):
+        raise BrokerAdapterError("KIS request failed after 3 attempts: connection refused")
+
+
+def test_broker_holdings_falls_back_to_bought_picks_when_broker_unavailable(db, monkeypatch) -> None:
+    db.add(AnalysisPick(
+        ref_date=dt.date(2026, 7, 3),
+        ticker="004490",
+        name="세방전지",
+        buy_price=53_900,
+        target_price=54_900,
+        stop_price=46_800,
+        state="BOUGHT",
+        strategy_trade_enabled=True,
+    ))
+    db.add(HistoricalOHLCV(
+        ticker="004490",
+        date=dt.date(2026, 7, 3),
+        open=53_500, high=54_500, low=53_000, close=54_000, volume=100_000,
+    ))
+    db.commit()
+
+    monkeypatch.setattr(risk, "get_broker", lambda: _FailingBroker())
+
+    holdings, max_exposure, count, status, error = risk._broker_holdings(db)
+
+    assert status == "fallback"
+    assert "connection refused" in error
+    assert count == 1
+    assert max_exposure == 0.0
+    assert holdings[0].ticker == "004490"
+    assert holdings[0].name == "세방전지"
+    assert holdings[0].entry_price == 53_900.0
+    assert holdings[0].current_price == 54_000.0
+    assert holdings[0].stop_price == 46_800.0
+    assert holdings[0].pnl_pct == pytest.approx(54_000 / 53_900 - 1.0)
+
+
+def test_broker_holdings_unavailable_without_fallback_records(db, monkeypatch) -> None:
+    monkeypatch.setattr(risk, "get_broker", lambda: _FailingBroker())
+
+    holdings, max_exposure, count, status, error = risk._broker_holdings(db)
+
+    assert holdings == []
+    assert count == 0
+    assert max_exposure == 0.0
+    assert status == "unavailable"
+    assert "KIS request failed" in error

@@ -224,13 +224,21 @@ def _active_strategy_counts(
 
 
 def _dashboard_alerts(db: Session, latest_ohlcv_date) -> list[AlertItem]:
-    kill_switch_rows = db.query(KillSwitchLog).order_by(KillSwitchLog.created_at.desc()).limit(5).all()
+    # 화면 라벨이 "최근 알림 (24H)"이므로 Kill Switch 이벤트도 24시간 내로 제한한다.
+    cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=24)
+    kill_switch_rows = (
+        db.query(KillSwitchLog)
+        .filter(KillSwitchLog.created_at >= cutoff)
+        .order_by(KillSwitchLog.created_at.desc())
+        .limit(5)
+        .all()
+    )
     if kill_switch_rows:
         return [
             AlertItem(
                 level="WARN" if row.event_type == "trigger" else "INFO",
                 message=f"Kill Switch [{row.event_type}] {row.strategy_id}: {row.reason}",
-                timestamp=row.created_at.strftime("%H:%M") if row.created_at else "",
+                timestamp=row.created_at.strftime("%m-%d %H:%M") if row.created_at else "",
             )
             for row in kill_switch_rows
         ]

@@ -81,6 +81,12 @@ function empty(id, msg = '데이터 없음') {
     `<div class="empty-state"><div class="empty-icon">○</div><div class="empty-text">${msg}</div></div>`;
 }
 
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ));
+}
+
 // ── Plotly 공통 설정 ─────────────────────────────────────────────────────────
 const LAYOUT_BASE = {
   paper_bgcolor: 'transparent',
@@ -373,8 +379,19 @@ async function loadRisk() {
         `<table><thead><tr><th>전략</th><th>현재 위험</th><th>한도</th><th>사용률</th></tr></thead><tbody>${rows}</tbody></table>`;
     }
 
+    let brokerNotice = '';
+    if (d.broker_status && d.broker_status !== 'ok') {
+      const noticeText = d.broker_status === 'fallback'
+        ? '브로커 연결 실패 — DB 기록 기반 근사 보유 내역입니다 (실시간 아님, 비중 미계산)'
+        : '브로커 연결 실패 — 보유 내역을 조회할 수 없습니다';
+      brokerNotice = `<div class="alert-item"><span class="alert-dot WARN"></span><span class="alert-msg">${noticeText}${d.broker_error ? `<div class="kpi-sub">${esc(d.broker_error)}</div>` : ''}</span></div>`;
+    }
     if (!d.holdings || d.holdings.length === 0) {
-      empty('risk-holdings', '보유 종목 없음');
+      if (brokerNotice) {
+        document.getElementById('risk-holdings').innerHTML = brokerNotice;
+      } else {
+        empty('risk-holdings', '보유 종목 없음');
+      }
     } else {
       const rows = d.holdings.map(h => `
         <tr>
@@ -388,6 +405,7 @@ async function loadRisk() {
           <td class="mono">${h.stop_price == null ? '—' : h.stop_price.toLocaleString('ko-KR')}</td>
         </tr>`).join('');
       document.getElementById('risk-holdings').innerHTML =
+        brokerNotice +
         `<table><thead><tr><th>티커</th><th>종목명</th><th>전략</th><th>진입가</th><th>현재가</th><th>PnL</th><th>비중</th><th>손절</th></tr></thead><tbody>${rows}</tbody></table>`;
     }
   } catch (e) {

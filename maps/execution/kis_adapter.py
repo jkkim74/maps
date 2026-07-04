@@ -89,6 +89,13 @@ class _TokenCacheEntry:
 _TOKEN_CACHE: dict[tuple[str, str, str, bool], _TokenCacheEntry] = {}
 _TOKEN_CACHE_LOCK = threading.Lock()
 
+# 잔고 응답 단기 캐시 — 화면 한 번 로드에 잔고 API가 여러 번 호출돼
+# 모의투자 초당 호출한도(EGW00201)를 넘는 것을 막는다. 주문·취소 직후에는
+# 포지션이 바뀌므로 무효화한다. 어댑터가 호출마다 새로 생성되므로 모듈 레벨로 공유한다.
+_BALANCE_CACHE_TTL_SEC = 5.0
+_BALANCE_CACHE: dict[tuple[str, str, str, bool], tuple[float, dict[str, Any]]] = {}
+_BALANCE_CACHE_LOCK = threading.Lock()
+
 
 class KISAdapter(BrokerAdapter):
     """KIS domestic-stock REST broker adapter."""
@@ -145,6 +152,7 @@ class KISAdapter(BrokerAdapter):
             "ORD_UNPR": str(order_price),
         }
         data = self._request("POST", _ORDER_PATH, tr_id=tr_id, json=body, hash_body=body)
+        self._invalidate_balance_cache()
         output = self._output(data)
         order_id = str(output.get("ODNO") or output.get("odno") or "")
         submitted = self._parse_kis_datetime(
@@ -184,6 +192,7 @@ class KISAdapter(BrokerAdapter):
             "QTY_ALL_ORD_YN": "Y",
         }
         self._request("POST", _CANCEL_PATH, tr_id=self._tr_id("cancel"), json=body, hash_body=body)
+        self._invalidate_balance_cache()
         return True
 
     def get_position(self, ticker: str) -> Position | None:
@@ -337,6 +346,11 @@ class KISAdapter(BrokerAdapter):
         )
 
     def _fetch_balance_data(self) -> dict[str, Any]:
+        now = time.monotonic()
+        with _BALANCE_CACHE_LOCK:
+            cached = _BALANCE_CACHE.get(self._token_cache_key)
+            if cached and now - cached[0] < _BALANCE_CACHE_TTL_SEC:
+                return cached[1]
         params = {
             "CANO": self._account_prefix,
             "ACNT_PRDT_CD": self._account_product_code,
@@ -350,7 +364,15 @@ class KISAdapter(BrokerAdapter):
             "CTX_AREA_FK100": "",
             "CTX_AREA_NK100": "",
         }
-        return self._request("GET", _BALANCE_PATH, tr_id=self._tr_id("balance"), params=params)
+        data = self._request("GET", _BALANCE_PATH, tr_id=self._tr_id("balance"), params=params)
+        with _BALANCE_CACHE_LOCK:
+            _BALANCE_CACHE[self._token_cache_key] = (time.monotonic(), data)
+        return data
+
+    def _invalidate_balance_cache(self) -> None:
+        """주문·취소로 포지션이 바뀐 뒤 오래된 잔고 캐시를 제거한다."""
+        with _BALANCE_CACHE_LOCK:
+            _BALANCE_CACHE.pop(self._token_cache_key, None)
 
     def _ensure_token(self) -> str:
         now = dt.datetime.now(dt.timezone.utc)

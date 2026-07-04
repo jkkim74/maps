@@ -11,7 +11,7 @@ import maps.common.models  # noqa: F401
 from maps.api import dashboard
 from maps.common.db import Base
 from maps.common.exceptions import BrokerAdapterError
-from maps.common.models import PortfolioSnapshot
+from maps.common.models import KillSwitchLog, PortfolioSnapshot
 from maps.execution.broker_adapter import AccountBalance
 
 
@@ -76,6 +76,29 @@ def test_dashboard_keeps_rendering_when_broker_balance_fails(ctx) -> None:
     assert data["total_assets"] == 0
     assert data["alerts"][0]["level"] == "WARN"
     assert "Broker account balance unavailable" in data["alerts"][0]["message"]
+
+
+def test_dashboard_alerts_exclude_kill_switch_older_than_24h(db) -> None:
+    now = dt.datetime.now(dt.timezone.utc)
+    db.add(KillSwitchLog(
+        strategy_id="donchian_v2",
+        event_type="trigger",
+        reason="consecutive_failure",
+        created_at=now - dt.timedelta(days=3),
+    ))
+    db.add(KillSwitchLog(
+        strategy_id="pullback_v3",
+        event_type="trigger",
+        reason="daily_loss",
+        created_at=now - dt.timedelta(hours=1),
+    ))
+    db.commit()
+
+    alerts = dashboard._dashboard_alerts(db, None)
+
+    messages = [a.message for a in alerts]
+    assert any("pullback_v3" in m for m in messages)
+    assert not any("donchian_v2" in m for m in messages)
 
 
 def test_dashboard_calculates_portfolio_metrics_from_snapshots(ctx) -> None:

@@ -108,6 +108,7 @@ class FakeSession:
 @pytest.fixture
 def settings(tmp_path: Path) -> MapsSettings:
     kis_adapter._TOKEN_CACHE.clear()
+    kis_adapter._BALANCE_CACHE.clear()
     return MapsSettings(
         maps_broker_mode="kis",
         maps_log_dir=str(tmp_path),
@@ -192,6 +193,38 @@ def test_get_account_balance_and_position(settings: MapsSettings) -> None:
     assert position.name == "삼성전자"
     assert position.current_price == 71_000
     assert position.market_value == 710_000
+
+
+def test_balance_data_is_cached_within_ttl(settings: MapsSettings) -> None:
+    http = FakeSession()
+    broker = KISAdapter(settings, http=http)
+
+    broker.get_account_balance()
+    broker.get_positions()
+    broker.get_position("005930")
+
+    balance_calls = [call for call in http.calls if call["url"].endswith("/inquire-balance")]
+    assert len(balance_calls) == 1  # 단기 캐시로 잔고 API는 1회만 호출
+
+
+def test_balance_cache_is_invalidated_after_order(settings: MapsSettings) -> None:
+    http = FakeSession()
+    broker = KISAdapter(settings, http=http)
+
+    broker.get_account_balance()
+    broker.place_order(
+        Order(
+            strategy_id="s1",
+            ticker="005930",
+            side=OrderSide.BUY,
+            order_type=OrderType.MARKET,
+            quantity=1,
+        )
+    )
+    broker.get_account_balance()
+
+    balance_calls = [call for call in http.calls if call["url"].endswith("/inquire-balance")]
+    assert len(balance_calls) == 2  # 주문 직후 캐시 무효화 → 재조회
 
 
 def test_get_open_orders(settings: MapsSettings) -> None:

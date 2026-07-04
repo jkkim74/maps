@@ -12,7 +12,14 @@ from maps.api.schemas import HoldingItem, RiskGaugeItem, RiskResponse
 from maps.common.constants import ALLOWED_MDD, STRATEGY_GROUP_MAP
 from maps.common.exceptions import BrokerAdapterError
 from maps.backtest.engine import _compute_atr14
-from maps.common.models import HistoricalOHLCV, KillSwitchLog, MonteCarloSequenceResults, OrderLog, SecurityMetadata
+from maps.common.models import (
+    AnalysisPick,
+    HistoricalOHLCV,
+    KillSwitchLog,
+    MonteCarloSequenceResults,
+    OrderLog,
+    SecurityMetadata,
+)
 from maps.common.settings import get_settings
 from maps.execution.broker_adapter import get_broker
 from maps.strategy.live_rules import atr_stop_price, stop_loss_price
@@ -85,7 +92,9 @@ def get_risk(db: Session = Depends(get_db)) -> RiskResponse:
 
     # long_term_risk: 전략 중 가장 높은 MDD p95/limit 비율
     max_ratio = max((g.ratio for g in gauges), default=0.0)
-    holdings, max_exposure_pct, broker_position_count = _broker_holdings(db)
+    holdings, max_exposure_pct, broker_position_count, broker_status, broker_error = (
+        _broker_holdings(db)
+    )
 
     return RiskResponse(
         short_term_risk=0.0,        # 당일 PnL은 실시간 계좌 연동 필요 (Phase 5)
@@ -96,6 +105,8 @@ def get_risk(db: Session = Depends(get_db)) -> RiskResponse:
         position_count=max(position_count, broker_position_count),
         gauges=gauges,
         holdings=holdings,
+        broker_status=broker_status,
+        broker_error=broker_error,
     )
 
 
@@ -115,7 +126,13 @@ def _default_strategy_gauges() -> list[RiskGaugeItem]:
     return gauges
 
 
-def _broker_holdings(db: Session) -> tuple[list[HoldingItem], float, int]:
+def _broker_holdings(db: Session) -> tuple[list[HoldingItem], float, int, str, str | None]:
+    """브로커 실시간 보유 내역을 반환한다.
+
+    Returns:
+        (holdings, max_exposure_pct, position_count, broker_status, broker_error).
+        broker_status: "ok"(실시간) | "fallback"(DB 근사) | "unavailable"(둘 다 실패).
+    """
     try:
         broker = get_broker()
         balance = broker.get_account_balance()
@@ -201,7 +218,64 @@ def _broker_holdings(db: Session) -> tuple[list[HoldingItem], float, int]:
                 )
             )
         max_exposure = max((item.exposure_pct for item in holdings), default=0.0)
-        return holdings, max_exposure, len(holdings)
+        return holdings, max_exposure, len(holdings), "ok", None
     except (BrokerAdapterError, NotImplementedError, ValueError) as exc:
         logger.warning("Risk broker holdings unavailable: %s", exc)
-        return [], 0.0, 0
+        fallback = _fallback_holdings(db)
+        status = "fallback" if fallback else "unavailable"
+        return fallback, 0.0, len(fallback), status, str(exc)
+
+
+def _fallback_holdings(db: Session) -> list[HoldingItem]:
+    """브로커 조회 실패 시 DB 기록으로 보유 내역을 근사한다.
+
+    전략매매 엔진이 추적하는 analysis_pick(state=BOUGHT)을 사용하며,
+    현재가는 최신 OHLCV 종가로 대신한다. 실시간 잔고가 아니므로
+    exposure_pct는 계산하지 않는다(0.0).
+    """
+    picks = (
+        db.query(AnalysisPick)
+        .filter(AnalysisPick.state == "BOUGHT")
+        .order_by(AnalysisPick.updated_at.desc())
+        .all()
+    )
+    holdings: list[HoldingItem] = []
+    seen: set[str] = set()
+    for pick in picks:
+        if pick.ticker in seen:
+            continue
+        seen.add(pick.ticker)
+        entry_price = pick.buy_price or 0.0
+        if pick.entry_order_id:
+            order = db.query(OrderLog).filter(OrderLog.order_id == pick.entry_order_id).first()
+            if order is not None and (order.fill_price or order.order_price):
+                entry_price = order.fill_price or order.order_price
+        current_price = _latest_close(db, pick.ticker)
+        holdings.append(
+            HoldingItem(
+                ticker=pick.ticker,
+                name=pick.name,
+                strategy_id=pick.strategy_context or "strategy_trade",
+                entry_price=float(entry_price),
+                current_price=current_price,
+                pnl_pct=(
+                    current_price / entry_price - 1.0
+                    if current_price is not None and entry_price > 0
+                    else None
+                ),
+                exposure_pct=0.0,
+                stop_price=float(pick.stop_price) if pick.stop_price else None,
+            )
+        )
+    return holdings
+
+
+def _latest_close(db: Session, ticker: str) -> float | None:
+    """최신 OHLCV 종가를 반환한다 (없으면 None)."""
+    row = (
+        db.query(HistoricalOHLCV)
+        .filter(HistoricalOHLCV.ticker == ticker)
+        .order_by(HistoricalOHLCV.date.desc())
+        .first()
+    )
+    return float(row.close) if row is not None else None
