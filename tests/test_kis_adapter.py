@@ -152,6 +152,26 @@ def test_token_is_reused_from_file_cache_after_memory_cache_clear(settings: Maps
     assert token_calls_2 == []
 
 
+def test_token_connection_error_raises_broker_adapter_error(settings: MapsSettings) -> None:
+    """토큰 서버 접속 거부(주말 VTS 다운 등)가 BrokerAdapterError로 래핑되는지 검증.
+
+    원시 requests.ConnectionError가 새어나가면 API 라우터들의 폴백 처리가 작동하지
+    못하고 500으로 죽는다 (2026-07-05 운영 장애 회귀 방지).
+    """
+    import requests
+
+    class RefusingSession(FakeSession):
+        def post(self, url: str, **kwargs: Any) -> FakeResponse:
+            if url.endswith("/oauth2/tokenP"):
+                raise requests.exceptions.ConnectionError("[Errno 111] Connection refused")
+            return super().post(url, **kwargs)
+
+    broker = KISAdapter(settings, http=RefusingSession())
+
+    with pytest.raises(BrokerAdapterError, match="KIS token request failed"):
+        broker.get_account_balance()
+
+
 def test_place_order_uses_paper_buy_tr_id_and_hashkey(settings: MapsSettings) -> None:
     http = FakeSession()
     broker = KISAdapter(settings, http=http)

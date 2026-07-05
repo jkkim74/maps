@@ -385,12 +385,17 @@ class KISAdapter(BrokerAdapter):
             "appkey": self._app_key,
             "appsecret": self._app_secret,
         }
-        response = self._http.post(
-            self._url(_TOKEN_PATH),
-            json=body,
-            headers={"content-type": "application/json; charset=utf-8"},
-            timeout=self._timeout,
-        )
+        try:
+            response = self._http.post(
+                self._url(_TOKEN_PATH),
+                json=body,
+                headers={"content-type": "application/json; charset=utf-8"},
+                timeout=self._timeout,
+            )
+        except requests.RequestException as exc:
+            # KIS 모의투자(VTS) 서버는 주말·야간에 접속을 거부한다. 원시 requests 예외가
+            # 새어나가면 상위의 BrokerAdapterError 폴백 처리가 작동하지 못하므로 래핑한다.
+            raise BrokerAdapterError(f"KIS token request failed: {exc}") from exc
         payload = self._decode_response(response)
         token = payload.get("access_token")
         if not token:
@@ -459,16 +464,19 @@ class KISAdapter(BrokerAdapter):
             logger.warning("Could not write KIS token cache file: %s", exc)
 
     def _hashkey(self, body: dict[str, Any]) -> str:
-        response = self._http.post(
-            self._url(_HASHKEY_PATH),
-            json=body,
-            headers={
-                "content-type": "application/json; charset=utf-8",
-                "appkey": self._app_key,
-                "appsecret": self._app_secret,
-            },
-            timeout=self._timeout,
-        )
+        try:
+            response = self._http.post(
+                self._url(_HASHKEY_PATH),
+                json=body,
+                headers={
+                    "content-type": "application/json; charset=utf-8",
+                    "appkey": self._app_key,
+                    "appsecret": self._app_secret,
+                },
+                timeout=self._timeout,
+            )
+        except requests.RequestException as exc:
+            raise BrokerAdapterError(f"KIS hashkey request failed: {exc}") from exc
         payload = self._decode_response(response)
         hashkey = payload.get("HASH") or payload.get("hash")
         if not hashkey:

@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime
 import logging
 
+import requests
 from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -62,7 +63,7 @@ def _broker_live_prices(tickers: list[str]) -> dict[str, float]:
                 ticker: broker.get_position(ticker)
                 for ticker in target
             }
-    except (BrokerAdapterError, NotImplementedError, ValueError) as exc:
+    except (BrokerAdapterError, NotImplementedError, ValueError, requests.RequestException) as exc:
         logger.warning("워치리스트 브로커 현재가 조회 실패: %s", exc)
         return {}
     prices: dict[str, float] = {}
