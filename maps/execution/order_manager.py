@@ -226,9 +226,10 @@ class OrderManager:
             for sell_row in pending_sells:
                 if sell_row.ticker not in current_positions:
                     sell_row.status = OrderStatus.FILLED.value
-                    if sell_row.fill_qty is None:
+                    # 제출 시점 브로커 응답의 체결수량 0이 그대로 남는 경우가 있어 0도 미기록으로 취급
+                    if not sell_row.fill_qty:
                         sell_row.fill_qty = sell_row.qty
-                    if sell_row.fill_price is None:
+                    if not sell_row.fill_price:
                         sell_row.fill_price = sell_row.order_price
                     updated += 1
                     logger.info(

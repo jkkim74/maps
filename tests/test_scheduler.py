@@ -734,6 +734,48 @@ def test_save_portfolio_snapshot_uses_broker_total_assets() -> None:
         engine.dispose()
 
 
+def test_save_portfolio_snapshot_clears_holdings_when_all_sold() -> None:
+    """전량 매도 후 빈 holdings({})는 저장되고, 조회 불가(None)는 기존 값을 유지해야 한다."""
+    engine, factory = _session_factory()
+    db = factory()
+    try:
+        sync = {"cash": 100.0, "positions_value": 50.0, "total_assets": 150.0}
+        OperationalPipeline._save_portfolio_snapshot(
+            db, dt.date(2026, 7, 13), sync, holdings={"004490": 146},
+        )
+        OperationalPipeline._save_portfolio_snapshot(
+            db, dt.date(2026, 7, 13), sync, holdings={},
+        )
+        row = db.query(PortfolioSnapshot).one()
+        assert row.holdings == {}
+
+        OperationalPipeline._save_portfolio_snapshot(
+            db, dt.date(2026, 7, 13), sync, holdings=None,
+        )
+        db.expire_all()
+        row = db.query(PortfolioSnapshot).one()
+        assert row.holdings == {}
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def test_broker_positions_distinguishes_empty_from_unsupported() -> None:
+    """빈 포지션({})은 유효한 상태로 통과시키고, 조회 미지원은 None을 반환해야 한다."""
+
+    class _Unsupported:
+        def get_positions(self) -> dict[str, int]:
+            raise NotImplementedError
+
+    class _Empty:
+        def get_positions(self) -> dict[str, int]:
+            return {}
+
+    assert OperationalPipeline._broker_positions(_Unsupported()) is None
+    assert OperationalPipeline._broker_positions(_Empty()) == {}
+
+
 def test_scheduler_registers_daily_stock_report_job() -> None:
     engine, factory = _session_factory()
     settings = MapsSettings(

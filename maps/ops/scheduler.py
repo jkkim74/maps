@@ -523,7 +523,7 @@ class OperationalPipeline:
             broker = get_broker(self._settings.maps_broker_mode)
             manager = OrderManager(broker=broker, risk=self._make_risk_manager(broker, db), db=db)
             sync = manager.sync_broker_state()
-            holdings = self._broker_positions(broker) or None
+            holdings = self._broker_positions(broker)
             self._save_portfolio_snapshot(db, ref_date, sync, holdings=holdings)
             live_enabled = self._settings.maps_live_trading_enabled
             submitted_orders = 0
@@ -565,7 +565,7 @@ class OperationalPipeline:
                 submitted_orders = submitted_sell_orders + submitted_buy_orders
                 skipped_orders = skipped_sell_orders + skipped_buy_orders
                 final_balance = broker.get_account_balance()
-                holdings = self._broker_positions(broker) or None
+                holdings = self._broker_positions(broker)
                 self._save_portfolio_snapshot(db, ref_date, {
                     "cash": final_balance.cash,
                     "positions_value": final_balance.positions_value,
@@ -612,7 +612,7 @@ class OperationalPipeline:
             broker = get_broker(self._settings.maps_broker_mode)
             manager = OrderManager(broker=broker, risk=self._make_risk_manager(broker, db), db=db)
             sync = manager.sync_broker_state()
-            holdings = self._broker_positions(broker) or None
+            holdings = self._broker_positions(broker)
             self._save_portfolio_snapshot(db, ref_date, sync, holdings=holdings)
             live_enabled = self._settings.maps_live_trading_enabled
             market_open = False
@@ -665,7 +665,7 @@ class OperationalPipeline:
                         "positions_value": final_balance.positions_value,
                         "total_assets": final_balance.total_value,
                     }
-                    holdings = self._broker_positions(broker) or None
+                    holdings = self._broker_positions(broker)
                     self._save_portfolio_snapshot(db, ref_date, sync, holdings=holdings)
 
             self._write_log(
@@ -1624,7 +1624,7 @@ class OperationalPipeline:
 
         account = broker.get_account_balance()
         remaining_cash = account.cash
-        positions = self._broker_positions(broker)
+        positions = self._broker_positions(broker) or {}
         submitted = 0
         skipped = 0
         # STRONG(1.0)→3건, MIXED(0.5)→2건, WEAK(0.25)→1건
@@ -2510,11 +2510,12 @@ class OperationalPipeline:
         return fresh_count >= self._MIN_FRESH_TICKERS, latest_date, expected
 
     @staticmethod
-    def _broker_positions(broker) -> dict[str, int]:
+    def _broker_positions(broker) -> dict[str, int] | None:
+        """브로커 보유 수량을 반환한다. 조회 미지원이면 None (빈 dict는 '전량 미보유'라는 유효한 상태)."""
         try:
             return broker.get_positions()
         except NotImplementedError:
-            return {}
+            return None
 
     @staticmethod
     def _broker_position_details(broker) -> dict[str, Position]:
@@ -2524,7 +2525,7 @@ class OperationalPipeline:
             return positions
         return {
             ticker: position
-            for ticker, qty in OperationalPipeline._broker_positions(broker).items()
+            for ticker, qty in (OperationalPipeline._broker_positions(broker) or {}).items()
             if qty > 0 and (position := broker.get_position(ticker)) is not None
         }
 

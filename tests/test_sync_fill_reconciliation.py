@@ -79,6 +79,7 @@ def test_prior_day_pending_sell_reconciled_by_positions() -> None:
         rows = {r.ticker: r for r in db.query(OrderLog).all()}
         assert rows["000660"].status == "filled"      # 포지션 소멸 = KIS 실제 체결
         assert rows["000660"].fill_price == 1000.0      # order_price로 보정
+        assert rows["000660"].fill_qty == 10            # 제출 시 기록된 0도 주문수량으로 보정
         assert rows["005930"].status == "expired"      # 포지션 유지 = 진짜 미체결
     finally:
         db.close()
