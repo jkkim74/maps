@@ -14,6 +14,7 @@
 .ap-form input,.ap-form select{width:100%;padding:7px 10px;border:1px solid var(--border);
   border-radius:6px;background:var(--bg);color:var(--text-primary);font-size:.85rem}
 .ap-num{text-align:right;font-variant-numeric:tabular-nums}
+.topbar-btn.active{background:var(--accent);color:#fff;border-color:var(--accent)}
 </style>
 {% endblock %}
 {% block topbar_actions %}
@@ -42,6 +43,10 @@
 </div>
 
 <div class="section-header"><span class="section-title">분석 워치리스트</span><hr></div>
+<div style="display:flex;gap:6px;margin-bottom:10px">
+  <button id="ap-tab-active" class="topbar-btn" onclick="setMode('active')">워치리스트</button>
+  <button id="ap-tab-closed" class="topbar-btn" onclick="setMode('closed')">완료(익절/손절)</button>
+</div>
 <div class="card"><div class="card-body" id="ap-list">
   <div class="loading"><div class="spinner"></div></div>
 </div></div>
@@ -64,11 +69,16 @@ function toKST(isoStr) {
   const s = isoStr.includes('Z') || isoStr.includes('+') ? isoStr : isoStr + 'Z';
   return new Date(s).toLocaleString('sv-SE', { timeZone: 'Asia/Seoul' }).slice(0, 16).replace('T', ' ');
 }
-function stateBadge(st) {
+function stateBadge(p) {
   const map = { WATCH:['관찰','info'], ARMED:['대기','warn'], BOUGHT:['보유','pass'],
                 CLOSED:['종료','info'], CANCELLED:['취소','fail'] };
-  const [label, cls] = map[st] || [st, 'info'];
-  return `<span class="badge badge-${cls}">${label}</span>`;
+  const [label, cls] = map[p.state] || [p.state, 'info'];
+  let extra = '';
+  if (p.state === 'CLOSED' && p.exit_reason) {
+    const [rl, rc] = p.exit_reason === 'take_profit' ? ['익절','pass'] : ['손절','fail'];
+    extra = ` <span class="badge badge-${rc}">${rl}</span>`;
+  }
+  return `<span class="badge badge-${cls}">${label}</span>${extra}`;
 }
 function esc(s) {
   // JS 문자열 리터럴용 이스케이프 (onclick 인자)
@@ -80,13 +90,25 @@ function escHtml(s) {
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
+let apMode = 'active';
+function setMode(m) {
+  apMode = m;
+  document.getElementById('ap-tab-active').classList.toggle('active', m === 'active');
+  document.getElementById('ap-tab-closed').classList.toggle('active', m === 'closed');
+  loadPicks();
+}
+
 async function loadPicks() {
   const box = document.getElementById('ap-list');
+  const closed = apMode === 'closed';
   try {
-    const d = await fetch('/api/v1/analysis-picks').then(r => r.json());
+    const url = closed ? '/api/v1/analysis-picks?state=CLOSED' : '/api/v1/analysis-picks';
+    const d = await fetch(url).then(r => r.json());
     if (!d.picks || d.picks.length === 0) {
+      const msg = closed ? '완료(익절/손절)된 종목이 없습니다.'
+                         : '워치리스트가 비어 있습니다 — ＋ 수동 추가 또는 /analyze 결과 적재';
       box.innerHTML = '<div class="empty-state"><div class="empty-icon">○</div>' +
-        '<div class="empty-text">워치리스트가 비어 있습니다 — ＋ 수동 추가 또는 /analyze 결과 적재</div></div>';
+        `<div class="empty-text">${msg}</div></div>`;
       return;
     }
     const rows = d.picks.map(p => `
@@ -101,7 +123,7 @@ async function loadPicks() {
         <td class="ap-num mono">${fmtPrice(p.target_price)}</td>
         <td class="ap-num mono">${fmtPrice(p.stop_price)}</td>
         <td class="ap-num mono">${p.rr_ratio != null ? p.rr_ratio.toFixed(2) : '—'}</td>
-        <td title="${[p.entry_order_id ? 'entry=' + p.entry_order_id : '', p.exit_order_id ? 'exit=' + p.exit_order_id : ''].filter(Boolean).join(' ')}">${stateBadge(p.state)}</td>
+        <td title="${[p.entry_order_id ? 'entry=' + p.entry_order_id : '', p.exit_order_id ? 'exit=' + p.exit_order_id : ''].filter(Boolean).join(' ')}">${stateBadge(p)}</td>
         <td style="text-align:center">${bracketCell(p)}</td>
         <td class="text-muted" style="font-size:.75rem">${escHtml(p.source)}</td>
         <td class="mono text-muted" style="font-size:.75rem">${toKST(p.created_at)}</td>
@@ -186,6 +208,6 @@ async function deletePick(id) {
   loadPicks();
 }
 
-document.addEventListener('DOMContentLoaded', loadPicks);
+document.addEventListener('DOMContentLoaded', () => setMode('active'));
 </script>
 {% endblock %}
