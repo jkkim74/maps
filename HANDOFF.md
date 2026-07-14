@@ -1,8 +1,8 @@
 # HANDOFF
 
-> 작성일: 2026-07-09 (KST) · 작성자: 이전 세션 에이전트
-> 주제: 운영 서버 상태 점검 + stock-report KQ150.KS 심볼 교체
-> 이전 핸드오프(analysis-picks 500 + KIS 예외 래핑 수정, 7/05 집 PC 세션): git 이력 `f1e2db2`의 HANDOFF.md 참고.
+> 작성일: 2026-07-14 (KST) · 작성자: 세션 에이전트 (집 PC, 키 `D:\maps\`)
+> 주제: 분석 워치리스트 — 익절/손절 종목 완료목록 분리 (백엔드 + 웹 UI)
+> 이전 핸드오프(운영 점검 + stock-report KQ150.KS 교체, 7/09): 아래 섹션 유지, git 이력 `f1e2db2` 참고.
 
 ## Goal
 
@@ -17,6 +17,26 @@
 집 PC `D:\maps\...`. CLAUDE.md에는 집 PC 기준으로 적혀 있음.
 
 ## Current Progress
+
+### 익절/손절 종목 완료목록 분리 (2026-07-14, 완료·배포됨)
+
+문제: 분석 워치리스트(`analysis_pick`) 종목이 매수 → 익절(목표가 도달)되면 브래킷 엔진이
+`state="CLOSED"`로만 바꾸고 아무 정리도 안 해서, `list_picks`가 모든 state를 반환하던 탓에
+익절 끝난 종목이 워치리스트에 계속 남아 보였다(기능적 재진입 위험은 없음 — 엔진은 ARMED/BOUGHT만 재로딩,
+CLOSED는 `arm_pick`에서 재무장 불가). 순수 표시·이력 정책 공백이었음.
+
+조치(커밋 `356f04f` 백엔드 + `2c020c2` UI, 둘 다 운영 배포됨):
+- `AnalysisPick.exit_reason` 컬럼 추가(`take_profit`|`stop_loss`) + Alembic `0011_analysis_pick_exit_reason`
+  — 운영 Postgres `alembic upgrade head`로 반영 완료.
+- 브래킷 청산 `_process_strategy_trades`(`scheduler.py:2192`)에서 이미 계산된 `reason`을 `exit_reason`에 저장.
+- `list_picks`(`analysis_picks.py`): state 미지정 시 `!= CLOSED` 필터 → 기본 목록에서 분리,
+  `?state=CLOSED`로만 완료 조회. `exit_reason`을 `AnalysisPickItem`(`schemas.py`)에 노출.
+- 웹 대시보드 `templates/analysis_picks.html`: **[워치리스트] / [완료(익절/손절)]** 탭 토글,
+  완료 탭은 상태 옆 익절(녹)/손절(빨) 배지. 서버 렌더라 배포 즉시 반영.
+- 테스트: `test_strategy_trade.py`(exit_reason 검증), `test_analysis_picks_api.py`(CLOSED 기본 제외/조회). **412 passed**.
+
+범위 밖(후속): 모바일 앱 `apps/mobile/src/screens/WatchlistScreen.tsx`에는 완료 탭 미반영(앱 재빌드/배포 필요).
+자동 파이프라인(`candidate_snapshot`/`_order_candidates`)의 "이전에 익절한 티커 재매수" 방지는 별개 시스템 — 미해결.
 
 ### 운영 점검 결과 (2026-07-09 오전) — 정상
 
@@ -66,6 +86,8 @@
 
 ## Next Steps
 
+0. **(선택) 모바일 앱에 완료 탭 반영** — `WatchlistScreen.tsx`/`usePicks.ts`에 `?state=CLOSED` 탭 추가
+   후 `npm run build` + `cap:sync` + 스토어 배포. 웹은 이미 반영됨.
 1. **오늘 15:01 stock_report 잡 로그 확인** — `sudo journalctl -u maps --since "15:00" | grep -i "yfinance\|KQ150\|229200"`
    으로 404 소멸 최종 확인 (교체 검증은 끝났으니 형식적 확인).
 2. **stock_report supply 타입 실패 조사** — run_id 163 "리포트 생성 실패: 조건 미충족 또는 데이터 없음"
