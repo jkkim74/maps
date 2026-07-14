@@ -165,6 +165,7 @@ def _to_item(
         state=p.state,
         entry_order_id=p.entry_order_id,
         exit_order_id=p.exit_order_id,
+        exit_reason=p.exit_reason,
         last_action_at=p.last_action_at.isoformat() if p.last_action_at else None,
         # 손익비는 체결가 우선(실제 진입가) — 미체결이면 계획 매수가 기준.
         rr_ratio=_rr_ratio(fill_price or p.buy_price, p.target_price, p.stop_price),
@@ -182,6 +183,8 @@ def list_picks(
     q = db.query(AnalysisPick)
     if state:
         q = q.filter(AnalysisPick.state == state)
+    else:
+        q = q.filter(AnalysisPick.state != "CLOSED")   # 완료(익절/손절)는 기본 목록에서 분리, ?state=CLOSED로만 조회
     if source:
         q = q.filter(AnalysisPick.source == source)
     rows = q.order_by(AnalysisPick.created_at.desc()).limit(500).all()

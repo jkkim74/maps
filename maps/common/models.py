@@ -511,6 +511,7 @@ class AnalysisPick(Base):
     state: Mapped[str] = mapped_column(String(16), nullable=False, default="WATCH")  # WATCH|ARMED|BOUGHT|CLOSED|CANCELLED
     entry_order_id: Mapped[str | None] = mapped_column(String(64), nullable=True)   # 진입 주문 order_log 연결
     exit_order_id: Mapped[str | None] = mapped_column(String(64), nullable=True)    # 청산(익절/손절) 주문 연결
+    exit_reason: Mapped[str | None] = mapped_column(String(16), nullable=True)      # take_profit | stop_loss
     last_action_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)  # 마지막 엔진 처리 시각
 
     updated_at: Mapped[datetime.datetime] = mapped_column(

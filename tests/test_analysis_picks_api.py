@@ -248,6 +248,22 @@ def test_state_filter_via_arm(client) -> None:
     assert client.get("/api/v1/analysis-picks?state=WATCH").json()["total"] == 0
 
 
+def test_closed_hidden_by_default_shown_when_requested(client) -> None:
+    # 익절/손절로 CLOSED된 픽은 기본 목록에서 빠지고 ?state=CLOSED로만 조회된다(완료 목록 분리).
+    from maps.common.models import AnalysisPick
+
+    pid = _new_pick(client)
+    with client.session_factory() as s:
+        pick = s.get(AnalysisPick, pid)
+        pick.state = "CLOSED"
+        pick.exit_reason = "take_profit"
+        s.commit()
+    assert client.get("/api/v1/analysis-picks").json()["total"] == 0
+    closed = client.get("/api/v1/analysis-picks?state=CLOSED").json()["picks"]
+    assert len(closed) == 1
+    assert closed[0]["exit_reason"] == "take_profit"
+
+
 def _new_pick(client, **overrides):
     return client.post("/api/v1/analysis-picks", json={"picks": [_sample(**overrides)]}).json()["picks"][0]["id"]
 

@@ -2189,6 +2189,7 @@ class OperationalPipeline:
                     logger.warning("전략매매 청산 실패 [%s] %s: %s", pick.ticker, reason, exc)
                     continue
                 pick.exit_order_id = result.order_id
+                pick.exit_reason = reason
                 pick.state = "CLOSED"
                 pick.last_action_at = now
                 db.commit()   # 청산(이미 커밋된 OrderLog)과 CLOSED 상태를 즉시 동기화

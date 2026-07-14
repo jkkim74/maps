@@ -89,6 +89,7 @@ def test_take_profit(env):
     assert (submitted, closed) == (0, 1)
     assert pick.state == "CLOSED"
     assert pick.exit_order_id is not None
+    assert pick.exit_reason == "take_profit"
     assert broker.get_positions().get("005930", 0) == 0
 
 
@@ -100,6 +101,7 @@ def test_stop_loss(env):
     submitted, closed = _run(pipeline, broker, manager, db, [pick], {"005930": 65000})  # ≤손절
     assert (submitted, closed) == (0, 1)
     assert pick.state == "CLOSED"
+    assert pick.exit_reason == "stop_loss"
 
 
 def test_oco_single_close(env):
