@@ -8,6 +8,7 @@ with a single request.
 from __future__ import annotations
 
 import datetime as dt
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
@@ -34,8 +35,11 @@ from maps.api.schemas import (
 )
 from maps.common.models import DeviceToken
 from maps.common.settings import get_settings
+from maps.market.regime_history import latest_applied_regime
 
 router = APIRouter(prefix="/api/v1/mobile", tags=["Mobile"])
+
+logger = logging.getLogger(__name__)
 
 
 class MobileLoginRequest(BaseModel):
@@ -48,6 +52,19 @@ class MobileLoginResponse(BaseModel):
     username: str
 
 
+class MobileRegime(BaseModel):
+    """앱 홈에 표시할 압축 장세(시장 국면) 정보 — market_regime_log 최신 행 기반."""
+
+    regime: str = "unknown"        # strong | mixed | weak | unknown (applied_regime)
+    weekly_trend: str = "unknown"  # pass | fail | unknown
+    vol_regime: str = "normal"     # low | normal | high
+    breadth_pct: float | None = None
+    up_count: int | None = None
+    total_assets: int | None = None
+    floor_applied: bool = False
+    ref_date: str | None = None
+
+
 class MobileSummaryResponse(BaseModel):
     server_time: str
     dashboard: DashboardResponse
@@ -55,6 +72,33 @@ class MobileSummaryResponse(BaseModel):
     risk: RiskResponse
     live_monitor: LiveMonitorResponse
     alerts: list[AlertItem]
+    regime: MobileRegime
+
+
+def _mobile_regime(db: Session) -> MobileRegime:
+    """최신 장세 판정 이력을 압축 응답으로 매핑한다(없거나 실패 시 unknown).
+
+    /api/v1/market과 달리 실시간 재계산(pykrx/yfinance) 없이 스케줄러가 upsert한
+    market_regime_log의 최근 applied_regime을 인덱스 1회 조회로 읽는다. 장세 조회
+    실패가 summary 전체를 깨지 않도록 방어적으로 처리한다.
+    """
+    try:
+        row = latest_applied_regime(db, dt.date.today())
+    except Exception:  # noqa: BLE001 — 장세는 부가 정보, summary를 막지 않는다
+        logger.warning("모바일 summary 장세 조회 실패", exc_info=True)
+        return MobileRegime()
+    if row is None:
+        return MobileRegime()
+    return MobileRegime(
+        regime=row.applied_regime or "unknown",
+        weekly_trend=row.weekly_trend or "unknown",
+        vol_regime=row.vol_regime or "normal",
+        breadth_pct=row.breadth_pct,
+        up_count=row.up_count,
+        total_assets=row.total_assets,
+        floor_applied=bool(row.floor_applied),
+        ref_date=row.ref_date.isoformat() if row.ref_date else None,
+    )
 
 
 @router.post("/login", response_model=MobileLoginResponse)
@@ -82,6 +126,7 @@ def get_mobile_summary(db: Session = Depends(get_db)) -> MobileSummaryResponse:
         risk=get_risk(db),
         live_monitor=get_live_monitor(db),
         alerts=dashboard.alerts[:10],
+        regime=_mobile_regime(db),
     )
 
 

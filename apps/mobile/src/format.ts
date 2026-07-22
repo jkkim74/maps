@@ -22,6 +22,36 @@ export const STATE_LABEL: Record<string, string> = {
   CANCELLED: '취소',
 }
 
+/** 장세(시장 국면) 라벨. */
+export const REGIME_LABEL: Record<string, string> = {
+  strong: '강세',
+  mixed: '혼조',
+  weak: '약세',
+  unknown: '판정없음',
+}
+
+/** 변동성 국면 라벨. */
+export const VOL_LABEL: Record<string, string> = {
+  low: '낮음',
+  normal: '보통',
+  high: '높음',
+}
+
+/** 주봉 추세 라벨. */
+export const weeklyLabel = (v: string): string =>
+  v === 'pass' ? '통과' : v === 'fail' ? '미달' : '—'
+
+/**
+ * 장세 → 배너 톤. 웹 대시보드(static/js/app.js) 규칙을 미러:
+ * 주봉 fail이면 무조건 danger(빨강), strong→ok(녹), weak→warn(앰버), 그 외→info(파랑).
+ */
+export const regimeTone = (regime: string, weeklyTrend: string): 'ok' | 'warn' | 'danger' | 'info' => {
+  if (weeklyTrend === 'fail') return 'danger'
+  if (regime === 'strong') return 'ok'
+  if (regime === 'weak') return 'warn'
+  return 'info'
+}
+
 /** 예정 주문 스킵 사유 → 짧은 한글 라벨. */
 export const previewSkipLabel = (reason: string | null): string => {
   if (!reason) return '스킵'

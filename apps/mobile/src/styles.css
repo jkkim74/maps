@@ -26,6 +26,8 @@ h2 { margin: 0 0 12px; color: #b9c4c9; font-size: 13px; font-weight: 700; text-t
 .status-banner { display: flex; gap: 12px; align-items: center; padding: 14px; border-radius: 8px; border: 1px solid; margin-bottom: 16px; }
 .status-banner.ok { color: #66d19e; background: #14251f; border-color: #275743; }
 .status-banner.danger { color: #ff8d87; background: #2b191a; border-color: #673638; }
+.status-banner.warn { color: #fbbf24; background: #2a2413; border-color: #5c4d22; }
+.status-banner.info { color: #70b8ee; background: #152230; border-color: #274863; }
 .status-banner strong, .status-banner span { display: block; }
 .status-banner span { margin-top: 3px; color: #aab7bc; font-size: 12px; }
 

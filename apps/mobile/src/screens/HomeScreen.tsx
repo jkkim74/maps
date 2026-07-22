@@ -1,15 +1,35 @@
-import { ShieldCheck, ShieldX } from 'lucide-react'
+import { Minus, ShieldCheck, ShieldX, TrendingDown, TrendingUp } from 'lucide-react'
 import type { MobileSummary, PortfolioHistory } from '../api'
 import { Kpi } from '../components/Kpi'
 import { AlertList } from '../components/AlertList'
 import { TrendChart } from '../components/TrendChart'
-import { absPct, money, pct } from '../format'
+import { REGIME_LABEL, VOL_LABEL, absPct, money, pct, regimeTone, weeklyLabel } from '../format'
 
-/** 홈 탭 — 운영 상태 배너 + 핵심 KPI + 자산 추이 + 오늘의 운영 + 최근 알림. */
+/** 장세 배너 — 현재 시장 국면(강세/혼조/약세)을 홈 최상단에 표시. */
+function RegimeBanner({ regime }: { regime: MobileSummary['regime'] }) {
+  const tone = regimeTone(regime.regime, regime.weekly_trend)
+  const Icon = regime.regime === 'strong' ? TrendingUp : regime.regime === 'weak' ? TrendingDown : Minus
+  const label = REGIME_LABEL[regime.regime] ?? regime.regime
+  const sub: string[] = [`주봉 ${weeklyLabel(regime.weekly_trend)}`, `변동성 ${VOL_LABEL[regime.vol_regime] ?? regime.vol_regime}`]
+  if (regime.up_count != null && regime.total_assets != null) sub.push(`상승 ${regime.up_count}/${regime.total_assets}`)
+  if (regime.floor_applied) sub.push('하한적용')
+  return (
+    <section className={`status-banner ${tone}`}>
+      <Icon size={22} />
+      <div>
+        <strong>장세 · {label}</strong>
+        <span>{sub.join(' · ')}</span>
+      </div>
+    </section>
+  )
+}
+
+/** 홈 탭 — 장세 배너 + 운영 상태 배너 + 핵심 KPI + 자산 추이 + 오늘의 운영 + 최근 알림. */
 export function HomeScreen({ data, history }: { data: MobileSummary; history?: PortfolioHistory }) {
   const blocked = !data.orders.auto_order_active
   return (
     <>
+      {data.regime ? <RegimeBanner regime={data.regime} /> : null}
       <section className={`status-banner ${blocked ? 'danger' : 'ok'}`}>
         {blocked ? <ShieldX size={22} /> : <ShieldCheck size={22} />}
         <div>

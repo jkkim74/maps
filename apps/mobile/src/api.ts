@@ -62,6 +62,16 @@ export type MobileSummary = {
     pending_release_count: number
   }
   alerts: Alert[]
+  regime: {
+    regime: string // strong | mixed | weak | unknown
+    weekly_trend: string // pass | fail | unknown
+    vol_regime: string // low | normal | high
+    breadth_pct: number | null
+    up_count: number | null
+    total_assets: number | null
+    floor_applied: boolean
+    ref_date: string | null
+  }
 }
 
 import { AuthError, clearToken, getToken } from './auth'

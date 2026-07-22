@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import datetime as dt
+
 from fastapi.testclient import TestClient
 
 from maps.api.schemas import (
@@ -10,6 +12,7 @@ from maps.api.schemas import (
     RiskResponse,
     SlippageStats,
 )
+from maps.common.models import MarketRegimeLog
 
 
 def test_mobile_summary_combines_operational_endpoints(monkeypatch) -> None:
@@ -88,3 +91,42 @@ def test_mobile_summary_combines_operational_endpoints(monkeypatch) -> None:
     assert data["dashboard"]["total_assets"] == 10_000_000
     assert data["orders"]["auto_order_active"] is True
     assert data["alerts"][0]["message"] == "Check risk limit"
+    # 장세 블록이 응답에 포함된다(로그 없으면 unknown).
+    assert data["regime"]["regime"] == "unknown"
+
+
+def test_mobile_regime_maps_latest_log_row(db) -> None:
+    from maps.api.mobile import _mobile_regime
+
+    db.add(MarketRegimeLog(
+        ref_date=dt.date.today(),
+        raw_regime="mixed",
+        applied_regime="strong",
+        weekly_trend="pass",
+        vol_regime="high",
+        floor_applied=True,
+        breadth_pct=0.42,
+        up_count=6,
+        total_assets=8,
+        source="candidate_generation",
+    ))
+    db.commit()
+
+    regime = _mobile_regime(db)
+
+    assert regime.regime == "strong"          # applied_regime (히스테리시스 적용값)
+    assert regime.weekly_trend == "pass"
+    assert regime.vol_regime == "high"
+    assert regime.floor_applied is True
+    assert regime.up_count == 6 and regime.total_assets == 8
+    assert regime.ref_date == dt.date.today().isoformat()
+
+
+def test_mobile_regime_unknown_when_no_log(db) -> None:
+    from maps.api.mobile import _mobile_regime
+
+    regime = _mobile_regime(db)
+
+    assert regime.regime == "unknown"
+    assert regime.weekly_trend == "unknown"
+    assert regime.up_count is None
