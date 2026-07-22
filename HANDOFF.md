@@ -1,109 +1,88 @@
 # HANDOFF
 
-> 작성일: 2026-07-14 (KST) · 작성자: 세션 에이전트 (집 PC, 키 `D:\maps\`)
-> 주제: 분석 워치리스트 — 익절/손절 종목 완료목록 분리 (백엔드 + 웹 UI)
-> 이전 핸드오프(운영 점검 + stock-report KQ150.KS 교체, 7/09): 아래 섹션 유지, git 이력 `f1e2db2` 참고.
+> 작성일: 2026-07-22 (KST) · 작성자: 세션 에이전트 (회사 PC, 키 `D:\ssh_maps\`)
+> 주제: 모바일 앱 3기능 추가·배포 + 앱 시작 크래시(Firebase) 해결 + 워치리스트 미증가 원인 규명
+> 이전 핸드오프(완료목록 분리, 7/14): git 이력 `2c020c2`·`f1e2db2` 참고.
 
 ## Goal
 
-운영 서버(magable.kr)가 정상 구동 중인지 점검하고, 점검에서 발견된 유일한 조치 대상이던
-**yfinance `KQ150.KS` 404 에러**(매일 15:01 stock_report 잡)를 해결한다.
+모바일 앱 개선 3건(예정 주문·워치 현재가·장세 배너)을 구현·배포하고, 앱 설치 후 발생한
+시작 크래시를 해결한다. 부수적으로 "며칠째 워치 종목이 안 늘어난다"는 사용자 관찰의 원인을 규명한다.
 
 ## 운영 환경
 
 배포 서버: AWS Lightsail `3.37.117.246`, `/opt/maps`, systemd `maps`, `https://magable.kr`.
-브로커는 **KIS 모의투자(VTS)** 계좌 `50185813`. 운영 DB는 PostgreSQL(`sudo -u postgres psql -d maps`).
-**SSH 키 경로는 PC마다 다름**: 이 PC(회사) `D:\ssh_maps\LightsailDefaultKey-ap-northeast-2.pem`,
-집 PC `D:\maps\...`. CLAUDE.md에는 집 PC 기준으로 적혀 있음.
+브로커 **KIS 모의투자(paper)** 계좌 `50185813`. 운영 DB PostgreSQL(`sudo -u postgres psql -d maps`
+또는 앱 venv로 `SessionLocal`). **SSH 키는 PC마다 다름**: 이 PC `D:\ssh_maps\LightsailDefaultKey-ap-northeast-2.pem`.
 
-## Current Progress
+## Current Progress (2026-07-22, 전부 완료·배포됨)
 
-### 익절/손절 종목 완료목록 분리 (2026-07-14, 완료·배포됨)
+### 1. 모바일 예정 주문 + 워치 현재가 + `live_eligible` (커밋 `574e985`, 배포됨)
+- 백엔드: `PreviewOrderItem.live_eligible`(schemas.py) 추가 — 예정주문 항목이 실주문 대상
+  (live_candidate/live)인지 모의(mock_candidate)인지 구분. `order_preview.py`에서 `promotions`로 판정.
+- 모바일 주문 탭: 상단 "다음 거래일 예정 주문" 섹션(기존 `/api/v1/orders/preview` 소비) — 핵심만 표시
+  + [실주문]/[모의] 뱃지. `api.ts`/`useOrderPreview.ts`/`OrdersScreen.tsx`/`format.ts`/`styles.css`.
+- 모바일 워치 탭: 현재가를 **체결 전에도** 표시(백엔드는 이미 미체결 픽에 current_price 채움 — 순수 프론트
+  렌더 버그였음). `WatchlistScreen.tsx`. `HoldingDetail.tsx`는 원래도 정상.
 
-문제: 분석 워치리스트(`analysis_pick`) 종목이 매수 → 익절(목표가 도달)되면 브래킷 엔진이
-`state="CLOSED"`로만 바꾸고 아무 정리도 안 해서, `list_picks`가 모든 state를 반환하던 탓에
-익절 끝난 종목이 워치리스트에 계속 남아 보였다(기능적 재진입 위험은 없음 — 엔진은 ARMED/BOUGHT만 재로딩,
-CLOSED는 `arm_pick`에서 재무장 불가). 순수 표시·이력 정책 공백이었음.
+### 2. 모바일 홈 장세 배너 (커밋 `c5359fc`, 배포됨)
+- 백엔드: `/api/v1/mobile/summary`에 `regime` 블록 추가(`mobile.py` `MobileRegime`/`_mobile_regime`).
+  **`latest_applied_regime(db, today)`로 `market_regime_log` 인덱스 1회 조회**(실시간 pykrx 재계산 없음).
+  운영 검증: `강세 · 주봉 통과 · 변동성 높음 · 상승 6/8`(2026-07-22) 반환 확인.
+- 모바일: HomeScreen 최상단 장세 배너(강세/혼조/약세). 웹 색상 규칙 미러(`regimeTone`): 주봉fail→빨강,
+  strong→녹, weak→앰버, else→파랑. `.status-banner.warn/.info` CSS 추가.
+- 테스트: `test_mobile_api.py`(regime 매핑) 추가. **전체 415 passed**.
 
-조치(커밋 `356f04f` 백엔드 + `2c020c2` UI, 둘 다 운영 배포됨):
-- `AnalysisPick.exit_reason` 컬럼 추가(`take_profit`|`stop_loss`) + Alembic `0011_analysis_pick_exit_reason`
-  — 운영 Postgres `alembic upgrade head`로 반영 완료.
-- 브래킷 청산 `_process_strategy_trades`(`scheduler.py:2192`)에서 이미 계산된 `reason`을 `exit_reason`에 저장.
-- `list_picks`(`analysis_picks.py`): state 미지정 시 `!= CLOSED` 필터 → 기본 목록에서 분리,
-  `?state=CLOSED`로만 완료 조회. `exit_reason`을 `AnalysisPickItem`(`schemas.py`)에 노출.
-- 웹 대시보드 `templates/analysis_picks.html`: **[워치리스트] / [완료(익절/손절)]** 탭 토글,
-  완료 탭은 상태 옆 익절(녹)/손절(빨) 배지. 서버 렌더라 배포 즉시 반영.
-- 테스트: `test_strategy_trade.py`(exit_reason 검증), `test_analysis_picks_api.py`(CLOSED 기본 제외/조회). **412 passed**.
+### 3. 앱 시작 크래시 해결 (Firebase google-services.json 누락)
+- 증상: 설치 후 실행 즉시 "MAPS에 오류 발생 — 앱을 종료했습니다"(네이티브 크래시, 로그인 화면 전).
+- 원인: `@capacitor/push-notifications`가 `firebase-messaging` 포함 → `FirebaseInitProvider`가 시작 시
+  `google_app_id`를 못 찾아 크래시. **`apps/mobile/android/app/google-services.json` 누락**이 원인.
+- 해결: 사용자가 Firebase 프로젝트 `maps-bc07c`의 kr.maps.mobile용 google-services.json 제공 → 해당
+  경로 배치 후 재빌드(`processDebugGoogleServices` 정상) → 크래시 소멸 확인.
 
-범위 밖(후속): 모바일 앱 `apps/mobile/src/screens/WatchlistScreen.tsx`에는 완료 탭 미반영(앱 재빌드/배포 필요).
-자동 파이프라인(`candidate_snapshot`/`_order_candidates`)의 "이전에 익절한 티커 재매수" 방지는 별개 시스템 — 미해결.
+### 4. APK 빌드 (디버그)
+- 산출물: `apps/mobile/android/app/build/outputs/apk/debug/app-debug.apk` (7.4MB),
+  복사본 `C:\Users\jack\Downloads\maps-debug-20260722.apk`. 최신 커밋 `c5359fc` 전체 포함, 운영 API 연결.
+- **모바일 UI는 systemd 배포로 안 나감** — APK 재빌드/사이드로드 필요. 백엔드 필드는 배포로 반영됨.
 
-### 운영 점검 결과 (2026-07-09 오전) — 정상
-
-- `maps` systemd `active (running)`, 메모리 ~240MB, load ~0. `https://magable.kr` HTTP 200.
-- 일일 파이프라인(수집 2,765종목 → 후보 → 검증 → 08:55 order_cycle → 15:35 EOD) 최근 2거래일 전부 success.
-- KIS paper 계좌 총자산 ~8,560만원, 보유 004490 전략매매 추적 중(목표 54,900 / 손절 46,800).
-- **7/05 핸드오프의 "월요일 장중 KIS 복구 확인" 항목은 사실상 확인됨** — 장중 broker_sync
-  `sync_errors: 0`, 현재가 갱신 정상. 장외 시간대에만 KIS 모의투자 지연(90020000)으로 `sync_errors: 1`.
-- **weak 장세 지속**: 후보는 저장되나 8개 전략 전부 주문 차단(`preferred_regime_mismatch:weak` 등)
-  — `d5f2fa8`(regime gate 개편: 관찰은 항상, 주문만 차단) 의도대로 동작. 검증 승격 통과 0건도 게이트 정상 작동 결과.
-
-### KQ150.KS → 229200.KS 교체 (완료, 운영 반영됨)
-
-- 위치는 **로컬 저장소가 아니라 서버의 외부 소스 `/opt/stock_report`** — `report_generator.py:734`,
-  `getUpAndDownReport.py:30`의 `KOSDAQ150_TICKER`. **이 디렉터리는 git 저장소가 아님** → 서버 직접
-  편집(사용자 승인 받음), 백업 `*.bak-20260709` 생성.
-- 대체 심볼 `229200.KS`(KODEX 코스닥150 ETF)는 같은 소스 `marketSummary.py`가 이미 코스닥150 대용으로
-  사용 중. 신호 계산이 일간수익률·ATR%·장대음봉이라 ETF OHLC로 충분.
-- `maps/stock_report/runner.py`가 이 모듈을 **in-process import(캐시)** 하므로 수정 후
-  `sudo systemctl restart maps` 필요 → 10:58 KST 재시작, 1분 뒤 broker_sync `sync_errors: 0` 재개 확인.
-- 교체 전 `229200.KS` yfinance 조회 검증(30행), 교체 후 `compute_kosdaq_signals()` 실값 반환 확인
-  (이전에는 404로 전부 NaN 폴백). `KOSPI200.KS`는 에러 없어 유지.
-
-### 그 외 (이전 handoff들 정리)
-
-2026-06-29 handoff의 모바일 Next Steps 5건은 전부 완료(APK 서명 `8db0de7`, FCM `39c8e68`,
-추이 차트 `b1a59e4`, 드릴다운·App.tsx 분리 `224cd9e`). 7/05 집 PC 세션이 KIS 예외 래핑
-수정(`613c340`)·브로커 장애 폴백(`df44d04`)을 배포함.
+### 5. 워치리스트 미증가 원인 규명 (조치 불필요 — 정상 동작)
+- **핵심: analyze는 이미 매 거래일 자동 실행 중.** `/etc/cron.d/maps-analyze`
+  (`0 16 * * 1-5 ubuntu bash /opt/maps/scripts/run_analyze_cron.sh`) → `claude -p "/analyze"`
+  (서버에 claude CLI v2.1.197 설치·구독 OAuth 인증). 로그 `/opt/maps/logs/analyze_cron_*.log`.
+- **미증가 이유 = 게이트 전량탈락.** `analysis_run` 7/8~7/22 매일 `status=completed, picks=0`.
+  파이프라인 정상 완료하나 안전마진·R:R·기술 게이트를 다 통과하는 셋업이 현 방어장에 안 나옴.
+  예 7/22: 현대해상(001450) 안전마진 25.6% 통과했으나 **trade-planner R:R 0.34로 최종 탈락**.
+- **R:R 게이트 = ≥ 2.0** (`.claude/agents/trade-planner.md:28,40,65`, 운영은 `/opt/maps/.claude/...`).
+  손익분기 승률 33%인 검증-우선 표준값. **사용자 결정: 2.0 그대로 유지**(변경 없음).
 
 ## What Worked
-
-- **로그 grep으로 에러 발생 시각(매일 15:01)과 stock_report 잡을 연결** → 로컬 repo에 KQ150이 없어도
-  `/opt/stock_report`를 grep해서 위치 특정.
-- **교체 전 검증 → 편집 → 기능 검증 → 재시작 → broker_sync 재개 확인**의 순서. 임시 셸 검증 시
-  `MPLBACKEND=Agg`로 report_generator import 가능.
-- 서버 직접 수정은 자동 승인 모드에서 권한 정책상 차단됨 → 사용자에게 옵션 제시 후 승인 받아 진행.
+- 병렬 Explore 에이전트로 백엔드/모바일/웹을 동시 조사 → 예정주문·장세 데이터 소스 빠르게 특정.
+- 장세 데이터는 `/api/v1/market`(실시간 재계산) 대신 **`market_regime_log` 로그 조회**가 위젯에 적합.
+- 크래시 진단: logcat 없이도 `google-services.json` 부재 + 빌드 매니페스트에 FirebaseInitProvider 존재로 확정.
+- 운영 로그(`analysis_run` + cron 로그 tail)로 "자동화 이미 있음 + 게이트 탈락" 원인을 데이터로 확정.
 
 ## What Didn't Work / 주의
-
-- **PowerShell로 원격 python -c 인라인 실행은 이스케이프 지옥** — Bash 도구 + 작은따옴표/heredoc 사용.
-- `/opt/stock_report`에서 임시 셸로 import 시 "KRX 로그인 실패(KRX_ID/KRX_PW 미설정)" 출력 — 모듈
-  import 부수효과일 뿐 이번 수정과 무관. 해당 자격증명 env var는 로컬 `.env`에 있음(값은 커밋 금지).
-- `apps/mobile/google-services.json`이 untracked로 존재(Firebase 키 포함) — **커밋 금지**.
-  파일 지정 add 또는 `git add -u`만 사용.
-- 이 저장소는 **집 PC와 회사 PC 두 곳에서 작업됨** — 푸시 전 `git fetch`로 원격 선행 커밋 확인
-  (이번에도 non-fast-forward로 rebase 병합이 필요했음).
+- **초기 오진**: "analyze 수동실행이라 미실행"으로 판단 → **틀림**. 이미 cron 자동 실행 중이었음.
+  교훈: `crontab -l`은 `/etc/cron.d/`를 안 보여줌 → `/etc/cron.d/` 직접 확인 필수.
+- **APK 빌드는 JDK 21 필요**(JAVA_HOME 기본 17). `JAVA_HOME=...Adoptium\jdk-21...` 지정 후 gradlew.bat.
+- **`google-services.json`·`android/`는 gitignore** — 커밋 안 됨. 새 PC/체크아웃마다 재배치해야 크래시 방지.
+- `.env`(KRX_ID/PW 등 시크릿) 커밋 금지 — `git add -u`만 사용(tracked만).
+- 운영 DB .env 직접 grep은 분류기 차단됨 → 앱 venv `SessionLocal`로 조회하면 시크릿 노출 없이 가능.
 
 ## Next Steps
-
-0. **(선택) 모바일 앱에 완료 탭 반영** — `WatchlistScreen.tsx`/`usePicks.ts`에 `?state=CLOSED` 탭 추가
-   후 `npm run build` + `cap:sync` + 스토어 배포. 웹은 이미 반영됨.
-1. **오늘 15:01 stock_report 잡 로그 확인** — `sudo journalctl -u maps --since "15:00" | grep -i "yfinance\|KQ150\|229200"`
-   으로 404 소멸 최종 확인 (교체 검증은 끝났으니 형식적 확인).
-2. **stock_report supply 타입 실패 조사** — run_id 163 "리포트 생성 실패: 조건 미충족 또는 데이터 없음"
-   이 반복성인지 확인 (`stock_report_runs` 테이블).
-3. **KIS 모의투자 지연(90020000) 경고** — 장외 시간 일별 체결 동기화에서 `sync_errors: 1` 반복.
-   실질 영향 없으나 장외 시간대 호출 스킵 처리 여지 (`df44d04`가 폴백·24h 알림은 이미 추가함).
-4. **매도 만료율 높음 조사** (이월, 미착수) — order_log에서 매도 주문 만료 패턴 분석.
-5. `/opt/stock_report`가 git 관리 밖이므로 **백업/버전 관리 방안 검토** (예: 서버에서 git init 또는 로컬 미러).
-6. **네트워크 의존 테스트 mock 처리** (7/05 handoff 이월) — conftest에서 broker mock 강제로 환경 편차 제거.
-7. **펀더멘털 백필 재개 예정일(2026-06-22) 경과** (이월) — 상태 확인 필요(메모리 노트 참고).
+0. **새 APK 폰 설치·확인** — 홈 "장세·강세" 배너, 주문 탭 예정주문, 워치 체결 전 현재가 육안 확인.
+1. **(선택) 게이트 튜닝은 보류** — R:R 2.0 유지 결정됨. 픽을 늘리려면 스케줄이 아니라 게이트(R:R/안전마진/섹터)
+   조정이나, 검증-우선 철학상 신중. 현 0건은 정상 신호.
+2. **모바일 완료 탭(익절/손절)** 미반영(7/14 handoff 이월) — `WatchlistScreen.tsx`에 `?state=CLOSED` 탭.
+3. **서명 릴리스 APK**(스토어/정식 배포용) 필요 시 `npm run build:apk:release`(RELEASE.md, keystore 필요).
+4. 이월 항목: 매도 만료율 조사, KIS 90020000 장외 경고, `/opt/stock_report` 버전관리, 네트워크 테스트 mock화.
 
 ## 핵심 파일 맵
-
-- stock_report 연동: `maps/stock_report/runner.py`(sys.path로 `/opt/stock_report` import, `MAPS_STOCK_REPORT_PATH`).
-- 서버 소스(서버에만 존재): `/opt/stock_report/report_generator.py`, `getUpAndDownReport.py`, `marketSummary.py`.
-- regime gate: `maps/market/regime.py`, 주문 차단 사유는 candidate_generation 잡 로그의 `strategies_blocked`.
-- 직전 코드 변경(7/05 세션): `maps/execution/kis_adapter.py`(토큰/해시키 예외 래핑),
-  `maps/api/analysis_picks.py`(except 확대), `tests/test_kis_adapter.py`(회귀 테스트).
-- 운영 접속: `ssh -i <PC별 키 경로> ubuntu@3.37.117.246`, 앱 루트 `/opt/maps`.
+- 모바일: `apps/mobile/src/{api.ts,format.ts,App.tsx}`, `screens/{HomeScreen,OrdersScreen,WatchlistScreen}.tsx`,
+  `hooks/useOrderPreview.ts`, `styles.css`. Firebase: `apps/mobile/android/app/google-services.json`(gitignore).
+- 백엔드: `maps/api/mobile.py`(regime 블록), `maps/ops/order_preview.py`+`maps/api/schemas.py`(live_eligible),
+  `maps/market/regime_history.py`(`latest_applied_regime`).
+- analyze 자동화(서버): `/etc/cron.d/maps-analyze`, `/opt/maps/scripts/run_analyze_cron.sh`,
+  `/opt/maps/.claude/{commands/analyze.md,agents/*.md}`(R:R 등 게이트 규칙), `scripts/load_analysis_picks.py`.
+- APK 빌드: `apps/mobile/RELEASE.md`, JDK21 필요. 디버그=`gradlew.bat assembleDebug`.
+- 운영 접속: `ssh -i D:\ssh_maps\LightsailDefaultKey-ap-northeast-2.pem ubuntu@3.37.117.246`, 앱 루트 `/opt/maps`.
