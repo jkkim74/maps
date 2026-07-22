@@ -47,6 +47,14 @@ export function WatchlistScreen({
                     ? ` (${p.current_price >= p.fill_price ? '+' : ''}${(((p.current_price - p.fill_price) / p.fill_price) * 100).toFixed(1)}%)`
                     : ''}
                 </div>
+              ) : p.current_price != null ? (
+                // 미체결(관망/무장) 픽도 현재가를 표시 — 체결 여부와 무관(최신 일봉 종가).
+                <div className="pick-current">
+                  현재 {won(p.current_price)}
+                  {p.buy_price && p.current_price != null
+                    ? ` (매수가 대비 ${p.current_price >= p.buy_price ? '+' : ''}${(((p.current_price - p.buy_price) / p.buy_price) * 100).toFixed(1)}%)`
+                    : ''}
+                </div>
               ) : null}
               <div className="pick-actions">
                 <button type="button" disabled={busy || armed || bought} onClick={() => onArm(p)}>무장</button>

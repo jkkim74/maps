@@ -21,3 +21,16 @@ export const STATE_LABEL: Record<string, string> = {
   CLOSED: '청산',
   CANCELLED: '취소',
 }
+
+/** 예정 주문 스킵 사유 → 짧은 한글 라벨. */
+export const previewSkipLabel = (reason: string | null): string => {
+  if (!reason) return '스킵'
+  if (reason === 'gap_exceeded') return 'GAP초과'
+  if (reason === 'insufficient_cash') return '수량부족'
+  if (reason === 'no_entry_signal') return '진입신호없음'
+  // preferred_regime_mismatch:*, weekly_trend_fail, weak_high_vol 등 장세 계열
+  if (reason.startsWith('preferred_regime_mismatch') || reason.includes('weekly_trend') || reason.includes('regime') || reason.includes('weak')) {
+    return '장세차단'
+  }
+  return reason
+}

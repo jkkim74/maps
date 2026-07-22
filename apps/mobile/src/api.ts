@@ -84,6 +84,31 @@ export type AnalysisPick = {
 
 type PicksResponse = { total: number; picks: AnalysisPick[] }
 
+// 다음 거래일 예정 주문 미리보기 — 서버 OrderPreviewResponse의 앱 사용 필드.
+export type OrderPreviewItem = {
+  ticker: string
+  name: string
+  strategy_id: string
+  limit_price: number
+  estimated_qty: number
+  estimated_amount: number
+  gap_pct: number
+  skipped: boolean
+  skip_reason: string | null
+  live_eligible: boolean // true=실주문 대상(live_candidate/live), false=모의(mock_candidate)
+}
+
+export type OrderPreview = {
+  next_trading_day: string
+  assumed_cash: number
+  items: OrderPreviewItem[]
+  data_available: boolean
+  data_stale: boolean
+  stale_reason: string | null // regime_blocked | data_collection_failed
+  market_regime: string
+  max_orders_effective: number
+}
+
 // 추이 차트(SCR home) — portfolio_snapshot 기반 일별 자산 시계열.
 export type PortfolioHistoryPoint = {
   date: string // YYYY-MM-DD
@@ -200,6 +225,14 @@ export async function fetchPicks(signal?: AbortSignal): Promise<AnalysisPick[]> 
   }
   const data = (await response.json()) as PicksResponse
   return data.picks
+}
+
+export async function fetchOrderPreview(signal?: AbortSignal): Promise<OrderPreview> {
+  const response = await authedFetch('/api/v1/orders/preview', { signal })
+  if (!response.ok) {
+    throw new Error(`서버 응답 오류 (${response.status})`)
+  }
+  return (await response.json()) as OrderPreview
 }
 
 export async function armPick(id: number): Promise<void> {

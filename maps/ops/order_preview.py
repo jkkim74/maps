@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 _MAX_ORDERS = 3
 _ELIGIBLE_STAGES = {"mock_candidate", "live_candidate", "live"}
+_LIVE_STAGES = {"live_candidate", "live"}  # 실제 08:55 주문 대상 단계 (모의 후보 구분용)
 _LOOKAHEAD_DAYS = 14  # 최대 탐색 일수 (긴 연휴 대비)
 _MAX_PREVIEW_ITEMS = 10  # 차단 사유 행 포함 미리보기 최대 표시 건수
 
@@ -243,6 +244,9 @@ def build_order_preview(db: Session, settings: MapsSettings) -> OrderPreviewResp
         if candidate.ticker in seen_tickers:
             continue
 
+        # 실주문 대상(live_candidate/live) vs 모의(mock_candidate) 구분 플래그.
+        live_eligible = promotions.get(candidate.strategy_id) in _LIVE_STAGES
+
         signal_close = _latest_close(db, candidate.ticker, ref_date)
         if signal_close <= 0:
             continue
@@ -290,6 +294,7 @@ def build_order_preview(db: Session, settings: MapsSettings) -> OrderPreviewResp
                 estimated_amount=0,
                 skipped=True,
                 skip_reason=regime_block_reason,
+                live_eligible=live_eligible,
             ))
             continue
 
@@ -312,6 +317,7 @@ def build_order_preview(db: Session, settings: MapsSettings) -> OrderPreviewResp
                 estimated_amount=0,
                 skipped=True,
                 skip_reason="no_entry_signal",
+                live_eligible=live_eligible,
             ))
             continue
 
@@ -330,6 +336,7 @@ def build_order_preview(db: Session, settings: MapsSettings) -> OrderPreviewResp
                 estimated_amount=0,
                 skipped=True,
                 skip_reason="gap_exceeded",
+                live_eligible=live_eligible,
             ))
             continue
 
@@ -349,6 +356,7 @@ def build_order_preview(db: Session, settings: MapsSettings) -> OrderPreviewResp
                 estimated_amount=0,
                 skipped=True,
                 skip_reason="insufficient_cash",
+                live_eligible=live_eligible,
             ))
             continue
 
@@ -367,6 +375,7 @@ def build_order_preview(db: Session, settings: MapsSettings) -> OrderPreviewResp
             estimated_amount=amount,
             skipped=False,
             skip_reason=None,
+            live_eligible=live_eligible,
         ))
         seen_tickers.add(candidate.ticker)
         submitted += 1

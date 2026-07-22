@@ -120,6 +120,30 @@ def test_preview_fresh_when_candidate_current(db, monkeypatch) -> None:
     assert resp.data_stale is False
     assert resp.stale_reason is None
     assert [item.ticker for item in resp.items] == ["AAAA"]
+    # 시드는 mock_candidate 단계 → 실주문 대상이 아님(모의).
+    assert resp.items[0].live_eligible is False
+
+
+def test_preview_live_eligible_for_live_stage(db, monkeypatch) -> None:
+    """전략이 live 단계면 항목이 실주문 대상(live_eligible=True)으로 표시된다."""
+    ref_date = dt.date.today()
+    _seed_candidate(db, ref_date=ref_date)  # donchian_v2 @ mock_candidate
+    # 더 최근 성공 승격(live)을 추가 — _latest_promotions는 마지막 성공 단계를 현재 단계로 본다.
+    db.add(PromotionHistory(
+        strategy_id="donchian_v2",
+        from_stage="live_candidate",
+        to_stage="live",
+        tradeability_score=90,
+        passed=True,
+        evaluated_at=dt.datetime.combine(ref_date, dt.time(9)),
+    ))
+    db.commit()
+    monkeypatch.setattr("maps.ops.order_preview.next_trading_day", lambda value: value + dt.timedelta(days=1))
+
+    resp = build_order_preview(db, MapsSettings())
+
+    assert [item.ticker for item in resp.items] == ["AAAA"]
+    assert resp.items[0].live_eligible is True
 
 
 def test_preview_marks_regime_blocked_candidate_with_reason(db, monkeypatch) -> None:

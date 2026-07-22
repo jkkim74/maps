@@ -16,6 +16,7 @@ import { useAuth } from './hooks/useAuth'
 import { useSummary } from './hooks/useSummary'
 import { useHistory } from './hooks/useHistory'
 import { usePicks } from './hooks/usePicks'
+import { useOrderPreview } from './hooks/useOrderPreview'
 import { useKillSwitches } from './hooks/useKillSwitches'
 import { usePolling } from './hooks/usePolling'
 import { HomeScreen } from './screens/HomeScreen'
@@ -41,6 +42,9 @@ export function App() {
     load: loadPicks, onArm, onDisarm,
   } = usePicks(requireLogin)
   const {
+    preview, loading: previewLoading, error: previewError, load: loadPreview,
+  } = useOrderPreview(requireLogin)
+  const {
     data: ks, loading: ksLoading, error: ksError,
     busyId: ksBusyId, message: ksMsg,
     load: loadKillSwitches, onApprove, onRelease,
@@ -64,7 +68,8 @@ export function App() {
   useEffect(() => {
     if (tab === 'watchlist') void loadPicks()
     if (tab === 'risk') void loadKillSwitches()
-  }, [tab, loadPicks, loadKillSwitches])
+    if (tab === 'orders') void loadPreview()
+  }, [tab, loadPicks, loadKillSwitches, loadPreview])
 
   // 탭 전환 시 열려 있던 드릴다운 상세 화면을 닫는다.
   useEffect(() => {
@@ -78,7 +83,8 @@ export function App() {
     if (tab === 'home') void loadHistory()
     if (tab === 'watchlist') void loadPicks()
     if (tab === 'risk') void loadKillSwitches()
-  }, [tab, refresh, loadHistory, loadPicks, loadKillSwitches])
+    if (tab === 'orders') void loadPreview()
+  }, [tab, refresh, loadHistory, loadPicks, loadKillSwitches, loadPreview])
   usePolling(pollTick, !needLogin)
 
   if (needLogin) {
@@ -98,7 +104,7 @@ export function App() {
       <header>
         <div><span className="brand">MAPS</span><p>Mobile Operations</p></div>
         <div className="header-actions">
-          <button className="icon-btn" type="button" onClick={() => { void refresh(); if (tab === 'watchlist') void loadPicks() }} aria-label="새로고침" title="새로고침">
+          <button className="icon-btn" type="button" onClick={() => { void refresh(); if (tab === 'watchlist') void loadPicks(); if (tab === 'orders') void loadPreview() }} aria-label="새로고침" title="새로고침">
             <RefreshCw size={19} className={loading || picksLoading ? 'spin' : ''} />
           </button>
           <button className="icon-btn" type="button" onClick={logout} aria-label="로그아웃" title="로그아웃">
@@ -113,7 +119,11 @@ export function App() {
         {data && tab === 'orders' ? (
           selectedOrder
             ? <OrderDetail order={selectedOrder} onBack={() => setSelectedOrder(null)} />
-            : <OrdersScreen data={data} onSelect={setSelectedOrder} />
+            : <OrdersScreen
+                data={data} onSelect={setSelectedOrder}
+                preview={preview} previewLoading={previewLoading} previewError={previewError}
+                onReloadPreview={() => void loadPreview()}
+              />
         ) : null}
         {data && tab === 'risk' ? (
           <>

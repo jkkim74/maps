@@ -101,11 +101,24 @@ h2 { margin: 0 0 12px; color: #b9c4c9; font-size: 13px; font-weight: 700; text-t
 .pick-head span { color: #84929a; font-size: 12px; }
 .pick-prices { margin: 8px 0 8px; color: #aab7bc; font-size: 13px; }
 .pick-fill { margin: 0 0 12px; color: #66d19e; font-size: 13px; font-weight: 600; }
+.pick-current { margin: 0 0 12px; color: #aab7bc; font-size: 13px; font-weight: 600; }
 .badge { padding: 3px 9px; border-radius: 999px; font-size: 11px; font-weight: 700; border: 1px solid; }
 .badge.watch { color: #9db3bd; background: #1b2329; border-color: #34424a; }
 .badge.armed { color: #e3b85f; background: #2a2413; border-color: #5c4d22; }
 .badge.bought { color: #66d19e; background: #14251f; border-color: #275743; }
 .badge.closed, .badge.cancelled { color: #8a969c; background: #191e22; border-color: #2b373e; }
+.badge.live { color: #101418; background: #e3b85f; border-color: #e3b85f; }
+.badge.mock { color: #9db3bd; background: #1b2329; border-color: #34424a; }
+
+/* 예정 주문 미리보기 */
+.preview-summary { margin-bottom: 12px; padding: 12px 14px; background: #192126; border: 1px solid #2a353c; border-radius: 8px; }
+.preview-summary strong { display: block; color: #e3b85f; font-size: 15px; }
+.preview-summary span { display: block; margin-top: 4px; color: #839098; font-size: 12px; }
+.row-end .badge { display: inline-block; margin-top: 5px; }
+.preview-skips { margin-top: 10px; border: 1px solid #29343b; border-radius: 8px; overflow: hidden; background: #171d21; }
+.preview-skips div { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 14px; border-bottom: 1px solid #232c31; }
+.preview-skips div:last-child { border-bottom: 0; }
+.preview-skips span:first-child { color: #8b999f; font-size: 12px; }
 .pick-actions { display: flex; gap: 10px; }
 .pick-actions button { flex: 1; padding: 10px; border-radius: 8px; font-weight: 700; font-size: 14px; color: #101418; background: #e3b85f; border: 0; }
 .pick-actions button.ghost { color: #ff8d87; background: transparent; border: 1px solid #673638; }

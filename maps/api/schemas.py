@@ -191,6 +191,7 @@ class PreviewOrderItem(BaseModel):
     estimated_amount: int
     skipped: bool
     skip_reason: str | None
+    live_eligible: bool = True   # True=실주문 대상(live_candidate/live), False=모의(mock_candidate)
 
 
 class OrderPreviewResponse(BaseModel):
