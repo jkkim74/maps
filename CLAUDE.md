@@ -86,7 +86,7 @@ The application is a FastAPI server (`main.py`) with a Jinja2 web dashboard and 
 
 Production times (set in server `.env`; **code defaults in parentheses**):
 
-`16:40` collect OHLCV (16:10) → `16:50` generate candidates (16:20) → `17:10` run validation (16:40) → `08:55` (next morning) place orders → `15:35` EOD sync. Stock report at `15:00`.
+`16:40` collect OHLCV (16:10) → `16:50` generate candidates (16:20) → `17:10` run validation (16:40) → `08:55` (next morning) place orders → `15:35` EOD sync. Stock report at `18:00` (default 15:00; moved past KRX EOD-data settle so the Market Supply/수급 report stops intermittently failing).
 
 Times are settings-driven — override via `MAPS_DATA_COLLECTION_TIME`, `MAPS_CANDIDATE_TIME`,
 `MAPS_VALIDATION_TIME`, `MAPS_ORDER_TIME`, `MAPS_EOD_TIME`, `MAPS_STOCK_REPORT_TIME`
