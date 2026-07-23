@@ -7,7 +7,7 @@ from maps.common.settings import MapsSettings
 from maps.execution.broker_adapter import OrderSide, OrderStatus
 from maps.api.orders import get_orders
 from maps.market.trading_rules import previous_trading_day
-from maps.ops.order_preview import build_order_preview
+from maps.ops.order_preview import build_order_preview, next_trading_day
 
 
 def _seed_candidate(db, *, ref_date: dt.date) -> None:
@@ -67,6 +67,25 @@ def test_preview_hides_candidate_after_order_submission(db, monkeypatch) -> None
     after = build_order_preview(db, MapsSettings())
     assert after.data_available is True
     assert after.items == []
+
+
+def test_preview_shows_prior_session_before_todays_generation(db) -> None:
+    """거래일 아침(당일 16:20 후보 생성 전) — 직전 세션 스냅샷을 stale로 비우지 말고 노출한다.
+
+    회귀 방지: 예전엔 expected_ref가 next_trading_day(today) 기준이라, 자정에 날짜가
+    넘어가면 직전 세션(어제) 스냅샷을 stale로 오판해 아침 내내 예정목록이 통째로 비었다.
+    이제 신선도는 OHLCV 수집 상태로 판정하므로 어제 세션 스냅샷이 정상 노출된다.
+    """
+    prior_session = previous_trading_day(dt.date.today())
+    _seed_candidate(db, ref_date=prior_session)  # 어제 세션 후보 + OHLCV, 당일분은 아직 없음
+
+    resp = build_order_preview(db, MapsSettings())
+
+    assert resp.data_stale is False
+    assert resp.stale_reason is None
+    assert "AAAA" in [item.ticker for item in resp.items]
+    # 이 스냅샷으로 실제 주문될 다음 거래일을 노출한다(오늘이 거래일이면 오늘).
+    assert resp.next_trading_day == next_trading_day(prior_session).isoformat()
 
 
 def test_preview_marks_stale_when_candidates_old(db, monkeypatch) -> None:

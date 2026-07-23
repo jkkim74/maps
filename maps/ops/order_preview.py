@@ -157,7 +157,6 @@ def _held_tickers(db: Session) -> set[str]:
 def build_order_preview(db: Session, settings: MapsSettings) -> OrderPreviewResponse:
     """다음 거래일 예정 주문 미리보기를 계산한다."""
     today = dt.date.today()
-    next_day = next_trading_day(today)
 
     # 장세 분석 — 스케줄러 주문 경로와 동일하게 설정 오버라이드를 존중한다.
     regime_result = None
@@ -189,21 +188,30 @@ def build_order_preview(db: Session, settings: MapsSettings) -> OrderPreviewResp
     )
     effective_max = max(1, round(_MAX_ORDERS * max_policy_ratio))
 
-    # 신선도 가드: 최신 후보가 다음 거래일 직전 세션보다 오래되면(생성 실패·지연)
-    # 오래된 후보를 "다음 거래일 예정"으로 노출하지 않는다.
+    # 주문 대상일·신선도 판정은 08:55 주문 사이클과 동일하게 "최신 스냅샷"을 기준으로 삼는다.
+    # 예전엔 next_trading_day(today) 기준 expected_ref를 써서, 자정에 날짜가 넘어가면
+    # (당일 16:20 후보 생성 전) 직전 세션 스냅샷을 stale로 오판, 거래일 아침 내내
+    # 예정목록이 통째로 비는 버그가 있었다. 이제 스냅샷 기준일(latest_ref)에서 실제
+    # 주문될 다음 거래일을 도출하고, 신선도는 OHLCV 수집 상태로 판정한다.
     latest_ref = db.query(func.max(CandidateSnapshot.ref_date)).scalar()
-    expected_ref = previous_trading_day(next_day, extra_closed_dates=settings.krx_closed_dates)
-    data_stale = latest_ref is not None and latest_ref < expected_ref
+    latest_ohlcv_date: dt.date | None = db.query(func.max(HistoricalOHLCV.date)).scalar()
+
+    # 이 스냅샷이 실제 주문에 쓰일 다음 거래일 (저녁·아침 모두 일관된 기준일).
+    next_day = next_trading_day(latest_ref) if latest_ref is not None else next_trading_day(today)
+
+    # 존재해야 하는 최신 스냅샷 세션 = 직전 완료 세션이되, 오늘 세션 OHLCV가 이미
+    # 수집됐으면(=당일 후보 생성도 완료됐어야) 오늘까지다. 시계 시각에 의존하지 않아
+    # 테스트가 결정적이고, 아침(당일 수집 전)엔 직전 세션 스냅샷을 정상으로 본다.
+    last_completed = previous_trading_day(today, extra_closed_dates=settings.krx_closed_dates)
+    expected_session = last_completed
+    if latest_ohlcv_date is not None and latest_ohlcv_date >= today:
+        expected_session = latest_ohlcv_date
+    data_stale = latest_ref is not None and latest_ref < expected_session
 
     # stale 사유 판별: OHLCV가 직전 완료 세션까지 수집돼 있으면 수집은 정상 —
-    # 후보 생성이 장세 차단 등으로 스냅샷을 저장하지 않은 것. 기준을 expected_ref가
-    # 아닌 previous_trading_day(today)로 잡는 이유: 당일분 OHLCV는 16:40 수집
-    # 전까지 존재할 수 없어 장중에는 expected_ref 비교가 항상 실패하기 때문.
+    # 후보 생성이 장세 차단 등으로 스냅샷을 저장하지 않은 것.
     stale_reason: str | None = None
-    latest_ohlcv_date: dt.date | None = None
     if data_stale:
-        latest_ohlcv_date = db.query(func.max(HistoricalOHLCV.date)).scalar()
-        last_completed = previous_trading_day(today, extra_closed_dates=settings.krx_closed_dates)
         if latest_ohlcv_date is not None and latest_ohlcv_date >= last_completed:
             stale_reason = "regime_blocked"
         else:
@@ -397,7 +405,7 @@ def build_order_preview(db: Session, settings: MapsSettings) -> OrderPreviewResp
         weekly_trend=weekly_trend,
         max_orders_effective=effective_max,
         data_stale=data_stale,
-        expected_ref_date=expected_ref.isoformat(),
+        expected_ref_date=expected_session.isoformat(),
         stale_reason=stale_reason,
-        latest_ohlcv_date=latest_ohlcv_date.isoformat() if latest_ohlcv_date else None,
+        latest_ohlcv_date=latest_ohlcv_date.isoformat() if (data_stale and latest_ohlcv_date) else None,
     )
