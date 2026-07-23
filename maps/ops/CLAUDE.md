@@ -34,11 +34,13 @@ ops/
 OperationalPipeline(settings=None, session_factory=SessionLocal, notifier=None)
 ```
 
+KST 실행 시간은 운영 실제값(서버 `.env` 오버라이드) 기준이며, 괄호는 코드 기본값(`settings.py`).
+
 | 메서드 | KST 실행 시간 | 설명 |
 |---|---|---|
-| `collect_data(ref_date?)` | 16:10 | OHLCV + 메타 수집 |
-| `generate_candidates(ref_date?)` | 16:20 | 유니버스 필터 → 후보 스냅샷 저장 + 시황 분석 |
-| `run_validation(ref_date?)` | 16:40 | WFA/Plateau/MC 생성 → 승격 평가 |
+| `collect_data(ref_date?)` | 16:40 (기본 16:10) | OHLCV + 메타 수집 |
+| `generate_candidates(ref_date?)` | 16:50 (기본 16:20) | 유니버스 필터 → 후보 스냅샷 저장 + 시황 분석 |
+| `run_validation(ref_date?)` | 17:10 (기본 16:40) | WFA/Plateau/MC 생성 → 승격 평가 |
 | `run_order_cycle(ref_date?)` | 08:55 | 브로커 동기화 → 매도/매수 주문 제출 |
 | `sync_broker_state(ref_date?)` | 60초 간격 | 장중 포지션·잔고 동기화, 손절 모니터링 |
 | `run_eod_cleanup(ref_date?)` | 15:35 | 미체결 주문 취소, 브로커 EOD 처리 |

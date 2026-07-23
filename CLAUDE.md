@@ -84,9 +84,13 @@ The application is a FastAPI server (`main.py`) with a Jinja2 web dashboard and 
 
 ### Daily scheduled pipeline (KST)
 
-`16:10` collect OHLCV → `16:20` generate candidates → `16:40` run validation → `08:55` (next morning) place orders → `15:35` EOD sync
+Production times (set in server `.env`; **code defaults in parentheses**):
 
-Enabled by `MAPS_SCHEDULER_ENABLED=true`. Off by default.
+`16:40` collect OHLCV (16:10) → `16:50` generate candidates (16:20) → `17:10` run validation (16:40) → `08:55` (next morning) place orders → `15:35` EOD sync. Stock report at `15:00`.
+
+Times are settings-driven — override via `MAPS_DATA_COLLECTION_TIME`, `MAPS_CANDIDATE_TIME`,
+`MAPS_VALIDATION_TIME`, `MAPS_ORDER_TIME`, `MAPS_EOD_TIME`, `MAPS_STOCK_REPORT_TIME`
+(defaults in `maps/common/settings.py`). Enabled by `MAPS_SCHEDULER_ENABLED=true`. Off by default.
 
 ### Promotion stages
 
