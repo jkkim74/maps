@@ -139,7 +139,20 @@ def test_preview_fresh_when_candidate_current(db, monkeypatch) -> None:
     assert resp.data_stale is False
     assert resp.stale_reason is None
     assert [item.ticker for item in resp.items] == ["AAAA"]
-    # 시드는 mock_candidate 단계 → 실주문 대상이 아님(모의).
+    # 시드는 mock_candidate 단계 — 모의 계좌(기본 broker_mode=mock)에서는 주문 대상이다.
+    assert resp.items[0].live_eligible is True
+
+
+def test_preview_mock_candidate_not_eligible_on_real_account(db, monkeypatch) -> None:
+    """실계좌에서는 mock_candidate 단계 항목이 주문 대상에서 빠진다."""
+    _seed_candidate(db, ref_date=dt.date.today())
+    monkeypatch.setattr("maps.ops.order_preview.next_trading_day", lambda value: value + dt.timedelta(days=1))
+
+    settings = MapsSettings(maps_broker_mode="kis", kis_real_trading=True)
+    assert settings.is_paper_account is False
+
+    resp = build_order_preview(db, settings)
+
     assert resp.items[0].live_eligible is False
 
 

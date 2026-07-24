@@ -6,9 +6,12 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+import pytest
+
 import maps.common.models  # noqa: F401
 from maps.common.db import Base
-from maps.common.models import CandidateSnapshot
+from maps.common.models import CandidateSnapshot, OrderLog, PromotionHistory
+from maps.common.settings import MapsSettings
 from maps.data.security_repo import Security
 from maps.ops.scheduler import OperationalPipeline
 
@@ -45,6 +48,80 @@ def test_order_candidates_empty_when_snapshot_stale() -> None:
 
         # 직전 거래일보다 오래된 후보 → 신선도 가드로 빈 목록
         assert pipeline._order_candidates(db, dt.date.today()) == []
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def _seed_mock_candidate_strategy(db, ref_date: dt.date) -> None:
+    """mock_candidate 단계 전략의 당일 후보 1건을 심는다."""
+    db.add(CandidateSnapshot(
+        ref_date=ref_date,
+        strategy_id="donchian_v2",
+        ticker="AAAA",
+        name="AAAA",
+        market="KOSPI",
+        factor_score=90,
+        trend_strength=80,
+        ts_bucket="S5",
+        final_score=95,
+        weekly_pass=True,
+    ))
+    db.add(PromotionHistory(
+        strategy_id="donchian_v2",
+        from_stage="alert_only",
+        to_stage="mock_candidate",
+        tradeability_score=70.0,
+        passed=True,
+        evaluated_at=dt.datetime.now() - dt.timedelta(days=1),
+    ))
+    db.commit()
+
+
+def test_mock_candidate_orders_on_paper_account_only() -> None:
+    """mock_candidate 전략은 모의 계좌에서만 주문 후보가 된다 (mock_months 축적용)."""
+    engine, factory = _memory_factory()
+    db = factory()
+    try:
+        _seed_mock_candidate_strategy(db, dt.date.today())
+
+        paper = OperationalPipeline(settings=MapsSettings(maps_broker_mode="mock"), session_factory=factory)
+        assert [row.ticker for row in paper._order_candidates(db, dt.date.today())] == ["AAAA"]
+
+        real = OperationalPipeline(
+            settings=MapsSettings(maps_broker_mode="kis", kis_real_trading=True),
+            session_factory=factory,
+        )
+        assert real._order_candidates(db, dt.date.today()) == []
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def test_mock_track_months_counts_from_first_filled_buy() -> None:
+    """mock_months = 최초 '체결된' 매수 이후 경과 개월. 미체결 주문은 세지 않는다."""
+    engine, factory = _memory_factory()
+    db = factory()
+    try:
+        today = dt.date.today()
+        db.add(OrderLog(  # 미체결 — 무시돼야 함
+            order_id="O-1", strategy_id="donchian_v2", ticker="AAAA", side="BUY",
+            qty=10, fill_qty=0, status="CANCELLED",
+            created_at=dt.datetime.now() - dt.timedelta(days=200),
+        ))
+        db.add(OrderLog(
+            order_id="O-2", strategy_id="donchian_v2", ticker="AAAA", side="BUY",
+            qty=10, fill_qty=10, status="FILLED",
+            created_at=dt.datetime.now() - dt.timedelta(days=95),
+        ))
+        db.commit()
+
+        months = OperationalPipeline._mock_track_months(db, today)
+        assert months["donchian_v2"] == pytest.approx(95 / 30.44)
+        assert months["donchian_v2"] >= 3.0  # Live Small 진입 조건 충족
+        assert months.get("pullback_v3", 0.0) == 0.0
     finally:
         db.close()
         Base.metadata.drop_all(engine)

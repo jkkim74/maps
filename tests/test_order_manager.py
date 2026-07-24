@@ -17,7 +17,8 @@ from maps.execution.broker_adapter import (
     OrderType,
 )
 from maps.execution.mock_broker import MockBroker
-from maps.execution.order_manager import OrderManager
+from maps.common.settings import MapsSettings
+from maps.execution.order_manager import OrderManager, _order_log_mode
 from maps.risk.manager import RiskConfig, RiskManager
 
 
@@ -153,3 +154,25 @@ def test_submit_exit_bypasses_new_entry_kill_switch(
     ))
 
     assert result.status == OrderStatus.FILLED
+
+
+# ---------------------------------------------------------------------------
+# 5. order_log.mode 라벨 — 페이퍼 계좌 체결은 'live'가 아니다
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "kwargs, expected",
+    [
+        ({"maps_broker_mode": "mock", "maps_live_trading_enabled": True}, "mock"),
+        # KIS 모의투자(paper) — 주문은 나가지만 실제 돈은 아니다
+        ({"maps_broker_mode": "kis", "maps_live_trading_enabled": True, "kis_real_trading": False}, "mock"),
+        ({"maps_broker_mode": "kis", "maps_live_trading_enabled": True, "kis_real_trading": True}, "live"),
+        ({"maps_broker_mode": "kis", "maps_live_trading_enabled": False, "kis_real_trading": True}, "mock"),
+    ],
+)
+def test_order_log_mode_marks_only_real_money_as_live(monkeypatch, kwargs, expected) -> None:
+    monkeypatch.setattr(
+        "maps.execution.order_manager.get_settings",
+        lambda: MapsSettings(**kwargs),
+    )
+    assert _order_log_mode() == expected

@@ -197,6 +197,17 @@ class MapsSettings(BaseSettings):
         return self.kis_real_base_url if self.kis_real_trading else self.kis_paper_base_url
 
     @property
+    def is_paper_account(self) -> bool:
+        """실제 돈이 오가지 않는 계좌인지 여부.
+
+        mock 브로커이거나 KIS 모의투자 엔드포인트를 쓰는 경우만 True.
+        kiwoom 은 모의 여부를 판별할 플래그가 없어 보수적으로 False.
+        """
+        return self.maps_broker_mode == "mock" or (
+            self.maps_broker_mode == "kis" and not self.kis_real_trading
+        )
+
+    @property
     def krx_closed_dates(self):
         """Return explicitly configured KRX closure dates."""
         from maps.market.trading_rules import parse_closed_dates

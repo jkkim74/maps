@@ -239,6 +239,8 @@ def build_order_preview(db: Session, settings: MapsSettings) -> OrderPreviewResp
         {s for s, stage in promotions.items() if stage in _ELIGIBLE_STAGES}
     )
 
+    order_stages = _LIVE_STAGES | ({"mock_candidate"} if settings.is_paper_account else set())
+
     items: list[PreviewOrderItem] = []
     submitted = 0
     seen_tickers: set[str] = set()
@@ -252,8 +254,9 @@ def build_order_preview(db: Session, settings: MapsSettings) -> OrderPreviewResp
         if candidate.ticker in seen_tickers:
             continue
 
-        # 실주문 대상(live_candidate/live) vs 모의(mock_candidate) 구분 플래그.
-        live_eligible = promotions.get(candidate.strategy_id) in _LIVE_STAGES
+        # 실제 08:55 주문이 나가는 항목인지 구분하는 플래그.
+        # 주문 경로(_order_candidates)와 동일하게, 모의 계좌에서는 mock_candidate 도 주문 대상이다.
+        live_eligible = promotions.get(candidate.strategy_id) in order_stages
 
         signal_close = _latest_close(db, candidate.ticker, ref_date)
         if signal_close <= 0:

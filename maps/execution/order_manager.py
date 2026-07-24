@@ -23,6 +23,19 @@ logger = logging.getLogger(__name__)
 _BLOCKED_STAGES: frozenset[str] = frozenset(["research", "alert_only"])
 
 
+def _order_log_mode() -> str:
+    """order_log.mode 라벨 — 실제 돈이 오간 주문만 'live'.
+
+    이전에는 maps_live_trading_enabled 만 봐서 KIS 모의투자(paper) 체결까지
+    'live' 로 기록됐다. 계좌 종류(is_paper_account)를 함께 봐야 감사 로그가
+    실거래와 모의를 구분한다.
+    """
+    settings = get_settings()
+    if settings.maps_live_trading_enabled and not settings.is_paper_account:
+        return "live"
+    return "mock"
+
+
 class OrderManager:
     """전략 신호를 브로커 주문으로 변환하고 order_log에 기록한다.
 
@@ -181,7 +194,7 @@ class OrderManager:
                         fill_qty=result.filled_quantity,
                         status=result.status.value,
                         broker=get_settings().maps_broker_mode,
-                        mode="live" if get_settings().maps_live_trading_enabled else "mock",
+                        mode=_order_log_mode(),
                     )
                 )
                 updated += 1
@@ -344,7 +357,7 @@ class OrderManager:
                     fill_qty=result.filled_quantity,
                     status=result.status.value,
                     broker=get_settings().maps_broker_mode,
-                    mode="live" if get_settings().maps_live_trading_enabled else "mock",
+                    mode=_order_log_mode(),
                 )
             )
             self._db.commit()

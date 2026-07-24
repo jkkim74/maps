@@ -1017,6 +1017,7 @@ class OperationalPipeline:
             return {"evaluated": 0, "passed": 0, "failed": 0, "strategies": []}
 
         gate = PromotionGate(db=db)
+        mock_months = self._mock_track_months(db, ref_date)
         passed = 0
         failed = 0
         evaluated_strategies: list[str] = []
@@ -1027,6 +1028,7 @@ class OperationalPipeline:
                 latest_mc.get(strategy_id),
                 latest_wfa.get(strategy_id),
             )
+            metrics["mock_months"] = mock_months.get(strategy_id, 0.0)
             decision = gate.evaluate(
                 strategy_id,
                 metrics,
@@ -1044,6 +1046,26 @@ class OperationalPipeline:
             "passed": passed,
             "failed": failed,
             "strategies": evaluated_strategies,
+        }
+
+    @staticmethod
+    def _mock_track_months(db: Session, ref_date: dt.date) -> dict[str, float]:
+        """전략별 최초 체결 매수 이후 경과 개월 수를 반환한다.
+
+        승격 게이트의 `mock_months`(Live Small 진입에 필요한 실체결 트랙레코드
+        길이) 입력값이다. 체결(fill_qty > 0)된 BUY 주문만 센다 — 미체결·취소는
+        운용 실적이 아니다.
+        """
+        rows = (
+            db.query(OrderLog.strategy_id, func.min(OrderLog.created_at))
+            .filter(OrderLog.side == "BUY", OrderLog.fill_qty > 0)
+            .group_by(OrderLog.strategy_id)
+            .all()
+        )
+        return {
+            strategy_id: max((ref_date - first_at.date()).days, 0) / 30.44
+            for strategy_id, first_at in rows
+            if strategy_id and first_at
         }
 
     @staticmethod
@@ -2218,6 +2240,10 @@ class OperationalPipeline:
 
         min_score = self._settings.maps_candidate_min_score
         eligible_stages = {"live_candidate", "live"}
+        # 모의 계좌에서는 mock_candidate 전략도 주문을 낸다 — 그래야 live_candidate
+        # 승격 조건인 mock_months(실제 체결 트랙레코드)가 쌓인다. 실계좌에서는 제외.
+        if self._settings.is_paper_account:
+            eligible_stages.add("mock_candidate")
         latest_promotions = self._latest_promotions(db)
         rows = (
             db.query(CandidateSnapshot)
