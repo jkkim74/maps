@@ -106,9 +106,13 @@ _mock_track_months → {}  (체결된 BUY가 아직 없음 — 월요일부터 �
 
 ## Next Steps
 
-1. **7/27(월) 08:55 확인** — `order_cycle` 로그에 `submitted_buy_orders > 0` 나오는지.
-   지금까지 계속 0이었으므로 이게 이번 변경의 실질 검증이다.
+1. **7/27(월) 08:55 확인 (최우선)** — `order_cycle` 로그에 `submitted_buy_orders > 0` 나오는지.
+   지금까지 계속 0이었으므로 이게 승격 데드락 수정(`226a468`)의 실질 검증이다.
    장세 `mixed` 기준 상한은 **하루 2건**(`max_orders = max(1, round(3 × entry_limit_ratio))`).
+   확인 명령: `sudo journalctl -u maps --no-pager | grep "order_cycle: success" | tail -1`
+   - 0이면 추가 원인(장세 차단·entry_signal 미발생 등) 조사.
+   - **자동화 불가 메모**: 클라우드 예약 에이전트(`/schedule`)로 이 체크를 못 건다 — prod는 SSH
+     키(로컬 전용)로만 접근되고 대시보드는 인증 게이트다. 서버 cron이나 Slack 알림은 가능(미구현).
 2. **~2026-10월말: `mock_months ≥ 3` 충족 시점** 재확인. 단 **점수 34.7 < 임계값 75는 그대로**라
    승격은 여전히 안 된다 — Live Small 차단만 풀린다. 점수 개선은 별도 과제.
 3. **새 APK 폰 설치·확인**(7/22 이월) — 홈 장세 배너, 주문 탭 예정주문, 워치 체결 전 현재가.
