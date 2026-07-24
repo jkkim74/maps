@@ -76,13 +76,30 @@ def _broker_live_prices(tickers: list[str]) -> dict[str, float]:
     return prices
 
 
+def _live_quote_prices(tickers: list[str]) -> dict[str, float]:
+    """미보유 워치 종목의 실시간 현재가를 브로커 시세 조회로 구한다.
+
+    보유 종목 시세만 주는 잔고 조회(`_broker_live_prices`)와 달리 임의 종목의 현재가를
+    얻는다. 시세 API가 없는 브로커(mock)는 빈 딕셔너리를 반환한다. 조회 실패는 로깅 후
+    흡수해 목록 조회가 죽지 않게 한다(상위에서 일봉 종가 폴백).
+    """
+    target = [t for t in tickers if t]
+    if not target:
+        return {}
+    try:
+        return get_broker().get_current_prices(target)
+    except (BrokerAdapterError, NotImplementedError, ValueError, requests.RequestException) as exc:
+        logger.warning("워치리스트 실시간 시세 조회 실패: %s", exc)
+        return {}
+
+
 def _current_prices(db: Session, tickers: list[str]) -> dict[str, float]:
     """워치리스트 종목의 현재가를 구한다.
 
-    보유(BOUGHT) 종목은 리스크 모니터 보유종목과 동일하게 브로커 라이브 현재가를 우선
-    사용하고(`_broker_live_prices`), 미보유 종목은 historical_ohlcv의 티커별 최신 date 종가로
-    폴백한다. 일봉 종가는 장중 실시간 틱이 아니라 일별 수집(16:10 KST) 시점 값이다. 어느
-    소스에도 시세가 없는 티커는 생략한다(응답에서 current_price=None).
+    보유(BOUGHT) 종목은 리스크 모니터 보유종목과 동일하게 브로커 잔고의 라이브 현재가를
+    쓰고(`_broker_live_prices`), 미보유 종목은 브로커 실시간 시세 조회(`_live_quote_prices`)로
+    폴백한다. 시세 조회까지 실패한 종목만 historical_ohlcv 티커별 최신 date 종가로 최종
+    폴백한다(일별 수집 16:40 KST 시점 값). 어느 소스에도 없으면 생략(current_price=None).
     """
     unique = list({t for t in tickers if t})
     if not unique:
@@ -106,8 +123,11 @@ def _current_prices(db: Session, tickers: list[str]) -> dict[str, float]:
         .all()
     )
     prices = {ticker: float(close) for ticker, close in rows if close and close > 0}
-    # 보유 종목은 브로커 라이브 현재가로 덮어쓴다(장중 실시간 반영).
-    prices.update(_broker_live_prices(unique))
+    # 보유 종목은 잔고의 라이브 현재가로 덮어쓴다(장중 실시간 반영).
+    held = _broker_live_prices(unique)
+    prices.update(held)
+    # 미보유 종목은 실시간 시세 조회로 일봉 종가를 덮어쓴다.
+    prices.update(_live_quote_prices([t for t in unique if t not in held]))
     return prices
 
 

@@ -112,6 +112,29 @@ def test_list_current_price_prefers_broker_live(client, monkeypatch) -> None:
     assert item["current_price"] == 72800  # 일봉 종가(71500)가 아니라 라이브 시세
 
 
+def test_list_current_price_live_quote_for_unheld(client, monkeypatch) -> None:
+    """미보유(WATCH) 종목은 실시간 시세 조회가 일봉 종가를 덮어쓴다."""
+    import datetime as dt
+
+    from maps.common.models import HistoricalOHLCV
+    from maps.execution.mock_broker import MockBroker
+
+    client.post("/api/v1/analysis-picks", json={"picks": [_sample(ticker="005930")]})
+    with client.session_factory() as s:
+        s.add(HistoricalOHLCV(
+            ticker="005930", date=dt.date(2026, 6, 25), open=71500, high=71500,
+            low=71500, close=71500, volume=1000,
+        ))
+        s.commit()
+
+    # 보유는 없지만 브로커 시세 조회가 실시간 현재가를 준다.
+    broker = MockBroker(price_feed={"005930": 73400})
+    monkeypatch.setattr("maps.api.analysis_picks.get_broker", lambda *a, **k: broker)
+
+    item = client.get("/api/v1/analysis-picks").json()["picks"][0]
+    assert item["current_price"] == 73400  # 일봉 종가(71500)가 아니라 실시간 시세
+
+
 def _seed_bought_pick_with_order(client, *, fill_price, order_price, status="filled"):
     """BOUGHT 픽 + 연결된 진입 OrderLog를 시드하고 pick_id를 반환한다."""
     from maps.common.models import AnalysisPick, OrderLog

@@ -48,6 +48,9 @@ _ORDER_PATH = "/uapi/domestic-stock/v1/trading/order-cash"
 _CANCEL_PATH = "/uapi/domestic-stock/v1/trading/order-rvsecncl"
 _BALANCE_PATH = "/uapi/domestic-stock/v1/trading/inquire-balance"
 _DAILY_CCLD_PATH = "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
+_PRICE_PATH = "/uapi/domestic-stock/v1/quotations/inquire-price"
+# 시세 조회 TR_ID는 모의/실거래 공통 (FHKST01010100).
+_PRICE_TR_ID = "FHKST01010100"
 
 _TR_IDS = {
     "paper": {
@@ -298,6 +301,27 @@ class KISAdapter(BrokerAdapter):
                 ),
             )
         return buys
+
+    def get_current_prices(self, tickers: list[str]) -> dict[str, float]:
+        """종목별 실시간 현재가를 조회한다(미보유 포함). 실패한 종목은 결과에서 빠진다.
+
+        KIS inquire-price(FHKST01010100)를 종목당 1회 호출한다. 보유 종목만 시세를 주는
+        잔고 조회와 달리 임의 종목의 현재가(stck_prpr)를 얻을 수 있다. 개별 조회 실패는
+        로깅 후 건너뛰어(상위에서 일봉 종가 폴백) 화면 조회가 죽지 않게 한다.
+        """
+        prices: dict[str, float] = {}
+        for ticker in {t for t in tickers if t}:
+            params = {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": ticker}
+            try:
+                data = self._request("GET", _PRICE_PATH, tr_id=_PRICE_TR_ID, params=params)
+            except (BrokerAdapterError, requests.RequestException) as exc:
+                logger.warning("KIS 현재가 조회 실패 [%s]: %s", ticker, exc)
+                continue
+            output = data.get("output") or {}
+            price = self._to_float(output.get("stck_prpr"))
+            if price > 0:
+                prices[ticker] = price
+        return prices
 
     def is_market_open(self) -> bool:
         now = dt.datetime.now(_KST)

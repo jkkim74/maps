@@ -98,6 +98,12 @@ class FakeSession:
             return FakeResponse(self.balance_payload)
         if url.endswith("/inquire-daily-ccld"):
             return FakeResponse(self.open_orders_payload)
+        if url.endswith("/quotations/inquire-price"):
+            iscd = kwargs.get("params", {}).get("FID_INPUT_ISCD")
+            price = {"005930": "72500", "000660": "0"}.get(iscd)
+            if price is None:
+                return FakeResponse({"rt_cd": "1", "msg_cd": "40580000", "msg1": "no data"})
+            return FakeResponse({"rt_cd": "0", "output": {"stck_prpr": price}})
         if url.endswith("/order-cash"):
             return FakeResponse(self.order_payload)
         if url.endswith("/order-rvsecncl"):
@@ -213,6 +219,19 @@ def test_get_account_balance_and_position(settings: MapsSettings) -> None:
     assert position.name == "삼성전자"
     assert position.current_price == 71_000
     assert position.market_value == 710_000
+
+
+def test_get_current_prices_uses_quote_api(settings: MapsSettings) -> None:
+    http = FakeSession()
+    broker = KISAdapter(settings, http=http)
+
+    # 005930은 정상 시세, 000660은 0(무효), 111111은 조회 실패 → 결과에서 빠진다.
+    prices = broker.get_current_prices(["005930", "000660", "111111"])
+
+    assert prices == {"005930": 72500.0}
+    quote_calls = [c for c in http.calls if c["url"].endswith("/quotations/inquire-price")]
+    assert len(quote_calls) == 3  # 종목당 1회
+    assert quote_calls[0]["headers"]["tr_id"] == "FHKST01010100"
 
 
 def test_balance_data_is_cached_within_ttl(settings: MapsSettings) -> None:

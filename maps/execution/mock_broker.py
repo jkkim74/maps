@@ -227,6 +227,14 @@ class MockBroker(BrokerAdapter):
         """단일 종목 가격을 설정한다."""
         self._price_feed[ticker] = price
 
+    def get_current_prices(self, tickers: list[str]) -> dict[str, float]:
+        """price_feed에 있는 종목의 현재가를 반환한다(미보유 포함)."""
+        return {
+            t: float(self._price_feed[t])
+            for t in tickers
+            if t in self._price_feed and self._price_feed[t] > 0
+        }
+
     @property
     def filled_orders(self) -> list[OrderResult]:
         """체결된 주문 목록."""
