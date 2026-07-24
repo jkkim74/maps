@@ -66,6 +66,22 @@ _mock_track_months → {}  (체결된 BUY가 아직 없음 — 월요일부터 �
   ```
 - 며칠 뒤 문제없으면 `DROP TABLE order_log_backup_20260724;` (42행이라 방치해도 무방).
 
+### 5. 워치리스트 실시간 시세 (커밋 `99e7d3d`, 배포·검증 완료)
+
+- 증상: 워치리스트 현재가가 실제와 안 맞음. 원인은 **미보유(WATCH) 종목이 실시간 시세 소스가 없어
+  `historical_ohlcv` 최신 일봉 종가로 폴백**하던 것 — 장중엔 어제 종가가 뜬다. KIS 잔고 조회는
+  보유 종목 시세(`prpr`)만 준다.
+- 조치: `BrokerAdapter.get_current_prices(tickers)` 선택 메서드 추가(기본 no-op).
+  `KISAdapter`가 **inquire-price(FHKST01010100, 모의/실 공통 TR)** 종목당 1회 호출로 구현.
+  `analysis_picks._current_prices` 폴백 순서: 보유=잔고 라이브 → 미보유=KIS 실시간 조회 →
+  조회 실패=일봉 종가 → 없으면 None. 조회 실패는 로깅 후 흡수해 목록이 죽지 않는다.
+- **곁다리 발견/수정**: 이 PC에 KIS `.env`(prod paper)가 있어 **테스트가 실제 KIS API를 치고 있었다.**
+  `conftest.py`에 `MAPS_BROKER_MODE=mock` 강제 추가 → 어느 테스트든 실 브로커 미접촉. **425 passed.**
+- 운영 검증: `_current_prices(db, ["002350"]) → {'002350': 6930.0}` (저장된 7/23 종가 7030 대신 라이브).
+  **모바일 워치리스트는 백엔드 실시간 소비 → APK 재빌드 불필요, systemd 배포로 반영됨.**
+- 주의(YAGNI로 보류): 워치 종목당 KIS 1회 호출. 현재 1건이라 무해하나 수십 건이면 모의투자
+  초당 호출한도(EGW00201) 근접 가능 — 그때 배치/캐시 도입. 지금 필요 없음.
+
 ## What Worked
 
 - **`skipped=0` vs `skipped>0` 구분이 진단의 핵심이었다.** "스킵"이면 필터 조건 문제, "0회 루프"면
