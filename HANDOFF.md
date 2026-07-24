@@ -77,9 +77,10 @@ _mock_track_months → {}  (체결된 BUY가 아직 없음 — 월요일부터 �
 
 ## What Didn't Work / 주의
 
-- **이 PC(집)의 `.venv`가 깨져 있다.** `pyvenv.cfg`가 `C:\Python312`(없음) + `D:\workspace2\maps` 기준으로
-  생성돼 있어 `.venv\Scripts\python.exe`가 실행 불가. **`C:\ProgramData\anaconda3\python.exe`로 pytest 실행**
-  (필요 패키지 전부 있음): `& C:\ProgramData\anaconda3\python.exe -m pytest --tb=short -q`
+- **이 PC(집)의 `.venv`가 깨져 있었다 → 재생성 완료.** 기존 `pyvenv.cfg`가 `C:\Python312`(존재하지 않음)
+  + `D:\workspace2\maps` 기준이라 `.venv\Scripts\python.exe`가 실행 불가였다. `C:\ProgramData\anaconda3\python.exe`
+  (3.12.4)로 재생성 + `pip install -r requirements.txt` → **423 passed 확인**. 이제 CLAUDE.md 안내대로 쓰면 된다.
+  다른 PC에서 같은 증상이 나오면 동일하게 `.venv` 삭제 후 재생성할 것.
 - **PowerShell에서 ssh + psql 중첩 따옴표는 거의 항상 깨진다.** Bash 툴(Git Bash)에서
   `'...'"'"'...'"'"'...'` 또는 heredoc(`<< "SQL"`)을 쓸 것.
 - **`analyze` 픽 0건과 이번 주문 0건은 완전히 다른 파이프라인이다.** 혼동 금지:
