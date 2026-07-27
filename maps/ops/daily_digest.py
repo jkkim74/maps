@@ -151,23 +151,41 @@ def _build_market(db: Session, settings: MapsSettings, ref_date: dt.date) -> Dig
     )
 
 
+def _placeholder_inputs(reason: str | None) -> list[str]:
+    """스코어러가 스스로 표기한 중립 자리표시자 입력 목록을 뽑는다.
+
+    SectorScorer 가 reason 끝에 ``; neutral placeholders=a,b,c`` 형태로 남긴다.
+    스코어러가 권위이므로 여기서 다시 하드코딩하지 않는다 — 실데이터가 연결되는
+    날 목록이 저절로 줄어든다. 형식이 바뀌면 빈 목록이 되지만 reason 원문을
+    함께 내려보내므로 정보가 사라지지는 않는다.
+    """
+    marker = "neutral placeholders="
+    if not reason or marker not in reason:
+        return []
+    return [part.strip() for part in reason.split(marker, 1)[1].split(",") if part.strip()]
+
+
 def _build_sectors(db: Session, settings: MapsSettings, ref_date: dt.date) -> DigestSectors:
-    """강세업종 섹션. DB만 사용하므로 재계산이 결정적이다(스케줄러 결과는 미영속)."""
+    """강세업종 섹션 — 매매 적용 여부와 무관하게 항상 관측한다.
+
+    ``maps_sector_filter_enabled`` 는 "이 결과로 후보 유니버스를 자를지"만 정한다.
+    꺼져 있어도 계산 자체는 DB만으로 결정적으로 되므로, 기록은 남긴다.
+    선택기는 실제 매매 경로와 동일하게 고르므로 "켰다면 이렇게 됐을 것"이 정확하다.
+    """
     from maps.market.regime import create_regime_analyzer
-    from maps.market.sector_selector import SectorRegimeSelector
+    from maps.market.sector_selector import SectorRegimeSelector, SectorSelector
 
-    if not settings.maps_sector_filter_enabled:
-        return DigestSectors(enabled=False, reason="sector filter disabled")
-
+    applied = settings.maps_sector_filter_enabled
     regime = create_regime_analyzer(settings).analyze()
-    selector = SectorRegimeSelector(
-        lookback_days=settings.maps_sector_lookback_days,
-        top_n=settings.maps_sector_top_n,
-    )
-    result = selector.select(db, ref_date, regime)
-    return DigestSectors(
-        enabled=True,
-        selected=[
+    lookback = settings.maps_sector_lookback_days
+    top_n = settings.maps_sector_top_n
+
+    if settings.maps_sector_kostolany_mode_enabled:
+        result = SectorRegimeSelector(lookback_days=lookback, top_n=top_n).select(
+            db, ref_date, regime
+        )
+        chosen = set(result.selected_sectors)
+        selected = [
             DigestSector(
                 sector=name,
                 score=score.score,
@@ -178,12 +196,40 @@ def _build_sectors(db: Session, settings: MapsSettings, ref_date: dt.date) -> Di
                 overheat_warning=score.overheat_warning,
             )
             for name, score in result.sector_scores.items()
-            if name in set(result.selected_sectors)
+            if name in chosen
+        ]
+        placeholders = next(
+            (p for p in (_placeholder_inputs(s.reason) for s in selected) if p), []
+        )
+        return DigestSectors(
+            applied_to_trading=applied,
+            selector="kostolany",
+            selected=selected,
+            watchlist=list(result.watchlist_sectors),
+            overheated=list(result.overheated_sectors),
+            excluded=dict(result.excluded_sectors),
+            placeholder_inputs=placeholders,
+            reason=result.reason,
+        )
+
+    # 레거시 선택기 — 자리표시자 없이 기간 수익률 순위만 쓴다(WEAK 장세는 방어업종 우선).
+    base = SectorSelector(lookback_days=lookback, top_n=top_n)
+    names = base.select_strong_sectors(db, ref_date, regime)
+    returns = base._calc_sector_returns(  # noqa: SLF001 — 순위 근거 수치를 그대로 싣는다
+        db, ref_date, ref_date - dt.timedelta(days=lookback * 2)
+    )
+    return DigestSectors(
+        applied_to_trading=applied,
+        selector="legacy",
+        selected=[
+            DigestSector(
+                sector=name,
+                momentum_20d=returns.get(name),
+                reason="legacy: 기간 수익률 순위",
+            )
+            for name in names
         ],
-        watchlist=list(result.watchlist_sectors),
-        overheated=list(result.overheated_sectors),
-        excluded=dict(result.excluded_sectors),
-        reason=result.reason,
+        reason="기간 수익률 상위 N개" + ("" if applied else " (관측 전용 — 매매 미적용)"),
     )
 
 

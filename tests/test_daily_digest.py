@@ -17,6 +17,7 @@ import maps.common.models  # noqa: F401 — 모델 등록
 from maps.common.db import Base
 from maps.common.models import (
     CandidateSnapshot,
+    HistoricalOHLCV,
     MarketRegimeLog,
     OrderLog,
     SecurityMetadata,
@@ -96,6 +97,24 @@ def _seed(db) -> None:
     db.commit()
 
 
+def _seed_sector_ohlcv(db) -> None:
+    """업종 수익률 계산에 필요한 최소 데이터 — 업종당 3종목 이상이어야 집계된다."""
+    plan = {"화학": (1000, 1300), "금융": (2000, 2100), "유통": (3000, 2700)}
+    for sector, (start, end) in plan.items():
+        for n in range(3):
+            ticker = f"{abs(hash(sector)) % 900 + 100}{n:03d}"
+            db.add(SecurityMetadata(
+                ticker=ticker, name=f"{sector}{n}", market="KOSPI",
+                security_type="stock", sector=sector,
+            ))
+            for day, close in ((REF_DATE - dt.timedelta(days=40), start), (REF_DATE, end)):
+                db.add(HistoricalOHLCV(
+                    ticker=ticker, date=day, open=close, high=close,
+                    low=close, close=close, volume=10_000,
+                ))
+    db.commit()
+
+
 def test_digest_collects_all_sections(db, settings) -> None:
     _seed(db)
     digest = build_daily_digest(db, settings, REF_DATE)
@@ -134,6 +153,38 @@ def test_unmeasured_factors_are_flagged(db, settings) -> None:
     assert factors["liquidity"].measured is False
     assert factors["psychology"].note                      # 왜 미측정인지 사유가 있어야 한다
     assert factors["price_trend"].measured is True
+
+
+def test_sectors_are_observed_even_when_filter_is_off(db, settings) -> None:
+    """필터가 꺼져 있어도 강세업종은 계산해 남긴다 — 나중에 켤지 판단할 근거가 된다."""
+    _seed_sector_ohlcv(db)
+    assert settings.maps_sector_filter_enabled is False
+
+    digest = build_daily_digest(db, settings, REF_DATE)
+
+    assert digest.sectors is not None
+    assert digest.sectors.applied_to_trading is False   # 매매엔 안 쓰였다는 표시가 핵심
+    assert digest.sectors.selector == "legacy"          # kostolany 모드도 꺼져 있다
+    assert [s.sector for s in digest.sectors.selected]   # 그래도 관측값은 있어야 한다
+    assert "관측 전용" in (digest.sectors.reason or "")
+
+
+def test_sectors_report_placeholder_inputs_in_kostolany_mode(db) -> None:
+    """코스톨라니 스코어러는 가중치 절반이 중립값이다 — 글에서 감추면 안 된다."""
+    _seed_sector_ohlcv(db)
+    settings = MapsSettings(
+        maps_market_regime_override="mixed",
+        maps_weekly_trend_override="pass",
+        maps_broker_mode="mock",
+        maps_data_provider="mock",
+        maps_sector_kostolany_mode_enabled=True,
+    )
+
+    digest = build_daily_digest(db, settings, REF_DATE)
+
+    assert digest.sectors.selector == "kostolany"
+    assert digest.sectors.applied_to_trading is False
+    assert "earnings_revision" in digest.sectors.placeholder_inputs
 
 
 def test_market_context_extracts_report_text(db, settings) -> None:

@@ -49,7 +49,13 @@ regime / raw_regime / weekly_trend / vol_regime / breadth_pct / entry_limit_rati
 
 ## 2. 강세 업종
 `sectors.selected`의 업종별 score·momentum·reason. `overheated`가 있으면 과열 경고를 적는다.
-`enabled: false`면 "업종 필터 비활성"이라고만 쓴다.
+
+**`applied_to_trading: false`면 반드시 첫 줄에 "관측 전용 — 후보 선정에는 적용되지 않음"을
+명시한다.** 적용된 것처럼 쓰면 오늘 매매를 잘못 설명하게 된다.
+
+`placeholder_inputs`가 비어 있지 않으면 그 입력들이 중립값(50)이라 점수가 중앙으로
+눌려 있다는 점을 한 줄로 적는다. `selector`가 `legacy`면 자리표시자 없이 기간 수익률
+순위만 쓴 것이므로 그렇게 적는다.
 
 ## 3. 오늘의 전략
 `strategies`에서 `active: true`인 전략과 그 이유(preferred_regimes에 오늘 국면이 포함),

@@ -736,7 +736,7 @@ class DigestMarket(BaseModel):
 
 class DigestSector(BaseModel):
     sector: str
-    score: float
+    score: float | None = None      # 레거시 선택기는 순위만 내므로 점수가 없다
     momentum_20d: float | None = None
     momentum_60d: float | None = None
     turnover_growth: float | None = None
@@ -745,11 +745,19 @@ class DigestSector(BaseModel):
 
 
 class DigestSectors(BaseModel):
-    enabled: bool
+    """강세업종 — 매매 적용 여부와 무관하게 항상 관측한다.
+
+    필터가 꺼져 있어도 "켰다면 어떤 업종이 뽑혔을지"를 매일 남겨두면, 나중에
+    활성화를 판단할 때 쓸 근거가 쌓인다. 지금 없는 게 정확히 그 데이터다.
+    """
+    applied_to_trading: bool         # False면 관측만 — 후보 필터링에 쓰이지 않았다
+    selector: str                    # kostolany | legacy — 실제 매매 경로와 같은 선택기
     selected: list[DigestSector] = []
     watchlist: list[str] = []
     overheated: list[str] = []
     excluded: dict[str, str] = {}
+    # 스코어러가 중립값(50)으로 채운 입력들. 점수의 절반 가까이가 여기 걸려 있다.
+    placeholder_inputs: list[str] = []
     reason: str | None = None
 
 
