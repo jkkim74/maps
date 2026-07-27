@@ -15,7 +15,7 @@ from sqlalchemy.pool import StaticPool
 import maps.common.models  # noqa: F401 — 모델 등록
 from maps.common.db import Base
 from maps.common.models import OrderLog
-from maps.execution.broker_adapter import AccountBalance, BrokerAdapter
+from maps.execution.broker_adapter import AccountBalance, BrokerAdapter, SameDayBuy
 from maps.execution.order_manager import OrderManager
 from maps.risk.manager import RiskManager
 
@@ -81,6 +81,48 @@ def test_prior_day_pending_sell_reconciled_by_positions() -> None:
         assert rows["000660"].fill_price == 1000.0      # order_price로 보정
         assert rows["000660"].fill_qty == 10            # 제출 시 기록된 0도 주문수량으로 보정
         assert rows["005930"].status == "expired"      # 포지션 유지 = 진짜 미체결
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def test_same_day_buy_at_0855_kst_is_reconciled() -> None:
+    """08:55 KST 매수는 UTC로 전일 23:55에 기록된다 — 조회 경계에서 빠지면 안 된다.
+
+    naive한 date.today() 경계를 쓰면 스케줄러가 낸 매수가 통째로 범위 밖으로 밀려
+    영영 pending으로 남고, mock_months 축적과 손절 진입가 조회가 함께 막힌다
+    (2026-07-27 475150 실사례).
+    """
+
+    class _SameDayBuyBroker(_FakeBroker):
+        def get_same_day_buys(self) -> dict[str, SameDayBuy]:
+            return {"475150": SameDayBuy(ticker="475150", quantity=52, avg_price=79_500.0)}
+
+    engine, factory = _factory()
+    db = factory()
+    try:
+        kst_today = dt.datetime.now(dt.timezone(dt.timedelta(hours=9))).date()
+        # 오늘 08:55 KST == 어제 23:55 UTC (created_at은 UTC naive 저장)
+        created_utc = dt.datetime.combine(kst_today, dt.time(8, 55)) - dt.timedelta(hours=9)
+        db.add(OrderLog(
+            order_id="OID-475150",
+            strategy_id="donchian_v2",
+            ticker="475150", side="buy", qty=52,
+            order_price=81_800.0, fill_price=None, fill_qty=0,
+            status="pending", broker="kis", mode="mock",
+            created_at=created_utc,
+        ))
+        db.commit()
+
+        broker = _SameDayBuyBroker(positions={"475150": 52})
+        mgr = OrderManager(broker=broker, risk=RiskManager(broker, db), db=db)
+        mgr.sync_broker_state()
+
+        row = db.query(OrderLog).filter(OrderLog.ticker == "475150").one()
+        assert row.status == "filled"
+        assert row.fill_qty == 52
+        assert row.fill_price == 79_500.0
     finally:
         db.close()
         Base.metadata.drop_all(engine)

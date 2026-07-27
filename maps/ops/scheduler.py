@@ -52,7 +52,14 @@ from maps.data.ohlcv_repo import HistoricalOHLCVRepository
 from maps.data.krx_adapter import CollectionResult, KRXAdapter, MockKRXAdapter, SecurityMeta
 from maps.data.security_repo import HaltPeriod, ManagedPeriod, Security
 from maps.data_quality.universe_filter import DataQualityFilter, UniverseResult
-from maps.execution.broker_adapter import Order, OrderSide, OrderType, Position, get_broker
+from maps.execution.broker_adapter import (
+    BrokerAdapter,
+    Order,
+    OrderSide,
+    OrderType,
+    Position,
+    get_broker,
+)
 from maps.execution.order_manager import OrderManager
 from maps.market.breadth import classify_breadth, compute_pct_above_ma
 from maps.market.regime import RegimeResult, WeeklyTrendLabel, create_regime_analyzer
@@ -638,12 +645,17 @@ class OperationalPipeline:
                 monitor_tickers = set(held_tickers) | {p.ticker for p in st_picks}
                 prices: dict[str, float] = {}
                 if monitor_tickers:
-                    prices = self._fetch_intraday_prices(list(monitor_tickers))
+                    prices = self._fetch_intraday_prices(list(monitor_tickers), broker=broker)
                     if prices:
                         broker.update_prices(prices)
                         logger.info("장중 현재가 갱신: %d/%d종목", len(prices), len(monitor_tickers))
-                    else:
-                        logger.warning("장중 현재가 조회 실패 — 손절 판단에 전일 종가 사용 (대상 %d종목)", len(monitor_tickers))
+                    # 일부만 조회돼도 나머지는 전일 종가로 손절을 판단하게 된다 — 반드시 남긴다.
+                    stale = sorted(t for t in monitor_tickers if t not in prices)
+                    if stale:
+                        logger.warning(
+                            "장중 현재가 조회 실패 — 손절 판단에 전일 종가 사용 (대상 %d종목: %s)",
+                            len(stale), ", ".join(stale),
+                        )
                 # 브래킷이 관리하는 BOUGHT 종목은 전략 %/ATR 손절에서 제외(이중 매도 방지)
                 bracket_tickers = {p.ticker for p in st_picks if p.state == "BOUGHT"}
                 submitted_sell_orders, skipped_sell_orders, exit_tickers = self._submit_exit_orders(
@@ -2460,8 +2472,40 @@ class OperationalPipeline:
             return (today_snap.total_assets - prev_snap.total_assets) / prev_snap.total_assets
         return 0.0
 
+    def _fetch_intraday_prices(
+        self,
+        tickers: list[str],
+        broker: BrokerAdapter | None = None,
+    ) -> dict[str, float]:
+        """장중 현재가를 조회한다. 브로커 실시간 시세가 1순위, pykrx 배치는 폴백이다.
+
+        pykrx 배치 조회는 15분 지연인 데다 장중 간헐적으로 실패한다. 실패하면 손절
+        판단이 전일 종가로 퇴화해 당일 급락을 통째로 놓치므로(2026-07-27 475150 사례),
+        임의 종목의 실시간 현재가를 주는 브로커(KIS inquire-price)를 먼저 쓰고
+        조회되지 않은 종목만 pykrx로 보완한다.
+
+        브로커 미지원(기본 no-op)·조회 실패 시에는 기존 pykrx 경로와 동일하게 동작한다.
+        """
+        target = [t for t in tickers if t]
+        if not target:
+            return {}
+
+        prices: dict[str, float] = {}
+        if broker is not None:
+            try:
+                live = broker.get_current_prices(target)
+            except (BrokerAdapterError, NotImplementedError, ValueError) as exc:
+                logger.warning("브로커 실시간 시세 조회 실패 — pykrx 폴백: %s", exc)
+            else:
+                prices = {t: float(p) for t, p in live.items() if p and float(p) > 0}
+
+        missing = [t for t in target if t not in prices]
+        if missing:
+            prices.update(self._fetch_intraday_prices_pykrx(missing))
+        return prices
+
     @staticmethod
-    def _fetch_intraday_prices(tickers: list[str]) -> dict[str, float]:
+    def _fetch_intraday_prices_pykrx(tickers: list[str]) -> dict[str, float]:
         """pykrx 배치 API로 장중 현재가를 조회한다 (15분 지연 KRX 데이터).
 
         KOSPI/KOSDAQ 전 종목을 각 1회 호출로 조회 후 보유 티커만 필터링한다.

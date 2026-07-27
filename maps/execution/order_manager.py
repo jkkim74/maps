@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import time
 import zoneinfo
-from datetime import date, datetime, time as dt_time, timedelta
+from datetime import datetime, time as dt_time, timedelta
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -21,6 +21,18 @@ logger = logging.getLogger(__name__)
 
 # Research/Alert_only 단계에서 자동 주문이 금지된 전략 단계
 _BLOCKED_STAGES: frozenset[str] = frozenset(["research", "alert_only"])
+
+_KST = zoneinfo.ZoneInfo("Asia/Seoul")
+
+
+def _kst_today_start_utc() -> datetime:
+    """오늘(KST) 자정을 order_log.created_at 과 같은 UTC naive 시각으로 반환한다.
+
+    created_at 은 UTC 로 저장되는데 08:55 KST 주문은 UTC 로 **전일 23:55** 다.
+    naive 한 date.today() 로 경계를 잡으면 스케줄러가 낸 매수가 통째로 조회 범위
+    밖으로 빠져 영영 pending 으로 남는다(2026-07-27 475150 사례).
+    """
+    return datetime.combine(datetime.now(_KST).date(), dt_time.min) - timedelta(hours=9)
 
 
 def _order_log_mode() -> str:
@@ -147,9 +159,7 @@ class OrderManager:
     def sync_broker_state(self) -> dict[str, float | int]:
         """Sync same-day broker fills/open orders into order_log."""
         # 주문 시각(8:55 KST = 23:55 UTC)이 UTC 날짜 경계를 넘지 않도록 KST 자정 기준으로 만료
-        _KST = zoneinfo.ZoneInfo("Asia/Seoul")
-        today_kst = datetime.now(_KST).date()
-        today_start = datetime.combine(today_kst, dt_time.min) - timedelta(hours=9)
+        today_start = _kst_today_start_utc()
         # expire_pending_orders는 아래 브로커 포지션 대조가 끝난 뒤 마지막에 실행한다.
         # (전일 제출됐지만 브로커에서 실제 체결된 매도가 동기화 전에 만료로 오기록되는 버그 방지)
         balance = self._broker.get_account_balance()
@@ -276,7 +286,7 @@ class OrderManager:
         if not isinstance(buys, dict):
             return 0
 
-        today_start = datetime.combine(date.today(), dt_time.min)
+        today_start = _kst_today_start_utc()
         rows = (
             self._db.query(OrderLog)
             .filter(OrderLog.created_at >= today_start)
@@ -396,7 +406,8 @@ class OrderManager:
         raise final_exc
 
     def _raise_if_duplicate_active_order(self, order: Order) -> None:
-        today_start = datetime.combine(date.today(), dt_time.min)
+        # 08:55 KST 제출분은 UTC 로 전일 23:55 — KST 자정 기준이라야 같은 거래일로 잡힌다.
+        today_start = _kst_today_start_utc()
         existing = (
             self._db.query(OrderLog)
             .filter(OrderLog.created_at >= today_start)

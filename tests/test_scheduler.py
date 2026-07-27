@@ -24,6 +24,7 @@ from maps.common.models import (
     UniverseQualityLog,
     WalkForwardResults,
 )
+from maps.common.exceptions import BrokerAdapterError
 from maps.common.settings import MapsSettings
 from maps.execution.broker_adapter import Order, OrderSide, OrderType
 from maps.execution.mock_broker import MockBroker
@@ -1161,7 +1162,7 @@ def test_order_cycle_account_balance_reflects_updated_price(monkeypatch) -> None
 # ---------------------------------------------------------------------------
 
 def test_fetch_intraday_prices_returns_empty_when_pykrx_unavailable(monkeypatch) -> None:
-    """pykrx 미설치 환경에서 _fetch_intraday_prices 가 빈 딕셔너리를 반환한다."""
+    """pykrx 미설치 + 브로커 없음이면 _fetch_intraday_prices 가 빈 딕셔너리를 반환한다."""
     import builtins
     real_import = builtins.__import__
 
@@ -1171,8 +1172,60 @@ def test_fetch_intraday_prices_returns_empty_when_pykrx_unavailable(monkeypatch)
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", _block_pykrx)
-    result = OperationalPipeline._fetch_intraday_prices(["005930", "000660"])
+    result = OperationalPipeline()._fetch_intraday_prices(["005930", "000660"])
     assert result == {}
+
+
+def test_fetch_intraday_prices_prefers_broker_over_pykrx(monkeypatch) -> None:
+    """브로커 실시간 시세가 있으면 pykrx(15분 지연)를 호출하지 않는다."""
+    pipeline = OperationalPipeline()
+    broker = MockBroker(price_feed={"AAAA": 9_000, "BBBB": 5_000})
+    called: list[list[str]] = []
+    monkeypatch.setattr(
+        OperationalPipeline, "_fetch_intraday_prices_pykrx",
+        staticmethod(lambda tickers: called.append(tickers) or {}),
+    )
+
+    prices = pipeline._fetch_intraday_prices(["AAAA", "BBBB"], broker=broker)
+
+    assert prices == {"AAAA": 9_000, "BBBB": 5_000}
+    assert called == []  # 전 종목이 실시간으로 채워져 폴백 불필요
+
+
+def test_fetch_intraday_prices_falls_back_to_pykrx_for_missing_tickers(monkeypatch) -> None:
+    """브로커가 못 준 종목만 pykrx로 보완하고, 조회된 종목은 덮어쓰지 않는다."""
+    pipeline = OperationalPipeline()
+    broker = MockBroker(price_feed={"AAAA": 9_000})
+    called: list[list[str]] = []
+
+    def _fake_pykrx(tickers):
+        called.append(tickers)
+        return {"BBBB": 5_000}
+
+    monkeypatch.setattr(
+        OperationalPipeline, "_fetch_intraday_prices_pykrx", staticmethod(_fake_pykrx),
+    )
+
+    prices = pipeline._fetch_intraday_prices(["AAAA", "BBBB"], broker=broker)
+
+    assert prices == {"AAAA": 9_000, "BBBB": 5_000}
+    assert called == [["BBBB"]]  # 실시간으로 못 받은 종목만 폴백 조회
+
+
+def test_fetch_intraday_prices_survives_broker_error(monkeypatch) -> None:
+    """브로커 시세 조회가 터져도 pykrx 폴백으로 값을 채운다(손절 판단 유지)."""
+    pipeline = OperationalPipeline()
+    broker = MockBroker(price_feed={"AAAA": 9_000})
+    monkeypatch.setattr(
+        broker, "get_current_prices",
+        lambda _tickers: (_ for _ in ()).throw(BrokerAdapterError("quote api down")),
+    )
+    monkeypatch.setattr(
+        OperationalPipeline, "_fetch_intraday_prices_pykrx",
+        staticmethod(lambda tickers: {"AAAA": 8_800}),
+    )
+
+    assert pipeline._fetch_intraday_prices(["AAAA"], broker=broker) == {"AAAA": 8_800}
 
 
 def test_sync_broker_updates_price_feed_when_exit_monitor_active(monkeypatch) -> None:
@@ -1200,7 +1253,7 @@ def test_sync_broker_updates_price_feed_when_exit_monitor_active(monkeypatch) ->
     monkeypatch.setattr(held_broker, "is_market_open", lambda: True)
     monkeypatch.setattr(
         OperationalPipeline, "_fetch_intraday_prices",
-        staticmethod(lambda tickers: {"AAAA": 9_000}),
+        lambda self, tickers, broker=None: {"AAAA": 9_000},
     )
 
     pipeline.sync_broker_state(dt.date(2026, 5, 5))
