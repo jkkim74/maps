@@ -48,6 +48,9 @@ htmlcov/
 logs/
 logs/.kis_token_cache.json
 
+# 일일 매매 기록 블로그 — 생성물이지 소스가 아니다 (서버 /opt/maps/blog 에 쌓인다)
+blog/
+
 # Node / hybrid mobile app
 node_modules/
 apps/mobile/dist/
