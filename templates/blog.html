@@ -1,0 +1,142 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="section-header"><span class="section-title">일일 매매 기록</span><hr></div>
+
+<div class="card"><div class="card-body">
+  <label for="blog-date" style="margin-right:8px">날짜</label>
+  <select id="blog-date" onchange="loadPost(this.value)" style="min-width:180px"></select>
+  <span id="blog-count" style="margin-left:12px;opacity:.7"></span>
+</div></div>
+
+<div class="card"><div class="card-body" id="blog-body">
+  <div class="loading"><div class="spinner"></div></div>
+</div></div>
+
+{% endblock %}
+{% block extra_scripts %}
+<style>
+  #blog-body h1 { font-size:1.6rem; margin:.6em 0 .4em }
+  #blog-body h2 { font-size:1.25rem; margin:1.4em 0 .4em; border-bottom:1px solid rgba(128,128,128,.25); padding-bottom:.2em }
+  #blog-body h3 { font-size:1.05rem; margin:1.1em 0 .3em }
+  #blog-body p  { line-height:1.75; margin:.6em 0 }
+  #blog-body ul { margin:.5em 0 .5em 1.2em; line-height:1.7 }
+  #blog-body table { border-collapse:collapse; margin:.8em 0; width:100%; }
+  #blog-body th, #blog-body td { border:1px solid rgba(128,128,128,.3); padding:6px 10px; text-align:left }
+  #blog-body th { background:rgba(128,128,128,.12) }
+  #blog-body hr { border:none; border-top:1px solid rgba(128,128,128,.25); margin:1.2em 0 }
+  #blog-body code { background:rgba(128,128,128,.15); padding:1px 5px; border-radius:3px }
+  #blog-body .fm { font-size:.85rem; opacity:.7; margin-bottom:1em }
+  #blog-body .table-scroll { overflow-x:auto }
+</style>
+<script>
+// 최소 Markdown 렌더러 — /blog 커맨드가 만드는 문법(제목·목록·표·강조·구분선)만 다룬다.
+// 외부 라이브러리를 쓰지 않아 오프라인·CSP 환경에서도 동작한다.
+function esc(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function inline(s) {
+  return esc(s)
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/(^|[^*])\*([^*]+)\*/g, '$1<em>$2</em>');
+}
+
+function renderMarkdown(md) {
+  const out = [];
+  let lines = md.replace(/\r\n/g, '\n').split('\n');
+
+  // YAML front matter — 메타는 작게 따로 표시
+  if (lines[0] === '---') {
+    const end = lines.indexOf('---', 1);
+    if (end > 0) {
+      out.push('<div class="fm">' + inline(lines.slice(1, end).join(' · ')) + '</div>');
+      lines = lines.slice(end + 1);
+    }
+  }
+
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+
+    if (!line.trim()) { i++; continue; }
+
+    const h = line.match(/^(#{1,4})\s+(.*)$/);
+    if (h) { out.push(`<h${h[1].length}>${inline(h[2])}</h${h[1].length}>`); i++; continue; }
+
+    if (/^(-{3,}|\*{3,})\s*$/.test(line)) { out.push('<hr>'); i++; continue; }
+
+    // 표: 헤더행 + 구분행 + 데이터행
+    if (line.includes('|') && i + 1 < lines.length && /^\s*\|?[\s:|-]+\|[\s:|-]*$/.test(lines[i + 1])) {
+      const cells = r => r.replace(/^\||\|$/g, '').split('|').map(c => c.trim());
+      const head = cells(line);
+      i += 2;
+      const rows = [];
+      while (i < lines.length && lines[i].includes('|')) { rows.push(cells(lines[i])); i++; }
+      out.push(
+        '<div class="table-scroll"><table><thead><tr>' +
+        head.map(c => `<th>${inline(c)}</th>`).join('') +
+        '</tr></thead><tbody>' +
+        rows.map(r => '<tr>' + r.map(c => `<td>${inline(c)}</td>`).join('') + '</tr>').join('') +
+        '</tbody></table></div>'
+      );
+      continue;
+    }
+
+    if (/^\s*[-*]\s+/.test(line)) {
+      const items = [];
+      while (i < lines.length && /^\s*[-*]\s+/.test(lines[i])) {
+        items.push(`<li>${inline(lines[i].replace(/^\s*[-*]\s+/, ''))}</li>`);
+        i++;
+      }
+      out.push(`<ul>${items.join('')}</ul>`);
+      continue;
+    }
+
+    // 문단 — 빈 줄까지 이어 붙인다
+    const para = [];
+    while (i < lines.length && lines[i].trim() && !/^(#{1,4}\s|\s*[-*]\s|-{3,})/.test(lines[i])) {
+      para.push(lines[i]);
+      i++;
+    }
+    if (para.length) out.push(`<p>${inline(para.join(' '))}</p>`);
+  }
+  return out.join('\n');
+}
+
+async function loadPost(date) {
+  const body = document.getElementById('blog-body');
+  body.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+  try {
+    const res = await fetch(`/api/v1/blog/${encodeURIComponent(date)}`);
+    if (!res.ok) throw new Error(`${res.status}`);
+    const data = await res.json();
+    body.innerHTML = renderMarkdown(data.content);
+  } catch (e) {
+    body.innerHTML = `<p>글을 불러오지 못했습니다 (${e.message}).</p>`;
+  }
+}
+
+async function init() {
+  const sel = document.getElementById('blog-date');
+  const body = document.getElementById('blog-body');
+  try {
+    const res = await fetch('/api/v1/blog');
+    const data = await res.json();
+    document.getElementById('blog-count').textContent =
+      `${data.entries.length}편 · ${data.directory}`;
+    if (!data.entries.length) {
+      body.innerHTML = '<p>아직 생성된 글이 없습니다. 저녁 배치(<code>run_blog_cron.sh</code>)가 돌면 채워집니다.</p>';
+      return;
+    }
+    sel.innerHTML = data.entries.map(e => `<option value="${e.date}">${e.date}</option>`).join('');
+    loadPost(data.entries[0].date);
+  } catch (e) {
+    body.innerHTML = `<p>목록을 불러오지 못했습니다 (${e.message}).</p>`;
+  }
+}
+
+init();
+</script>
+{% endblock %}

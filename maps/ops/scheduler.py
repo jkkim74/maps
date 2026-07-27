@@ -2009,7 +2009,7 @@ class OperationalPipeline:
                 ),
             )
             try:
-                manager.submit_exit(order)
+                manager.submit_exit(order, exit_reason=reason)
             except DuplicateOrderError:
                 logger.info(
                     "Exit skipped [%s %s]: already submitted",
@@ -2218,7 +2218,7 @@ class OperationalPipeline:
                     ),
                 )
                 try:
-                    result = manager.submit_exit(order)
+                    result = manager.submit_exit(order, exit_reason=reason)
                 except (DuplicateOrderError, BrokerAdapterError) as exc:
                     logger.warning("전략매매 청산 실패 [%s] %s: %s", pick.ticker, reason, exc)
                     continue

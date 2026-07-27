@@ -65,6 +65,7 @@ class MapsSettings(BaseSettings):
     # pick.qty 미지정 시 진입 수량 산정용 계좌 리스크 비율 (손절폭 기준).
     maps_strategy_trade_account_risk_pct: float = Field(default=0.01, gt=0.0, le=0.1)
     maps_stock_report_path: str = "/opt/stock_report"              # stock-report 소스 경로
+    maps_blog_dir: str = "blog"                                    # 일일 블로그 Markdown 저장 경로
 
     maps_krx_closed_dates: str = ""
 

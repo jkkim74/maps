@@ -46,6 +46,8 @@ from maps.api.trade_review import router as trade_review_router
 from maps.api.stock_analysis import router as stock_analysis_router
 from maps.api.analysis_picks import router as analysis_picks_router
 from maps.api.telegram import router as telegram_router
+from maps.api.daily_digest import router as daily_digest_router
+from maps.api.blog import router as blog_router
 
 logger = logging.getLogger(__name__)
 
@@ -142,6 +144,8 @@ app.include_router(trade_review_router)
 app.include_router(stock_analysis_router)
 app.include_router(analysis_picks_router)
 app.include_router(telegram_router)
+app.include_router(daily_digest_router)
+app.include_router(blog_router)
 app.include_router(auth_router)
 
 
@@ -174,6 +178,7 @@ _SCREEN_MAP = {
     "trade-review":     "거래 리뷰",
     "stock-analysis":   "주식 종목 분석",
     "analysis-picks":   "분석 워치리스트",
+    "blog":             "매매 기록",
     "maps-intro":       "MAPS 소개",
 }
 
@@ -291,6 +296,12 @@ async def stock_analysis_page(request: Request) -> HTMLResponse:
 @app.get("/analysis-picks", response_class=HTMLResponse)
 async def analysis_picks_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "analysis_picks.html", _ctx(request, "analysis-picks"))
+
+
+@app.get("/blog", response_class=HTMLResponse)
+async def blog_page(request: Request) -> HTMLResponse:
+    """일일 매매 기록 — 저녁 cron이 생성한 Markdown 글 보기."""
+    return templates.TemplateResponse(request, "blog.html", _ctx(request, "blog"))
 
 
 @app.get("/maps-intro", response_class=HTMLResponse)

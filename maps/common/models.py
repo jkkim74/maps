@@ -387,6 +387,10 @@ class OrderLog(Base):
     status: Mapped[str] = mapped_column(String(16), nullable=False)     # FILLED | CANCELLED | REJECTED | PARTIAL
     broker: Mapped[str | None] = mapped_column(String(16), nullable=True)  # mock | kis | kiwoom
     mode: Mapped[str | None] = mapped_column(String(16), nullable=True)    # mock | live_small | live
+    # 매도 주문의 청산 사유. 왜 팔았는지가 감사 로그에 남지 않아 추가했다(이전에는
+    # journald 로그에만 존재). BUY 주문에서는 항상 None.
+    exit_reason: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # stop_loss | plan_stop | emergency_stop | trailing_stop | take_profit | strategy_exit
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc)
     )

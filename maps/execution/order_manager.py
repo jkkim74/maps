@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import time
 import zoneinfo
-from datetime import datetime, time as dt_time, timedelta
+from datetime import date, datetime, time as dt_time, timedelta
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -25,14 +25,21 @@ _BLOCKED_STAGES: frozenset[str] = frozenset(["research", "alert_only"])
 _KST = zoneinfo.ZoneInfo("Asia/Seoul")
 
 
-def _kst_today_start_utc() -> datetime:
-    """오늘(KST) 자정을 order_log.created_at 과 같은 UTC naive 시각으로 반환한다.
+def kst_day_bounds_utc(ref_date: date) -> tuple[datetime, datetime]:
+    """KST 하루(ref_date 00:00~24:00)를 order_log.created_at 과 같은 UTC naive 구간으로 반환한다.
 
     created_at 은 UTC 로 저장되는데 08:55 KST 주문은 UTC 로 **전일 23:55** 다.
     naive 한 date.today() 로 경계를 잡으면 스케줄러가 낸 매수가 통째로 조회 범위
-    밖으로 빠져 영영 pending 으로 남는다(2026-07-27 475150 사례).
+    밖으로 빠져 영영 pending 으로 남는다(2026-07-27 475150 사례). order_log 를
+    거래일 기준으로 조회하는 코드는 전부 이 함수를 거쳐야 한다.
     """
-    return datetime.combine(datetime.now(_KST).date(), dt_time.min) - timedelta(hours=9)
+    start = datetime.combine(ref_date, dt_time.min) - timedelta(hours=9)
+    return start, start + timedelta(days=1)
+
+
+def _kst_today_start_utc() -> datetime:
+    """오늘(KST) 자정을 UTC naive 시각으로 반환한다."""
+    return kst_day_bounds_utc(datetime.now(_KST).date())[0]
 
 
 def _order_log_mode() -> str:
@@ -98,15 +105,20 @@ class OrderManager:
         """
         return self._submit(order, daily_pnl=daily_pnl, check_entry_risk=True)
 
-    def submit_exit(self, order: Order) -> OrderResult:
+    def submit_exit(self, order: Order, *, exit_reason: str | None = None) -> OrderResult:
         """Submit a strategy exit without applying new-entry exposure checks.
 
         This is only for a normal strategy exit or stop-loss. Kill Switch
         liquidation remains a separate, explicitly approved workflow.
+
+        exit_reason(stop_loss|take_profit|signal|bracket)은 order_log에 그대로
+        기록된다. 왜 팔았는지가 감사 로그에 남지 않으면 사후 검증이 불가능하다.
         """
         if order.side != OrderSide.SELL:
             raise ValueError("submit_exit only accepts sell orders")
-        return self._submit(order, daily_pnl=0.0, check_entry_risk=False)
+        return self._submit(
+            order, daily_pnl=0.0, check_entry_risk=False, exit_reason=exit_reason,
+        )
 
     def _submit(
         self,
@@ -114,6 +126,7 @@ class OrderManager:
         *,
         daily_pnl: float,
         check_entry_risk: bool,
+        exit_reason: str | None = None,
     ) -> OrderResult:
         if order.strategy_id in self._research:
             raise ResearchStrategyError(order.strategy_id, "research")
@@ -136,7 +149,7 @@ class OrderManager:
                 )
             else:
                 self._risk.on_order_success(order.strategy_id)
-            self._log_order(order, result)
+            self._log_order(order, result, exit_reason=exit_reason)
             return result
         except Exception as exc:
             # 관측성: 브로커 예외(KIS 에러코드 등)를 사유와 함께 WARNING으로 남기고 카운터에 반영
@@ -344,15 +357,18 @@ class OrderManager:
 
     # ------------------------------------------------------------------
 
-    def _log_order(self, order: Order, result: OrderResult) -> None:
+    def _log_order(
+        self, order: Order, result: OrderResult, *, exit_reason: str | None = None,
+    ) -> None:
         """order_log 테이블에 감사 로그를 기록한다."""
         logger.info(
-            "order_log [%s] %s %s qty=%s status=%s",
+            "order_log [%s] %s %s qty=%s status=%s%s",
             result.strategy_id,
             result.side.value,
             result.ticker,
             result.filled_quantity,
             result.status.value,
+            f" exit_reason={exit_reason}" if exit_reason else "",
         )
         try:
             self._db.add(
@@ -368,6 +384,7 @@ class OrderManager:
                     status=result.status.value,
                     broker=get_settings().maps_broker_mode,
                     mode=_order_log_mode(),
+                    exit_reason=exit_reason,
                 )
             )
             self._db.commit()

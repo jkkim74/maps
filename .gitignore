@@ -29,6 +29,12 @@ env/
 .idea/
 .claude/*
 !.claude/agents/
+# 서버 cron이 실행하는 슬래시 커맨드는 실행물이다 — 코드와 함께 배포돼야 한다.
+# 개인용 커맨드까지 딸려오지 않도록 파이프라인 커맨드만 명시적으로 포함한다.
+!.claude/commands/
+.claude/commands/*
+!.claude/commands/analyze.md
+!.claude/commands/blog.md
 *.iml
 
 # Testing

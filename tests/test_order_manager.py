@@ -5,7 +5,11 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
+from maps.common.db import Base
 from maps.common.exceptions import BrokerAdapterError, DuplicateOrderError, KillSwitchError, ResearchStrategyError
 from maps.common.models import OrderLog
 from maps.execution.broker_adapter import (
@@ -154,6 +158,39 @@ def test_submit_exit_bypasses_new_entry_kill_switch(
     ))
 
     assert result.status == OrderStatus.FILLED
+
+
+def test_submit_exit_records_exit_reason(broker: MockBroker) -> None:
+    """청산 사유가 order_log에 남아야 한다 — 이전에는 로그에만 있어 사후 검증이 불가했다."""
+    engine = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+    try:
+        manager = OrderManager(
+            broker=broker, risk=RiskManager(broker=broker, db=db, config=RiskConfig()), db=db,
+        )
+        manager.submit(_buy())
+        manager.submit_exit(
+            Order(
+                strategy_id="live_strat",
+                ticker="AAAA",
+                side=OrderSide.SELL,
+                order_type=OrderType.MARKET,
+                quantity=10,
+                current_price=9_000,
+            ),
+            exit_reason="stop_loss",
+        )
+
+        rows = {r.side: r for r in db.query(OrderLog).all()}
+        assert rows["sell"].exit_reason == "stop_loss"
+        assert rows["buy"].exit_reason is None   # 매수에는 청산 사유가 없다
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
 
 
 # ---------------------------------------------------------------------------

@@ -697,3 +697,130 @@ class AnalysisPickUpdate(BaseModel):
     stop_price: float | None = None
     qty: int | None = None
     rationale: str | None = None
+
+
+# ── 일일 다이제스트 (블로그 생성용 결정적 데이터팩) ────────────────────────────
+#
+# 이 모델들은 "하루치 매매 기록"의 유일한 수치 출처다. 블로그를 쓰는 에이전트는
+# 여기 담긴 값만 인용할 수 있고 DB를 직접 조회하지 않는다. 없는 값은 지어내는
+# 대신 measured=False / None 으로 내려보내 "미측정"임을 글에서 명시하게 한다.
+
+class DigestFactor(BaseModel):
+    """시장 팩터 1개. measured=False면 실제 데이터가 없어 중립값(50)이 들어간 것이다."""
+    name: str
+    score: float | None = None
+    measured: bool = True
+    note: str | None = None
+
+
+class DigestMarket(BaseModel):
+    regime: str                      # 히스테리시스 적용 후 최종 국면
+    raw_regime: str | None = None    # 당일 지표만으로 계산한 국면
+    weekly_trend: str
+    vol_regime: str | None = None
+    market_mode: str | None = None
+    entry_limit_ratio: float | None = None
+    breadth_pct: float | None = None
+    breadth_label: str | None = None
+    up_count: int | None = None
+    total_assets: int | None = None
+    kospi_above_ma5w: bool | None = None
+    kospi_above_ma10w: bool | None = None
+    kospi_ts: float | None = None
+    floor_applied: bool = False
+    final_market_score: float | None = None
+    factors: list[DigestFactor] = []
+    reason: str | None = None
+    source: str = "market_regime_log"
+
+
+class DigestSector(BaseModel):
+    sector: str
+    score: float
+    momentum_20d: float | None = None
+    momentum_60d: float | None = None
+    turnover_growth: float | None = None
+    reason: str | None = None
+    overheat_warning: str | None = None
+
+
+class DigestSectors(BaseModel):
+    enabled: bool
+    selected: list[DigestSector] = []
+    watchlist: list[str] = []
+    overheated: list[str] = []
+    excluded: dict[str, str] = {}
+    reason: str | None = None
+
+
+class DigestStrategy(BaseModel):
+    strategy_id: str
+    strategy_type: str | None = None
+    stage: str | None = None                 # promotion_history 최신 통과 단계
+    preferred_regimes: list[str] = []
+    active: bool = False                     # 오늘 진입 허용 여부
+    block_reason: str | None = None          # 차단 사유 (active=False일 때)
+    entry_limit_ratio: float | None = None
+
+
+class DigestCandidate(BaseModel):
+    ticker: str
+    name: str
+    market: str | None = None
+    strategy_id: str
+    final_score: float
+    factor_score: float | None = None
+    trend_strength: float | None = None
+    ts_bucket: str | None = None
+    score_reason: str | None = None
+    excluded_reason: str | None = None
+    holding_type: str | None = None
+    estimated_qty: int | None = None
+    ai_technical_score: float | None = None
+    ai_analysis_memo: str | None = None
+    ai_buy_price: float | None = None
+    ai_stop_price: float | None = None
+    ai_target_price: float | None = None
+    ai_contrarian_opinion: str | None = None
+    ai_contrarian_thesis: str | None = None
+    ai_contrarian_anti_thesis: str | None = None
+    valuation_margin_score: float | None = None
+    valuation_margin_reason: str | None = None
+
+
+class DigestExecution(BaseModel):
+    order_id: str
+    strategy_id: str | None = None
+    ticker: str
+    name: str | None = None
+    side: str
+    qty: int
+    order_price: float | None = None
+    fill_price: float | None = None
+    fill_qty: int = 0
+    status: str
+    mode: str | None = None
+    exit_reason: str | None = None           # 매도만. 없으면 컬럼 도입 전 기록이다.
+    created_at: str
+    entry_rationale: str | None = None       # 매수 시 후보 스냅샷의 score_reason
+
+
+class DigestReportExcerpt(BaseModel):
+    report_type: str
+    trade_date: str | None = None
+    excerpt: str
+
+
+class DailyDigest(BaseModel):
+    ref_date: str
+    generated_at: str
+    market: DigestMarket | None = None
+    sectors: DigestSectors | None = None
+    strategies: list[DigestStrategy] = []
+    candidates: list[DigestCandidate] = []
+    candidate_total: int = 0
+    candidate_excluded: int = 0
+    tomorrow_orders: OrderPreviewResponse | None = None
+    executions: list[DigestExecution] = []
+    market_context: list[DigestReportExcerpt] = []
+    errors: list[str] = []
