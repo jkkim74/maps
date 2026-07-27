@@ -4,9 +4,13 @@
 # 2단계 구조:
 #   1) maps.ops.daily_digest 가 DB에서 하루치 JSON(digest)을 만든다 — 수치의 유일한 출처
 #   2) claude -p /blog 가 그 JSON만 읽고 Markdown을 쓴다 — DB 조회 권한 없음
+#   3) verify_blog_numbers.py 가 글의 숫자를 다이제스트와 대조해 보고한다
 #
-# 글쓰기 단계에 Bash/WebSearch를 주지 않는 것이 핵심이다. 도구가 없으면 수치를
-# 지어낼 경로 자체가 없다. 객관성은 프롬프트가 아니라 이 구조가 담보한다.
+# 2단계의 도구 제한이 핵심이지만 그것만 믿지는 않는다. 실측 결과:
+#   - `--allowedTools Read Write` 만으로는 **Bash 가 막히지 않는다**(자동승인 목록일 뿐).
+#   - `--disallowedTools Bash` 만 걸면 `ToolSearch` 로 `Monitor` 를 불러와 셸을 우회한다.
+# 그래서 실행·조회 계열을 전부 명시적으로 차단한다. 차단 목록은 본질적으로
+# 빈틈이 생길 수 있으므로 3단계 검증을 함께 둔다.
 #
 # /etc/cron.d/maps-blog 에서 호출 (stock_report 18:00 완료 후):
 #   30 18 * * 1-5 ubuntu /opt/maps/scripts/run_blog_cron.sh
@@ -74,8 +78,13 @@ print(f'  후보={digest.candidate_total} 체결={len(digest.executions)} 오류
 fi
 
 # ── 2단계: 글쓰기 ──────────────────────────────────────────────────────────
-# 허용 도구를 Read/Write로 제한한다. Bash도 WebSearch도 없으므로 글쓰기 에이전트가
-# 다이제스트 밖의 수치를 가져올 방법이 없다.
+# Read/Write 만 남기고 실행·조회·위임 계열을 전부 차단한다. ToolSearch 를 빼먹으면
+# 지연 도구(Monitor 등)를 불러와 셸을 되찾으므로 반드시 포함해야 한다.
+BLOG_DENY=(
+  Bash Edit Agent Task Skill ToolSearch Workflow
+  Monitor WebFetch WebSearch Glob Grep NotebookEdit
+  ScheduleWakeup ReportFindings
+)
 if [ -f "$SECRETS_FILE" ]; then
   set -a
   # shellcheck disable=SC1090
@@ -95,6 +104,7 @@ OUT="$BLOG_DIR/${REF_DATE}.md"
 log "claude -p /blog 실행 시작 (timeout ${BLOG_TIMEOUT}s, raw=$RAW_LOG)"
 timeout "${BLOG_TIMEOUT}s" "$CLAUDE_BIN" -p "/blog $DIGEST $OUT" \
     --allowedTools Read Write \
+    --disallowedTools "${BLOG_DENY[@]}" \
     --verbose --output-format stream-json 2>>"$LOG" \
   | tee -a "$RAW_LOG" \
   | python "$APP_DIR/scripts/analyze_stream_to_log.py" "$LOG"
@@ -112,6 +122,11 @@ fi
 if [ ! -s "$OUT" ]; then
   log "claude는 성공했으나 글이 비어 있음: $OUT"; exit 1
 fi
+
+# ── 3단계: 숫자 대조 ───────────────────────────────────────────────────────
+# 도구 차단은 블랙리스트라 빈틈이 남는다. 결과물을 직접 검증해 로그에 남긴다.
+# 파생값(차이·비율)은 정상이므로 실패로 처리하지 않고 사람이 훑도록 보고만 한다.
+python "$APP_DIR/scripts/verify_blog_numbers.py" "$DIGEST" "$OUT" 2>&1 | tee -a "$LOG"
 
 log "blog cron 완료 — $OUT ($(wc -c <"$OUT") bytes)"
 exit 0
