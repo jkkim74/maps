@@ -2,7 +2,8 @@
 
 > 작성일: 2026-07-27 (월, KST) · 작성자: 세션 에이전트 (회사 PC, 키 `D:\ssh_maps\`)
 > 주제 ①: 7/24 승격 데드락 수정의 실전 검증 → **UTC/KST 날짜 경계 버그** 규명·수정·배포. 첫 손절까지 완주.
-> 주제 ②: **일일 매매 기록 블로그 자동 생성** 구현·배포. 2단계(결정적 다이제스트 → 서술) 구조.
+> 주제 ②: **일일 매매 기록 블로그 자동 생성** 구현·배포·cron 등록. 3단계(다이제스트 → 서술 → 검증).
+> 주제 ③: **KRX 계정 잠금** 규명·복구. 시스템의 무한 재시도가 스스로 계정을 잠갔다.
 > 이전 핸드오프(승격 데드락 해소·워치리스트 실시간 시세, 7/24): git `226a468`·`99e7d3d` 참고.
 
 ## 운영 환경
@@ -79,18 +80,34 @@ today_start = datetime.combine(date.today(), dt_time.min)  # 2026-07-27 00:00 na
 
 ---
 
-# 주제 ② 일일 매매 기록 블로그 (커밋 `2c306ca`·`16b4155`, 배포 완료)
+# 주제 ② 일일 매매 기록 블로그 (커밋 `2c306ca`~`a10c87b`, 배포·cron 등록 완료)
 
 ## 설계 — 객관성은 문체가 아니라 구조로 담보한다
 
 ```
-1단계  maps/ops/daily_digest.py → DB에서 하루치 JSON 조립 (수치의 유일한 출처)
-2단계  claude -p /blog          → 그 JSON만 읽고 Markdown 작성
+1단계  maps/ops/daily_digest.py    → DB에서 하루치 JSON 조립 (수치의 유일한 출처)
+2단계  claude -p /blog             → 그 JSON만 읽고 Markdown 작성 (조회 도구 없음)
+3단계  verify_blog_numbers.py      → 글의 숫자를 다이제스트와 대조해 보고
 ```
 
-2단계에 **`--allowedTools Read Write`만** 준다. Bash도 WebSearch도 없으니 다이제스트 밖의
-수치를 가져올 경로 자체가 없다. LLM에 DB 조회를 맡기면 매일 다른 쿼리를 짜서 같은 날
-수치가 흔들린다. 미측정 항목은 `measured=false`로 내려보내 글에서 "미측정"으로 쓰게 강제한다.
+LLM에 DB 조회를 맡기면 매일 다른 쿼리를 짜서 같은 날 수치가 흔들린다. 미측정 항목은
+`measured=false`로 내려보내 글에서 "미측정"으로 쓰게 강제한다.
+
+### ⚠️ `--allowedTools` 는 도구를 제한하지 않는다 (실측)
+
+처음엔 `--allowedTools Read Write`만 주면 된다고 봤는데 **틀렸다.** 첫 실행 로그에
+`▶ Bash:` 가 찍혀서 파고든 결과:
+
+| 시도 | 결과 |
+|---|---|
+| `--allowedTools Read Write` | Bash **그대로 실행됨** — 배제 목록이 아니라 **자동승인** 목록이다 |
+| `+ --disallowedTools Bash` | Bash는 막히나 **`ToolSearch`로 `Monitor`를 불러와 셸 우회** |
+| 실행·조회·위임 계열 전면 차단 | 에이전트가 "명령 실행 도구가 없다"고 보고 ✅ |
+
+`ToolSearch`가 지연 도구로 가는 통로라 이걸 빼면 나머지 차단이 무의미하다. 최종 차단 목록은
+`run_blog_cron.sh`의 `BLOG_DENY` 배열 참고. **차단 목록은 본질적으로 블랙리스트이므로
+예방만 믿지 않고 3단계 검증을 함께 둔다.** 파생값(차이·비율)은 정상 서술이라 실패로
+처리하지 않고 보고만 한다 — 실제 글에서 미매칭 8개가 나왔고 전부 파생값·건수였다.
 
 | 파일 | 역할 |
 |---|---|
@@ -164,38 +181,60 @@ DB만으로 결정적이므로 **꺼져 있어도 기록은 남긴다**. `applie
 
 ---
 
+## 7/27 중 해결된 것 (다음 세션이 다시 파지 않도록)
+
+- **서버 claude OAuth 재인증 완료.** 7/24부터 만료돼 analyze cron이 죽어 있었다.
+  블로그 수동 1회 성공 확인 후 **cron 등록 완료**: `/etc/cron.d/maps-blog`, `30 18 * * 1-5`.
+- **`MAPS_KOSTOLANY_REGIME_ENABLED=true` 적용.** 시장 팩터 5개가 이제 채워진다.
+  안전 확인 근거: `composite` 소비처는 `api/market.py`(화면 표시)뿐이고 진입 판단
+  (`entry_limit_ratio`·`market_mode`)은 `regime`/`vol_regime`만 본다.
+  단 `psychology`/`liquidity`는 여전히 자리표시자 50이고 digest가 `measured=false`로 표기한다.
+- **KRX 계정 복구** — 아래 참고.
+
+## 🔥 KRX 계정 잠금 사건 (7/27, 해결됨 — 재발 방지는 미완)
+
+- 증상: `pykrx 배치 현재가 조회 실패`가 하루 163회. `market/regime.py`도 yfinance 폴백.
+- 1차 원인: 계정 `jack68` 비밀번호 만료 → `_error_code=CD010`(패스워드 변경 필요).
+- **2차 원인(더 중요): 시스템이 스스로 계정을 잠갔다.** 만료된 비밀번호로 **158회** 로그인을
+  재시도했고 그 누적이 오류횟수 잠금을 유발했다 → `_error_code=CD007 패스워드 오류수에 의한 잠금`.
+  이 상태에서는 **올바른 비밀번호를 넣어도 CD007만 반환**되므로 "비밀번호가 틀렸다"로 오진하기 쉽다.
+- 진단 방법 — 래퍼가 삼키는 원본 코드를 직접 봐야 한다:
+  ```python
+  # pykrx/website/comm/auth.py 의 login_krx 를 그대로 재현해 _error_code 를 찍는다
+  # CD001=정상 / CD007=잠금 / CD010=변경필요 / CD011=중복로그인
+  ```
+- 복구 순서(중요): 잠금 해제만 하고 두면 **16:40·16:50·17:10·18:00·18:30 잡이 곧바로 재시도**해
+  비밀번호가 틀릴 경우 몇 분 만에 재잠금된다. 실제로 이 순서로 처리했다:
+  1. `.env`의 `KRX_ID`/`KRX_PW`를 `#LOCKED_` 접두사로 주석 처리 → 자동 로그인 시도 정지
+     (pykrx가 환경변수 없음으로 조기 종료, HTTP 요청 자체를 안 보낸다). 장세는 yfinance 폴백 유지.
+  2. 사용자가 krx.co.kr에서 잠금 해제 + 비밀번호 재설정
+  3. **되살리기 전에** 1회 수동 로그인 검증 → `CD001 정상` 확인
+  4. `sed -i 's|^#LOCKED_KRX_|KRX_|' .env && sudo systemctl restart maps`
+- 복구 확인: KOSPI 943행 / KOSDAQ 1822행 / 지수 6행, 배치 현재가 정상 반환.
+- 백업: `/opt/maps/.env.bak_krxlock_*`.
+
+---
+
 ## Next Steps
 
-### 🔴 즉시 — 사람이 해야 하는 작업 두 가지
+### 🔴 재발 방지 (미완)
 
-1. **서버 claude OAuth 재인증** — 블로그 2단계와 **analyze cron이 둘 다 막혀 있다.**
-   ```
-   2026-07-24 16:00  analyze cron ❌ Failed to authenticate: OAuth session expired
-   2026-07-23 16:19  analyze cron ✅ (마지막 성공)
-   ```
-   `analysis_run`에도 7/24가 `failed / claude exit=1`로 남아 있다. 대화형이라 자동화 불가:
-   ```
-   ssh -i "D:\ssh_maps\LightsailDefaultKey-ap-northeast-2.pem" -t ubuntu@3.37.117.246 "claude"
-   ```
-   재인증 후 `bash /opt/maps/scripts/run_blog_cron.sh`로 1편 수동 생성 →
-   **성공 확인 후에** cron 등록(`/etc/cron.d/maps-blog`, `30 18 * * 1-5 ubuntu /opt/maps/scripts/run_blog_cron.sh`).
-   지금 걸면 실패 로그만 쌓인다.
-
-2. **KRX 계정 비밀번호 만료** — `jack68`이 변경 요구 상태라 pykrx 호출이 전부 실패한다
-   (오늘 163회). `market/regime.py`가 yfinance로 폴백 중인 것도 같은 원인이다.
-   krx.co.kr에서 변경 후 서버 `.env` 갱신. 업종·수급 계산 정확도에 영향.
+1. **KRX 로그인 실패에 백오프·회로차단기가 없다.** 자격증명이 만료되면 시스템이 스스로
+   계정을 잠근다(위 사건). 스케줄러가 돌 때마다 무한정 재시도한다.
+   필요한 것: 연속 실패 N회 시 일정 시간 로그인 시도 중단, 그동안 yfinance 폴백 유지.
+   오늘 하루 실제로 폴백만으로 돌았고 장세 판정에 문제가 없었으므로 안전한 설계다.
+   지금은 계정이 정상이라 재현 검증이 어렵다 — mock 레벨에서 테스트할 것.
+   `pykrx`가 벤더 코드라 우리 쪽 래퍼(`data/krx_adapter.py`, `market/regime.py`)에서 감싸야 한다.
 
 ### 판단 필요
 
-3. **`MAPS_KOSTOLANY_REGIME_ENABLED`** — 현재 `false`라 시장 팩터 5개가 전부 `null`이다.
-   켜도 안전하다(`composite` 소비처는 `api/market.py` 화면 표시뿐, 매매 판단 미사용 확인).
-   켜도 `psychology`/`liquidity`는 여전히 자리표시자 50이고 digest가 `measured=false`로 표기.
-4. **업종 필터 활성화** — 위 "왜 꺼져 있나" 참고. 관측 데이터가 쌓인 뒤 판단.
-   활성화 전 **레거시 선택기의 임계값 부재**부터 손볼 것.
+2. **업종 필터 활성화** — 위 "왜 꺼져 있나" 참고. 관측 데이터가 쌓인 뒤 판단.
+   활성화 전 **레거시 선택기의 임계값 부재**부터 손볼 것(7/24 관측에서 "강세업종" 5개 중
+   하위 2개가 마이너스 수익률이었다).
 
 ### 코드 정합성
 
-5. **ATR 손절 규칙이 실거래와 백테스트에서 다르다 (미수정).**
+3. **ATR 손절 규칙이 실거래와 백테스트에서 다르다 (미수정).**
    - `live_rules.py` 주석: "`max(고정%, ATR)` 중 **넓은 쪽**"
    - `backtest/portfolio_replay.py:280`: `min(stop_from_signal, atr_stop)` — 넓은 쪽 (의도대로)
    - `ops/scheduler.py:1964`, `api/risk.py:200`: `atr_stop_price(...) **or** stop_loss_price(...)`
@@ -203,23 +242,23 @@ DB만으로 결정적이므로 **꺼져 있어도 기록은 남긴다**. `applie
 
    이번엔 ATR(62,867)이 고정(71,550)보다 넓어 결과가 같았지만 규칙이 갈리는 케이스가 있다.
    **백테스트와 실거래 성과가 체계적으로 어긋나는 원인**이 될 수 있다. 정본을 정하고 통일할 것.
-6. **`장중 현재가 조회 실패` 경고 문구** — KIS 경로에선 손절에 영향이 없는데 치명적으로
+4. **`장중 현재가 조회 실패` 경고 문구** — KIS 경로에선 손절에 영향이 없는데 치명적으로
    읽힌다(실제로 오진 유발). 문구를 고치거나 `KISAdapter.update_prices()`를 구현할 것.
 
 ### 관측/이월
 
-7. **7/28 08:55 재확인** — 매수가 다시 나가는지, 이번엔 `broker_sync`가 같은 날 안에
+5. **7/28 08:55 재확인** — 매수가 다시 나가는지, 이번엔 `broker_sync`가 같은 날 안에
    `filled`로 반영하는지(오늘은 배포 후 수동 확인이었다).
    `sudo journalctl -u maps --no-pager | grep -v broker_sync | grep "order_cycle: success" | tail -1`
-8. **~2026-10월말 `mock_months ≥ 3`** 재확인. 단 **점수 34.7 < 임계값 75**라 승격은 여전히
+6. **~2026-10월말 `mock_months ≥ 3`** 재확인. 단 **점수 34.7 < 임계값 75**라 승격은 여전히
    안 된다 — Live Small 차단만 풀린다. 점수 개선은 별도 과제.
-9. **새 APK 폰 설치·확인**(7/22 이월) — 홈 장세 배너, 주문 탭 예정주문, 워치 체결 전 현재가.
+7. **새 APK 폰 설치·확인**(7/22 이월) — 홈 장세 배너, 주문 탭 예정주문, 워치 체결 전 현재가.
    `apps/mobile/google-services.json`이 워크트리 루트에 untracked인데, 필요한 위치는
    `apps/mobile/android/app/google-services.json`이다. JDK 21 필요.
-10. **모바일 완료 탭(익절/손절)** 미반영(7/14 이월) — `WatchlistScreen.tsx`에 `?state=CLOSED` 탭.
-    오늘 첫 손절 청산이 생겼으므로 이제 표시할 데이터가 실제로 있다.
-11. 이월: 매도 만료율 조사, KIS 90020000 장외 경고, `/opt/stock_report` 버전관리,
-    네트워크 테스트 mock화, 서명 릴리스 APK. `order_log_backup_20260724`(42행) DROP 가능.
+8. **모바일 완료 탭(익절/손절)** 미반영(7/14 이월) — `WatchlistScreen.tsx`에 `?state=CLOSED` 탭.
+   오늘 첫 손절 청산이 생겼으므로 이제 표시할 데이터가 실제로 있다.
+9. 이월: 매도 만료율 조사, KIS 90020000 장외 경고, `/opt/stock_report` 버전관리,
+   네트워크 테스트 mock화, 서명 릴리스 APK. `order_log_backup_20260724`(42행) DROP 가능.
 
 ---
 
@@ -232,7 +271,12 @@ DB만으로 결정적이므로 **꺼져 있어도 기록은 남긴다**. `applie
 - **손절 판정**: `scheduler._submit_exit_orders`(진입 기록 = `filled`/`partially_filled`,
   `expired` 폴백), `maps/strategy/live_rules.py`, `maps/backtest/portfolio_replay.py`.
 - **블로그**: `maps/ops/daily_digest.py`, `maps/api/{daily_digest,blog}.py`,
-  `templates/blog.html`, `scripts/run_blog_cron.sh`, `.claude/commands/blog.md`.
+  `templates/blog.html`, `scripts/run_blog_cron.sh`(`BLOG_DENY` 차단 목록),
+  `scripts/verify_blog_numbers.py`, `.claude/commands/blog.md`.
+  출력 `/opt/maps/blog/`(gitignore), cron `/etc/cron.d/maps-blog`.
+- **KRX 인증**: `.venv/.../pykrx/website/comm/auth.py` — `login_krx()`가 `_error_code`를
+  삼키고 "자격 증명을 확인하세요"로 뭉갠다. 진단하려면 이 함수를 재현해 코드를 직접 찍을 것.
+  자격증명은 서버 `.env`의 `KRX_ID`/`KRX_PW`(코드가 아니라 환경변수로만 읽는다).
 - **업종**: `maps/market/sector_selector.py` — `SectorScorer._WEIGHTS`(가중치),
   `SectorRegimeSelector._score_from_db`(실제 채우는 입력 3개), `SectorSelector.select_strong_sectors`(레거시).
 - **승격**: `maps/promotion/gate.py`(`_MIN_MOCK_MONTHS_FOR_LIVE_SMALL=3`),
