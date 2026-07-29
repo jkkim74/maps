@@ -4,7 +4,8 @@
 > 주제 ①: **KRX 로그인 회로차단기** — 7/27 계정 잠금의 재발 방지. 구현·배포 완료.
 > 주제 ②: **손절가 규칙 통일** — 경로마다 달랐다. 사이징이 포지션을 2배로 잡고 있었다.
 > 주제 ③: **전략관리 화면** — 식별자만 뜨던 화면에 설명·가이드·복사 버튼 추가.
-> 주제 ④: **도메인 이전** `magable.kr` → `maps.magable.kr` (DNS·인증서는 사용자 작업, 후속만 남음)
+> 주제 ④: **도메인 이전** `magable.kr` → `maps.magable.kr` — 완료. DNS·인증서는 사용자 작업,
+>          웹훅·모바일 재빌드·`ads.txt`·HSTS 는 이 세션에서 처리.
 > 이전 핸드오프(UTC/KST 경계·블로그 자동화·KRX 계정 잠금, 7/27): git `9f17af9` 참고.
 
 ## 운영 환경
@@ -19,7 +20,8 @@
 "오늘 주문"을 `WHERE created_at >= '오늘'`로 조회하면 **0 rows가 나온다**.
 `ORDER BY id DESC LIMIT n`이 안전하고, 코드에서는 `order_manager.kst_day_bounds_utc()`를 쓸 것.
 
-오늘 배포된 커밋 5개: `1b98004` `29eae95` `fb6a789` `7bd1514` `6d755cd`. 테스트 **513 passed**.
+오늘 커밋 7개: `1b98004` `29eae95` `fb6a789` `7bd1514` `6d755cd` `d36a08f` `0fd872a`.
+서버 배포는 `6d755cd` 까지(이후는 문서·모바일이라 서버 반영이 불필요). 테스트 **513 passed** + 모바일 **18 passed**.
 
 ---
 
@@ -175,10 +177,11 @@ MDD            → constants.ALLOWED_MDD
 
 ---
 
-# 주제 ④ 도메인 이전 `magable.kr` → `maps.magable.kr`
+# 주제 ④ 도메인 이전 `magable.kr` → `maps.magable.kr` — **완료**
 
 **DNS·nginx·인증서는 사용자가 오늘 13:05~14:35에 직접 처리했다.** 세션 중에 바뀌어서,
 배포 검증을 구 도메인으로 하다가 WordPress 404 를 받고 발견했다.
+나머지(웹훅·모바일·ads.txt·HSTS)는 이 세션에서 처리했다.
 
 | | 오전 11:07 | 현재 |
 |---|---|---|
@@ -189,7 +192,61 @@ MDD            → constants.ALLOWED_MDD
 
 구 vhost `/etc/nginx/sites-available/maps` 는 비활성으로 남아 있다.
 
-**⚠️ 새 vhost 에 HSTS 헤더가 빠졌다.** 구 설정엔 있었는데 certbot 이 만든 파일엔 없다.
+| 항목 | 상태 |
+|---|---|
+| DNS · nginx · 인증서 | ✅ 사용자 작업 |
+| 텔레그램 웹훅 | ✅ `6d755cd` (아래) |
+| 모바일 앱 | ✅ `0fd872a` + 재빌드·설치 (아래) |
+| `ads.txt` | ✅ vhost 복구 |
+| HSTS | ✅ vhost 복구 |
+| 문서 | ✅ `d36a08f` |
+
+## vhost 복구 — `ads.txt` 와 HSTS
+
+certbot 이 새로 만든 vhost 에 구 설정의 두 가지가 빠져 있었다.
+
+**`ads.txt`** — 복구 전 `303` 이었다. 요청이 앱으로 프록시돼 로그인 게이트에 걸리고 있었다.
+크롤러는 리다이렉트를 받으면 파일을 못 읽는다. `location = /ads.txt` 를 443 블록에 복구
+(퍼블리셔 ID 는 구 vhost·블로그와 동일한 `pub-6163734207162127`).
+검증: `status=200 type=text/plain redirects=0`.
+
+**HSTS** — `add_header Strict-Transport-Security "max-age=31536000" always;`
+**`includeSubDomains` 는 일부러 넣지 않았다.** 켜면 `magable.kr` 의 모든 서브도메인이
+HTTPS 강제되는데 루트는 이제 남의 서버라 통제할 수 없다. 구 설정도 이 값이었다.
+
+> 두 작업 모두 앵커를 조심해야 한다. `server_name maps.magable.kr;` 은 443 블록과 80
+> 리다이렉트 블록에 **각각 있다**(첫 번째가 443). HSTS 는 `ssl_certificate_key` 라인을
+> 앵커로 잡아 443 전용임을 보장했다. 백업: `maps.magable.kr.bak.{adstxt,hsts}.*`.
+
+`add_header` 는 하위 `location` 이 자체 `add_header` 를 가지면 상속이 끊긴다.
+`location = /ads.txt` 에는 없어서 HSTS 가 정상 상속됐다(확인함).
+
+> 📌 **앱에 광고 코드가 없다.** `templates/`·`static/`·모바일 어디에도 `adsbygoogle`/
+> `ca-pub` 스크립트가 없다. `ads.txt` 는 판매자 선언일 뿐 광고를 띄우지 않는다.
+> 구 도메인에서도 `ads.txt` 뿐이었으니 애드센스는 실질적으로 블로그 쪽에서만 돌았을 것이다.
+> 게재하려면 애드센스 콘솔에 `maps.magable.kr` 사이트 등록이 필요하다(사용자 작업).
+> 다만 대시보드는 로그인 벽 뒤라 게재 자체가 정책상 제한될 수 있다.
+
+## 모바일 앱 — 재빌드·설치 완료 (커밋 `0fd872a`)
+
+`PROD_DEFAULT` 는 **APK 안에 컴파일되어 박힌다.** 서버를 재배포해도 설치된 앱은 구 도메인을
+계속 호출한다. 도메인 이전 후 앱은 남의 서버에 API 를 요청하고 있었다.
+
+빌드: `npm test`(18 passed) → `npm run cap:sync` → `assembleDebug`.
+**`JAVA_HOME` 이 jdk-17 을 가리키고 있어서** 21 을 명시해야 한다(PATH 의 `java` 는 21이라
+`java -version` 만 보면 속는다).
+
+```bash
+JAVA_HOME="/c/Program Files/Eclipse Adoptium/jdk-21.0.11.10-hotspot" ./gradlew assembleDebug
+```
+
+산출물 `apps/mobile/android/app/build/outputs/apk/debug/app-debug.apk`.
+검증은 dist → android assets → **APK 내부(unzip)** 3단계로 문자열을 확인했다(구 도메인 0건).
+`google-services.json` 은 이미 `android/app/` 에 있어 7/22 이월 이슈는 해당 없었다.
+
+**설치 후 실측**: nginx 접속 로그에 폰(`106.101.195.128`)에서 온 요청이 전부 `200`.
+CORS preflight(`OPTIONS`)도 통과. 오늘 모바일 요청 45건.
+(`499` 한 건은 응답 전 클라이언트가 끊은 것 — 화면 전환 시 나는 정상값이다.)
 
 ## 텔레그램 웹훅 — 재배포로는 안 잡히는 종류 (커밋 `6d755cd`, 처리 완료)
 
@@ -239,6 +296,10 @@ URL 문자열만 보면 멀쩡해 보인다. **`ip_address` 를 봐야 잡힌다
 - `journalctl` 에 `broker_sync` 가 60초마다 찍힌다 → `| grep -v broker_sync` 필수.
 - **테스트 스텁을 `SimpleNamespace` 로 만들지 말 것.** 프로덕션이 `signal.atr14` 를 읽기
   시작하자 스텁에만 필드가 없어 3건이 깨졌다. 실제 dataclass 를 쓰면 안 깨진다.
+- **`java -version` 만 보고 JDK 를 판단하지 말 것.** PATH 는 21 인데 `JAVA_HOME` 은 17 이었다.
+  Gradle 은 `JAVA_HOME` 을 따르므로 모바일 빌드 시 명시해야 한다.
+- **nginx 앵커 주의.** `server_name maps.magable.kr;` 은 443 블록과 80 리다이렉트 블록에
+  각각 있다. 80 쪽에 넣으면 HTTPS 요청에는 적용되지 않는다.
 - **`analyze` 픽 0건과 스케줄러 주문은 다른 파이프라인이다** (혼동 금지):
   - `analyze`(cron 16:00) → `analysis_pick` → 워치리스트. 게이트 R:R ≥ 2.0.
   - 스케줄러(16:50 후보생성 → 08:55 주문) → `candidate_snapshot` → `order_log`.
@@ -247,33 +308,36 @@ URL 문자열만 보면 멀쩡해 보인다. **`ip_address` 를 봐야 잡힌다
 
 ## Next Steps
 
-### 🔴 도메인 이전 잔여
+> 도메인 이전은 **전부 끝났다**(주제 ④). 남은 건 사용자 계정 작업 하나뿐:
+> 애드센스 콘솔에 `maps.magable.kr` 사이트 등록. 단, 앱에 광고 코드가 없고
+> 대시보드가 로그인 벽 뒤라 게재 자체를 다시 판단할 필요가 있다.
 
-1. **모바일 앱이 구 도메인에 고정돼 있다.** `apps/mobile/src/config.ts` 의
-   `PROD_DEFAULT = 'https://magable.kr'`. **이미 설치된 APK 는 지금 WordPress 서버에
-   API 를 호출하고 있어 먹통이다.** 소스 수정 + 재빌드(JDK 21) + 재설치가 필요하다.
-   `apps/mobile/.env.example:3` 주석도 같이.
-2. **AdSense `ads.txt`** — 구 vhost 의 `location = /ads.txt` 에 있었다. 새 도메인에서
-   광고를 쓸 거면 재등록·재배치. 안 쓸 거면 정리.
-3. **HSTS 헤더 복구 여부 결정** — 새 vhost 443 블록에 없다.
+### 관측/확인 (이 세션의 변경이 실제로 도는지)
 
-### 관측/확인
-
-4. **7/30 08:55 주문 수량** — 정본 사이징 첫 적용. 주제 ② 참고.
-5. **16:40 데이터 수집 로그** — `KRX 로그인 회로차단기 설치 완료` 첫 출력 확인.
-6. **텔레그램 인라인 버튼 1회** 눌러 콜백 도달 확인.
-7. **전략관리 화면 눈으로 확인** — 탭 전환·카드·복사 버튼.
-8. **~2026-10월말 `mock_months ≥ 3`**. 단 **점수 34.7 < 임계값 75**라 승격은 여전히 안 된다 —
+1. **7/30 08:55 주문 수량** — 정본 사이징 첫 적용. ATR 이 넓은 종목이 걸리면 수량이
+   눈에 띄게 작아진다. 주제 ② 참고. **아직 실측 못 한 유일한 변경이다.**
+   ```
+   sudo journalctl -u maps --no-pager | grep -v broker_sync | grep "order_cycle: success" | tail -1
+   ```
+2. **16:40 데이터 수집 로그** — `KRX 로그인 회로차단기 설치 완료` 첫 출력.
+   성공 시엔 이후 조용하다(성공은 로그를 남기지 않는다).
+3. **텔레그램 인라인 버튼 1회** 눌러 콜백 도달 확인 (위조 콜백은 안 보냈다).
+4. **전략관리 화면 눈으로 확인** — 탭 전환·카드 클릭·[전체 복사] 버튼.
+   HTTP·JS 문법·API 페이로드까지만 확인했다.
+5. **~2026-10월말 `mock_months ≥ 3`**. 단 **점수 34.7 < 임계값 75**라 승격은 여전히 안 된다 —
    Live Small 차단만 풀린다. 점수 개선은 별도 과제.
 
 ### 판단 필요
 
-9. **업종 필터 활성화** — 점수 가중치 7개 중 `_score_from_db` 가 채우는 건 3개(0.50)뿐이고,
+6. **업종 필터 활성화** — 점수 가중치 7개 중 `_score_from_db` 가 채우는 건 3개(0.50)뿐이고,
    단일 최대 가중치 `earnings_revision` 0.25 가 통째로 자리표시자다. 활성화 전
    **레거시 선택기의 임계값 부재**부터 손볼 것(7/24 관측에서 "강세업종" 5개 중 하위 2개가
    마이너스 수익률이었다). `MAPS_SECTOR_FILTER_ENABLED` 는 꺼져 있어도 기록은 쌓인다.
-10. 이월: 매도 만료율 조사, KIS 90020000 장외 경고, `/opt/stock_report` 버전관리,
-    네트워크 테스트 mock 화, 서명 릴리스 APK. `order_log_backup_20260724`(42행) DROP 가능.
+7. **애드센스 게재 여부** — 콘솔에 `maps.magable.kr` 등록이 필요하고, 앱에 광고 코드가 없다.
+   대시보드는 로그인 벽 뒤라 정책상 제한될 수 있다. 블로그(`magable.kr`) 쪽이 실효가 클 것이다.
+   `docs/strategy_guides/` 원고 8편이 마침 그쪽 콘텐츠다.
+8. 이월: 매도 만료율 조사, KIS 90020000 장외 경고, `/opt/stock_report` 버전관리,
+   네트워크 테스트 mock 화, 서명 릴리스 APK. `order_log_backup_20260724`(42행) DROP 가능.
 
 ---
 
