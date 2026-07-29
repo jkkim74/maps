@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 import pandas as pd
 
 from maps.common.exceptions import DataCollectionError
+from maps.data.krx_auth import ensure_krx_login_guard
 
 logger = logging.getLogger(__name__)
 
@@ -156,6 +157,9 @@ class KRXAdapter(KRXAdapterBase):
             raise DataCollectionError(
                 "pykrx 라이브러리가 필요합니다: pip install pykrx"
             ) from e
+        # pykrx 는 요청마다 재로그인을 시도한다 — 실패 누적이 KRX 계정을 잠그지
+        # 않도록 회로차단기를 설치한다(멱등).
+        ensure_krx_login_guard()
 
     # pykrx 버전에 따라 컬럼명이 한글 또는 영문으로 반환될 수 있음 — 영문→한글 매핑
     _OHLCV_COL_MAP: dict[str, str] = {

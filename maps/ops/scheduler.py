@@ -130,6 +130,9 @@ def _is_krx_market_day(date: dt.date | None = None) -> bool:
 
     date_str = target.strftime("%Y%m%d")
     try:
+        from maps.data.krx_auth import ensure_krx_login_guard  # noqa: PLC0415
+
+        ensure_krx_login_guard()
         from pykrx import stock as _pykrx_stock  # noqa: PLC0415 — lazy import
         df = _pykrx_stock.get_index_ohlcv(date_str, date_str, "1001")  # KOSPI
         result = len(df) > 0
@@ -2513,6 +2516,9 @@ class OperationalPipeline:
         pykrx 미설치 또는 전체 조회 실패 시 빈 딕셔너리를 반환한다.
         """
         try:
+            from maps.data.krx_auth import ensure_krx_login_guard  # noqa: PLC0415
+
+            ensure_krx_login_guard()
             from pykrx import stock as _krx  # noqa: PLC0415
         except ImportError:
             return {}

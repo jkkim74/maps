@@ -69,6 +69,14 @@ class MapsSettings(BaseSettings):
 
     maps_krx_closed_dates: str = ""
 
+    # KRX 로그인 회로차단기 — pykrx 는 요청마다 재로그인을 시도하므로 자격증명이
+    # 만료되면 재시도 누적이 계정을 잠근다(2026-07-27 실제 사고). 연속 실패 시
+    # 로그인 시도를 멈추고 폴백 데이터 소스로 버틴다.
+    maps_krx_login_guard_enabled: bool = True
+    maps_krx_login_max_failures: int = Field(default=3, ge=1)
+    maps_krx_login_cooldown_seconds: int = Field(default=1800, ge=1)
+    maps_krx_login_max_cooldown_seconds: int = Field(default=21600, ge=1)
+
     # 시황 분석 수동 오버라이드 (auto 이면 pykrx/yfinance 실데이터 분석)
     maps_market_regime_override: Literal["auto", "strong", "mixed", "weak"] = "auto"
     maps_weekly_trend_override: Literal["auto", "pass", "fail"] = "auto"
@@ -303,6 +311,10 @@ def get_config_status(settings: MapsSettings | None = None) -> list[ConfigSectio
                 _field(s, "maps_broker_sync_interval_seconds", "MAPS_BROKER_SYNC_INTERVAL_SECONDS", "Broker balance/fill sync interval seconds"),
                 _field(s, "maps_stock_report_time", "MAPS_STOCK_REPORT_TIME", "Daily stock report generation time"),
                 _field(s, "maps_krx_closed_dates", "MAPS_KRX_CLOSED_DATES", "Additional comma-separated KRX closure dates"),
+                _field(s, "maps_krx_login_guard_enabled", "MAPS_KRX_LOGIN_GUARD_ENABLED", "Circuit breaker that stops KRX login retries after repeated failures"),
+                _field(s, "maps_krx_login_max_failures", "MAPS_KRX_LOGIN_MAX_FAILURES", "Consecutive KRX login failures before the circuit opens"),
+                _field(s, "maps_krx_login_cooldown_seconds", "MAPS_KRX_LOGIN_COOLDOWN_SECONDS", "Initial KRX login cooldown seconds (doubles per re-open)"),
+                _field(s, "maps_krx_login_max_cooldown_seconds", "MAPS_KRX_LOGIN_MAX_COOLDOWN_SECONDS", "Upper bound for KRX login cooldown seconds"),
                 _field(s, "maps_kostolany_regime_enabled", "MAPS_KOSTOLANY_REGIME_ENABLED", "Enable Kostolany-style composite market regime scoring"),
                 _field(s, "maps_contrarian_accumulation_enabled", "MAPS_CONTRARIAN_ACCUMULATION_ENABLED", "Allow limited contrarian-quality accumulation in weak/high-volatility markets"),
                 _field(s, "maps_contrarian_max_entry_ratio", "MAPS_CONTRARIAN_MAX_ENTRY_RATIO", "Maximum entry ratio for contrarian-quality accumulation"),

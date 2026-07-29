@@ -14,6 +14,13 @@ import pandas as pd
 import requests
 from pykrx import stock
 
+from maps.data.krx_auth import ensure_krx_login_guard
+
+# pykrx 는 임포트 시점에 1회, 이후 요청마다 재로그인을 시도한다. 임포트 시점
+# 1회는 가드보다 앞서므로 막을 수 없지만, 여기서 설치해두면 이후의 무한 재시도가
+# 끊긴다 — 계정 잠금을 유발한 것은 그 반복분이다.
+ensure_krx_login_guard()
+
 ProgressFn = Callable[[str, int], None]  # (step_label, pct 0-100)
 
 

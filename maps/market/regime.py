@@ -485,6 +485,9 @@ class CombinedWeeklyProvider:
         """pykrx 지수 주봉 종가를 반환한다 (실패 시 빈 리스트)."""
         ticker = _KRX_TICKERS[asset_name]
         try:
+            from maps.data.krx_auth import ensure_krx_login_guard  # noqa: PLC0415
+
+            ensure_krx_login_guard()
             from pykrx import stock  # noqa: PLC0415
         except ImportError:
             logger.warning("pykrx not installed")
