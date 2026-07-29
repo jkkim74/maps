@@ -118,6 +118,12 @@ Per-stage gate conditions (all AND):
 
 This mapping drives MC MDD limit lookups in `PromotionGate`. Adding a new strategy ID requires updating `STRATEGY_GROUP_MAP` in `common/constants.py`.
 
+새 전략을 추가할 때는 `strategy/catalog.py` 의 `STRATEGY_PROSE` / `STRATEGY_CLASSES` 에도
+등록하고 `docs/strategy_guides/` 에 가이드 원고를 둬야 한다. 빠뜨리면
+`tests/test_strategy_catalog.py` 가 실패한다 — 전략관리 화면에 식별자만 뜨는 상태를 막는 장치다.
+카탈로그에는 **산문만** 넣는다. 손절률·파라미터·선호 장세·MDD 는 코드에서 읽어 오므로
+값을 복사해 두면 조용히 어긋난다.
+
 ### Database
 
 SQLite by default (`maps.db`). Switch to PostgreSQL via `MAPS_DB_URL`. All tables are created at startup via `Base.metadata.create_all()`. Schema changes go through Alembic (`alembic/versions/`). All audit log tables (`promotion_history`, `universe_quality_log`, `order_log`, `kill_switch_log`) must exist from day 1.
@@ -139,6 +145,18 @@ SQLite by default (`maps.db`). Switch to PostgreSQL via `MAPS_DB_URL`. All table
 5. **Kill Switch** auto-blocks new entries only. Liquidating existing positions requires explicit user approval.
 
 6. **Live trading safety gate:** `MAPS_LIVE_TRADING_ENABLED=false` must be explicitly changed. `MAPS_BROKER_MODE=mock` disables real orders.
+
+7. **손절가는 `live_rules.effective_stop_price()` 하나로만 구한다.** 고정%와 ATR 손절 중
+   **넓은(가격이 낮은) 쪽**이 정본이다. ATR 은 고정% 하한선을 느슨하게만 만들 수 있고
+   조이지는 못한다. 청산 판정·**사이징**·화면 표시가 모두 이 함수를 거쳐야 한다.
+   경로마다 다르면 백테스트와 실거래가 체계적으로 어긋난다(2026-07-29 수정: 사이징이
+   고정%만 써서 ATR 이 넓은 종목의 포지션이 2배로 잡혔다).
+   `backtest/portfolio_replay._resolve_stop` 만 별도 구현을 유지한다 — 전략 신호의
+   `stop_price` 와 미등록 전략용 폴백이라는 백테스트 전용 입력이 있기 때문이다.
+
+8. **pykrx 를 쓰기 전에 `ensure_krx_login_guard()` 를 호출한다.** pykrx 는 요청마다
+   재로그인을 시도해서, 자격증명이 만료되면 재시도 누적이 KRX 계정을 잠근다
+   (2026-07-27 실제 사고, 하루 158회). `maps/data/krx_auth.py` 참고.
 
 ## Allowed MDD by strategy group
 
@@ -168,6 +186,10 @@ Promotion thresholds: `mock_candidate=60`, `live_candidate=75` (fixed, independe
 | `MAPS_ORDER_SLIPPAGE_PCT` | `0.01` | Limit price = last close × (1 + slippage) |
 | `MAPS_ORDER_MAX_GAP_PCT` | `0.02` | Cancel order if gap-up from signal price exceeds this |
 | `MAPS_STOCK_REPORT_PATH` | `/opt/stock_report` | Path to external stock-report source tree |
+| `MAPS_KRX_LOGIN_GUARD_ENABLED` | `true` | KRX 로그인 회로차단기. 끄면 자격증명 만료 시 재시도 누적으로 계정이 잠긴다 |
+| `MAPS_KRX_LOGIN_MAX_FAILURES` | `3` | 연속 실패 몇 회에 회로를 열지 (치명 코드는 1회에 즉시 차단) |
+| `MAPS_KRX_LOGIN_COOLDOWN_SECONDS` | `1800` | 최초 차단 시간. 재차단마다 2배 |
+| `MAPS_KRX_LOGIN_MAX_COOLDOWN_SECONDS` | `21600` | 차단 시간 상한 |
 
 ## Production Server
 
@@ -175,9 +197,9 @@ Promotion thresholds: `mock_candidate=60`, `live_candidate=75` (fixed, independe
 |---|---|
 | Provider | AWS Lightsail (ap-northeast-2 / Seoul) |
 | Public IP | `3.37.117.246` |
-| Domain / URL | `https://magable.kr` (also `www.magable.kr`) |
+| Domain / URL | `https://maps.magable.kr` |
 | SSH user | `ubuntu` |
-| SSH key | `D:\maps\LightsailDefaultKey-ap-northeast-2.pem` |
+| SSH key | **PC마다 경로가 다르다** — 회사 PC `D:\ssh_maps\`, 집 PC `D:\maps\` (`LightsailDefaultKey-ap-northeast-2.pem`) |
 | App root | `/opt/maps` |
 | Service | `maps` (systemd) |
 
@@ -185,12 +207,32 @@ Promotion thresholds: `mock_candidate=60`, `live_candidate=75` (fixed, independe
 
 Public traffic terminates at **nginx**, which reverse-proxies to uvicorn on
 `127.0.0.1:8000`. HTTPS uses a **Let's Encrypt** cert (certbot, auto-renew via
-`certbot.timer`). HTTP (80) 301-redirects to HTTPS (443). HSTS header set on 443.
+`certbot.timer`). HTTP (80) 301-redirects to HTTPS (443).
 
-- nginx site: `/etc/nginx/sites-enabled/maps` (server_name `magable.kr www.magable.kr`)
-- cert: `/etc/letsencrypt/live/magable.kr/` — renew test: `sudo certbot renew --dry-run`
+- nginx site: `/etc/nginx/sites-enabled/maps.magable.kr` (server_name `maps.magable.kr`)
+- cert: `/etc/letsencrypt/live/maps.magable.kr/` — renew test: `sudo certbot renew --dry-run`
 - Lightsail firewall must keep **80 + 443** open (80 = ACME challenge + redirect).
 - Cert/domain depends on a Lightsail **static IP** and a DNS A record → `3.37.117.246`.
+- DNS는 Lightsail이 아니라 **외부 등록업체**에서 관리한다 (`ns1~4.hosting.co.kr`).
+
+#### 2026-07-29 도메인 이전 (`magable.kr` → `maps.magable.kr`)
+
+루트 도메인을 블로그(WordPress, `54.180.179.20`)에 넘기고 MAPS는 서브도메인으로 옮겼다.
+`magable.kr` / `www.magable.kr` 은 **더 이상 이 서버를 가리키지 않는다.**
+구 vhost `/etc/nginx/sites-available/maps` 는 비활성 상태로 남아 있다(참고용).
+
+> ⚠️ **HSTS 헤더가 새 vhost에 없다.** 구 설정에는 있었으나 certbot이 만든 새 파일에는
+> 빠졌다. 필요하면 443 블록에 `add_header Strict-Transport-Security "max-age=31536000" always;`
+> 를 다시 넣을 것.
+
+도메인을 또 바꾼다면 **재배포로는 갱신되지 않는 것들**을 반드시 함께 처리해야 한다:
+
+| 항목 | 확인·조치 |
+|---|---|
+| 텔레그램 웹훅 | URL이 텔레그램 서버에 저장된다. `python scripts/setup_telegram_webhook.py` 재실행 후 `--info` 의 **`ip_address`** 가 우리 서버인지 확인 (URL 문자열만 보면 못 잡는다) |
+| 모바일 앱 | `apps/mobile/src/config.ts` 의 `PROD_DEFAULT`. 이미 설치된 APK는 구 도메인에 고정되므로 재빌드·재설치가 필요하다 |
+| 세션 쿠키 | host-only 라서 호스트가 바뀌면 전원 재로그인 (설정 변경은 불필요) |
+| AdSense | `ads.txt` 는 구 vhost의 `location = /ads.txt` 에 있었다. 새 도메인에서 광고를 쓰려면 다시 등록·배치 |
 
 ### Authentication (login)
 
@@ -215,7 +257,7 @@ Tests force auth off via an autouse fixture (`tests/conftest.py`), so the server
 ### SSH access
 
 ```powershell
-ssh -i "D:\maps\LightsailDefaultKey-ap-northeast-2.pem" ubuntu@3.37.117.246
+ssh -i "D:\ssh_maps\LightsailDefaultKey-ap-northeast-2.pem" ubuntu@3.37.117.246
 ```
 
 ### Manual deploy (step-by-step on server)
@@ -233,7 +275,7 @@ sudo systemctl status maps        # 기동 확인
 ### One-liner deploy from local (PowerShell)
 
 ```powershell
-ssh -i "D:\maps\LightsailDefaultKey-ap-northeast-2.pem" ubuntu@3.37.117.246 `
+ssh -i "D:\ssh_maps\LightsailDefaultKey-ap-northeast-2.pem" ubuntu@3.37.117.246 `
   "cd /opt/maps && git pull origin master && sudo systemctl restart maps && sudo systemctl status maps --no-pager"
 ```
 
@@ -241,11 +283,11 @@ ssh -i "D:\maps\LightsailDefaultKey-ap-northeast-2.pem" ubuntu@3.37.117.246 `
 
 ```powershell
 # 실시간 로그
-ssh -i "D:\maps\LightsailDefaultKey-ap-northeast-2.pem" ubuntu@3.37.117.246 `
+ssh -i "D:\ssh_maps\LightsailDefaultKey-ap-northeast-2.pem" ubuntu@3.37.117.246 `
   "sudo journalctl -u maps -f"
 
 # 최근 100줄
-ssh -i "D:\maps\LightsailDefaultKey-ap-northeast-2.pem" ubuntu@3.37.117.246 `
+ssh -i "D:\ssh_maps\LightsailDefaultKey-ap-northeast-2.pem" ubuntu@3.37.117.246 `
   "sudo journalctl -u maps -n 100 --no-pager"
 ```
 
