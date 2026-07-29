@@ -43,6 +43,27 @@ _ATR_MULTIPLIERS: dict[str, float] = {
 }
 
 
+def stop_loss_pct(strategy_id: str | None) -> float | None:
+    """전략의 고정 손절 비율을 반환한다 (``0.05`` = 5%).
+
+    화면·문서가 손절률을 직접 표시할 때 쓴다. 값을 복사해 두지 말고 이 함수를
+    거쳐야 규칙이 바뀔 때 표시도 함께 바뀐다.
+
+    :param strategy_id: 전략 ID.
+    :return: 손절 비율. 미등록 전략이면 ``None``.
+    """
+    return _STOP_LOSS_PCTS.get(strategy_id) if strategy_id else None
+
+
+def atr_multiplier(strategy_id: str | None) -> float | None:
+    """전략의 ATR(14) 손절 배수를 반환한다.
+
+    :param strategy_id: 전략 ID.
+    :return: ATR 배수. 미등록 전략이면 ``None``.
+    """
+    return _ATR_MULTIPLIERS.get(strategy_id) if strategy_id else None
+
+
 def stop_loss_price(strategy_id: str | None, entry_price: float | None) -> float | None:
     """Return the persisted live stop level based on the filled entry price."""
     if not strategy_id or entry_price is None or entry_price <= 0:

@@ -54,6 +54,31 @@ class StrategyItem(BaseModel):
     wfa_cv: float | None
     promotion_pending: bool
     fail_reasons: list[str]
+    # 화면 표시용 설명. 카탈로그에 없는 전략이면 display_name 은 ID 로 폴백한다.
+    display_name: str
+    summary: str | None = None
+    preferred_regimes: list[str] = []
+    stop_loss_pct: float | None = None
+    has_guide: bool = False
+
+
+class StrategyGuideResponse(BaseModel):
+    """전략 상세 설명 — 산문 + 코드에서 읽어온 규칙 값."""
+
+    strategy_id: str
+    display_name: str
+    summary: str
+    idea: str
+    entry_rules: list[str]
+    exit_rules: list[str]
+    strategy_group: str | None
+    preferred_regimes: list[str]
+    stop_loss_pct: float | None
+    atr_multiplier: float | None
+    mdd_limit: float | None
+    default_params: dict
+    # 네이버 블로그에 그대로 붙여넣을 수 있는 원고 전문. 파일이 없으면 None.
+    guide_text: str | None
 
 
 class PromotionHistoryItem(BaseModel):

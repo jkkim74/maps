@@ -143,31 +143,174 @@ async function loadDashboard() {
 }
 
 // ── SCR-02 전략 관리 ─────────────────────────────────────────────────────────
+const REGIME_LABELS = { strong: '강세', mixed: '혼조', weak: '약세' };
+
+function regimeBadges(regimes) {
+  if (!regimes || regimes.length === 0) return '<span class="text-muted">—</span>';
+  const cls = { strong: 'pass', mixed: 'info', weak: 'warn' };
+  return regimes.map(r => badge(REGIME_LABELS[r] || r, cls[r] || 'info')).join(' ');
+}
+
+function switchStrategyTab(tab) {
+  // 상세 패널은 어느 탭으로 옮겨가든 닫는다.
+  document.getElementById('strategy-detail').classList.add('hidden');
+  document.getElementById('tab-ops').classList.toggle('hidden', tab !== 'ops');
+  document.getElementById('tab-guide').classList.toggle('hidden', tab !== 'guide');
+  document.querySelectorAll('.tab-bar .tab-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.tab === tab);
+  });
+  if (tab === 'guide') loadStrategyCards();
+}
+
 async function loadStrategies() {
   loading('strategies-area');
   try {
     const d = await apiFetch('/strategies');
     if (d.strategies.length === 0) { empty('strategies-area', '등록된 전략 없음'); return; }
+    _strategyCache = d.strategies;
 
     const rows = d.strategies.map(s => `
-      <tr>
-        <td class="mono">${s.strategy_id}</td>
+      <tr class="${s.has_guide ? 'row-clickable' : ''}"
+          ${s.has_guide ? `onclick="showStrategyDetail('${esc(s.strategy_id)}')"` : ''}>
+        <td>
+          <div>${esc(s.display_name)}</div>
+          <div class="mono text-muted" style="font-size:11px">${esc(s.strategy_id)}</div>
+        </td>
         <td>${stageBadge(s.stage)}</td>
         <td class="mono">${fmt.score(s.tradeability_score)}</td>
         <td class="mono">${fmt.score(s.plateau_score)}</td>
         <td class="mono">${s.mc_mdd_p95 != null ? fmt.pct1(s.mc_mdd_p95) : '—'}</td>
         <td>${s.wfa_passed != null ? passBadge(s.wfa_passed) : '—'}</td>
+        <td>${regimeBadges(s.preferred_regimes)}</td>
         <td>${s.promotion_pending ? badge('대기', 'warn') : '—'}</td>
       </tr>`).join('');
 
     document.getElementById('strategies-area').innerHTML = `
       <div class="flex-between mb-16">
         <span class="text-muted">전체 ${d.total}개 · 승격 대기 ${d.pending_promotions}건</span>
+        <span class="text-muted" style="font-size:12px">행을 클릭하면 전략 설명이 열립니다</span>
       </div>
       <table><thead><tr>
-        <th>전략 ID</th><th>단계</th><th>Tradeability</th><th>Plateau</th><th>MC MDD p95</th><th>WFA</th><th>승격</th>
+        <th>전략</th><th>단계</th><th>Tradeability</th><th>Plateau</th><th>MC MDD p95</th><th>WFA</th><th>선호 장세</th><th>승격</th>
       </tr></thead><tbody>${rows}</tbody></table>`;
   } catch (e) { empty('strategies-area', `오류: ${e.message}`); }
+}
+
+let _strategyCache = null;
+
+async function loadStrategyCards() {
+  const host = document.getElementById('strategy-cards');
+  if (host.dataset.loaded === '1') return;
+  loading('strategy-cards');
+  try {
+    if (!_strategyCache) _strategyCache = (await apiFetch('/strategies')).strategies;
+    const cards = _strategyCache.filter(s => s.has_guide);
+    if (cards.length === 0) { empty('strategy-cards', '설명이 등록된 전략 없음'); return; }
+
+    host.innerHTML = `<div class="strat-grid">${cards.map(s => `
+      <div class="strat-card" onclick="showStrategyDetail('${esc(s.strategy_id)}')">
+        <div class="strat-card-name">${esc(s.display_name)}</div>
+        <div class="strat-card-id">${esc(s.strategy_id)}</div>
+        <div class="strat-card-summary">${esc(s.summary || '')}</div>
+        <div class="strat-card-meta">
+          ${regimeBadges(s.preferred_regimes)}
+          ${s.stop_loss_pct != null ? badge('손절 ' + fmt.pct1(s.stop_loss_pct), 'info') : ''}
+        </div>
+      </div>`).join('')}</div>`;
+    host.dataset.loaded = '1';
+  } catch (e) { empty('strategy-cards', `오류: ${e.message}`); }
+}
+
+function paramTable(params) {
+  const keys = Object.keys(params || {});
+  if (keys.length === 0) return '<span class="text-muted">—</span>';
+  return keys.map(k => `${esc(k)} = <span class="mono">${esc(params[k])}</span>`).join(' · ');
+}
+
+async function showStrategyDetail(strategyId) {
+  const panel = document.getElementById('strategy-detail');
+  document.getElementById('tab-ops').classList.add('hidden');
+  document.getElementById('tab-guide').classList.add('hidden');
+  panel.classList.remove('hidden');
+  loading('strategy-detail-body');
+
+  try {
+    const g = await apiFetch(`/strategies/guide/${encodeURIComponent(strategyId)}`);
+    const rules = (title, items) => `
+      <div class="strat-rule-box">
+        <div class="strat-rule-head">${title}</div>
+        <ul>${items.map(r => `<li>${esc(r)}</li>`).join('')}</ul>
+      </div>`;
+
+    document.getElementById('strategy-detail-body').innerHTML = `
+      <div class="strat-detail-head">
+        <div>
+          <div class="strat-detail-title">${esc(g.display_name)}</div>
+          <div class="mono text-muted" style="font-size:12px">${esc(g.strategy_id)}
+            ${g.strategy_group ? '· ' + esc(g.strategy_group) : ''}</div>
+        </div>
+        <button class="btn-copy" onclick="closeStrategyDetail()">← 목록</button>
+      </div>
+
+      <div class="strat-detail-idea">${esc(g.idea)}</div>
+
+      <div class="kpi-grid mb-16">
+        <div class="kpi-card">
+          <div class="kpi-label">선호 장세</div>
+          <div class="kpi-value" style="font-size:18px">${(g.preferred_regimes || []).map(r => REGIME_LABELS[r] || r).join(' · ') || '—'}</div>
+          <div class="kpi-sub">이 외 장세에서는 매수 안 함</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">고정 손절</div>
+          <div class="kpi-value">${g.stop_loss_pct != null ? fmt.pct1(g.stop_loss_pct) : '—'}</div>
+          <div class="kpi-sub">ATR × ${g.atr_multiplier != null ? fmt.num1(g.atr_multiplier) : '—'} 중 넓은 쪽</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">허용 MDD</div>
+          <div class="kpi-value">${g.mdd_limit != null ? fmt.pct1(g.mdd_limit) : '—'}</div>
+          <div class="kpi-sub">MC p95 한도</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">기본 파라미터</div>
+          <div class="kpi-value" style="font-size:13px;line-height:1.6">${paramTable(g.default_params)}</div>
+          <div class="kpi-sub">default_params</div>
+        </div>
+      </div>
+
+      <div class="strat-rule-cols">
+        ${rules('진입 조건 (모두 만족)', g.entry_rules)}
+        ${rules('청산 조건', g.exit_rules)}
+      </div>
+
+      ${g.guide_text ? `
+        <div class="strat-guide-head">
+          <span class="strat-rule-head" style="margin:0">초보자용 가이드 (블로그 원고)</span>
+          <button class="btn-copy" id="guide-copy-btn" onclick="copyGuideText(this)">전체 복사</button>
+        </div>
+        <div class="strat-guide-text" id="guide-text">${esc(g.guide_text)}</div>
+      ` : '<div class="text-muted">가이드 원고 파일이 없습니다.</div>'}`;
+  } catch (e) {
+    empty('strategy-detail-body', `오류: ${e.message}`);
+  }
+}
+
+function closeStrategyDetail() {
+  const wasGuideTab = document.querySelector('.tab-bar .tab-btn.active')?.dataset.tab === 'guide';
+  switchStrategyTab(wasGuideTab ? 'guide' : 'ops');
+}
+
+async function copyGuideText(btn) {
+  // textContent 로 읽어야 esc() 로 넣은 &amp; 같은 엔티티가 원문으로 돌아온다.
+  const text = document.getElementById('guide-text').textContent;
+  try {
+    await navigator.clipboard.writeText(text);
+    btn.textContent = '복사됨 ✓';
+    btn.classList.add('done');
+    setTimeout(() => { btn.textContent = '전체 복사'; btn.classList.remove('done'); }, 2000);
+  } catch (_) {
+    btn.textContent = '복사 실패';
+    setTimeout(() => { btn.textContent = '전체 복사'; }, 2000);
+  }
 }
 
 // ── SCR-03 장세 · 팩터 ───────────────────────────────────────────────────────

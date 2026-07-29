@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from maps.api.deps import get_db
-from maps.api.schemas import PromotionHistoryItem, StrategiesResponse, StrategyItem
+from maps.api.schemas import (
+    PromotionHistoryItem,
+    StrategiesResponse,
+    StrategyGuideResponse,
+    StrategyItem,
+)
 from maps.common.constants import STRATEGY_GROUP_MAP, WEIGHT_PRESETS
 from maps.common.models import (
     MonteCarloSequenceResults,
@@ -16,8 +22,12 @@ from maps.common.models import (
     PromotionHistory,
     WalkForwardResults,
 )
+from maps.strategy.catalog import describe_strategy
 
 router = APIRouter(prefix="/api/v1/strategies", tags=["SCR-02 Strategies"])
+
+#: 전략 가이드 원고 위치. 파일명은 카탈로그가 정하므로 입력이 경로에 닿지 않는다.
+_GUIDE_DIR = Path(__file__).resolve().parents[2] / "docs" / "strategy_guides"
 
 
 @router.get("", response_model=StrategiesResponse)
@@ -97,6 +107,7 @@ def _to_strategy_item(
 ) -> StrategyItem:
     tradeability = promotion.tradeability_score if promotion else _tradeability_score(plateau, mc, wfa)
     fail_reasons = json.loads(promotion.fail_reasons_json) if promotion and promotion.fail_reasons_json else []
+    described = describe_strategy(strategy_id)
     return StrategyItem(
         strategy_id=strategy_id,
         name=strategy_id,
@@ -108,6 +119,11 @@ def _to_strategy_item(
         wfa_cv=_wfa_cv(wfa) or 0.0,
         promotion_pending=False,
         fail_reasons=fail_reasons,
+        display_name=described.display_name if described else strategy_id,
+        summary=described.summary if described else None,
+        preferred_regimes=list(described.preferred_regimes) if described else [],
+        stop_loss_pct=described.stop_loss_pct if described else None,
+        has_guide=described is not None,
     )
 
 
@@ -135,6 +151,38 @@ def _wfa_cv(wfa: WalkForwardResults | None) -> float | None:
     if not wfa or wfa.sharpe_mean == 0:
         return None
     return abs(wfa.sharpe_std / wfa.sharpe_mean)
+
+
+@router.get("/guide/{strategy_id}", response_model=StrategyGuideResponse)
+def get_strategy_guide(strategy_id: str) -> StrategyGuideResponse:
+    """전략 설명과 블로그 원고 전문을 반환한다.
+
+    원고 파일이 없어도 설명 자체는 돌려준다 — 배포본에 `docs/` 가 빠져 있어도
+    화면의 개요 탭은 계속 동작해야 한다.
+    """
+    described = describe_strategy(strategy_id)
+    if described is None:
+        raise HTTPException(status_code=404, detail=f"전략 '{strategy_id}' 설명 없음")
+
+    guide_path = _GUIDE_DIR / described.guide_file
+    guide_text = (
+        guide_path.read_text(encoding="utf-8") if guide_path.is_file() else None
+    )
+    return StrategyGuideResponse(
+        strategy_id=described.strategy_id,
+        display_name=described.display_name,
+        summary=described.summary,
+        idea=described.idea,
+        entry_rules=list(described.entry_rules),
+        exit_rules=list(described.exit_rules),
+        strategy_group=described.strategy_group,
+        preferred_regimes=list(described.preferred_regimes),
+        stop_loss_pct=described.stop_loss_pct,
+        atr_multiplier=described.atr_multiplier,
+        mdd_limit=described.mdd_limit,
+        default_params=described.default_params,
+        guide_text=guide_text,
+    )
 
 
 @router.get("/history/{strategy_id}", response_model=list[PromotionHistoryItem])

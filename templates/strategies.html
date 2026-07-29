@@ -1,5 +1,21 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="section-header"><span class="section-title">전략 목록</span><hr></div>
-<div class="card"><div class="card-body" id="strategies-area"><div class="loading"><div class="spinner"></div></div></div></div>
+<div class="section-header"><span class="section-title">전략 관리</span><hr></div>
+
+<div class="tab-bar">
+  <button class="tab-btn active" data-tab="ops" onclick="switchStrategyTab('ops')">운용 현황</button>
+  <button class="tab-btn" data-tab="guide" onclick="switchStrategyTab('guide')">전략 설명</button>
+</div>
+
+<div class="card" id="tab-ops">
+  <div class="card-body" id="strategies-area"><div class="loading"><div class="spinner"></div></div></div>
+</div>
+
+<div class="card hidden" id="tab-guide">
+  <div class="card-body" id="strategy-cards"><div class="loading"><div class="spinner"></div></div></div>
+</div>
+
+<div class="card hidden" id="strategy-detail">
+  <div class="card-body" id="strategy-detail-body"></div>
+</div>
 {% endblock %}
