@@ -80,6 +80,37 @@ def test_contrarian_quality_prefers_valuation_and_earnings_revision():
     assert expensive_weak.final_score <= 39.0
 
 
+def test_legacy_reason_contains_per_ticker_measurements():
+    """근거 문자열은 공식 설명이 아니라 종목별 실측치여야 한다 — 매매일지의 재료다."""
+    result = LegacyFinalScoreCalculator().calculate(
+        factor_score=100.0,
+        trend_strength=29.93,
+        strategy_type=StrategyType.MOMENTUM,
+        ts_bucket="S2",
+    )
+
+    assert "100.0" in result.reason
+    assert "29.9" in result.reason
+    assert "(S2)" in result.reason
+    assert f"{result.final_score:.2f}" in result.reason
+
+
+def test_strategy_aware_reason_lists_component_values_and_placeholders():
+    result = StrategyAwareScoreCalculator().calculate(
+        StrategyScoreInput(
+            strategy_type=StrategyType.PULLBACK,
+            liquidity_score=70.0,
+            trend_strength=60.0,
+            valuation_margin_score=55.0,
+        )
+    )
+
+    assert "valuation_margin_score=55.0" in result.reason
+    # extra_scores 없이 중립 추정된 컴포넌트는 placeholder 마커에 나열돼야 한다
+    assert "neutral placeholders=" in result.reason
+    assert "supply_demand_score" in result.reason
+
+
 def test_missing_strategy_components_use_neutral_scores():
     result = StrategyAwareScoreCalculator().calculate(
         StrategyScoreInput(

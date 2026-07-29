@@ -789,11 +789,14 @@ class DigestSectors(BaseModel):
 class DigestStrategy(BaseModel):
     strategy_id: str
     strategy_type: str | None = None
-    stage: str | None = None                 # promotion_history 최신 통과 단계
+    stage: str | None = None                 # 승격 이력 없으면 "research" (암묵 초기 단계)
     preferred_regimes: list[str] = []
-    active: bool = False                     # 오늘 진입 허용 여부
+    active: bool = False                     # 오늘 진입 허용 여부 (국면 판정)
     block_reason: str | None = None          # 차단 사유 (active=False일 때)
     entry_limit_ratio: float | None = None
+    # 국면상 active 여도 승격 단계가 주문 자격에 못 미치면 False — 주문 경로의
+    # eligible_stages 판정과 동일 기준. "활성인데 왜 주문이 없나"를 다이제스트만으로 읽게 한다.
+    orderable: bool = False
 
 
 class DigestCandidate(BaseModel):
@@ -814,6 +817,9 @@ class DigestCandidate(BaseModel):
     ai_buy_price: float | None = None
     ai_stop_price: float | None = None
     ai_target_price: float | None = None
+    # ai_* 가격 컬럼은 AI 미작동 시 룰 기반 폴백 값이 들어간다 — 출처를 명시해야
+    # "AI 제시 매수가"로 잘못 읽히지 않는다. ai | analysis_pick | rule
+    price_source: str | None = None
     ai_contrarian_opinion: str | None = None
     ai_contrarian_thesis: str | None = None
     ai_contrarian_anti_thesis: str | None = None
@@ -851,8 +857,14 @@ class DailyDigest(BaseModel):
     sectors: DigestSectors | None = None
     strategies: list[DigestStrategy] = []
     candidates: list[DigestCandidate] = []
-    candidate_total: int = 0
-    candidate_excluded: int = 0
+    candidate_total: int = 0                 # 고유 ticker 수 (전략 중복 제거)
+    candidate_excluded: int = 0              # 점수식이 excluded_reason 을 남긴 스냅샷 수
+    # 데이터 품질 필터(universe_quality_log) 통계 — 후보 스냅샷과 별개의 상류 단계.
+    # 스냅샷 행 수를 세면 "유니버스 × 전략 수"가 되어 제외율이 항상 0으로 보인다.
+    universe_total: int | None = None
+    universe_kept: int | None = None
+    universe_excluded: int | None = None
+    universe_rejection_ratio: float | None = None
     tomorrow_orders: OrderPreviewResponse | None = None
     executions: list[DigestExecution] = []
     market_context: list[DigestReportExcerpt] = []

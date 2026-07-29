@@ -16,12 +16,15 @@ from sqlalchemy.pool import StaticPool
 import maps.common.models  # noqa: F401 — 모델 등록
 from maps.common.db import Base
 from maps.common.models import (
+    AnalysisPick,
     CandidateSnapshot,
     HistoricalOHLCV,
     MarketRegimeLog,
     OrderLog,
+    PromotionHistory,
     SecurityMetadata,
     StockReportRun,
+    UniverseQualityLog,
 )
 from maps.common.settings import MapsSettings
 from maps.ops.daily_digest import _html_to_text, build_daily_digest
@@ -205,6 +208,86 @@ def test_digest_survives_empty_database(db, settings) -> None:
     assert digest.executions == []
     assert digest.market is not None       # 로그가 없으면 재계산으로 채운다
     assert digest.market.source == "recomputed"
+
+
+def test_universe_stats_come_from_quality_log(db, settings) -> None:
+    """제외 통계는 DQ 필터의 감사 로그가 정본이다 — 스냅샷 행 수를 세면 항상 0%가 된다."""
+    _seed(db)
+    db.add(UniverseQualityLog(
+        ref_date=REF_DATE, mode="live", total_candidates=2771,
+        kept_count=1818, excluded_count=953, rejection_ratio=0.344,
+    ))
+    db.commit()
+
+    digest = build_daily_digest(db, settings, REF_DATE)
+
+    assert digest.universe_total == 2771
+    assert digest.universe_excluded == 953
+    assert digest.universe_rejection_ratio == 0.344
+
+
+def test_top_candidates_dedupe_across_strategies(db, settings) -> None:
+    """같은 종목이 전략 수만큼 상위권을 차지하면 안 된다 — 최고 점수 1행만."""
+    _seed(db)
+    db.add(CandidateSnapshot(
+        ref_date=REF_DATE, strategy_id="pullback_v3", ticker="475150",
+        name="SK이터닉스", market="KOSDAQ", factor_score=70.0, trend_strength=60.0,
+        ts_bucket="S2", final_score=66.0, weekly_pass=True,
+    ))
+    db.commit()
+
+    digest = build_daily_digest(db, settings, REF_DATE)
+
+    tickers = [c.ticker for c in digest.candidates]
+    assert tickers.count("475150") == 1
+    winner = next(c for c in digest.candidates if c.ticker == "475150")
+    assert winner.strategy_id == "donchian_v2"          # final_score 74.0 > 66.0
+    assert digest.candidate_total == 2                  # 고유 ticker 수 (행 수 3이 아니라)
+
+
+def test_price_source_labels_rule_based_fallback(db, settings) -> None:
+    """AI 미작동 시 ai_buy_price 는 룰 기반 폴백이다 — 출처를 정직하게 밝혀야 한다."""
+    _seed(db)
+    digest = build_daily_digest(db, settings, REF_DATE)
+
+    assert all(c.price_source == "rule" for c in digest.candidates)
+
+
+def test_candidates_backfill_from_analysis_pick(db, settings) -> None:
+    """/analyze 결과(analysis_pick)가 있으면 메모·가격을 보강하고 출처를 표시한다."""
+    _seed(db)
+    db.add(AnalysisPick(
+        ref_date=REF_DATE, ticker="475150", name="SK이터닉스", market="KOSDAQ",
+        buy_price=80000.0, target_price=95000.0, stop_price=74000.0,
+        rationale="20일 돌파 후 눌림, 수급 양호",
+    ))
+    db.commit()
+
+    digest = build_daily_digest(db, settings, REF_DATE)
+
+    pick_candidate = next(c for c in digest.candidates if c.ticker == "475150")
+    assert pick_candidate.price_source == "analysis_pick"
+    assert pick_candidate.ai_buy_price == 80000.0
+    assert pick_candidate.ai_analysis_memo == "20일 돌파 후 눌림, 수급 양호"
+
+
+def test_strategy_stage_defaults_to_research_and_flags_orderable(db, settings) -> None:
+    """승격 이력 없는 전략은 null 이 아니라 research 로, 주문 자격 여부와 함께 표시한다."""
+    _seed(db)
+    db.add(PromotionHistory(
+        strategy_id="donchian_v2", from_stage="alert_only", to_stage="mock_candidate",
+        tradeability_score=65.0, passed=True,
+    ))
+    db.commit()
+
+    digest = build_daily_digest(db, settings, REF_DATE)
+
+    by_id = {s.strategy_id: s for s in digest.strategies}
+    assert by_id["pullback_v2"].stage == "research"
+    assert by_id["pullback_v2"].orderable is False
+    assert by_id["donchian_v2"].stage == "mock_candidate"
+    # mock 브로커(모의 계좌)에서는 mock_candidate 도 주문 대상이다
+    assert by_id["donchian_v2"].orderable is True
 
 
 def test_html_to_text_drops_script_and_style() -> None:

@@ -56,8 +56,13 @@ KST 실행 시간은 운영 실제값(서버 `.env` 오버라이드) 기준이�
 #### `_save_candidate_snapshot` final_score 계산
 
 ```
-final_score = 0.6 × factor_score(거래대금) + 0.4 × trend_strength
+final_score = 0.6 × factor_score(거래대금) + 0.4 × trend_strength   # legacy (기본)
 ```
+
+`MAPS_STRATEGY_AWARE_SCORING_ENABLED=true`면 `StrategyAwareScoreCalculator`가 전략
+유형별 가중치를 대신 쓴다 (pullback/contrarian은 유동성 가중치 없음, contrarian은
+밸류마진 60 미만 시 excluded_reason 기록). factor_score는 유니버스 1위 거래대금 대비
+상대값이라 legacy 식에서는 초대형주가 항상 최상단에 온다.
 
 #### `_order_candidates` 필터 조건
 

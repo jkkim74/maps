@@ -68,6 +68,7 @@ class LegacyFinalScoreCalculator:
         ai_technical_score: float | None = None,
         ai_weight: float = 0.0,
         strategy_type: StrategyType | str | None = None,
+        ts_bucket: str | None = None,
     ) -> ScoreResult:
         factor = _normalize(factor_score, default=0.0)
         trend = _normalize(trend_strength)
@@ -76,16 +77,18 @@ class LegacyFinalScoreCalculator:
             "liquidity_score": factor,
             "trend_strength": trend,
         }
-        reason = "legacy formula: liquidity 60%, trend_strength 40%"
+        bucket = f"({ts_bucket})" if ts_bucket else ""
+        reason = (
+            f"유동성 {factor:.1f}×0.6 + 추세 {trend:.1f}×0.4{bucket} = {round(base_score, 2):.2f}"
+        )
         if ai_technical_score is not None:
             ai_score = _normalize(ai_technical_score)
             weight = max(0.0, min(float(ai_weight), 1.0))
             final_score = round((1.0 - weight) * base_score + weight * ai_score, 2)
             components["ai_technical_score"] = ai_score
             reason = (
-                "legacy formula with AI overlay: "
-                f"base {round(base_score, 2)} at {round((1.0 - weight) * 100, 1)}%, "
-                f"AI at {round(weight * 100, 1)}%"
+                f"{reason}; AI 오버레이 {ai_score:.1f}"
+                f"×{round(weight, 2)} → {final_score:.2f}"
             )
         else:
             final_score = round(base_score, 2)
@@ -135,41 +138,48 @@ class StrategyAwareScoreCalculator:
 
         if strategy_type == StrategyType.BREAKOUT.value:
             components = self._breakout_components(score_input, extra)
-            score = _weighted_sum(components, self._BREAKOUT_WEIGHTS)
-            reason = "breakout formula: liquidity/trend/new-high/foreign-flow"
+            weights = self._BREAKOUT_WEIGHTS
+            score = _weighted_sum(components, weights)
             excluded_reason = None
+            label = "breakout"
         elif strategy_type == StrategyType.PULLBACK.value:
             components = self._pullback_components(score_input, extra)
-            score = _weighted_sum(components, self._PULLBACK_WEIGHTS)
-            reason = "pullback formula: support/cooling/trend/supply-demand/valuation"
+            weights = self._PULLBACK_WEIGHTS
+            score = _weighted_sum(components, weights)
             excluded_reason = None
+            label = "pullback"
         elif strategy_type == StrategyType.CONTRARIAN_QUALITY.value:
             components = self._contrarian_components(score_input, extra)
-            raw_score = _weighted_sum(components, self._CONTRARIAN_WEIGHTS)
+            weights = self._CONTRARIAN_WEIGHTS
+            raw_score = _weighted_sum(components, weights)
             excluded_reason = None
             if components["valuation_margin_score"] < 60.0:
                 excluded_reason = "valuation_margin_below_contrarian_threshold"
                 score = min(raw_score, 39.0)
             else:
                 score = raw_score
-            reason = "contrarian_quality formula: valuation/earnings/neglect/accumulation/bottom"
+            label = "contrarian_quality"
         elif strategy_type == StrategyType.MULTI_ASSET_TREND.value:
             components = self._multi_asset_components(score_input, extra)
-            score = _weighted_sum(components, self._MULTI_ASSET_WEIGHTS)
-            reason = "multi_asset_trend formula: asset trend/vol-adjusted momentum/macro liquidity/risk"
+            weights = self._MULTI_ASSET_WEIGHTS
+            score = _weighted_sum(components, weights)
             excluded_reason = None
+            label = "multi_asset_trend"
         else:
             components = self._momentum_components(score_input, extra)
-            score = _weighted_sum(components, {"liquidity_score": 0.50, "trend_strength": 0.50})
-            reason = "default strategy-aware formula: liquidity 50%, trend_strength 50%"
+            weights = {"liquidity_score": 0.50, "trend_strength": 0.50}
+            score = _weighted_sum(components, weights)
             excluded_reason = None
+            label = "momentum"
+
+        reason = self._build_reason(label, components, weights, score, extra)
 
         ai_score = _normalize(score_input.ai_technical_score) if score_input.ai_technical_score is not None else None
         if ai_score is not None and score_input.ai_weight > 0:
             weight = max(0.0, min(float(score_input.ai_weight), 1.0))
             score = round((1.0 - weight) * score + weight * ai_score, 2)
             components["ai_technical_score"] = ai_score
-            reason = f"{reason}; AI technical overlay weight={round(weight, 2)}"
+            reason = f"{reason}; AI 오버레이 {ai_score:.1f}×{round(weight, 2)}"
 
         return ScoreResult(
             final_score=round(score, 2),
@@ -179,6 +189,35 @@ class StrategyAwareScoreCalculator:
             reason=reason,
             excluded_reason=excluded_reason,
         )
+
+    # StrategyScoreInput 에서 직접 실측으로 들어오는 컴포넌트. 이 밖의 키가
+    # extra_scores 에도 없으면 중립 추정치(placeholder)로 채워진 것이다.
+    _DIRECT_INPUTS = frozenset({"liquidity_score", "trend_strength", "valuation_margin_score"})
+
+    @classmethod
+    def _build_reason(
+        cls,
+        label: str,
+        components: dict[str, float],
+        weights: dict[str, float],
+        score: float,
+        extra: dict[str, Any],
+    ) -> str:
+        """종목별 실측치로 근거 문자열을 만든다.
+
+        placeholder 마커 형식(``; neutral placeholders=a,b,c``)은 SectorScorer 와
+        동일한 규약 — 다이제스트가 이 접미사를 파싱해 "미측정" 목록을 노출한다.
+        """
+        parts = ", ".join(
+            f"{name}={components[name]:.1f}×{weights[name]:.2f}" for name in weights
+        )
+        reason = f"{label}: {parts} = {score:.2f}"
+        placeholders = [
+            name for name in weights if name not in cls._DIRECT_INPUTS and name not in extra
+        ]
+        if placeholders:
+            reason = f"{reason}; neutral placeholders={','.join(placeholders)}"
+        return reason
 
     def _breakout_components(self, score_input: StrategyScoreInput, extra: dict[str, Any]) -> dict[str, float]:
         trend = _normalize(score_input.trend_strength)

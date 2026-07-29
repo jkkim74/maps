@@ -33,11 +33,13 @@ from maps.api.schemas import (
     DigestStrategy,
 )
 from maps.common.models import (
+    AnalysisPick,
     CandidateSnapshot,
     MarketRegimeLog,
     OrderLog,
     SecurityMetadata,
     StockReportRun,
+    UniverseQualityLog,
 )
 from maps.common.settings import MapsSettings
 from maps.execution.order_manager import kst_day_bounds_utc
@@ -238,12 +240,14 @@ def _build_strategies(
 ) -> list[DigestStrategy]:
     """오늘 어떤 전략이 왜 채택/차단됐는지. 스케줄러의 판정 로직을 그대로 재현한다."""
     from maps.market.regime import create_regime_analyzer
-    from maps.ops.order_preview import _latest_promotions
+    from maps.ops.order_preview import _LIVE_STAGES, _latest_promotions
     from maps.ops.scheduler import _RUNNABLE_STRATEGIES
 
     regime = create_regime_analyzer(settings).analyze()
     regime_label = regime.regime.value
     stages = _latest_promotions(db)
+    # 주문 경로(_order_candidates)와 동일한 자격 판정 — 모의 계좌는 mock_candidate 도 주문한다.
+    eligible_stages = _LIVE_STAGES | ({"mock_candidate"} if settings.is_paper_account else set())
 
     out: list[DigestStrategy] = []
     for strategy_id, cls in _RUNNABLE_STRATEGIES.items():
@@ -264,24 +268,91 @@ def _build_strategies(
             limit_ratio = policy.entry_limit_ratio
             if not policy.allowed:
                 block_reason = policy.reason
+        # 승격 성공 이력이 없으면 암묵적으로 research 단계다 — null 로 두면
+        # "검증 안 된 전략이 돌고 있다"로 잘못 읽힌다.
+        stage = stages.get(strategy_id) or "research"
         out.append(
             DigestStrategy(
                 strategy_id=strategy_id,
                 strategy_type=strategy_type,
-                stage=stages.get(strategy_id),
+                stage=stage,
                 preferred_regimes=preferred,
                 active=block_reason is None,
                 block_reason=block_reason,
                 entry_limit_ratio=limit_ratio,
+                orderable=stage in eligible_stages,
             )
         )
     return out
 
 
+def _latest_picks(db: Session, tickers: set[str], ref_date: dt.date) -> dict[str, AnalysisPick]:
+    """ticker별 최신 analysis_pick (/analyze 결과). candidate_snapshot 과 분리된
+    별도 보관소라 다이제스트 표시 시점에만 읽어온다 — 스냅샷에 되쓰지 않는다."""
+    if not tickers:
+        return {}
+    picks: dict[str, AnalysisPick] = {}
+    for pick in (
+        db.query(AnalysisPick)
+        .filter(AnalysisPick.ticker.in_(tickers), AnalysisPick.ref_date <= ref_date)
+        .order_by(AnalysisPick.ref_date.desc(), AnalysisPick.id.desc())
+        .all()
+    ):
+        picks.setdefault(pick.ticker, pick)
+    return picks
+
+
+def _candidate_from_row(r: CandidateSnapshot, pick: AnalysisPick | None) -> DigestCandidate:
+    """스냅샷 1행 → 다이제스트 후보. AI 미작동 시 /analyze 결과로 보강하고 가격 출처를 밝힌다."""
+    memo = r.ai_analysis_memo
+    buy, stop, target = r.ai_buy_price, r.ai_stop_price, r.ai_target_price
+    if r.ai_technical_score is not None:
+        price_source = "ai"
+    elif pick is not None and pick.buy_price:
+        # 스냅샷의 ai_* 가격은 룰 기반 폴백 — /analyze 가 낸 계획이 있으면 그쪽이 우선
+        buy, stop, target = pick.buy_price, pick.stop_price, pick.target_price
+        price_source = "analysis_pick"
+    else:
+        price_source = "rule"
+    if memo is None and pick is not None:
+        memo = pick.rationale
+
+    return DigestCandidate(
+        ticker=r.ticker,
+        name=r.name,
+        market=r.market,
+        strategy_id=r.strategy_id,
+        final_score=r.final_score,
+        factor_score=r.factor_score,
+        trend_strength=r.trend_strength,
+        ts_bucket=r.ts_bucket,
+        score_reason=r.score_reason,
+        excluded_reason=r.excluded_reason,
+        holding_type=r.holding_type,
+        estimated_qty=r.estimated_qty,
+        ai_technical_score=r.ai_technical_score,
+        ai_analysis_memo=memo,
+        ai_buy_price=buy,
+        ai_stop_price=stop,
+        ai_target_price=target,
+        price_source=price_source,
+        ai_contrarian_opinion=r.ai_contrarian_opinion,
+        ai_contrarian_thesis=r.ai_contrarian_thesis,
+        ai_contrarian_anti_thesis=r.ai_contrarian_anti_thesis,
+        valuation_margin_score=r.valuation_margin_score,
+        valuation_margin_reason=r.valuation_margin_reason,
+    )
+
+
 def _build_candidates(
     db: Session, ref_date: dt.date
-) -> tuple[list[DigestCandidate], int, int]:
-    """후보 종목 섹션. 상위 N건과 전체/제외 건수를 함께 반환한다."""
+) -> tuple[list[DigestCandidate], int, int, UniverseQualityLog | None]:
+    """후보 종목 섹션. 상위 N건(종목 중복 제거)과 집계, 유니버스 품질 로그를 반환한다.
+
+    스냅샷은 (ref_date, strategy_id, ticker)당 1행이라 행 수를 그대로 세면
+    "유니버스 × 전략 수"가 된다. 전체 건수는 고유 ticker, 상위 목록은 ticker당
+    최고 점수 전략 1행만 쓴다 (주문 경로의 dedupe 와 동일 규칙).
+    """
     rows = (
         db.query(CandidateSnapshot)
         .filter(CandidateSnapshot.ref_date == ref_date)
@@ -289,34 +360,28 @@ def _build_candidates(
         .all()
     )
     excluded = sum(1 for r in rows if r.excluded_reason)
-    top = [
-        DigestCandidate(
-            ticker=r.ticker,
-            name=r.name,
-            market=r.market,
-            strategy_id=r.strategy_id,
-            final_score=r.final_score,
-            factor_score=r.factor_score,
-            trend_strength=r.trend_strength,
-            ts_bucket=r.ts_bucket,
-            score_reason=r.score_reason,
-            excluded_reason=r.excluded_reason,
-            holding_type=r.holding_type,
-            estimated_qty=r.estimated_qty,
-            ai_technical_score=r.ai_technical_score,
-            ai_analysis_memo=r.ai_analysis_memo,
-            ai_buy_price=r.ai_buy_price,
-            ai_stop_price=r.ai_stop_price,
-            ai_target_price=r.ai_target_price,
-            ai_contrarian_opinion=r.ai_contrarian_opinion,
-            ai_contrarian_thesis=r.ai_contrarian_thesis,
-            ai_contrarian_anti_thesis=r.ai_contrarian_anti_thesis,
-            valuation_margin_score=r.valuation_margin_score,
-            valuation_margin_reason=r.valuation_margin_reason,
-        )
-        for r in rows[:_MAX_CANDIDATES]
-    ]
-    return top, len(rows), excluded
+
+    seen_tickers: set[str] = set()
+    top_rows: list[CandidateSnapshot] = []
+    for r in rows:
+        if r.ticker in seen_tickers:
+            continue
+        seen_tickers.add(r.ticker)
+        top_rows.append(r)
+        if len(top_rows) >= _MAX_CANDIDATES:
+            break
+
+    picks = _latest_picks(db, {r.ticker for r in top_rows}, ref_date)
+    top = [_candidate_from_row(r, picks.get(r.ticker)) for r in top_rows]
+
+    quality = (
+        db.query(UniverseQualityLog)
+        .filter(UniverseQualityLog.ref_date <= ref_date)
+        .order_by(UniverseQualityLog.ref_date.desc(), UniverseQualityLog.id.desc())
+        .first()
+    )
+    total_tickers = len({r.ticker for r in rows})
+    return top, total_tickers, excluded, quality
 
 
 def _build_executions(db: Session, ref_date: dt.date) -> list[DigestExecution]:
@@ -429,7 +494,12 @@ def build_daily_digest(
 
     candidates = _section("candidates", lambda: _build_candidates(db, ref_date))
     if candidates is not None:
-        digest.candidates, digest.candidate_total, digest.candidate_excluded = candidates
+        digest.candidates, digest.candidate_total, digest.candidate_excluded, quality = candidates
+        if quality is not None:
+            digest.universe_total = quality.total_candidates
+            digest.universe_kept = quality.kept_count
+            digest.universe_excluded = quality.excluded_count
+            digest.universe_rejection_ratio = quality.rejection_ratio
 
     def _preview():  # noqa: ANN202
         from maps.ops.order_preview import build_order_preview

@@ -1392,8 +1392,10 @@ class OperationalPipeline:
                         stock.ticker, stock.name, ohlcv_df, strategy_id,
                         trend_strength, ts_bucket, ref_date.isoformat(),
                     )
-                except Exception:  # noqa: BLE001
-                    pass  # AI 오류 시 기존 점수 유지
+                except Exception as exc:  # noqa: BLE001
+                    # 점수는 기존 공식으로 유지하되, 조용히 삼키면 "AI 켰는데 전부
+                    # null"의 원인을 로그로도 못 잡는다
+                    logger.warning("AI 기술 스코어링 실패 [%s]: %s", stock.ticker, exc)
 
             # final_score 계산
             # AI 비활성: 유동성 60% + 추세강도 40%
@@ -1429,6 +1431,7 @@ class OperationalPipeline:
                     ai_technical_score=ai_technical_score,
                     ai_weight=ai_weight,
                     strategy_type=strategy_type,
+                    ts_bucket=ts_bucket,
                 )
             final_score = score_result.final_score
 
