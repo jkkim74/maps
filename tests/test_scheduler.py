@@ -30,7 +30,7 @@ from maps.execution.broker_adapter import Order, OrderSide, OrderType
 from maps.execution.mock_broker import MockBroker
 from maps.execution.order_manager import OrderManager
 from maps.market.regime import RegimeLabel, RegimeResult, WeeklyTrendLabel
-from maps.ops.scheduler import MapsOperationalScheduler, OperationalPipeline
+from maps.ops.scheduler import MapsOperationalScheduler, OperationalPipeline, StrategySignal
 from maps.risk.manager import RiskManager
 
 import maps.common.models  # noqa: F401
@@ -56,10 +56,16 @@ def _session_factory():
 
 
 def _force_entry_signal(monkeypatch) -> None:
+    # 실제 dataclass 를 쓴다. SimpleNamespace 로 흉내내면 프로덕션이 새 필드를
+    # 읽기 시작했을 때 테스트만 AttributeError 로 깨진다(atr14 에서 실제로 겪었다).
     monkeypatch.setattr(
         OperationalPipeline,
         "_latest_strategy_signal",
-        staticmethod(lambda *args, **kwargs: SimpleNamespace(entry_signal=True, exit_signal=False)),
+        staticmethod(
+            lambda *args, **kwargs: StrategySignal(
+                entry_signal=True, exit_signal=False, close=0.0
+            )
+        ),
     )
 
 

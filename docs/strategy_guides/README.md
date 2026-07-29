@@ -28,11 +28,10 @@
 - 선호 장세 — 각 전략 클래스의 `preferred_regimes`
 - 허용 MDD — `maps/common/constants.py:ALLOWED_MDD`
 
-> ⚠️ **알려진 불일치**: 원고에는 손절을 "고정 %와 ATR 중 더 여유 있는 쪽"으로 설명했다.
-> 이는 `live_rules.py` 주석과 `backtest/portfolio_replay.py` 의 설계 의도다. 그러나
-> 실거래 경로(`ops/scheduler.py`, `api/risk.py`)는 `atr_stop_price(...) or stop_loss_price(...)`
-> 라서 **ATR 값이 있으면 무조건 ATR** 을 쓴다. 이 불일치를 정리한 뒤(HANDOFF Next Steps 3)
-> 원고 문구를 최종 확정할 것.
+> ✅ **손절 문구 확정됨.** 원고의 "고정 %와 ATR 중 더 여유 있는 쪽"이 정본이며,
+> `maps/strategy/live_rules.py:effective_stop_price` 가 유일한 구현이다.
+> (이전에는 실거래 경로가 `atr_stop_price(...) or stop_loss_price(...)` 라서 ATR 이
+> 있으면 무조건 ATR 을 썼다 — HANDOFF Next Steps 3. 지금은 통일돼 있다.)
 
 ---
 

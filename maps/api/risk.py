@@ -22,7 +22,7 @@ from maps.common.models import (
 )
 from maps.common.settings import get_settings
 from maps.execution.broker_adapter import get_broker
-from maps.strategy.live_rules import atr_stop_price, stop_loss_price
+from maps.strategy.live_rules import effective_stop_price
 
 router = APIRouter(prefix="/api/v1/risk", tags=["SCR-06 Risk"])
 logger = logging.getLogger(__name__)
@@ -196,10 +196,7 @@ def _broker_holdings(db: Session) -> tuple[list[HoldingItem], float, int, str, s
             strategy_id = strategy_map.get(ticker, "broker")
             entry_price = round(entry_price_map.get(ticker) or position.avg_price)
             atr14 = _atr14_for_ticker(db, ticker)
-            raw_stop = (
-                atr_stop_price(strategy_map.get(ticker), entry_price, atr14)
-                or stop_loss_price(strategy_map.get(ticker), entry_price)
-            )
+            raw_stop = effective_stop_price(strategy_map.get(ticker), entry_price, atr14)
             stop_price = round(raw_stop) if raw_stop is not None else None
             holdings.append(
                 HoldingItem(

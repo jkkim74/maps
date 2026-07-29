@@ -265,7 +265,13 @@ class PortfolioReplayEngine:
     # ------------------------------------------------------------------
 
     def _resolve_stop(self, strategy_id: str, entry_price: float, p: _Prepared, dt) -> float:
-        """전략 고정% 손절과 ATR 손절 중 넓은(낮은) 쪽을 택한다."""
+        """전략 고정% 손절과 ATR 손절 중 넓은(낮은) 쪽을 택한다.
+
+        규칙은 :func:`maps.strategy.live_rules.effective_stop_price` 와 동일하다.
+        그 함수를 그대로 쓰지 않는 이유는 백테스트에만 있는 입력 두 가지 때문이다.
+        전략이 신호와 함께 낸 ``stop_price`` 를 우선 쓰고, 미등록 전략에 대해서는
+        ``_ATR_STOP_MULTIPLIER`` 로 폴백한다. 실거래 경로에는 둘 다 없다.
+        """
         default_stop = entry_price * 0.95
         stop_from_signal = _safe_float(p.stop_src.get(dt, default_stop))
         if not np.isfinite(stop_from_signal) or stop_from_signal <= 0:

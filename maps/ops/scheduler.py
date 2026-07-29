@@ -76,7 +76,7 @@ from maps.ops.order_state import claimed_candidate_tickers
 from maps.promotion.gate import PromotionGate, PromotionStage
 from maps.risk.manager import RiskConfig, RiskManager
 from maps.strategy.ath_breakout_v1 import ATHBreakoutV1Strategy
-from maps.strategy.live_rules import atr_stop_price, stop_loss_price
+from maps.strategy.live_rules import effective_stop_price
 from maps.strategy.ath_breakout_v2 import ATHBreakoutV2Strategy
 from maps.strategy.base import BaseStrategy, StrategyType
 from maps.strategy.donchian_v1 import DonchianV1Strategy
@@ -86,7 +86,6 @@ from maps.strategy.contrarian_quality_v1 import ContrarianQualityAccumulationV1S
 from maps.strategy.pullback_v2 import PullbackV2Strategy
 from maps.strategy.pullback_v3 import PullbackV3Strategy
 from maps.strategy.scoring import LegacyFinalScoreCalculator, StrategyAwareScoreCalculator, StrategyScoreInput
-from maps.strategy.live_rules import atr_stop_price, stop_loss_price
 from maps.indicator.trend_strength import TrendStrengthCalculator
 from maps.ai.contrarian_analyzer import AIContrarianAnalyzer
 from maps.ai.technical_scorer import AITechnicalScorer
@@ -1452,12 +1451,7 @@ class OperationalPipeline:
                         atr14_val = float(_compute_atr14(ohlcv_df).iloc[-1])
                     except Exception:  # noqa: BLE001
                         pass
-                stop_candidates = [
-                    stop_loss_price(strategy_id, plan_buy),
-                    atr_stop_price(strategy_id, plan_buy, atr14_val) if atr14_val else None,
-                ]
-                valid_stops = [v for v in stop_candidates if v is not None]
-                plan_stop = min(valid_stops) if valid_stops else None
+                plan_stop = effective_stop_price(strategy_id, plan_buy, atr14_val)
                 if plan_stop is not None:
                     plan_stop = float(round_to_krx_tick(plan_stop, market=stock.market))
                     plan_target = float(
@@ -1775,7 +1769,14 @@ class OperationalPipeline:
                 )
 
             remaining_slots = max(min(max_orders, candidate_max_orders) - submitted, 1)
-            qty = self._order_qty(candidate, account.total_value, remaining_cash, limit_price, remaining_slots)
+            qty = self._order_qty(
+                candidate,
+                account.total_value,
+                remaining_cash,
+                limit_price,
+                remaining_slots,
+                atr14=signal.atr14,
+            )
             if qty <= 0:
                 skipped += 1
                 continue
@@ -1963,10 +1964,7 @@ class OperationalPipeline:
             )
             entry_price = entry.fill_price or entry.order_price or position.avg_price
             atr14 = signal.atr14 if signal is not None else None
-            stop_price = (
-                atr_stop_price(entry.strategy_id, entry_price, atr14)
-                or stop_loss_price(entry.strategy_id, entry_price)
-            )
+            stop_price = effective_stop_price(entry.strategy_id, entry_price, atr14)
             strategy_exit = bool(signal and signal.exit_signal)
 
             if self._settings.maps_plan_based_exits_enabled:
@@ -2385,6 +2383,7 @@ class OperationalPipeline:
         remaining_cash: float,
         price: float,
         remaining_slots: int,
+        atr14: float | None = None,
     ) -> int:
         # 고정비중 예산: 단일종목 노출 상한과 잔여현금/슬롯 공정배분 중 작은 값.
         # 여러 후보 동시 진입 시 현금 고갈을 막는 상한으로 계속 사용한다.
@@ -2394,10 +2393,12 @@ class OperationalPipeline:
         fixed_qty = int(budget // price) if price > 0 else 0
 
         # C-2: 백테스트와 동일한 계좌-위험 사이징을 우선 적용한다(손절폭 기반).
-        # 손절가는 전략별 고정% 손절(live_rules)에서 유도하며, 손절 정보가 없는
-        # 전략이면 고정비중으로 폴백한다. risk 기반 수량은 고정비중 예산을 상한으로
-        # 두어 슬롯·현금 공정배분을 유지한다.
-        stop = stop_loss_price(candidate.strategy_id, price)
+        # 손절가는 반드시 실제 청산에 쓰이는 값(effective_stop_price)이어야 한다.
+        # 고정%만 쓰면 ATR 손절이 더 넓은 종목에서 손절폭을 과소평가해 포지션이
+        # 과대 산정된다(계좌 위험이 설정값의 2배 이상으로 커진다).
+        # 손절 정보가 없는 전략이면 고정비중으로 폴백한다. risk 기반 수량은
+        # 고정비중 예산을 상한으로 두어 슬롯·현금 공정배분을 유지한다.
+        stop = effective_stop_price(candidate.strategy_id, price, atr14)
         if stop is not None and 0 < stop < price:
             risk_qty = risk_based_qty(
                 equity=total_value,

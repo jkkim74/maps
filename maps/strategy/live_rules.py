@@ -28,7 +28,8 @@ _THESIS_STOP_TRIGGERS: dict[str, list[str]] = {
 
 # ATR(14) 기반 동적 손절 배율.
 # 변동성 장세에서 고정 % 손절이 노이즈에 조기 발동되는 것을 방지한다.
-# 실제 손절가 = max(고정%손절, ATR 손절) 중 넓은 쪽을 선택한다.
+# 실제 손절가는 :func:`effective_stop_price` 로만 구한다 — 고정%와 ATR 중
+# 손절 폭이 **넓은**(= 가격이 낮은) 쪽이다.
 _ATR_MULTIPLIERS: dict[str, float] = {
     "pullback_v3": 2.0,
     "pullback_v2": 2.0,
@@ -70,3 +71,40 @@ def atr_stop_price(
     if multiplier is None:
         return None
     return entry_price - multiplier * atr14
+
+
+def effective_stop_price(
+    strategy_id: str | None,
+    entry_price: float | None,
+    atr14: float | None = None,
+) -> float | None:
+    """실제로 적용할 손절가 — **이것이 정본이다.**
+
+    고정% 손절과 ATR 손절 중 손절 폭이 더 **넓은**(가격이 더 낮은) 쪽을 고른다.
+    두 규칙의 역할이 다르기 때문이다.
+
+    * 고정% — 손절이 아무리 타이트해져도 넘지 못하는 하한선.
+    * ATR   — 변동성이 큰 종목에서 잔진동에 조기 손절되는 것을 막는 완충.
+
+    따라서 ATR 이 고정%보다 **좁을 때는 고정%를 써야 한다**. ATR 이 있다고
+    무조건 ATR 을 쓰면 저변동성 종목에서 백테스트보다 일찍 털린다.
+
+    청산 판정·사이징·화면 표시가 모두 이 함수를 거쳐야 한다. 손절가가 경로마다
+    달라지면 백테스트와 실거래 성과가 체계적으로 어긋난다.
+
+    :param strategy_id: 전략 ID. 미등록 전략이면 ``None`` 을 반환한다.
+    :param entry_price: 체결 진입가.
+    :param atr14: ATR(14) 값. ``None`` 이거나 0 이하이면 고정% 손절만 쓴다.
+    :return: 손절가. 두 규칙 모두 산출 불가하면 ``None``.
+    """
+    candidates = [
+        price
+        for price in (
+            stop_loss_price(strategy_id, entry_price),
+            atr_stop_price(strategy_id, entry_price, atr14),
+        )
+        if price is not None and price > 0
+    ]
+    if not candidates:
+        return None
+    return min(candidates)
