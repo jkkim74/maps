@@ -1,368 +1,322 @@
 # HANDOFF
 
-> 작성일: 2026-07-29 (수, KST) · 작성자: 세션 에이전트 (회사 PC, 키 `D:\ssh_maps\`)
-> 주제 ①: **KRX 로그인 회로차단기** — 7/27 계정 잠금의 재발 방지. 구현·배포 완료.
-> 주제 ②: **손절가 규칙 통일** — 경로마다 달랐다. 사이징이 포지션을 2배로 잡고 있었다.
-> 주제 ③: **전략관리 화면** — 식별자만 뜨던 화면에 설명·가이드·복사 버튼 추가.
-> 주제 ④: **도메인 이전** `magable.kr` → `maps.magable.kr` — 완료. DNS·인증서는 사용자 작업,
->          웹훅·모바일 재빌드·`ads.txt`·HSTS 는 이 세션에서 처리.
-> 이전 핸드오프(UTC/KST 경계·블로그 자동화·KRX 계정 잠금, 7/27): git `9f17af9` 참고.
+> 작성일: 2026-07-30 (목, KST) · 작성자: 세션 에이전트 (회사 PC, 키 `D:\ssh_maps\`)
+> 주제 ①: **정본 사이징 첫 실측** — 7/29 핸드오프의 유일한 미실측 항목. 확인 완료.
+> 주제 ②: **오발주 사고** — 한 달 된 픽을 무장하자 17초 만에 매수가 나갔다. 원복 완료.
+> 주제 ③: **픽 만료(신선도) 처리** — ②의 재발 방지. 구현·배포·검증 완료.
+> 주제 ④: **`disarm` 고아 포지션 버그** — 부분 체결을 무시하고 추적을 끊고 있었다.
+> 이전 핸드오프(KRX 회로차단기·손절 통일·전략관리 화면·도메인 이전, 7/29): git `cc3d2b3` 참고.
 
 ## 운영 환경
 
-배포 서버: AWS Lightsail `3.37.117.246`, `/opt/maps`, systemd `maps`.
-**URL 이 바뀌었다 → `https://maps.magable.kr`** (구 `magable.kr` 은 이제 남의 서버다. 주제 ④)
+배포 서버: AWS Lightsail `3.37.117.246`, `/opt/maps`, systemd `maps`, `https://maps.magable.kr`.
 브로커 **KIS 모의투자(paper)** 계좌 `50185813` (`kis_real_trading=False`).
 운영 DB PostgreSQL(`sudo -u postgres psql -d maps`). **SSH 키는 PC마다 다름**: 회사 PC `D:\ssh_maps\`, 집 PC `D:\maps\`.
 
 **중요(계속 유효)**: 운영 DB `TimeZone=Etc/UTC`인데 서버 OS는 KST다. `order_log.created_at`은
-**UTC naive 저장** — 08:55 KST 주문은 `2026-07-28 23:55:15`처럼 전날로 찍힌다. psql로
+**UTC naive 저장** — 08:55 KST 주문은 `2026-07-29 23:55:32`처럼 전날로 찍힌다. psql로
 "오늘 주문"을 `WHERE created_at >= '오늘'`로 조회하면 **0 rows가 나온다**.
 `ORDER BY id DESC LIMIT n`이 안전하고, 코드에서는 `order_manager.kst_day_bounds_utc()`를 쓸 것.
 
-오늘 커밋 7개: `1b98004` `29eae95` `fb6a789` `7bd1514` `6d755cd` `d36a08f` `0fd872a`.
-서버 배포는 `6d755cd` 까지(이후는 문서·모바일이라 서버 반영이 불필요). 테스트 **513 passed** + 모바일 **18 passed**.
+오늘 커밋 1개: **`5a9e07e`** (14:2x). 배포 완료 — 14:37:29 KST 기동, `active (running)`.
+테스트 **568 passed** + 모바일 **18 passed**. 마이그레이션·requirements 변경 없음.
+
+> ⚠️ `5a9e07e` 는 **두 세션의 작업이 합쳐진 커밋**이다. 내 픽 만료 작업과, 다른 세션의
+> 블로그(네이버 형식)·리스크 KPI·모바일 작업이 `maps/api/schemas.py` 에서 얽혀
+> 파일 단위 분리가 불가능했다. 커밋 본문에서 갈래를 나눠 적었다.
+> 그 전 커밋 `f91c719`(7/30 00:13)도 다른 세션 작업이다(종목별 score_reason, 다이제스트 집계).
 
 ---
 
-# 주제 ① KRX 로그인 회로차단기 (커밋 `1b98004`, 배포 11:06)
+# 주제 ① 정본 사이징 첫 실측 — 7/29 Next Steps 1번 **해소**
 
-7/27 핸드오프의 🔴 재발 방지 항목. **해소됨.**
+7/29에 손절가를 `effective_stop_price()` 하나로 통일했는데, 사이징 변화는 실측을 못 했었다.
+7/30 08:55 주문이 첫 적용이었고, **예고한 시나리오가 정확히 나왔다.**
 
-## 원인 — 무한 재시도의 위치
+```
+089860  pullback_v3   매수 113주 @37,400(지정가) → 36,600 체결
+총자산 85,129,874   1회 허용위험 425,649원(0.5%)   ATR14 1,874.4
 
-pykrx `webio.py` 는 요청마다 `get_auth_session()` 을 부르고, 세션이 없으면 **그 자리에서
-재로그인**한다(`auth.py:217`). 자격증명이 만료(CD010)되면 이 재시도가 매 요청마다 돌고,
-누적 실패가 계정을 잠근다(CD007). 잠긴 뒤에는 올바른 비밀번호도 CD007을 받는다.
+수정 전(고정%만)  손절 35,530 (-5.00%)   손절폭 1,870  → qty 227  손실 851,023원 = 1.00%
+수정 후(정본)     손절 33,651 (-10.02%)  손절폭 3,749  → qty 113  손실 423,623원 = 0.50%
+```
 
-## `maps/data/krx_auth.py`
+ATR 손절이 고정 5%보다 **넓어서** 정본이 ATR을 골랐고, 손절폭이 2배가 되며 수량이 절반이 됐다.
+**227 → 113, 2.01배** — 7/27 `donchian_v2`(54 → 25)와 같은 패턴이다.
+수정 전 코드였다면 오늘도 계좌 위험 1.00%짜리 포지션이 나갔을 것이다.
 
-pykrx 로그인 진입점 두 개(`login_krx`, `build_krx_session`)를 감싼다.
+검증 방법: 운영 서버에서 실제 OHLCV(400봉)와 `effective_stop_price`/`risk_based_qty` 를
+그대로 호출해 재현했다. **재현값 113 = 실제 주문 수량**으로 일치.
 
-| 상황 | 동작 |
+> 📌 ATR14 재현 시 **lookback 400봉**을 맞춰야 한다. 60봉으로 계산하면 Wilder 평활 워밍업
+> 차이로 1,886.8이 나와 수량이 112로 어긋난다(`scheduler._latest_strategy_signal` 이 400).
+
+**부수효과(예고대로)**: 진입 금액이 4.22M으로 고정비중 상한 8.5M의 절반이다. 자본 투입
+속도가 느려지고 `mock_months` 누적 거래 빈도에도 영향이 있다.
+
+---
+
+# 주제 ② 오발주 사고 — 한 달 된 픽 무장 → 17초 만에 진입
+
+## 경위
+
+사용자가 "넥센타이어가 매수가에 왔는데 왜 안 사냐"고 물었다. 조사 결과 **버그가 아니라
+픽이 무장(ARMED)되지 않아서**였다 — 엔진은 `ARMED`/`BOUGHT` 만 조회한다. `WATCH` 픽은
+아무도 안 본다. 화면 라벨 "관찰"이 정반대 인상을 준다.
+
+그다음 매수가 재산정을 요청받아 4개 안을 냈고, 그중 **D안(MA20 회복 후 진입, 6,800)** 을
+"지금 무장해도 즉시 체결되지 않고 대기한다"고 설명하며 권했다. **이 설명이 틀렸다.**
+
+엔진의 진입 조건은 `현재가 <= 매수가` 다 — **"이 값까지 떨어지면 산다"는 지정가 하한**이지
+돌파 확인용 상한이 아니다. 이 엔진에는 stop-buy 의미론이 없어서 **"MA20 회복 후 진입"은
+애초에 구현 불가능**하다. 현재가 6,150 ≤ 6,800 이라 조건이 즉시 참이 됐다.
+
+```
+12:49:41  ARM (가격을 6,800/8,000/6,300 으로 PATCH 후)
+12:49:56  전략매매 추적 [002350] ARMED: 현재가=6150 매수가=6800 (-9.56%, 진입조건 충족)
+12:49:58  전략매매 진입 제출 [002350] qty=1253 @6800     ← 시장가나 다름없는 지정가
+12:50:13  DISARM (잔량 취소 성공) — 그러나 이미 21주 체결
+```
+
+## 원복
+
+| 단계 | 내용 |
 |---|---|
-| `CD007`(잠금) · `CD010`(변경필요) | **1회 실패로 즉시 차단**, 6시간 |
-| 네트워크 등 일시 오류 | 3회 연속 실패 후 차단 |
-| 재차단 | 쿨다운 2배씩 (30분 → 6시간 상한) |
-| 차단 중 | **HTTP 요청 자체를 안 보냄** → KRX 실패 카운터가 안 늘고, 상위는 폴백으로 계속 동작 |
+| 체결 | order `0000031820` (id=49) buy 1253주 중 **21주 @6,150** 부분 체결 |
+| 잔량 | disarm 시 취소 성공 (1,232주) |
+| 매도 | **사용자가 MTS에서 직접** 21주 @6,120 매도 |
+| 보정 | `order_log` id=50 `MANUAL-002350-20260730` sell 21@6120 `exit_reason=manual_unwind` |
 
-핵심은 **치명 코드와 일시 오류를 구분**한 것이다. 단순 N회 카운터로는 부족하다 —
-CD010은 몇 번을 해도 성공할 수 없고, 그 시도 자체가 잠금의 원인이었다.
+**실현 손익 -630원**(매매손익) / **-687원**(수수료·세금 포함). 모의투자 계좌, 계좌 대비 0.15%.
 
-pykrx 가 bool 로 뭉개 삼키는 원본 오류 코드도 살려 로그에 남긴다(7/27 진단을 막은 지점).
+MTS 매도는 시스템을 안 거쳐 `order_log` 에 매도가 없었고, 매매일지가
+`"매도 기록 없이 포지션 소멸(비정상)"` 분기로 손익을 null 처리했다. 실제로 일어난 거래이므로
+감사 로그에 반영했다. **보정 기록은 `order_id` 접두사 `MANUAL-` 로 브로커 채번 주문(숫자)과
+구분**하고, 삽입 전 중복 여부와 **실제 보유 0** 을 확인하는 안전장치를 뒀다(보유가 남아 있으면
+매도 기록이 거짓이 된다).
 
-**한계**: `webio` 는 임포트 시점에 로그인을 1회 시도하고, 가드는 그보다 앞설 수 없다
-(가드를 설치하려면 pykrx 를 임포트해야 한다). 프로세스당 1회는 남는다.
-`install_krx_login_guard()` 가 `_auth_session is None` 을 보고 그 실패를 회로에 반영한다.
+보정 후 매매일지: `002350 status=closed entry=6150 exit=6120 pnl=-630`.
 
-## 검증
+## 배운 것
 
-계정이 정상이라 실물 재현이 불가능해서, 운영 서버에서 `KRX_ID`/`KRX_PW` 를 비운 별도
-프로세스로 확인했다(**KRX 에 접속하지 않는다**).
-
-```
-login_krx patched : True   build_session patched : True
-CD007 기록 후 allow() : False   build_krx_session() : None (HTTP 없음)
-```
-
-가드는 **pykrx 를 실제로 쓰는 시점에 지연 설치**된다. `broker_sync` 는 KIS 실시간 시세가
-채워지면 pykrx 폴백을 안 타므로 로그가 안 뜬다 — 정상이다. 16:40 데이터 수집에서 처음 뜬다.
+- **엔진의 진입 의미론을 코드로 확인하지 않고 설명했다.** `scheduler.py:2199` 한 줄만 읽었으면
+  막을 수 있었다. 가격을 제안할 때는 그 가격이 **어느 방향 조건에 걸리는지** 먼저 확인할 것.
+- 실주문 경로는 권한 분류기가 막는다(매도 스크립트 실행·업로드 모두 차단됐다). 우회하지 말고
+  사용자에게 `!` 명령을 넘길 것. **이 차단은 유지하는 게 맞다** — 오늘 사고가 그 이유다.
 
 ---
 
-# 주제 ② 손절가 규칙 통일 (커밋 `fb6a789`, 배포 13:20)
+# 주제 ③ 픽 만료(신선도) 처리 — 커밋 `5a9e07e`, 배포 14:37
 
-7/27 핸드오프 Next Steps 3번. **해소됨.** 조사해 보니 2곳이 아니라 **3곳**이었다.
+②의 재발 방지. 계획 모드로 원인을 다시 파악하고 범위를 정해 구현했다.
 
-## 실제 불일치
+## 원인 (6가지가 겹쳤다)
 
-| 경로 | 방식 | |
+| # | 원인 | 위치 |
 |---|---|---|
-| 백테스트 청산 `portfolio_replay._resolve_stop` | `min(고정, ATR)` | ✅ |
-| 백테스트 사이징 | 위와 동일 | ✅ |
-| 매매계획 `scheduler:1455` | `min(...)` | ✅ |
-| 실거래 청산 `scheduler:1968` | `atr or fixed` | ❌ |
-| 화면 표시 `api/risk.py:199` | `atr or fixed` | ❌ |
-| **실거래 사이징** `scheduler:2402` | **고정%만** | ❌ |
+| 1 | 목록 조회에 신선도 필터 없음 (`state != CLOSED` 뿐) | `api/analysis_picks.py` |
+| 2 | 생성이 순수 INSERT — 같은 종목 옛 픽을 대체 안 함 | `scripts/load_analysis_picks.py` |
+| 3 | 만료 잡이 없음 (스케줄러 잡 7개 중 픽을 건드리는 게 없다) | `ops/scheduler.py` |
+| 4 | `CANCELLED` 상태가 죽은 코드 — 정의·표시만 있고 **할당하는 곳이 없음** | `common/models.py` |
+| 5 | **오래된 ARMED 픽이 실거래 가능** — 날짜 필터 없이 매 틱 평가 | `ops/scheduler.py` |
+| 6 | 오래된 픽이 다이제스트 가격을 조용히 채움 (상한만 있고 하한 없음) | `ops/daily_digest.py` |
 
-두 방향으로 어긋나고 있었다.
+**대조군**: 자동 파이프라인엔 이미 있다 — `_order_candidates` 는 스냅샷이 `previous_trading_day`
+보다 오래되면 `[]` 를 반환하고, `CandidateSnapshot` 은 생성 시 같은 키 옛 행을 지우고 넣는다.
+**픽에만 둘 다 없었다.**
 
-1. **저변동성 종목** — `atr or fixed` 는 ATR 이 고정%보다 *좁을 때도* ATR 을 쓴다.
-   백테스트는 고정%를 지키는데 실거래만 일찍 털렸다.
-2. **고변동성 종목** — 사이징이 손절폭을 절반으로 과소평가해 포지션이 2배가 됐다. (금액이 큰 쪽)
+## 구현 범위 (사용자 선택)
 
-## 7/27 실거래로 확인한 숫자
+**안전장치 + 화면 표시**. 자동 만료 잡과 생성 시 대체(원인 2·3·4)는 **이번에 안 했다.**
+만료 기준 **5거래일**(`MAPS_ANALYSIS_PICK_MAX_AGE_TRADING_DAYS`, 기본값).
 
-```
-donchian_v2  진입 79,500  ATR14 8,316
-  고정 손절 71,550 (-10.0%)   ATR 손절 62,867 (-20.9%)  ← 실제 청산은 여기서
+### 핵심 설계 — 파생 계산이지 상태 전이가 아니다
 
-수정 전(고정%로 사이징)  qty=54  손절 시 -898,182원 = 계좌 1.04%
-수정 후(정본으로 사이징)  qty=25  손절 시 -415,825원 = 계좌 0.48%
-설정한 1회 계좌위험(0.5%)                        430,841원
-```
-
-실제 주문은 52주, 실현손실 972,400원 — **설정값의 2배가 넘었다.**
-
-## 조치
-
-`live_rules.effective_stop_price(strategy_id, entry_price, atr14)` 가 정본.
-고정%와 ATR 중 **넓은(가격이 낮은) 쪽**. 근거는 두 규칙의 역할이 다르다는 것 —
-고정%는 *넘지 못하는 하한선*, ATR 은 *잔진동 방지 완충*. 그래서 ATR 은 고정%를
-느슨하게만 만들 수 있고 조이지는 못해야 한다.
-
-`_order_qty` 에 `atr14` 를 넘겨야 했는데, 주문 경로에 이미 `signal.atr14` 가 있어서 그대로 연결됐다.
-
-**백테스트는 안 건드렸다.** `_resolve_stop` 은 이미 정본과 같고, 전략 신호의 `stop_price` 와
-미등록 전략용 `_ATR_STOP_MULTIPLIER` 폴백이라는 백테스트 전용 입력이 둘 더 있다.
-
-## 배포 후 실측 (보유 2종목)
-
-| 종목 | 고정 | ATR | 수정 전 | 수정 후 |
-|---|---|---|---|---|
-| 082640 `donchian_v1` | 7,526 (-8.0%) | 7,377 (-9.8%) | 7,377 | 7,377 (동일) |
-| 002810 `multi_asset_trend_v1` | 21,476 (-8.0%) | 21,547 (-7.7%) | 21,547 | **21,476** |
-
-두 번째가 고쳐진 버그다. 71원이라 사소하지만, 저변동성 종목이 조기 손절되던 경로가
-실제로 살아 있었다는 증거다.
-
-> ⚠️ **사이징 변화는 아직 실측 못 했다.** 7/30 08:55 주문이 첫 적용이다.
-> ATR 이 넓은 종목이 걸리면 수량이 눈에 띄게 작아진다. 자본 투입 속도가 느려지고
-> `mock_months` 누적 거래 빈도에도 영향이 있다.
-
----
-
-# 주제 ③ 전략관리 화면 (커밋 `29eae95`·`7bd1514`, 배포 14:51)
-
-## 문제
-
-화면이 `strategy_id` 만 보여줬다. `_to_strategy_item` 이 `name=strategy_id` 로 복사해서,
-`donchian_v2` 가 무슨 전략인지 화면 안에서 알 방법이 없었다.
-
-## 설계 — 숫자는 코드에서, 산문만 문서에서
-
-`maps/strategy/catalog.py` 에는 **산문만** 둔다(한글명·요약·아이디어·진입/청산 서술).
-손절%·ATR 배수·파라미터·선호 장세·MDD 는 요청 시점에 코드에서 읽는다.
+원인 3이 "만료시키는 주체가 없다"인데 가드를 잡에 의존시키면 같은 실패를 반복한다.
+잡이 멈추거나 배포·DB 복원 직후에도 가드가 살아 있어야 한다. 그래서 `CANCELLED` 전이 대신
+**요청 시점 계산**으로 판정한다.
 
 ```
-손절%·ATR 배수 → live_rules (stop_loss_pct / atr_multiplier 접근자 신설)
-파라미터·선호장세 → 전략 클래스
-MDD            → constants.ALLOWED_MDD
+maps/ops/pick_freshness.py:35  pick_cutoff_date(settings, *, today=None)
+                          :54  is_pick_stale(pick, cutoff)      # ref_date >= cutoff 면 신선(경계 포함)
+                          :66  pick_stale_reason(pick, cutoff)  # "expired" | None
+                          :71  pick_age_trading_days(...)       # 화면용 "만료 N거래일"
+maps/market/trading_rules.py:58  trading_days_ago(ref, n, ...)  # 거래일 기준, 60일 상한
 ```
 
-**이 원칙이 바로 값을 했다.** 화면이 선호 장세를 코드에서 읽자마자,
-`multi_asset_trend_v1` 이 약세장 포함 **전 장세**로 선언돼 있는데 가이드 원고에는
-"강세·혼조"로 적힌 게 드러났다. 숫자를 문서에 복사했다면 아무도 몰랐다.
+> ⚠️ **신선도는 `ref_date` 로만 계산한다.** `created_at`/`updated_at`/`last_action_at` 은
+> UTC naive 인데 `ref_date` 는 KST `Date` 다. `created_at` 으로 재면 매일 09:00 KST 이전에
+> 하루씩 어긋난다.
 
-## 구성
+### 차단 지점
 
-- 탭 `운용 현황` — 기존 표 + 한글명·선호장세 컬럼, 행 클릭 → 상세
-- 탭 `전략 설명` — 카드 그리드
-- 상세 패널 — 아이디어 → KPI 4장 → 진입/청산 2단 → **가이드 원고 전문 + [전체 복사]**
-- `GET /api/v1/strategies/guide/{id}` — 파일명은 카탈로그가 정하므로 요청값이 경로에 안 닿는다
-
-## 블로그 원고
-
-`docs/strategy_guides/` 에 전략 1개 = 글 1편(+공통 도입부). 네이버 스마트에디터는
-마크다운을 렌더링하지 않아 **`##`·`**`·표를 쓰지 않았다** — 구분선·이모지·들여쓰기만 썼다.
-파일 전체를 복사해 붙여넣으면 그대로 발행된다.
-
-## 재발 방지
-
-`tests/test_strategy_catalog.py` 가 `STRATEGY_GROUP_MAP` 의 모든 전략에 산문·클래스·가이드
-파일이 있는지, 응답 숫자가 `live_rules` 와 같은지 검사한다. 설명 없이 전략을 추가하면 빌드가 깨진다.
-
-> ⚠️ **브라우저로 눈으로 본 적은 없다.** HTTP 응답·JS 문법(`node --check`)·API 페이로드까지만
-> 확인했다. 탭 전환·카드 클릭·복사 버튼 실동작은 미확인.
-
----
-
-# 주제 ④ 도메인 이전 `magable.kr` → `maps.magable.kr` — **완료**
-
-**DNS·nginx·인증서는 사용자가 오늘 13:05~14:35에 직접 처리했다.** 세션 중에 바뀌어서,
-배포 검증을 구 도메인으로 하다가 WordPress 404 를 받고 발견했다.
-나머지(웹훅·모바일·ads.txt·HSTS)는 이 세션에서 처리했다.
-
-| | 오전 11:07 | 현재 |
-|---|---|---|
-| `magable.kr` / `www` | 3.37.117.246 | **54.180.179.20** (WordPress, 남의 서버) |
-| `maps.magable.kr` | 없음 | **3.37.117.246** |
-| 인증서 | `magable.kr`+`www` | `maps.magable.kr` (만료 2026-10-27) |
-| nginx | `sites-enabled/maps` | `sites-enabled/maps.magable.kr` |
-
-구 vhost `/etc/nginx/sites-available/maps` 는 비활성으로 남아 있다.
-
-| 항목 | 상태 |
+| 위치 | 동작 |
 |---|---|
-| DNS · nginx · 인증서 | ✅ 사용자 작업 |
-| 텔레그램 웹훅 | ✅ `6d755cd` (아래) |
-| 모바일 앱 | ✅ `0fd872a` + 재빌드·설치 (아래) |
-| `ads.txt` | ✅ vhost 복구 |
-| HSTS | ✅ vhost 복구 |
-| 문서 | ✅ `d36a08f` |
+| `scheduler.py:2051` `_active_strategy_trade_picks` | 만료된 **ARMED** 제외 + WARNING |
+| `scheduler.py:2199~` 진입 분기 | 제출 직전 2차 가드 (돈이 나가는 줄) |
+| `api/analysis_picks.py:306` `arm_pick` | 409 거부, **상태 검사보다 앞에** |
 
-## vhost 복구 — `ads.txt` 와 HSTS
+`arm_pick` 한 곳이 **웹·모바일·텔레그램을 동시에** 막는다. 특히 텔레그램은 한 달 전 푸시
+메시지의 인라인 버튼이 영구히 살아 있어 서버 거부 외에 방법이 없다. 모바일은 `postAction` 이
+`body.detail` 을 그대로 던지므로 **기존 APK도 앱 업데이트 없이 한글 사유를 표시**한다.
 
-certbot 이 새로 만든 vhost 에 구 설정의 두 가지가 빠져 있었다.
+> 🔴 **`BOUGHT` 픽에는 만료를 적용하지 않는다.** 실제 보유 주식이고 익절·손절을
+> `_process_strategy_trades` 가 단독 관리한다 — 제외하면 청산 관리 없이 방치되어
+> 원래 문제보다 나빠진다. 회귀 테스트 2개로 고정했다
+> (`test_stale_bought_pick_still_exits_on_stop` / `..._takes_profit`).
 
-**`ads.txt`** — 복구 전 `303` 이었다. 요청이 앱으로 프록시돼 로그인 게이트에 걸리고 있었다.
-크롤러는 리다이렉트를 받으면 파일을 못 읽는다. `location = /ads.txt` 를 443 블록에 복구
-(퍼블리셔 ID 는 구 vhost·블로그와 동일한 `pub-6163734207162127`).
-검증: `status=200 type=text/plain redirects=0`.
+### 화면
 
-**HSTS** — `add_header Strict-Transport-Security "max-age=31536000" always;`
-**`includeSubDomains` 는 일부러 넣지 않았다.** 켜면 `magable.kr` 의 모든 서브도메인이
-HTTPS 강제되는데 루트는 이제 남의 서버라 통제할 수 없다. 구 설정도 이 값이었다.
+기준일 컬럼 추가(`ref_date` 는 **이미 API가 내려주는데 렌더만 안 하고 있었다**),
+`badge-alert` 만료 배지, 무장 버튼 비활성, 만료 건수 헤더. 모바일도 동일(필드는 전부 optional).
 
-> 두 작업 모두 앵커를 조심해야 한다. `server_name maps.magable.kr;` 은 443 블록과 80
-> 리다이렉트 블록에 **각각 있다**(첫 번째가 443). HSTS 는 `ssl_certificate_key` 라인을
-> 앵커로 잡아 443 전용임을 보장했다. 백업: `maps.magable.kr.bak.{adstxt,hsts}.*`.
+### 다이제스트
 
-`add_header` 는 하위 `location` 이 자체 `add_header` 를 가지면 상속이 끊긴다.
-`location = /ads.txt` 에는 없어서 HSTS 가 정상 상속됐다(확인함).
+`_latest_picks`(`daily_digest.py:290`)에 `ref_date` 하한 추가.
+**cutoff 는 다이제스트의 `ref_date` 기준**이다 — `date.today()` 로 잡으면 지난달 다이제스트를
+재생성(블로그 백필)할 때 픽이 전부 빠지고 `price_source` 가 조용히 `analysis_pick` → `rule` 로
+뒤집힌다. 이 함정을 `test_backdated_digest_uses_its_own_ref_date_window` 로 고정했다.
 
-> 📌 **앱에 광고 코드가 없다.** `templates/`·`static/`·모바일 어디에도 `adsbygoogle`/
-> `ca-pub` 스크립트가 없다. `ads.txt` 는 판매자 선언일 뿐 광고를 띄우지 않는다.
-> 구 도메인에서도 `ads.txt` 뿐이었으니 애드센스는 실질적으로 블로그 쪽에서만 돌았을 것이다.
-> 게재하려면 애드센스 콘솔에 `maps.magable.kr` 사이트 등록이 필요하다(사용자 작업).
-> 다만 대시보드는 로그인 벽 뒤라 게재 자체가 정책상 제한될 수 있다.
+## 배포 후 실측
 
-## 모바일 앱 — 재빌드·설치 완료 (커밋 `0fd872a`)
+```
+expected_ref_date: 2026-07-23   stale_count: 1
+  002350 넥센타이어  ref=2026-06-30  state=WATCH  stale=True  reason=expired  age=21
 
-`PROD_DEFAULT` 는 **APK 안에 컴파일되어 박힌다.** 서버를 재배포해도 설치된 앱은 구 도메인을
-계속 호출한다. 도메인 이전 후 앱은 남의 서버에 API 를 요청하고 있었다.
-
-빌드: `npm test`(18 passed) → `npm run cap:sync` → `assembleDebug`.
-**`JAVA_HOME` 이 jdk-17 을 가리키고 있어서** 21 을 명시해야 한다(PATH 의 `java` 는 21이라
-`java -version` 만 보면 속는다).
-
-```bash
-JAVA_HOME="/c/Program Files/Eclipse Adoptium/jdk-21.0.11.10-hotspot" ./gradlew assembleDebug
+POST /api/v1/analysis-picks/2/arm → 409
+{"detail":"기준일 2026-06-30 픽은 21거래일 지나 만료됐습니다.
+           (2026-07-23 이후 기준일만 무장 가능) 재분석 후 가격을 갱신하세요."}
 ```
 
-산출물 `apps/mobile/android/app/build/outputs/apk/debug/app-debug.apk`.
-검증은 dist → android assets → **APK 내부(unzip)** 3단계로 문자열을 확인했다(구 도메인 0건).
-`google-services.json` 은 이미 `android/app/` 에 있어 7/22 이월 이슈는 해당 없었다.
-
-**설치 후 실측**: nginx 접속 로그에 폰(`106.101.195.128`)에서 온 요청이 전부 `200`.
-CORS preflight(`OPTIONS`)도 통과. 오늘 모바일 요청 45건.
-(`499` 한 건은 응답 전 클라이언트가 끊은 것 — 화면 전환 시 나는 정상값이다.)
-
-## 텔레그램 웹훅 — 재배포로는 안 잡히는 종류 (커밋 `6d755cd`, 처리 완료)
-
-웹훅 URL은 **텔레그램 서버에 저장**된다. 도메인이 바뀌어도 우리가 재배포한다고 갱신되지 않는다.
-발견 당시 `getWebhookInfo` 의 `ip_address` 가 `54.180.179.20` — 콜백이 WordPress 로 가고 있었다.
-URL 문자열만 보면 멀쩡해 보인다. **`ip_address` 를 봐야 잡힌다.**
-
-유실은 없었다(`pending 0`, 도메인 이전 후 버튼 입력이 없었다). 재등록 후 `3.37.117.246` 확인.
-엔드포인트 도달도 확인: POST 시크릿없음 403 / 잘못된시크릿 403 / GET 405
-(303 이 나오면 로그인 게이트에 막힌 것이다).
-
-유효한 시크릿으로 위조 콜백은 **보내지 않았다** — 실제 주문 승인/거부가 트리거될 수 있다.
-**실제 버튼 1회 눌러 확인 필요.**
+> 📌 `age=21` 이다. 로컬에서는 22가 나오는데 **로컬에 `holidays` 패키지가 없어서**다
+> (운영은 0.97 설치됨 → 공휴일을 실제로 건너뛴다). **운영 값이 정본**이다.
+> 로컬 테스트 시 `holidays package unavailable` 경고가 대량으로 뜨는 것도 같은 이유.
 
 ---
 
-## 7/28·29 주문 실측 (7/27 Next Steps 5번 — 확인 완료)
+# 주제 ④ `disarm` 고아 포지션 버그 — 커밋 `5a9e07e`
 
-| 날짜 | 전략 | 종목 | 수량 | 지정가 | 체결가 |
-|---|---|---|---|---|---|
-| 7/28 08:55 | `donchian_v1` | 082640 | 636 | 8,370 | 8,180 |
-| 7/29 08:55 | `multi_asset_trend_v1` | 002810 | 226 | 23,450 | 23,344 |
+②에서 21주가 고아가 된 직접 원인이다.
 
-**체결 반영이 이번엔 자동으로 됐다**(7/27은 배포 후 수동 확인이었다).
-7/28 09:01 `updated_orders: 1`, 7/29 는 09:01·09:03·09:04 세 번 — 분할체결이 순차 반영됐고
-현금 감소 누계 5,276,490원이 `226 × 23,344` 와 일치했다.
+`disarm` 이 잔량 취소 **성공만 확인**하고 `entry_order_id` 를 지웠다. 취소는 잔량에만 걸리므로
+**이미 체결된 주식은 그대로 남는다.** 그 결과 21주가 브래킷도 %/ATR 손절도 관리하지 않는
+포지션이 됐다(`strategy_trade` 는 `live_rules._STOP_LOSS_PCTS` 에 없어 스케줄러 손절도 안 탄다).
 
-7/29 14시 기준 총자산 약 85.1M, 보유 2종목, 미체결 0, `sync_errors: 0`.
+코드 주석은 "고아 포지션"을 우려하고 있었지만 방어는 **취소 실패** 경우만 했다.
+
+**수정**(`api/analysis_picks.py:370~`): 취소 성공 여부보다 **체결 물량을 먼저 본다**.
+`fill_qty > 0` 이거나 status 가 `filled`/`partially_filled` 면 해제하지 않고 `BOUGHT` 로 올려
+브래킷이 계속 관리하게 하고 409로 거부한다. `fill_qty` 는 동기화가 늦을 수 있어 상태로도 판정한다
+(과소평가보다 과대평가가 안전).
+
+회귀 테스트 4개. 그중 `test_disarm_rejected_when_partially_filled_and_cancel_succeeds` 가
+실제 사고 재현이다 — mock 브로커는 미등록 주문에 `False` 를 주므로 취소 **성공** 경로는
+monkeypatch 로만 재현된다.
 
 ---
 
 ## What Worked
 
-- **로그 대신 코드로 확인한 것.** "가드 설치 로그가 안 뜬다"에서 멈추지 않고 호출 경로를
-  따라가니, KIS 실시간 시세가 채워지면 pykrx 폴백을 안 타서 정상이라는 게 나왔다.
-- **HANDOFF 를 그대로 믿지 않은 것.** ATR 불일치가 2곳으로 적혀 있었지만 실제로는 사이징까지
-  3곳이었고, 금액이 큰 쪽은 적혀 있지 않던 사이징이었다.
-- **숫자를 코드에서 렌더링하게 한 것.** 켜자마자 문서 오류를 스스로 잡아냈다.
-- **운영에서 자격증명을 비운 프로세스로 검증**한 것. KRX 를 건드리지 않고 가드를 확인했다.
+- **엔진 코드를 직접 읽어 "왜 안 사는가"를 판정한 것.** 버그를 찾으러 가지 않고 상태 머신과
+  조회 필터를 따라가니 "무장 안 됨"이라는 설계상 정상 동작이 나왔다.
+- **운영 코드로 재현해 사이징을 실측한 것.** `effective_stop_price`/`risk_based_qty` 를 그대로
+  호출해 113을 재현했다. 숫자를 손으로 계산했으면 lookback 차이(400 vs 60)를 못 잡았다.
+- **가드를 파생 계산으로 만든 것.** 만료 잡 없이도 오늘 배포 즉시 넥센 픽이 막혔다.
+- **계획 모드에서 Explore/Plan 에이전트로 원인을 다시 판 것.** 급하게 봤을 때 놓친
+  "오래된 ARMED 픽은 무기한 실거래 가능"(원인 5)과 다이제스트 백필(원인 6)이 그때 나왔다.
+- **테스트가 수정 전 코드에서 실패하는지 확인한 것.** `git stash` 로 소스만 되돌려
+  3건 실패를 확인했다 — 없었으면 무의미한 테스트를 넣었을 수 있다.
 
 ## What Didn't Work / 주의
 
-- **구 도메인으로 배포 검증을 했다.** 세션 중에 DNS 가 바뀌는 건 예상 밖이었다.
-  검증 전에 `dig` 로 현재 A 레코드를 확인하는 편이 빠르다.
-- **`date.today()` + UTC 저장 컬럼은 여전히 상습 함정.** 새 쿼리는 `kst_day_bounds_utc()`.
-- `order_log` 에 `price` 컬럼은 없다 — `order_price` / `fill_price`. `qty` 다(`order_qty` 아님).
-- `journalctl` 에 `broker_sync` 가 60초마다 찍힌다 → `| grep -v broker_sync` 필수.
-- **테스트 스텁을 `SimpleNamespace` 로 만들지 말 것.** 프로덕션이 `signal.atr14` 를 읽기
-  시작하자 스텁에만 필드가 없어 3건이 깨졌다. 실제 dataclass 를 쓰면 안 깨진다.
-- **`java -version` 만 보고 JDK 를 판단하지 말 것.** PATH 는 21 인데 `JAVA_HOME` 은 17 이었다.
-  Gradle 은 `JAVA_HOME` 을 따르므로 모바일 빌드 시 명시해야 한다.
-- **nginx 앵커 주의.** `server_name maps.magable.kr;` 은 443 블록과 80 리다이렉트 블록에
-  각각 있다. 80 쪽에 넣으면 HTTPS 요청에는 적용되지 않는다.
-- **`analyze` 픽 0건과 스케줄러 주문은 다른 파이프라인이다** (혼동 금지):
-  - `analyze`(cron 16:00) → `analysis_pick` → 워치리스트. 게이트 R:R ≥ 2.0.
-  - 스케줄러(16:50 후보생성 → 08:55 주문) → `candidate_snapshot` → `order_log`.
+- 🔴 **엔진 의미론을 확인 없이 설명해 실주문을 유발했다.** `현재가 <= 매수가` 는 지정가 하한이다.
+  가격을 제안하기 전에 **그 값이 어느 방향 조건에 걸리는지** 코드로 확인할 것.
+  이 엔진에 **stop-buy(돌파 매수)는 없다.**
+- **하드코딩 날짜가 테스트를 조용히 썩힌다.** `test_strategy_trade._TODAY = date(2026,6,25)` 와
+  `test_telegram_notifications._seed_pick(ref_date=date(2026,6,29))` 가 만료 가드 도입으로
+  깨졌다. 둘 다 `date.today()` 상대값으로 바꿨다. **픽/스냅샷 시드는 항상 today 상대로.**
+- **`trading_days_ago(base, n)` 을 루프 안에서 부르면 O(n²)** 다. `is_krx_closed_date` 가
+  호출마다 `holidays.KR(...)` 을 만든다. 나이 계산은 **뒤로 한 번만** 걸어야 한다(1,830회 → 60회).
+- **로컬에 `holidays` 가 없다.** 거래일 계산 결과가 운영과 1일 어긋나고 경고가 대량으로 찍힌다.
+  로컬 숫자를 운영에 그대로 인용하지 말 것.
+- **작업 트리에 다른 세션이 동시에 쓰고 있었다.** `git add -u` 전에 반드시 `git status` 로
+  내 것이 아닌 변경을 확인할 것. 오늘은 `schemas.py` 가 얽혀 분리 커밋이 불가능했다.
+- **실주문·프로덕션 쓰기는 권한 분류기가 막는다.** 우회하지 말고 `!` 명령으로 사용자에게 넘길 것.
+- 이월 주의(계속 유효): `date.today()` + UTC 저장 컬럼 함정, `order_log` 컬럼명
+  (`order_price`/`fill_price`, `qty`), `journalctl | grep -v broker_sync`,
+  `analyze` 픽과 스케줄러 주문은 **다른 파이프라인**.
 
 ---
 
 ## Next Steps
 
-> 도메인 이전은 **전부 끝났다**(주제 ④). 남은 건 사용자 계정 작업 하나뿐:
-> 애드센스 콘솔에 `maps.magable.kr` 사이트 등록. 단, 앱에 광고 코드가 없고
-> 대시보드가 로그인 벽 뒤라 게재 자체를 다시 판단할 필요가 있다.
+### 이번 변경 관측
 
-### 관측/확인 (이 세션의 변경이 실제로 도는지)
-
-1. **7/30 08:55 주문 수량** — 정본 사이징 첫 적용. ATR 이 넓은 종목이 걸리면 수량이
-   눈에 띄게 작아진다. 주제 ② 참고. **아직 실측 못 한 유일한 변경이다.**
+1. **워치리스트 화면 눈으로 확인** — 기준일 컬럼·만료 배지·무장 버튼 비활성.
+   HTTP·API 페이로드까지만 확인했고 **브라우저로 본 적은 없다.**
+2. **모바일 재빌드·재설치** — 만료 배지·버튼 비활성을 보려면 필요하다. 기존 APK도
+   409 사유는 정상 표시되므로 안전 측면에서는 급하지 않다.
    ```
-   sudo journalctl -u maps --no-pager | grep -v broker_sync | grep "order_cycle: success" | tail -1
+   JAVA_HOME="/c/Program Files/Eclipse Adoptium/jdk-21.0.11.10-hotspot" ./gradlew assembleDebug
    ```
-2. **16:40 데이터 수집 로그** — `KRX 로그인 회로차단기 설치 완료` 첫 출력.
-   성공 시엔 이후 조용하다(성공은 로그를 남기지 않는다).
-3. **텔레그램 인라인 버튼 1회** 눌러 콜백 도달 확인 (위조 콜백은 안 보냈다).
-4. **전략관리 화면 눈으로 확인** — 탭 전환·카드 클릭·[전체 복사] 버튼.
-   HTTP·JS 문법·API 페이로드까지만 확인했다.
-5. **~2026-10월말 `mock_months ≥ 3`**. 단 **점수 34.7 < 임계값 75**라 승격은 여전히 안 된다 —
-   Live Small 차단만 풀린다. 점수 개선은 별도 과제.
+3. **가드 로그** — 현재 ARMED 픽이 0건이라 `전략매매 픽 만료 — 진입 제외` 는 아직 안 뜬다.
+   ```
+   sudo journalctl -u maps --no-pager | grep -v broker_sync | grep "픽 만료"
+   ```
 
-### 판단 필요
+### 새로 발견 — 조사 필요
 
-6. **업종 필터 활성화** — 점수 가중치 7개 중 `_score_from_db` 가 채우는 건 3개(0.50)뿐이고,
-   단일 최대 가중치 `earnings_revision` 0.25 가 통째로 자리표시자다. 활성화 전
-   **레거시 선택기의 임계값 부재**부터 손볼 것(7/24 관측에서 "강세업종" 5개 중 하위 2개가
-   마이너스 수익률이었다). `MAPS_SECTOR_FILTER_ENABLED` 는 꺼져 있어도 기록은 쌓인다.
-7. **애드센스 게재 여부** — 콘솔에 `maps.magable.kr` 등록이 필요하고, 앱에 광고 코드가 없다.
-   대시보드는 로그인 벽 뒤라 정책상 제한될 수 있다. 블로그(`magable.kr`) 쪽이 실효가 클 것이다.
-   `docs/strategy_guides/` 원고 8편이 마침 그쪽 콘텐츠다.
-8. 이월: 매도 만료율 조사, KIS 90020000 장외 경고, `/opt/stock_report` 버전관리,
-   네트워크 테스트 mock 화, 서명 릴리스 APK. `order_log_backup_20260724`(42행) DROP 가능.
+4. 🟡 **매매일지 `estimated_exit` 13건.** 대부분 `donchian_v2` 이고 "매도 체결가 미기록 →
+   매도일 종가로 추정" 상태다. **`009150` 은 아예 "매도 기록 없음"으로 손익 null**이다.
+   오늘 002350과 같은 계열의 정합성 구멍이 과거에도 쌓여 있다는 뜻이다.
+   `GET /api/v1/trade-review` 로 재현되고, 손익 합계의 신뢰도에 직접 영향한다.
+
+### 픽 만료 — 이번에 일부러 안 한 것
+
+5. **자동 만료 잡** (`WATCH` → `CANCELLED`). 파생 가드가 이미 주문을 막으므로 급하지 않다.
+   붙인다면 `run_eod_cleanup`(브로커 미체결 취소를 먼저 하므로 순서가 맞다)에.
+   `CANCELLED` 는 지금도 **아무도 할당하지 않는 죽은 상태**다.
+6. **생성 시 같은 종목 옛 픽 대체.** `CandidateSnapshot` 선례를 따르되 soft-cancel 로
+   (`entry_order_id` → `order_log` 감사 추적이 끊기므로 DELETE 금지).
+7. **라벨 `관찰` → `대기(미무장)`** 개명 검토. `WATCH` 는 "감시 중"이 아니라 "무장 안 됨"인데
+   현재 라벨이 정반대 인상을 준다 — 이번 사고의 인지적 원인 중 하나다.
+
+### 이월
+
+8. **~2026-10월말 `mock_months ≥ 3`**. 단 **점수 34.7 < 임계값 75**라 승격은 여전히 안 된다.
+9. **업종 필터 활성화** — 점수 가중치 7개 중 `_score_from_db` 가 채우는 건 3개(0.50)뿐이고
+   `earnings_revision` 0.25 가 통째로 자리표시자다. 활성화 전 레거시 선택기의 임계값 부재부터.
+10. **애드센스** — `maps.magable.kr` 사이트 등록 필요(사용자 계정 작업). 앱에 광고 코드가 없고
+    대시보드는 로그인 벽 뒤라 실효는 블로그 쪽이 클 것이다.
+11. 이월: 매도 만료율 조사, KIS 90020000 장외 경고, `/opt/stock_report` 버전관리,
+    네트워크 테스트 mock 화, 서명 릴리스 APK. `order_log_backup_20260724`(42행) DROP 가능.
 
 ---
 
 ## 핵심 파일 맵
 
-- **KRX 인증**: `maps/data/krx_auth.py` — 로그인 회로차단기. 설치 지점 4곳
-  (`data/krx_adapter.py:__init__`, `market/regime.py:_krx_index_weekly`,
-  `ops/scheduler.py` ×2, `stock_analysis/analyzer.py`).
-  벤더 원본은 `.venv/.../pykrx/website/comm/auth.py`.
-- **손절 정본**: `maps/strategy/live_rules.py` — `effective_stop_price()`,
-  `stop_loss_pct()`, `atr_multiplier()`. 소비처: `scheduler._submit_exit_orders`,
-  `scheduler._order_qty`, `api/risk.py`. 백테스트만 `backtest/portfolio_replay._resolve_stop`.
-- **전략 설명**: `maps/strategy/catalog.py`(산문), `maps/api/strategies.py`(조합·가이드 API),
-  `templates/strategies.html`, `static/js/app.js`(`loadStrategies` 이하), `static/css/main.css`(말미).
-  원고는 `docs/strategy_guides/`.
+- **픽 신선도**: `maps/ops/pick_freshness.py` (정본 판정),
+  `maps/market/trading_rules.py:58`(`trading_days_ago`),
+  `maps/common/settings.py`(`maps_analysis_pick_max_age_trading_days`).
+  소비처: `scheduler.py:2051`·`:2199`, `api/analysis_picks.py:168`(`_to_item`)·`:306`(`arm_pick`),
+  `ops/daily_digest.py:290`(`_latest_picks`).
+- **브래킷 엔진**: `maps/ops/scheduler.py` — `_active_strategy_trade_picks`(2051),
+  `_process_strategy_trades`(진입 조건 `current <= buy_price` 는 2199),
+  `_strategy_trade_qty`. 상태 전이는 `api/analysis_picks.py` 의 `arm`/`disarm` 뿐이다.
+- **손절 정본**: `maps/strategy/live_rules.py` — `effective_stop_price()`(고정%와 ATR 중 **넓은** 쪽).
+  소비처: `scheduler._submit_exit_orders`, `scheduler._order_qty`, `api/risk.py`.
+  백테스트만 `backtest/portfolio_replay._resolve_stop` 별도.
+  ATR14 재현 시 **lookback 400봉**(`_latest_strategy_signal`).
+- **KRX 인증**: `maps/data/krx_auth.py` — 로그인 회로차단기. 설치 지점 4곳.
 - **날짜 경계**: `maps/execution/order_manager.py` — `kst_day_bounds_utc()`.
-- **장중 시세**: `maps/ops/scheduler.py` — `_fetch_intraday_prices`(브로커 우선),
-  `_fetch_intraday_prices_pykrx`(폴백).
+- **매매일지**: `maps/api/trade_review.py` — 매수/매도 페어링. 매도 기록이 없으면
+  `estimated_exit` 또는 손익 null. 위 Next Steps 4번 참고.
+- **전략 설명**: `maps/strategy/catalog.py`(산문), `maps/api/strategies.py`,
+  `templates/strategies.html`, 원고 `docs/strategy_guides/`.
 - **블로그**: `maps/ops/daily_digest.py`, `maps/api/{daily_digest,blog}.py`,
-  `scripts/run_blog_cron.sh`(`BLOG_DENY`), `scripts/verify_blog_numbers.py`.
-  출력 `/opt/maps/blog/`, cron `/etc/cron.d/maps-blog`.
-- **승격**: `maps/promotion/gate.py`(`_MIN_MOCK_MONTHS_FOR_LIVE_SMALL=3`),
-  `scheduler`(`_order_candidates`, `_mock_track_months`), `settings.is_paper_account`.
-- **테스트**: `tests/test_krx_login_guard.py`, `tests/test_effective_stop_price.py`,
-  `tests/test_strategy_catalog.py`, `tests/test_order_qty.py`, `tests/test_scheduler.py`.
-- **analyze 자동화(서버)**: `/etc/cron.d/maps-analyze`, `scripts/run_analyze_cron.sh`,
-  `.claude/commands/analyze.md`, `scripts/load_analysis_picks.py`.
+  `scripts/{run_blog_cron.sh,verify_blog_numbers.py,check_naver_format.py}`,
+  `docs/blog_style_naver.md`. 출력 `/opt/maps/blog/`, cron `/etc/cron.d/maps-blog`.
+- **테스트**: `tests/test_pick_freshness.py`, `test_trading_rules.py`, `test_strategy_trade.py`,
+  `test_analysis_picks_api.py`, `test_telegram_notifications.py`, `test_daily_digest.py`,
+  `test_effective_stop_price.py`, `test_order_qty.py`.
 - **운영 접속**: `ssh -i D:\ssh_maps\LightsailDefaultKey-ap-northeast-2.pem ubuntu@3.37.117.246`.
