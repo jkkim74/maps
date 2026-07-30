@@ -21,11 +21,17 @@ export type Order = {
 
 export type Holding = {
   ticker: string
+  name: string
   strategy_id: string
   entry_price: number
   current_price: number | null
   pnl_pct: number | null
   exposure_pct: number
+  stop_price: number | null
+  // 실시간 잔고에서만 채워진다. 브로커 조회 실패로 DB 근사(fallback)를 쓰면
+  // quantity=0 / market_value=null 이므로 화면이 해당 줄을 숨겨야 한다.
+  quantity: number
+  market_value: number | null
 }
 
 export type MobileSummary = {
@@ -55,6 +61,9 @@ export type MobileSummary = {
     max_exposure_pct: number
     position_count: number
     holdings: Holding[]
+    broker_status: string          // ok | fallback | unavailable
+    broker_error: string | null
+    active_kill_count: number
   }
   live_monitor: {
     auto_response_active: boolean
@@ -90,6 +99,12 @@ export type AnalysisPick = {
   stop_price: number | null
   current_price: number | null
   rr_ratio: number | null
+  // 기준일 만료 관련. 구버전 서버 응답에는 없으므로 전부 optional 이고,
+  // undefined 는 "신선"으로 취급한다.
+  ref_date?: string
+  data_stale?: boolean
+  stale_reason?: string | null // expired
+  age_trading_days?: number | null
 }
 
 type PicksResponse = { total: number; picks: AnalysisPick[] }

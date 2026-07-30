@@ -185,6 +185,10 @@ class FillItem(BaseModel):
     fill_qty: int
     status: str
     created_at: str
+    # 체결 카드가 전략과 주문 수량을 표시할 수 있도록 내려준다. 없으면 화면이
+    # 전략을 'broker'로, 수량을 공백으로 찍는다(모바일 주문 탭 표시 결함).
+    strategy_id: str | None = None
+    qty: int = 0
 
 
 class SlippageStats(BaseModel):
@@ -258,6 +262,10 @@ class HoldingItem(BaseModel):
     pnl_pct: float | None
     exposure_pct: float
     stop_price: float | None
+    # 실시간 잔고에서만 채워진다. DB 근사(fallback) 경로는 수량·평가금액을 알 수
+    # 없어 0/None으로 남으며, 화면은 그때 해당 줄을 숨긴다.
+    quantity: int = 0
+    market_value: float | None = None
 
 
 class RiskResponse(BaseModel):
@@ -266,11 +274,12 @@ class RiskResponse(BaseModel):
     long_term_risk: float
     long_term_limit: float
     max_exposure_pct: float
-    position_count: int
+    position_count: int                 # 보유 종목 수 — holdings 길이와 항상 일치
     gauges: list[RiskGaugeItem]
     holdings: list[HoldingItem]
     broker_status: str = "ok"           # ok | fallback | unavailable
     broker_error: str | None = None
+    active_kill_count: int = 0          # 발동 중인 Kill Switch 수 (position_count와 별개)
 
 
 # ── SCR-07 Backtest ───────────────────────────────────────────────────────────
@@ -688,11 +697,18 @@ class AnalysisPickItem(BaseModel):
     last_action_at: str | None = None
     rr_ratio: float | None = None          # 손익비 = (목표가-진입가)/(진입가-손절가), 진입가=체결가 우선
     created_at: str
+    # 기준일 만료 여부. 필드명은 OrderPreviewResponse 의 data_stale/stale_reason 과 맞춘다
+    # — 두 화면이 같은 어휘로 읽히도록. 날짜 연산은 전부 백엔드에서 끝낸다.
+    data_stale: bool = False
+    stale_reason: str | None = None        # expired
+    age_trading_days: int | None = None    # 화면이 "만료 N거래일"을 그대로 찍을 수 있게
 
 
 class AnalysisPicksResponse(BaseModel):
     total: int
     picks: list[AnalysisPickItem]
+    expected_ref_date: str | None = None   # 이 날짜 이후 기준일만 신선(= cutoff)
+    stale_count: int = 0
 
 
 class AnalysisPickCreate(BaseModel):

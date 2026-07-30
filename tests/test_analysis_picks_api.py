@@ -59,7 +59,11 @@ def _sample(**overrides):
 def test_list_empty(client) -> None:
     r = client.get("/api/v1/analysis-picks")
     assert r.status_code == 200
-    assert r.json() == {"total": 0, "picks": []}
+    body = r.json()
+    assert body["total"] == 0
+    assert body["picks"] == []
+    assert body["stale_count"] == 0
+    assert body["expected_ref_date"]   # 신선도 기준일은 목록이 비어도 내려간다
 
 
 def test_list_current_price_from_latest_close(client) -> None:
@@ -347,3 +351,169 @@ def test_disarm_rejected_when_entry_cancel_unconfirmed(client) -> None:
         s.get(AnalysisPick, pid).entry_order_id = "live-order-xyz"
         s.commit()
     assert client.post(f"/api/v1/analysis-picks/{pid}/disarm").status_code == 409
+
+
+def _seed_entry_order(client, pid: int, *, order_id: str, status: str, fill_qty: int) -> None:
+    """픽에 진입 주문을 연결하고 order_log 행을 심는다."""
+    from maps.common.models import AnalysisPick, OrderLog
+    with client.session_factory() as s:
+        s.get(AnalysisPick, pid).entry_order_id = order_id
+        s.add(OrderLog(
+            order_id=order_id, strategy_id="strategy_trade", ticker="005930",
+            side="BUY", qty=1000, order_price=70000.0, fill_price=69000.0,
+            fill_qty=fill_qty, status=status, broker="mock",
+        ))
+        s.commit()
+
+
+def test_disarm_rejected_when_entry_partially_filled(client) -> None:
+    """부분 체결분이 있으면 해제를 거부하고 BOUGHT 로 올린다.
+
+    잔량 취소가 성공해도 이미 체결된 주식은 남는다. 해제해서 entry_order_id 를
+    비우면 브래킷도 손절도 관리하지 않는 고아 포지션이 된다(2026-07-30 실제 발생).
+    """
+    from maps.common.models import AnalysisPick
+    pid = _new_pick(client)
+    client.post(f"/api/v1/analysis-picks/{pid}/arm")
+    _seed_entry_order(client, pid, order_id="ord-partial", status="partially_filled", fill_qty=21)
+
+    r = client.post(f"/api/v1/analysis-picks/{pid}/disarm")
+    assert r.status_code == 409
+    assert "21주" in r.json()["detail"]
+
+    with client.session_factory() as s:
+        pick = s.get(AnalysisPick, pid)
+        # 고아 방지: 체결분을 브래킷이 계속 추적해야 한다.
+        assert pick.state == "BOUGHT"
+        assert pick.entry_order_id == "ord-partial"
+
+
+def test_disarm_rejected_when_entry_filled_without_fill_qty(client) -> None:
+    """fill_qty 가 아직 동기화되지 않았어도 체결 상태면 보유로 간주한다."""
+    from maps.common.models import AnalysisPick
+    pid = _new_pick(client)
+    client.post(f"/api/v1/analysis-picks/{pid}/arm")
+    _seed_entry_order(client, pid, order_id="ord-filled", status="filled", fill_qty=0)
+
+    r = client.post(f"/api/v1/analysis-picks/{pid}/disarm")
+    assert r.status_code == 409
+    assert "수량 미상" in r.json()["detail"]
+    with client.session_factory() as s:
+        assert s.get(AnalysisPick, pid).state == "BOUGHT"
+
+
+def test_disarm_rejected_when_partially_filled_and_cancel_succeeds(client, monkeypatch) -> None:
+    """2026-07-30 사고 재현 — 잔량 취소가 **성공**해도 체결분은 남는다.
+
+    실제 KIS 는 잔량 취소에 성공(True)했고, 기존 코드는 그 성공만 보고
+    entry_order_id 를 지워 체결된 21주를 고아로 만들었다. mock 브로커는
+    미등록 주문에 False 를 주므로 취소 성공 경로는 이렇게만 재현된다.
+    """
+    import maps.execution.broker_adapter as ba
+    from maps.common.models import AnalysisPick
+
+    class _CancelOkBroker:
+        def cancel_order(self, order_id: str) -> bool:
+            return True
+
+    monkeypatch.setattr(ba, "get_broker", lambda *a, **k: _CancelOkBroker())
+
+    pid = _new_pick(client)
+    client.post(f"/api/v1/analysis-picks/{pid}/arm")
+    _seed_entry_order(client, pid, order_id="ord-kis", status="partially_filled", fill_qty=21)
+
+    r = client.post(f"/api/v1/analysis-picks/{pid}/disarm")
+    assert r.status_code == 409
+    detail = r.json()["detail"]
+    assert "21주" in detail and "취소했습니다" in detail
+    with client.session_factory() as s:
+        pick = s.get(AnalysisPick, pid)
+        assert pick.state == "BOUGHT"
+        assert pick.entry_order_id == "ord-kis"   # 고아 방지의 핵심
+
+
+def test_disarm_allowed_when_entry_unfilled(client) -> None:
+    """미체결 주문은 취소만 확인되면 정상 해제된다(기존 동작 유지)."""
+    from maps.common.models import AnalysisPick
+    pid = _new_pick(client)
+    client.post(f"/api/v1/analysis-picks/{pid}/arm")
+    _seed_entry_order(client, pid, order_id="ord-open", status="pending", fill_qty=0)
+
+    r = client.post(f"/api/v1/analysis-picks/{pid}/disarm")
+    # mock 브로커가 취소를 확인해 주면 200, 아니면 취소 미확인 409 — 어느 쪽이든
+    # 체결분이 없으므로 BOUGHT 로 가서는 안 된다.
+    assert r.status_code in (200, 409)
+    with client.session_factory() as s:
+        assert s.get(AnalysisPick, pid).state != "BOUGHT"
+
+
+# ── 기준일 만료 (2026-07-30 사고) ───────────────────────────────────────────
+# 6/30 픽이 한 달째 "관찰"로 떠 있었고, 표시된 매수가는 이미 주가가 관통한 값이었다.
+# 무장 거부는 서버가 해야 한다 — 텔레그램 옛 메시지의 인라인 버튼은 영구히 살아 있다.
+
+def _aged_pick(client, trading_days: int, **overrides):
+    """기준일이 N거래일 지난 픽. today 상대라 어느 날 실행해도 결과가 같다."""
+    import datetime as dt
+    from maps.market.trading_rules import trading_days_ago
+    ref = trading_days_ago(dt.date.today(), trading_days)
+    return _new_pick(client, ref_date=ref.isoformat(), **overrides)
+
+
+def test_arm_rejects_stale_pick(client) -> None:
+    pid = _aged_pick(client, 30)
+    r = client.post(f"/api/v1/analysis-picks/{pid}/arm")
+    assert r.status_code == 409
+    assert "만료" in r.json()["detail"]
+    # 상태는 그대로 — 거부된 무장이 부분 적용되면 안 된다
+    assert client.get("/api/v1/analysis-picks").json()["picks"][0]["state"] == "WATCH"
+
+
+def test_arm_allows_pick_at_cutoff_boundary(client) -> None:
+    """기본 만료 기준은 5거래일 — 정확히 5거래일 된 픽은 아직 무장 가능하다."""
+    pid = _aged_pick(client, 5)
+    assert client.post(f"/api/v1/analysis-picks/{pid}/arm").status_code == 200
+
+
+def test_arm_rejects_stale_cancelled_pick(client) -> None:
+    """CANCELLED 를 재무장 허용 상태로 두는 것이 만료 구멍이 되지 않는지."""
+    from maps.common.models import AnalysisPick
+    pid = _aged_pick(client, 30)
+    with client.session_factory() as s:
+        s.get(AnalysisPick, pid).state = "CANCELLED"
+        s.commit()
+    assert client.post(f"/api/v1/analysis-picks/{pid}/arm").status_code == 409
+
+
+def test_list_marks_stale_items(client) -> None:
+    stale_id = _aged_pick(client, 30, ticker="002350", name="넥센타이어")
+    fresh_id = _new_pick(client, ticker="005930")
+    body = client.get("/api/v1/analysis-picks").json()
+    by_id = {p["id"]: p for p in body["picks"]}
+
+    assert by_id[stale_id]["data_stale"] is True
+    assert by_id[stale_id]["stale_reason"] == "expired"
+    assert by_id[stale_id]["age_trading_days"] >= 5
+    assert by_id[fresh_id]["data_stale"] is False
+    assert by_id[fresh_id]["stale_reason"] is None
+
+    assert body["stale_count"] == 1
+    assert body["expected_ref_date"]
+
+
+def test_list_still_returns_stale_picks(client) -> None:
+    """투명성 — 만료 픽을 목록에서 숨기지 않는다.
+
+    숨기면 운영자가 삭제하려 해도 보이지 않고, 만료된 BOUGHT 포지션이 통째로 사라진다.
+    """
+    _aged_pick(client, 60)
+    body = client.get("/api/v1/analysis-picks").json()
+    assert body["total"] == 1
+    assert body["picks"][0]["data_stale"] is True
+
+
+def test_update_pick_reports_stale(client) -> None:
+    """단건 변경 응답에도 만료가 실려야 한다(_to_item 이 cutoff 를 스스로 계산)."""
+    pid = _aged_pick(client, 30)
+    r = client.patch(f"/api/v1/analysis-picks/{pid}", json={"buy_price": 6140})
+    assert r.status_code == 200
+    assert r.json()["data_stale"] is True

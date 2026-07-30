@@ -1,7 +1,7 @@
 import { AlertTriangle } from 'lucide-react'
 import type { AnalysisPick } from '../api'
 import { Empty } from '../components/Empty'
-import { STATE_LABEL, won } from '../format'
+import { STATE_LABEL, staleLabel, won } from '../format'
 
 /** 워치리스트 탭 — 분석 픽 목록 + 무장/무장해제 액션. */
 export function WatchlistScreen({
@@ -29,13 +29,17 @@ export function WatchlistScreen({
           const busy = busyId === p.id
           const armed = p.state === 'ARMED'
           const bought = p.state === 'BOUGHT'
+          const stale = staleLabel(p)
           return (
             <article className="pick" key={p.id}>
               <div className="pick-head tappable" onClick={() => onSelect(p)}>
                 <div><strong>{p.name}</strong><span>{p.ticker}</span></div>
-                <span className={`badge ${p.state.toLowerCase()}`}>{STATE_LABEL[p.state] ?? p.state}</span>
+                <span className="pick-badges">
+                  <span className={`badge ${p.state.toLowerCase()}`}>{STATE_LABEL[p.state] ?? p.state}</span>
+                  {stale ? <span className="badge stale">{stale}</span> : null}
+                </span>
               </div>
-              <div className="pick-prices">
+              <div className={stale ? 'pick-prices muted' : 'pick-prices'}>
                 매수 {won(p.buy_price)} · 목표 {won(p.target_price)} · 손절 {won(p.stop_price)}
                 {p.rr_ratio != null ? ` · R:R ${p.rr_ratio}` : ''}
               </div>
@@ -57,7 +61,7 @@ export function WatchlistScreen({
                 </div>
               ) : null}
               <div className="pick-actions">
-                <button type="button" disabled={busy || armed || bought} onClick={() => onArm(p)}>무장</button>
+                <button type="button" disabled={busy || armed || bought || !!p.data_stale} onClick={() => onArm(p)}>무장</button>
                 <button type="button" className="ghost" disabled={busy || p.state === 'WATCH' || bought} onClick={() => onDisarm(p)}>무장해제</button>
               </div>
             </article>

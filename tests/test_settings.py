@@ -50,3 +50,21 @@ def test_kis_account_product_code_defaults_to_stock_product_for_8_digit_account(
 
     assert settings.kis_account_prefix == "12345678"
     assert settings.kis_account_product_code == "01"
+
+
+def test_analysis_pick_max_age_default_and_override() -> None:
+    """픽 만료 기준은 기본 5거래일이며 환경변수로 조정된다.
+
+    0 으로 두면 저녁 analyze 결과가 다음날 08:55 주문 전에 죽으므로 기본값이 중요하다.
+    """
+    assert MapsSettings().maps_analysis_pick_max_age_trading_days == 5
+    assert MapsSettings(maps_analysis_pick_max_age_trading_days=10).maps_analysis_pick_max_age_trading_days == 10
+
+
+def test_analysis_pick_max_age_appears_in_config_status() -> None:
+    envs = {
+        field.env_var
+        for section in get_config_status(MapsSettings())
+        for field in section.fields
+    }
+    assert "MAPS_ANALYSIS_PICK_MAX_AGE_TRADING_DAYS" in envs

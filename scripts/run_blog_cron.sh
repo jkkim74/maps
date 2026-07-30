@@ -3,7 +3,9 @@
 #
 # 2단계 구조:
 #   1) maps.ops.daily_digest 가 DB에서 하루치 JSON(digest)을 만든다 — 수치의 유일한 출처
-#   2) claude -p /blog 가 그 JSON만 읽고 Markdown을 쓴다 — DB 조회 권한 없음
+#   2) claude -p /blog 가 그 JSON만 읽고 원고를 쓴다 — DB 조회 권한 없음
+#      출력은 마크다운이 아니라 네이버 스마트에디터 붙여넣기용 평문(.txt)이다.
+#      규약: docs/blog_style_naver.md
 #   3) verify_blog_numbers.py 가 글의 숫자를 다이제스트와 대조해 보고한다
 #
 # 2단계의 도구 제한이 핵심이지만 그것만 믿지는 않는다. 실측 결과:
@@ -99,7 +101,7 @@ fi
 
 BLOG_TIMEOUT="${BLOG_TIMEOUT:-900}"
 RAW_LOG="$LOG_DIR/blog_cron_${TS}.jsonl"
-OUT="$BLOG_DIR/${REF_DATE}.md"
+OUT="$BLOG_DIR/${REF_DATE}.txt"
 
 log "claude -p /blog 실행 시작 (timeout ${BLOG_TIMEOUT}s, raw=$RAW_LOG)"
 timeout "${BLOG_TIMEOUT}s" "$CLAUDE_BIN" -p "/blog $DIGEST $OUT" \
@@ -127,6 +129,12 @@ fi
 # 도구 차단은 블랙리스트라 빈틈이 남는다. 결과물을 직접 검증해 로그에 남긴다.
 # 파생값(차이·비율)은 정상이므로 실패로 처리하지 않고 사람이 훑도록 보고만 한다.
 python "$APP_DIR/scripts/verify_blog_numbers.py" "$DIGEST" "$OUT" 2>&1 | tee -a "$LOG"
+
+# ── 4단계: 네이버 포맷·문체 검사 ───────────────────────────────────────────
+# 붙여넣기(마크다운 잔재)와 문체(이모지·em dash·상투구)를 함께 본다.
+# 전자는 글을 깨뜨리고, 후자는 AI 생성물처럼 보이게 해 숫자의 신뢰까지 깎는다.
+# 발행 전에 사람이 고칠 수 있도록 목록만 남긴다.
+python "$APP_DIR/scripts/check_naver_format.py" "$OUT" 2>&1 | tee -a "$LOG"
 
 log "blog cron 완료 — $OUT ($(wc -c <"$OUT") bytes)"
 exit 0

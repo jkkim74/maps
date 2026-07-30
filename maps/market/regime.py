@@ -1,7 +1,9 @@
 """장세 분석 — MarketRegime + WeeklyTrend + VolRegime.
 
 설계서 SCR-03 기준.
-MarketRegime: 5개 자산군의 5주 이동평균 기반 3단계 분류 (strong | mixed | weak).
+MarketRegime: 8개 자산의 5주 이동평균 기반 3단계 분류 (strong | mixed | weak).
+              자산 목록은 `_ASSETS` 가 정본이다 — KOSPI·KOSDAQ·S&P 500·NASDAQ·
+              USD/KRW·금·WTI·구리.
 WeeklyTrend:  10주/20주 MA 및 20주/40주 MA 방향 기반 통과 여부.
 VolRegime:    KOSPI 20주 실현변동성 기반 변동성 국면 (low | normal | high).
               high_vol 시 entry_limit_ratio를 1단계 하향한다 (WEAK+HIGH → 완전 중단).

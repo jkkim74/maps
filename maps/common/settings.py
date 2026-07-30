@@ -64,8 +64,11 @@ class MapsSettings(BaseSettings):
     maps_strategy_trade_enabled: bool = False
     # pick.qty 미지정 시 진입 수량 산정용 계좌 리스크 비율 (손절폭 기준).
     maps_strategy_trade_account_risk_pct: float = Field(default=0.01, gt=0.0, le=0.1)
+    # 분석 워치리스트 픽의 유효 기간(KRX 거래일). ref_date 가 이보다 오래되면 만료로 보고
+    # 무장·진입을 차단한다. 0 으로 두면 저녁 analyze 결과가 다음날 08:55 주문 전에 죽는다.
+    maps_analysis_pick_max_age_trading_days: int = Field(default=5, ge=0, le=60)
     maps_stock_report_path: str = "/opt/stock_report"              # stock-report 소스 경로
-    maps_blog_dir: str = "blog"                                    # 일일 블로그 Markdown 저장 경로
+    maps_blog_dir: str = "blog"                                    # 일일 블로그 원고(.txt) 저장 경로
 
     maps_krx_closed_dates: str = ""
 
@@ -305,6 +308,7 @@ def get_config_status(settings: MapsSettings | None = None) -> list[ConfigSectio
                 _field(s, "maps_broker_mode", "MAPS_BROKER_MODE", "Broker adapter: mock, kis, or kiwoom", required=True),
                 _field(s, "maps_live_trading_enabled", "MAPS_LIVE_TRADING_ENABLED", "Explicit live-order safety switch"),
                 _field(s, "maps_strategy_trade_enabled", "MAPS_STRATEGY_TRADE_ENABLED", "Master switch for watchlist bracket (strategy-trade) execution"),
+                _field(s, "maps_analysis_pick_max_age_trading_days", "MAPS_ANALYSIS_PICK_MAX_AGE_TRADING_DAYS", "Max age (KRX trading days) of an analysis pick's ref_date before it expires"),
                 _field(s, "maps_data_provider", "MAPS_DATA_PROVIDER", "Market data provider: pykrx or mock", required=True),
                 _field(s, "maps_scheduler_enabled", "MAPS_SCHEDULER_ENABLED", "Enable APScheduler jobs inside the API process"),
                 _field(s, "maps_scheduler_timezone", "MAPS_SCHEDULER_TIMEZONE", "Scheduler timezone", required=True),

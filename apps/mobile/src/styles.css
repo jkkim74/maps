@@ -61,13 +61,17 @@ h2 { margin: 0 0 12px; color: #b9c4c9; font-size: 13px; font-weight: 700; text-t
 .error { flex-wrap: wrap; color: #ff8d87; }
 .error button { padding: 6px 10px; border: 1px solid #673638; border-radius: 6px; color: #ffb4ae; background: #2b191a; }
 
+/* 버튼 개수를 하드코딩하지 않는다 — repeat(4,1fr)이던 시절 탭이 5개가 되면서
+   '알림'이 두 번째 줄로 밀리고, 1줄 기준인 .app-shell 하단 패딩으로는 본문이 잘렸다.
+   grid-auto-flow 를 쓰면 탭이 늘어도 다시 깨지지 않는다. */
 .bottom-nav {
-  position: fixed; right: 0; bottom: 0; left: 0; z-index: 3; display: grid; grid-template-columns: repeat(4, 1fr);
+  position: fixed; right: 0; bottom: 0; left: 0; z-index: 3; display: grid;
+  grid-auto-flow: column; grid-auto-columns: 1fr;
   padding-bottom: env(safe-area-inset-bottom); background: #151b1f; border-top: 1px solid #2b373e;
 }
 .bottom-nav button { height: 64px; display: grid; place-content: center; justify-items: center; gap: 4px; color: #7d8b92; background: transparent; border: 0; }
 .bottom-nav button.active { color: #e3b85f; }
-.bottom-nav span { font-size: 10px; }
+.bottom-nav span { font-size: 10px; white-space: nowrap; }
 .spin { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
@@ -111,6 +115,30 @@ h2 { margin: 0 0 12px; color: #b9c4c9; font-size: 13px; font-weight: 700; text-t
 .badge.closed, .badge.cancelled { color: #8a969c; background: #191e22; border-color: #2b373e; }
 .badge.live { color: #101418; background: #e3b85f; border-color: #e3b85f; }
 .badge.mock { color: #9db3bd; background: #1b2329; border-color: #34424a; }
+/* 기준일 만료 — 상태 배지 옆에 붙고, 가격 줄은 흐리게 눌러 유효한 계획으로 안 읽히게 한다. */
+.badge.stale { color: #e08a6d; background: #2a1a15; border-color: #5c3427; }
+.pick-badges { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; justify-content: flex-end; }
+.pick-prices.muted { opacity: .55; }
+
+/* 보유 현황 — .pick 카드를 재사용하고 손익/메타 그리드만 덧붙인다 */
+.holdings { display: flex; flex-direction: column; gap: 10px; }
+.holding .pick-head b { font-size: 15px; font-weight: 700; }
+.holding .pick-prices { margin-bottom: 10px; }
+.holding-meta { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 12px; }
+.holding-meta div { display: flex; justify-content: space-between; gap: 8px; }
+.holding-meta span { color: #839098; font-size: 11px; }
+.holding-meta b { color: #dce5e9; font-size: 13px; }
+
+/* 홈 보유 요약 — 리스크 탭 보유 현황으로 가는 진입점 */
+.holding-summary { padding: 14px; background: #151b1f; border: 1px solid #2b373e; border-radius: 10px; }
+.holding-summary-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.holding-summary-head strong { color: #e8edf0; font-size: 15px; }
+.holding-summary-value { display: block; margin-top: 4px; color: #839098; font-size: 12px; }
+.holding-summary-list { margin: 8px 0 0; color: #aab7bc; font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
+.holding-summary-link {
+  margin-top: 12px; display: inline-flex; align-items: center; gap: 4px; padding: 0;
+  color: #e3b85f; background: transparent; border: 0; font-size: 13px; font-weight: 700;
+}
 
 /* 예정 주문 미리보기 */
 .preview-summary { margin-bottom: 12px; padding: 12px 14px; background: #192126; border: 1px solid #2a353c; border-radius: 8px; }

@@ -7,6 +7,7 @@ from maps.market.trading_rules import (
     krx_tick_size,
     parse_closed_dates,
     previous_trading_day,
+    trading_days_ago,
     round_to_krx_tick,
     round_up_krx_price,
 )
@@ -75,3 +76,32 @@ def test_round_to_krx_tick_snaps_to_nearest() -> None:
 def test_round_to_krx_tick_handles_nonpositive() -> None:
     assert round_to_krx_tick(0) == 0
     assert round_to_krx_tick(-5) == -5
+
+
+def test_trading_days_ago_skips_weekend() -> None:
+    # 2026-07-27 은 월요일 → 1거래일 전은 직전 금요일 7/24
+    assert trading_days_ago(dt.date(2026, 7, 27), 1) == dt.date(2026, 7, 24)
+    assert trading_days_ago(dt.date(2026, 7, 27), 3) == dt.date(2026, 7, 22)
+
+
+def test_trading_days_ago_zero_is_identity() -> None:
+    ref = dt.date(2026, 7, 30)
+    assert trading_days_ago(ref, 0) == ref
+
+
+def test_trading_days_ago_skips_fixed_closure() -> None:
+    # 5/1(근로자의날)은 고정 휴장 — 2026-05-04(월)에서 1거래일 전은 4/30(목)
+    assert trading_days_ago(dt.date(2026, 5, 4), 1) == dt.date(2026, 4, 30)
+
+
+def test_trading_days_ago_honors_extra_closed_dates() -> None:
+    extra = {dt.date(2026, 7, 24)}
+    assert trading_days_ago(dt.date(2026, 7, 27), 1, extra_closed_dates=extra) == dt.date(2026, 7, 23)
+
+
+def test_trading_days_ago_rejects_out_of_range() -> None:
+    import pytest
+    with pytest.raises(ValueError):
+        trading_days_ago(dt.date(2026, 7, 30), -1)
+    with pytest.raises(ValueError):
+        trading_days_ago(dt.date(2026, 7, 30), 61)

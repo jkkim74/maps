@@ -27,6 +27,7 @@ from maps.common.models import (
     UniverseQualityLog,
 )
 from maps.common.settings import MapsSettings
+from maps.market.trading_rules import trading_days_ago
 from maps.ops.daily_digest import _html_to_text, build_daily_digest
 
 REF_DATE = dt.date(2026, 7, 27)
@@ -293,3 +294,52 @@ def test_strategy_stage_defaults_to_research_and_flags_orderable(db, settings) -
 def test_html_to_text_drops_script_and_style() -> None:
     html = "<div><script>var a=1;</script><style>p{color:red}</style><p>본문  텍스트</p></div>"
     assert _html_to_text(html) == "본문 텍스트"
+
+
+# ── 픽 기준일 만료 (2026-07-30 사고) ────────────────────────────────────────
+# _latest_picks 는 `ref_date <= ref_date` 상한만 있고 하한이 없어서, 몇 달 전 픽이
+# 오늘 다이제스트의 매수·손절·목표가를 조용히 채우고 있었다.
+
+def test_stale_pick_does_not_backfill_digest(db, settings) -> None:
+    _seed(db)
+    db.add(AnalysisPick(
+        ref_date=trading_days_ago(REF_DATE, 30), ticker="475150", name="SK이터닉스",
+        market="KOSDAQ", buy_price=80000.0, target_price=95000.0, stop_price=74000.0,
+        rationale="한 달 전 근거",
+    ))
+    db.commit()
+
+    digest = build_daily_digest(db, settings, REF_DATE)
+
+    candidate = next(c for c in digest.candidates if c.ticker == "475150")
+    assert candidate.price_source == "rule"       # 만료 픽은 가격 출처가 될 수 없다
+    assert candidate.ai_analysis_memo != "한 달 전 근거"
+
+
+def test_backdated_digest_uses_its_own_ref_date_window(db, settings) -> None:
+    """과거 날짜로 재생성해도 그날 기준 신선했던 픽은 살아 있어야 한다.
+
+    cutoff 를 `date.today()` 로 잡으면 블로그 백필 시 픽이 전부 빠지고
+    price_source 가 조용히 analysis_pick → rule 로 뒤집힌다.
+    """
+    old_ref = REF_DATE - dt.timedelta(days=90)
+    db.add(SecurityMetadata(
+        ticker="475150", name="SK이터닉스", market="KOSDAQ", security_type="stock",
+    ))
+    db.add(CandidateSnapshot(
+        ref_date=old_ref, strategy_id="donchian_v2", ticker="475150",
+        name="SK이터닉스", market="KOSDAQ", factor_score=70.0, trend_strength=80.0,
+        ts_bucket="S1", final_score=74.0, weekly_pass=True,
+    ))
+    db.add(AnalysisPick(
+        ref_date=old_ref, ticker="475150", name="SK이터닉스", market="KOSDAQ",
+        buy_price=80000.0, target_price=95000.0, stop_price=74000.0,
+        rationale="그날 기준으로는 신선했던 근거",
+    ))
+    db.commit()
+
+    digest = build_daily_digest(db, settings, old_ref)
+
+    candidate = next(c for c in digest.candidates if c.ticker == "475150")
+    assert candidate.price_source == "analysis_pick"
+    assert candidate.ai_buy_price == 80000.0

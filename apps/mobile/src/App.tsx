@@ -115,7 +115,9 @@ export function App() {
       <main>
         {loading && !data ? <div className="loading"><RefreshCw className="spin" />운영 데이터를 불러오는 중입니다.</div> : null}
         {error ? <div className="error"><AlertTriangle size={20} />{error}<button type="button" onClick={() => void refresh()}>다시 시도</button></div> : null}
-        {data && tab === 'home' ? <HomeScreen data={data} history={history} /> : null}
+        {data && tab === 'home' ? (
+          <HomeScreen data={data} history={history} onGoRisk={() => setTab('risk')} />
+        ) : null}
         {data && tab === 'orders' ? (
           selectedOrder
             ? <OrderDetail order={selectedOrder} onBack={() => setSelectedOrder(null)} />

@@ -120,6 +120,8 @@ def get_orders(db: Session = Depends(get_db)) -> OrdersResponse:
             fill_qty=r.fill_qty,
             status=r.status,
             created_at=r.created_at.isoformat() if r.created_at else "",
+            strategy_id=r.strategy_id,
+            qty=r.qty,
         )
         for r in rows
         if r.status in ("filled", "FILLED", "partially_filled", "PARTIAL")

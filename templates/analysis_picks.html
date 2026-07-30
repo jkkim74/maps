@@ -14,6 +14,10 @@
 .ap-form input,.ap-form select{width:100%;padding:7px 10px;border:1px solid var(--border);
   border-radius:6px;background:var(--bg);color:var(--text-primary);font-size:.85rem}
 .ap-num{text-align:right;font-variant-numeric:tabular-nums}
+/* 기준일 만료 행 — 가격이 유효한 계획처럼 읽히지 않게 눌러 둔다. 이 페이지 전용이라
+   전역 CSS 에 클래스를 만들지 않는다. */
+tr.ap-stale td{opacity:.55}
+tr.ap-stale td:first-child,tr.ap-stale td:nth-child(3){opacity:1}
 .topbar-btn.active{background:var(--accent);color:#fff;border-color:var(--accent)}
 </style>
 {% endblock %}
@@ -78,6 +82,11 @@ function stateBadge(p) {
     const [rl, rc] = p.exit_reason === 'take_profit' ? ['익절','pass'] : ['손절','fail'];
     extra = ` <span class="badge badge-${rc}">${rl}</span>`;
   }
+  // 기준일 만료 — 날짜 계산은 서버가 끝냈고 여기선 라벨만 붙인다.
+  if (p.data_stale) {
+    const age = p.age_trading_days != null ? `${p.age_trading_days}거래일` : '';
+    extra += ` <span class="badge badge-alert" title="분석 기준일이 오래돼 무장할 수 없습니다">만료 ${age}</span>`;
+  }
   return `<span class="badge badge-${cls}">${label}</span>${extra}`;
 }
 function esc(s) {
@@ -112,11 +121,12 @@ async function loadPicks() {
       return;
     }
     const rows = d.picks.map(p => `
-      <tr>
+      <tr${p.data_stale ? ' class="ap-stale"' : ''}>
         <td><span class="ap-link" onclick="openStockAnalysisModal('${esc(p.ticker)}')">
           ${escHtml(p.name || p.ticker)}<br><span class="mono text-muted" style="font-size:.75rem">${escHtml(p.ticker)}</span>
         </span></td>
         <td class="text-muted">${escHtml(p.market || '—')}</td>
+        <td class="mono text-muted" style="font-size:.75rem">${escHtml(p.ref_date || '—')}</td>
         <td class="ap-num mono">${fmtPrice(p.current_price)}</td>
         <td class="ap-num mono">${fmtPrice(p.buy_price)}</td>
         <td class="ap-num mono">${fmtPrice(p.fill_price)}</td>
@@ -129,10 +139,15 @@ async function loadPicks() {
         <td class="mono text-muted" style="font-size:.75rem">${toKST(p.created_at)}</td>
         <td><button class="topbar-btn" style="font-size:.72rem" onclick="deletePick(${p.id})">삭제</button></td>
       </tr>`).join('');
-    box.innerHTML = `
+    const staleNote = d.stale_count > 0
+      ? `<div class="text-muted" style="font-size:.78rem;margin-bottom:.5rem">
+           기준일 ${escHtml(d.expected_ref_date || '')} 이전 픽 <b>${d.stale_count}건</b>이 만료 상태입니다 — 무장할 수 없습니다. 재분석 후 가격을 갱신하세요.
+         </div>`
+      : '';
+    box.innerHTML = staleNote + `
       <table>
         <thead><tr>
-          <th>종목</th><th>시장</th><th class="ap-num">현재가</th>
+          <th>종목</th><th>시장</th><th>기준일</th><th class="ap-num">현재가</th>
           <th class="ap-num">매수가</th><th class="ap-num">체결가</th><th class="ap-num">목표가</th><th class="ap-num">손절가</th>
           <th class="ap-num">손익비</th><th>상태</th>
           <th style="text-align:center">브래킷</th><th>소스</th><th>생성</th><th></th>
@@ -180,8 +195,12 @@ async function submitPick() {
 }
 
 function bracketCell(p) {
-  if (p.state === 'WATCH' || p.state === 'CANCELLED')
+  if (p.state === 'WATCH' || p.state === 'CANCELLED') {
+    // 진짜 가드는 서버의 409다. 여기서 끄는 건 헛된 왕복을 줄이기 위한 것뿐이다.
+    if (p.data_stale)
+      return `<button class="topbar-btn" style="font-size:.72rem" disabled title="기준일 ${p.ref_date} — 만료되어 무장할 수 없습니다">무장</button>`;
     return `<button class="topbar-btn" style="font-size:.72rem" onclick="armPick(${p.id})">무장</button>`;
+  }
   if (p.state === 'ARMED')
     return `<button class="topbar-btn" style="font-size:.72rem" onclick="disarmPick(${p.id})">해제</button>`;
   if (p.state === 'BOUGHT')

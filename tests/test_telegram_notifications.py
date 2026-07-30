@@ -192,8 +192,10 @@ def webhook_client(monkeypatch):
 
 
 def _seed_pick(factory, **overrides) -> int:
+    # 기준일은 today 상대값이어야 한다 — 고정 날짜면 만료 가드가 들어온 뒤 시간이
+    # 흐르면서 무장 테스트가 조용히 409 를 받게 된다.
     base = dict(
-        ref_date=dt.date(2026, 6, 29), ticker="005930", name="삼성전자", market="KOSPI",
+        ref_date=dt.date.today(), ticker="005930", name="삼성전자", market="KOSPI",
         source="analyze", buy_price=70000, target_price=80000, stop_price=66000, state="WATCH",
     )
     base.update(overrides)
@@ -348,3 +350,29 @@ def test_load_picks_failed_status_skips_telegram(picks_session_factory) -> None:
         session_factory=picks_session_factory, notifier=rec,
     )
     assert rec.picks_calls == []  # 실패 기록은 알림 없음
+
+
+def test_webhook_arm_rejects_stale_pick(webhook_client, monkeypatch) -> None:
+    """옛 푸시 메시지의 무장 버튼은 영구히 살아 있다 — 서버 거부가 유일한 방어선이다.
+
+    2026-07-30: 한 달 전 기준일 픽이 무장되자 17초 만에 진입 주문이 나갔다.
+    """
+    from maps.market.trading_rules import trading_days_ago
+
+    pid = _seed_pick(
+        webhook_client.session_factory, ref_date=trading_days_ago(dt.date.today(), 30)
+    )
+    rec = _RecordingNotifier()
+    monkeypatch.setattr("maps.api.telegram.get_telegram_notifier", lambda: rec)
+
+    r = webhook_client.post(
+        "/api/telegram/webhook",
+        json=_callback(f"arm:{pid}"),
+        headers={"X-Telegram-Bot-Api-Secret-Token": "s3cret"},
+    )
+    assert r.status_code == 200
+    with webhook_client.session_factory() as s:
+        pick = s.get(AnalysisPick, pid)
+        assert pick.state == "WATCH"                  # 무장되지 않았다
+        assert pick.strategy_trade_enabled is False
+    assert rec.answers and "만료" in rec.answers[0][1]

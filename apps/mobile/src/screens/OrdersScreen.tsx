@@ -1,7 +1,7 @@
 import { AlertTriangle } from 'lucide-react'
 import type { MobileSummary, Order, OrderPreview } from '../api'
 import { Empty } from '../components/Empty'
-import { money, previewSkipLabel, won } from '../format'
+import { money, orderStatusLabel, previewSkipLabel, sideLabel, won } from '../format'
 
 /** 다음 거래일 예정 주문 섹션 — 핵심만: 총 예상 건수·금액 + 종목별 예상금액([실주문]/[모의] 구분). */
 function OrderPreviewSection({
@@ -102,13 +102,16 @@ export function OrdersScreen({
         preview={preview} loading={previewLoading} error={previewError} onReload={onReloadPreview}
       />
       <section>
-        <h2>주문 및 체결</h2>
-        {orders.length === 0 ? <Empty text="표시할 주문 내역이 없습니다." /> : (
+        {/* 오늘의 주문·체결만 보여준다 — 보유 종목 목록이 아니다(어제 산 종목은 안 나온다).
+            보유는 리스크 탭의 '보유 현황'과 홈 요약이 담당한다. */}
+        <h2>오늘 주문 및 체결</h2>
+        {orders.length === 0 ? <Empty text="오늘 주문·체결 내역이 없습니다." /> : (
           <div className="rows">
             {orders.map((order) => (
               <article className="row tappable" key={`${order.order_id}-${order.status}`} onClick={() => onSelect(order)}>
-                <div><strong>{order.name || order.ticker}</strong><span>{order.ticker} · {order.strategy_id || 'broker'}</span></div>
-                <div className="row-end"><b>{order.side} {order.qty}</b><span className={`pill ${order.status.toLowerCase()}`}>{order.status}</span></div>
+                <div><strong>{order.name || order.ticker}</strong><span>{order.ticker} · {order.strategy_id || '수동/브로커'}</span></div>
+                {/* pill 클래스는 영문 상태값을 그대로 쓴다(.pill.filled 등). 표시 문구만 한글. */}
+                <div className="row-end"><b>{sideLabel(order.side)}{order.qty ? ` ${order.qty.toLocaleString('ko-KR')}주` : ''}</b><span className={`pill ${order.status.toLowerCase()}`}>{orderStatusLabel(order.status)}</span></div>
               </article>
             ))}
           </div>

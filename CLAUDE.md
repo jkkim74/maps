@@ -158,6 +158,16 @@ SQLite by default (`maps.db`). Switch to PostgreSQL via `MAPS_DB_URL`. All table
    재로그인을 시도해서, 자격증명이 만료되면 재시도 누적이 KRX 계정을 잠근다
    (2026-07-27 실제 사고, 하루 158회). `maps/data/krx_auth.py` 참고.
 
+9. **분석 워치리스트 픽의 신선도는 `ops/pick_freshness` 로만 판정한다.**
+   `ref_date` 가 `MAPS_ANALYSIS_PICK_MAX_AGE_TRADING_DAYS`(기본 5거래일)보다 오래되면
+   무장(`arm`)과 브래킷 진입이 차단된다. 이건 **파생 계산이지 상태 전이가 아니다** —
+   만료 잡에 의존하면 잡이 멈춘 사이 오래된 픽이 다시 실주문을 낸다
+   (2026-07-30 실제 사고: 6/30 픽 무장 17초 만에 진입, 그사이 주가 -39%).
+   신선도는 반드시 `ref_date`(KST `Date`)로 계산한다. `created_at` 은 UTC naive 라
+   09:00 KST 이전에 하루씩 어긋난다.
+   > ⚠️ **`BOUGHT` 픽에는 만료를 적용하지 않는다.** 실제 보유 주식이고 익절·손절을
+   > `_process_strategy_trades` 가 단독 관리한다 — 제외하면 청산 없이 방치된다.
+
 ## Allowed MDD by strategy group
 
 | Strategy | mc_p95_limit |
@@ -186,6 +196,7 @@ Promotion thresholds: `mock_candidate=60`, `live_candidate=75` (fixed, independe
 | `MAPS_ORDER_SLIPPAGE_PCT` | `0.01` | Limit price = last close × (1 + slippage) |
 | `MAPS_ORDER_MAX_GAP_PCT` | `0.02` | Cancel order if gap-up from signal price exceeds this |
 | `MAPS_STOCK_REPORT_PATH` | `/opt/stock_report` | Path to external stock-report source tree |
+| `MAPS_ANALYSIS_PICK_MAX_AGE_TRADING_DAYS` | `5` | 분석 워치리스트 픽의 유효 기간(KRX 거래일). `ref_date` 가 이보다 오래되면 무장·진입 차단 |
 | `MAPS_KRX_LOGIN_GUARD_ENABLED` | `true` | KRX 로그인 회로차단기. 끄면 자격증명 만료 시 재시도 누적으로 계정이 잠긴다 |
 | `MAPS_KRX_LOGIN_MAX_FAILURES` | `3` | 연속 실패 몇 회에 회로를 열지 (치명 코드는 1회에 즉시 차단) |
 | `MAPS_KRX_LOGIN_COOLDOWN_SECONDS` | `1800` | 최초 차단 시간. 재차단마다 2배 |

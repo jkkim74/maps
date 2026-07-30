@@ -73,6 +73,7 @@ from maps.market.trading_rules import (
 )
 from maps.ops.notifications import SlackNotifier
 from maps.ops.order_state import claimed_candidate_tickers
+from maps.ops.pick_freshness import is_pick_stale, pick_cutoff_date
 from maps.promotion.gate import PromotionGate, PromotionStage
 from maps.risk.manager import RiskConfig, RiskManager
 from maps.strategy.ath_breakout_v1 import ATHBreakoutV1Strategy
@@ -2048,13 +2049,33 @@ class OperationalPipeline:
 
     # ── 전략매매 브래킷 실행 엔진 (분석 워치리스트) ─────────────────────────
     def _active_strategy_trade_picks(self, db: Session) -> list[AnalysisPick]:
-        """무장(ARMED) 또는 보유(BOUGHT) 상태의 전략매매 픽을 반환한다."""
-        return (
+        """무장(ARMED) 또는 보유(BOUGHT) 상태의 전략매매 픽을 반환한다.
+
+        기준일이 만료된 **ARMED** 픽은 제외한다. 진입 조건이 `현재가 <= 매수가` 라
+        오래된(=높은) 매수가는 첫 틱에 즉시 발동하므로, 한 달 전 분석으로 오늘
+        주문이 나가는 일을 여기서 끊는다(2026-07-30 실제 발생).
+
+        **BOUGHT 는 절대 제외하지 않는다.** 실제 보유 주식이고 익절·손절을
+        `_process_strategy_trades` 가 단독으로 관리한다 — 여기서 빼면 청산 관리
+        없이 방치되어 원래 문제보다 나빠진다.
+        """
+        rows = (
             db.query(AnalysisPick)
             .filter(AnalysisPick.strategy_trade_enabled.is_(True))
             .filter(AnalysisPick.state.in_(["ARMED", "BOUGHT"]))
             .all()
         )
+        cutoff = pick_cutoff_date(self._settings)
+        active: list[AnalysisPick] = []
+        for pick in rows:
+            if pick.state == "ARMED" and is_pick_stale(pick, cutoff):
+                logger.warning(
+                    "전략매매 픽 만료 — 진입 제외 [%s] ref_date=%s 매수가=%s (기준일 >= %s 필요)",
+                    pick.ticker, pick.ref_date, pick.buy_price, cutoff,
+                )
+                continue
+            active.append(pick)
+        return active
 
     def _strategy_trade_qty(self, broker, pick: AnalysisPick) -> int:
         """진입 수량을 산정한다. pick.qty 우선, 없으면 계좌 risk%(손절폭 기반).
@@ -2176,6 +2197,15 @@ class OperationalPipeline:
                         db.commit()
                 # 현재가 ≤ 매수가 & 미제출 → 지정가 진입
                 if pick.entry_order_id is None and pick.buy_price and current <= pick.buy_price:
+                    # 만료 픽 2차 가드. _active_strategy_trade_picks 와 중복이지만, 이 함수는
+                    # picks 를 인자로 받으므로 그 필터를 우회한 호출부가 있으면 여기가 마지막
+                    # 방어선이다 — 돈이 나가는 줄 바로 앞이라 중복을 감수한다.
+                    if is_pick_stale(pick, pick_cutoff_date(self._settings)):
+                        logger.warning(
+                            "전략매매 진입 차단 — 픽 만료 [%s] ref_date=%s 매수가=%.0f 현재가=%.0f",
+                            pick.ticker, pick.ref_date, pick.buy_price, current,
+                        )
+                        continue
                     qty = self._strategy_trade_qty(broker, pick)
                     if qty <= 0:
                         logger.warning("전략매매 진입 스킵 [%s]: 수량 0 (사이즈 산정 실패)", pick.ticker)

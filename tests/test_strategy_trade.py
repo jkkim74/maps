@@ -15,9 +15,12 @@ from maps.common.models import AnalysisPick
 from maps.execution.broker_adapter import Order, OrderSide, OrderType
 from maps.execution.mock_broker import MockBroker
 from maps.execution.order_manager import OrderManager
+from maps.market.trading_rules import trading_days_ago
 from maps.ops.scheduler import OperationalPipeline
 
-_TODAY = dt.date(2026, 6, 25)
+# 픽 기준일은 today 상대값이어야 한다. 고정 날짜로 두면 신선도 가드가 들어온 뒤
+# 시간이 흐르면서 전 테스트가 조용히 만료 픽을 쓰게 된다.
+_TODAY = dt.date.today()
 
 
 @pytest.fixture
@@ -180,3 +183,69 @@ def test_submit_exit_orders_excludes_bracket_tickers(env):
         db=db, broker=broker, manager=manager, ref_date=_TODAY, exclude_tickers={"005930"},
     )
     assert result == (0, 0, set())
+
+
+# ── 기준일 만료 가드 ────────────────────────────────────────────────────────
+# 2026-07-30: 6/30 기준 픽이 "관찰"로 남아 있다가 무장되자 17초 만에 진입 주문이
+# 나갔다. 진입 조건이 `현재가 <= 매수가` 라 오래된(=높은) 매수가는 즉시 발동한다.
+
+def _stale_pick(db, *, state="ARMED", **kw):
+    """만료 기준(5거래일)을 훨씬 넘긴 픽. today 상대라 어느 날 실행해도 만료다."""
+    p = _pick(db, state=state, **kw)
+    p.ref_date = trading_days_ago(dt.date.today(), 30)
+    db.commit()
+    db.refresh(p)
+    return p
+
+
+def test_stale_armed_pick_never_enters(env):
+    pipeline, broker, manager, db = env
+    pick = _stale_pick(db)
+    # 현재가가 매수가 아래 = 신선한 픽이었다면 즉시 진입했을 조건
+    submitted, closed = _run(pipeline, broker, manager, db, [pick], {"005930": 69000})
+    assert (submitted, closed) == (0, 0)
+    assert pick.entry_order_id is None
+    assert broker.get_positions().get("005930", 0) == 0
+
+
+def test_stale_armed_pick_excluded_from_active_query(env):
+    pipeline, _broker, _manager, db = env
+    stale = _stale_pick(db, ticker="005930")
+    fresh = _pick(db, ticker="000660")
+    active = pipeline._active_strategy_trade_picks(db)
+    ids = {p.id for p in active}
+    assert fresh.id in ids
+    assert stale.id not in ids
+
+
+def test_stale_bought_pick_still_exits_on_stop(env):
+    """**비대칭 회귀 테스트.** 보유 중인 픽은 만료돼도 청산 관리에서 빼면 안 된다.
+
+    BOUGHT 를 제외하면 실제 보유 주식이 손절·익절 없이 방치된다 — 원래 문제보다 나쁘다.
+    """
+    pipeline, broker, manager, db = env
+    pick = _pick(db)
+    _run(pipeline, broker, manager, db, [pick], {"005930": 69000})   # 진입
+    _run(pipeline, broker, manager, db, [pick], {"005930": 69000})   # BOUGHT
+    assert pick.state == "BOUGHT"
+    pick.ref_date = trading_days_ago(dt.date.today(), 30)            # 이제 만료
+    db.commit()
+
+    assert pipeline._active_strategy_trade_picks(db)                 # 조회에서 안 빠진다
+    submitted, closed = _run(pipeline, broker, manager, db, [pick], {"005930": 65000})
+    assert (submitted, closed) == (0, 1)
+    assert pick.state == "CLOSED"
+    assert pick.exit_reason == "stop_loss"
+    assert broker.get_positions().get("005930", 0) == 0
+
+
+def test_stale_bought_pick_still_takes_profit(env):
+    pipeline, broker, manager, db = env
+    pick = _pick(db)
+    _run(pipeline, broker, manager, db, [pick], {"005930": 69000})
+    _run(pipeline, broker, manager, db, [pick], {"005930": 69000})
+    pick.ref_date = trading_days_ago(dt.date.today(), 30)
+    db.commit()
+    submitted, closed = _run(pipeline, broker, manager, db, [pick], {"005930": 81000})
+    assert (submitted, closed) == (0, 1)
+    assert pick.exit_reason == "take_profit"

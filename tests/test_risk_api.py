@@ -14,7 +14,7 @@ import maps.common.models  # noqa: F401
 from maps.api import risk
 from maps.common.db import Base
 from maps.common.exceptions import BrokerAdapterError
-from maps.common.models import AnalysisPick, HistoricalOHLCV, OrderLog
+from maps.common.models import AnalysisPick, HistoricalOHLCV, KillSwitchLog, OrderLog
 from maps.execution.broker_adapter import AccountBalance, Position
 
 
@@ -96,10 +96,91 @@ def test_risk_returns_default_strategy_gauges_and_broker_holdings(ctx) -> None:
             "pnl_pct": 0.040000000000000036,
             "exposure_pct": 0.104,
             "stop_price": 47500.0,
+            "quantity": 2,
+            "market_value": 104000.0,
         }
     ]
     assert data["max_exposure_pct"] == 0.104
     assert data["position_count"] == 1
+    assert data["active_kill_count"] == 0
+
+
+def test_position_count_is_holdings_only_and_kills_reported_separately(db, monkeypatch) -> None:
+    """보유 1건 + 활성 Kill 3건이어도 position_count 는 1이어야 한다.
+
+    과거에는 max(len(active_kills), 보유수) 로 합쳐서, Kill 이 많으면 화면의
+    '보유 종목' KPI 가 실제 보유 행 수보다 커졌다.
+    """
+    for strategy_id in ("pullback_v3", "donchian_v1", "ath_breakout_v1"):
+        db.add(KillSwitchLog(
+            strategy_id=strategy_id,
+            event_type="trigger",
+            reason="daily_loss",
+            new_entry_blocked=True,
+        ))
+    db.add(OrderLog(
+        order_id="filled-005930",
+        strategy_id="pullback_v3",
+        ticker="005930",
+        side="buy",
+        qty=2,
+        order_price=50_000,
+        fill_price=50_000,
+        fill_qty=2,
+        status="filled",
+    ))
+    db.commit()
+
+    class FakeBroker:
+        def get_account_balance(self):
+            return AccountBalance(cash=900_000, positions_value=104_000)
+
+        def _fetch_positions_and_balance(self):
+            return {
+                "005930": Position(
+                    "005930",
+                    2,
+                    50_000,
+                    name="삼성전자",
+                    current_price=52_000,
+                    evaluation_value=104_000,
+                )
+            }, self.get_account_balance()
+
+    monkeypatch.setattr(risk, "get_broker", lambda: FakeBroker())
+
+    response = risk.get_risk(db)
+
+    assert len(response.holdings) == 1
+    assert response.position_count == 1
+    assert response.active_kill_count == 3
+
+
+def test_broker_holdings_expose_quantity_and_market_value(db, monkeypatch) -> None:
+    """화면이 '113주 · 평가 4,248,800원' 을 찍을 수 있어야 한다."""
+    class FakeBroker:
+        def get_account_balance(self):
+            return AccountBalance(cash=1_000_000, positions_value=4_248_800)
+
+        def _fetch_positions_and_balance(self):
+            return {
+                "089860": Position(
+                    "089860",
+                    113,
+                    36_600,
+                    name="롯데렌탈",
+                    current_price=37_600,
+                    evaluation_value=4_248_800,
+                )
+            }, self.get_account_balance()
+
+    monkeypatch.setattr(risk, "get_broker", lambda: FakeBroker())
+
+    holdings, _max_exposure, _count, status, _error = risk._broker_holdings(db)
+
+    assert status == "ok"
+    assert holdings[0].quantity == 113
+    assert holdings[0].market_value == 4_248_800.0
 
 
 def test_broker_holdings_infers_strategy_from_matching_buy_order(db, monkeypatch) -> None:
@@ -221,6 +302,9 @@ def test_broker_holdings_falls_back_to_bought_picks_when_broker_unavailable(db, 
     assert holdings[0].current_price == 54_000.0
     assert holdings[0].stop_price == 46_800.0
     assert holdings[0].pnl_pct == pytest.approx(54_000 / 53_900 - 1.0)
+    # 실시간 잔고가 없으므로 수량·평가금액은 비워 둔다 — 화면이 그 줄을 숨긴다.
+    assert holdings[0].quantity == 0
+    assert holdings[0].market_value is None
 
 
 def test_broker_holdings_unavailable_without_fallback_records(db, monkeypatch) -> None:

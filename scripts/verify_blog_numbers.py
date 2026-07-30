@@ -11,8 +11,11 @@
 따라서 이 스크립트는 **판정하지 않고 보고**한다. 사람이 목록을 훑어 그것들이
 다이제스트 값의 산술 결과인지 확인하면 된다.
 
+원고는 네이버 붙여넣기용 평문(`.txt`)이지만 이 검사는 포맷과 무관하다 —
+본문 전체에서 숫자 토큰만 뽑아 대조하므로 `.md` 원고에도 그대로 쓸 수 있다.
+
 사용법:
-    python scripts/verify_blog_numbers.py <digest.json> <post.md>
+    python scripts/verify_blog_numbers.py <digest.json> <post.txt>
 """
 
 from __future__ import annotations
@@ -77,6 +80,11 @@ def _collect(node: object, acc: set[Decimal]) -> None:
 
 
 def main(argv: list[str]) -> int:
+    # 원고에는 구분선(─)·이모지가 들어간다. 윈도우 콘솔 기본 코덱(cp949)은 이를 못 찍고
+    # UnicodeEncodeError 로 죽는다 — 검증기가 검증 대상 때문에 실패하면 안 된다.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
     if len(argv) != 3:
         print(__doc__)
         return 2

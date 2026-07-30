@@ -43,6 +43,7 @@ from maps.common.models import (
 )
 from maps.common.settings import MapsSettings
 from maps.execution.order_manager import kst_day_bounds_utc
+from maps.ops.pick_freshness import pick_cutoff_date
 
 logger = logging.getLogger(__name__)
 
@@ -286,15 +287,31 @@ def _build_strategies(
     return out
 
 
-def _latest_picks(db: Session, tickers: set[str], ref_date: dt.date) -> dict[str, AnalysisPick]:
+def _latest_picks(
+    db: Session, tickers: set[str], ref_date: dt.date, settings: MapsSettings
+) -> dict[str, AnalysisPick]:
     """ticker별 최신 analysis_pick (/analyze 결과). candidate_snapshot 과 분리된
-    별도 보관소라 다이제스트 표시 시점에만 읽어온다 — 스냅샷에 되쓰지 않는다."""
+    별도 보관소라 다이제스트 표시 시점에만 읽어온다 — 스냅샷에 되쓰지 않는다.
+
+    기준일이 만료된 픽은 제외한다. 상한(`ref_date <= ref_date`)만 있고 하한이 없던
+    탓에 몇 달 전 픽이 오늘 다이제스트의 매수·손절·목표가를 조용히 채우고 있었다.
+
+    .. note::
+       cutoff 는 **다이제스트의 ref_date 기준**이다. `date.today()` 로 잡으면
+       지난달 다이제스트를 재생성(블로그 백필)할 때 픽이 전부 빠지고
+       `price_source` 가 조용히 analysis_pick → rule 로 뒤집힌다.
+    """
     if not tickers:
         return {}
+    cutoff = pick_cutoff_date(settings, today=ref_date)
     picks: dict[str, AnalysisPick] = {}
     for pick in (
         db.query(AnalysisPick)
-        .filter(AnalysisPick.ticker.in_(tickers), AnalysisPick.ref_date <= ref_date)
+        .filter(
+            AnalysisPick.ticker.in_(tickers),
+            AnalysisPick.ref_date <= ref_date,
+            AnalysisPick.ref_date >= cutoff,
+        )
         .order_by(AnalysisPick.ref_date.desc(), AnalysisPick.id.desc())
         .all()
     ):
@@ -345,7 +362,7 @@ def _candidate_from_row(r: CandidateSnapshot, pick: AnalysisPick | None) -> Dige
 
 
 def _build_candidates(
-    db: Session, ref_date: dt.date
+    db: Session, ref_date: dt.date, settings: MapsSettings
 ) -> tuple[list[DigestCandidate], int, int, UniverseQualityLog | None]:
     """후보 종목 섹션. 상위 N건(종목 중복 제거)과 집계, 유니버스 품질 로그를 반환한다.
 
@@ -371,7 +388,7 @@ def _build_candidates(
         if len(top_rows) >= _MAX_CANDIDATES:
             break
 
-    picks = _latest_picks(db, {r.ticker for r in top_rows}, ref_date)
+    picks = _latest_picks(db, {r.ticker for r in top_rows}, ref_date, settings)
     top = [_candidate_from_row(r, picks.get(r.ticker)) for r in top_rows]
 
     quality = (
@@ -492,7 +509,7 @@ def build_daily_digest(
         "strategies", lambda: _build_strategies(db, settings, ref_date)
     ) or []
 
-    candidates = _section("candidates", lambda: _build_candidates(db, ref_date))
+    candidates = _section("candidates", lambda: _build_candidates(db, ref_date, settings))
     if candidates is not None:
         digest.candidates, digest.candidate_total, digest.candidate_excluded, quality = candidates
         if quality is not None:

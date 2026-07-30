@@ -50,6 +50,39 @@ def previous_trading_day(ref_date: dt.date, *, extra_closed_dates: Iterable[dt.d
     return candidate
 
 
+# 신선도 판정용 lookback 상한. is_krx_closed_date 가 호출마다 holidays.KR(...) 을
+# 만들기 때문에 n 을 열어 두면 실수 한 번이 그대로 비용이 된다.
+_MAX_TRADING_DAYS_LOOKBACK = 60
+
+
+def trading_days_ago(
+    ref_date: dt.date,
+    n: int,
+    *,
+    extra_closed_dates: Iterable[dt.date] = (),
+) -> dt.date:
+    """``ref_date`` 로부터 KRX 거래일 기준 ``n`` 일 이전 날짜를 반환한다.
+
+    데이터 신선도를 "며칠 지났나"로 판정할 때 쓴다. **달력일이 아니라 거래일**이어야
+    한다 — 달력일로 세면 금요일에 만든 데이터가 월요일 아침에 이미 3일이 되어,
+    임계값이 작을 때 주말마다 전량 만료된다.
+
+    :param ref_date: 기준 날짜.
+    :param n: 거슬러 올라갈 거래일 수. ``0`` 이면 ``ref_date`` 를 그대로 돌려준다.
+    :param extra_closed_dates: 운영 설정으로 추가된 휴장일.
+    :return: ``n`` 거래일 이전 날짜.
+    :raises ValueError: ``n`` 이 음수이거나 상한(60)을 넘을 때.
+    """
+    if n < 0:
+        raise ValueError(f"n must be non-negative: {n}")
+    if n > _MAX_TRADING_DAYS_LOOKBACK:
+        raise ValueError(f"n exceeds lookback cap {_MAX_TRADING_DAYS_LOOKBACK}: {n}")
+    candidate = ref_date
+    for _ in range(n):
+        candidate = previous_trading_day(candidate, extra_closed_dates=extra_closed_dates)
+    return candidate
+
+
 def krx_tick_size(price: float, *, market: str = "KOSPI", security_type: str = "stock") -> int:
     """Return the KRX quotation-price unit for an equity-like instrument.
 

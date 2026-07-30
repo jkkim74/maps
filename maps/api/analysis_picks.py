@@ -26,6 +26,12 @@ from maps.common.exceptions import BrokerAdapterError
 from maps.common.models import AnalysisPick, HistoricalOHLCV, OrderLog
 from maps.common.settings import get_settings
 from maps.execution.broker_adapter import get_broker
+from maps.ops.pick_freshness import (
+    is_pick_stale,
+    pick_age_trading_days,
+    pick_cutoff_date,
+    pick_stale_reason,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -163,8 +169,18 @@ def _to_item(
     p: AnalysisPick,
     current_price: float | None = None,
     fill_price: float | None = None,
+    cutoff: datetime.date | None = None,
 ) -> AnalysisPickItem:
-    """ORM 모델을 응답 스키마로 변환한다."""
+    """ORM 모델을 응답 스키마로 변환한다.
+
+    :param cutoff: 신선도 기준일. 목록 조회는 한 번만 계산해 전 행에 넘긴다.
+        생략하면 여기서 계산한다 — 기본값을 "신선"으로 두면 한 달 된 픽을 PATCH 했을 때
+        `data_stale=False` 라는 거짓이 응답에 실린다(단건 변경 응답이 호출부 5곳 중 4곳).
+    """
+    settings = get_settings()
+    if cutoff is None:
+        cutoff = pick_cutoff_date(settings)
+    stale = is_pick_stale(p, cutoff)
     return AnalysisPickItem(
         id=p.id,
         ref_date=p.ref_date.isoformat(),
@@ -190,6 +206,9 @@ def _to_item(
         # 손익비는 체결가 우선(실제 진입가) — 미체결이면 계획 매수가 기준.
         rr_ratio=_rr_ratio(fill_price or p.buy_price, p.target_price, p.stop_price),
         created_at=p.created_at.isoformat() if p.created_at else "",
+        data_stale=stale,
+        stale_reason=pick_stale_reason(p, cutoff),
+        age_trading_days=pick_age_trading_days(p, settings=settings) if stale else None,
     )
 
 
@@ -210,9 +229,15 @@ def list_picks(
     rows = q.order_by(AnalysisPick.created_at.desc()).limit(500).all()
     prices = _current_prices(db, [r.ticker for r in rows])
     fills = _fill_prices(db, rows)
+    # 오래된 픽도 목록에서 빼지 않는다 — 표시만 하고 보여준다. 숨기면 운영자가 삭제하려
+    # 해도 보이지 않고, 오래된 BOUGHT 포지션이 통째로 사라진다.
+    cutoff = pick_cutoff_date(get_settings())
+    items = [_to_item(r, prices.get(r.ticker), fills.get(r.id), cutoff=cutoff) for r in rows]
     return AnalysisPicksResponse(
-        total=len(rows),
-        picks=[_to_item(r, prices.get(r.ticker), fills.get(r.id)) for r in rows],
+        total=len(items),
+        picks=items,
+        expected_ref_date=cutoff.isoformat(),
+        stale_count=sum(1 for i in items if i.data_stale),
     )
 
 
@@ -283,6 +308,20 @@ def arm_pick(pick_id: int, db: Session = DbDep) -> AnalysisPickItem:
     pick = db.get(AnalysisPick, pick_id)
     if pick is None:
         raise HTTPException(status_code=404, detail="픽을 찾을 수 없습니다.")
+    # 만료 검사를 상태 검사보다 먼저 한다 — 운영자가 "무장 불가 상태" 대신 진짜 사유를
+    # 받아야 한다. 이 한 곳이 웹·모바일·텔레그램 인라인 버튼을 동시에 막는다(텔레그램은
+    # 한 달 전 메시지의 버튼도 영구히 살아 있어서 서버 거부 외에 막을 방법이 없다).
+    settings = get_settings()
+    cutoff = pick_cutoff_date(settings)
+    if is_pick_stale(pick, cutoff):
+        age = pick_age_trading_days(pick, settings=settings)
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"기준일 {pick.ref_date} 픽은 {age}거래일 지나 만료됐습니다. "
+                f"({cutoff} 이후 기준일만 무장 가능) 재분석 후 가격을 갱신하세요."
+            ),
+        )
     if pick.state not in ("WATCH", "CANCELLED"):
         raise HTTPException(status_code=409, detail=f"무장 불가 상태: {pick.state}")
     b, t, s = pick.buy_price, pick.target_price, pick.stop_price
@@ -310,12 +349,47 @@ def disarm_pick(pick_id: int, db: Session = DbDep) -> AnalysisPickItem:
     # 미체결 진입 주문이 있으면 취소를 시도하고, 취소가 확인되지 않으면 거부한다.
     # (라이브 주문이 살아있는 채로 entry_order_id를 비우면 체결 시 추적 불가 — 고아 포지션)
     if pick.entry_order_id:
+        # 잔량 취소를 먼저 시도한다 — 체결 여부를 판정하는 동안 추가 체결이 쌓이는 것을 막는다.
         try:
             from maps.execution.broker_adapter import get_broker
             cancelled = bool(get_broker(get_settings().maps_broker_mode).cancel_order(pick.entry_order_id))
         except Exception as exc:  # noqa: BLE001
             logger.warning("disarm 진입주문 취소 실패 [%s %s]: %s", pick.ticker, pick.entry_order_id, exc)
             cancelled = False
+
+        # 취소 성공 여부보다 "이미 체결된 물량"을 먼저 본다. 취소는 잔량에만 걸리므로
+        # 부분 체결된 주식은 취소가 성공해도 그대로 남는다. 이때 entry_order_id를 지우면
+        # 브래킷도 %/ATR 손절도 관리하지 않는 고아 포지션이 된다(2026-07-30 실제 발생:
+        # 1,253주 주문 중 21주 체결 후 해제 → 손절·익절 없이 방치).
+        entry_log = (
+            db.query(OrderLog).filter(OrderLog.order_id == pick.entry_order_id).first()
+        )
+        filled_qty = int(entry_log.fill_qty or 0) if entry_log is not None else 0
+        # fill_qty 는 브로커 동기화에 의존해 늦게 채워질 수 있다. 수량을 모르더라도
+        # 체결 상태면 보유로 간주한다(과소평가보다 과대평가가 안전하다).
+        has_fill = filled_qty > 0 or (
+            entry_log is not None and entry_log.status in ("filled", "partially_filled")
+        )
+        if has_fill:
+            # 해제하지 않고 BOUGHT 로 올린다. 브래킷이 목표/손절을 계속 관리하게 해야
+            # 체결분이 추적 밖으로 벗어나지 않는다. 청산은 사용자 승인이 필요하므로
+            # 여기서 자동으로 팔지는 않는다.
+            pick.state = "BOUGHT"
+            pick.last_action_at = datetime.datetime.now(datetime.timezone.utc)
+            db.commit()
+            logger.warning(
+                "disarm 거부 — 진입 주문 부분 체결 [%s %s] filled=%s cancelled=%s → BOUGHT 전이",
+                pick.ticker, pick.entry_order_id, filled_qty or "미상", cancelled,
+            )
+            qty_text = f"{filled_qty}주" if filled_qty > 0 else "수량 미상"
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"진입 주문이 이미 체결({qty_text})돼 해제할 수 없습니다. "
+                    f"잔량은 {'취소했습니다' if cancelled else '취소를 확인하지 못했습니다'}. "
+                    "보유분은 브래킷이 계속 관리합니다 — 청산은 주문 화면에서 처리하세요."
+                ),
+            )
         if not cancelled:
             raise HTTPException(
                 status_code=409,

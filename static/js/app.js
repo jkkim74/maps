@@ -299,9 +299,11 @@ function closeStrategyDetail() {
   switchStrategyTab(wasGuideTab ? 'guide' : 'ops');
 }
 
-async function copyGuideText(btn) {
+// 전략 가이드·일일 원고 공용. 둘 다 네이버 블로그에 그대로 붙여넣는 평문이라
+// 복사 동작이 같아야 한다 — 구현을 나누면 한쪽만 고쳐지고 조용히 어긋난다.
+async function copyGuideText(btn, sourceId = 'guide-text') {
   // textContent 로 읽어야 esc() 로 넣은 &amp; 같은 엔티티가 원문으로 돌아온다.
-  const text = document.getElementById('guide-text').textContent;
+  const text = document.getElementById(sourceId).textContent;
   try {
     await navigator.clipboard.writeText(text);
     btn.textContent = '복사됨 ✓';
@@ -501,7 +503,7 @@ async function loadRisk() {
         <div class="kpi-card ${shortRatio >= 1 ? 'fail' : shortRatio >= 0.8 ? 'warn' : 'pass'}"><div class="kpi-label">Daily Risk</div><div class="kpi-value">${fmt.pct1(Math.abs(d.short_term_risk))}</div><div class="kpi-sub">한도 ${fmt.pct1(d.short_term_limit)}</div></div>
         <div class="kpi-card ${longRatio >= 1 ? 'fail' : longRatio >= 0.8 ? 'warn' : 'info'}"><div class="kpi-label">MC Risk Ratio</div><div class="kpi-value">${fmt.pct1(d.long_term_risk)}</div><div class="kpi-sub">전략군 최대 비율</div></div>
         <div class="kpi-card"><div class="kpi-label">Max Exposure</div><div class="kpi-value">${fmt.pct1(d.max_exposure_pct)}</div><div class="kpi-sub">단일 보유 비중</div></div>
-        <div class="kpi-card"><div class="kpi-label">Positions</div><div class="kpi-value">${d.position_count}</div><div class="kpi-sub">Kill Switch 또는 보유 종목</div></div>
+        <div class="kpi-card"><div class="kpi-label">보유 종목</div><div class="kpi-value">${d.position_count}</div><div class="kpi-sub">활성 Kill ${d.active_kill_count ?? 0}건</div></div>
       </div>`;
 
     if (!d.gauges || d.gauges.length === 0) {
@@ -541,6 +543,8 @@ async function loadRisk() {
           <td class="mono">${h.ticker}</td>
           <td>${h.name || '—'}</td>
           <td>${h.strategy_id}</td>
+          <td class="mono">${h.quantity ? h.quantity.toLocaleString('ko-KR') : '—'}</td>
+          <td class="mono">${h.market_value == null ? '—' : Math.round(h.market_value).toLocaleString('ko-KR')}</td>
           <td class="mono">${h.entry_price.toLocaleString('ko-KR')}</td>
           <td class="mono">${h.current_price == null ? '—' : h.current_price.toLocaleString('ko-KR')}</td>
           <td class="mono">${fmt.pct(h.pnl_pct)}</td>
@@ -549,7 +553,7 @@ async function loadRisk() {
         </tr>`).join('');
       document.getElementById('risk-holdings').innerHTML =
         brokerNotice +
-        `<table><thead><tr><th>티커</th><th>종목명</th><th>전략</th><th>진입가</th><th>현재가</th><th>PnL</th><th>비중</th><th>손절</th></tr></thead><tbody>${rows}</tbody></table>`;
+        `<table><thead><tr><th>티커</th><th>종목명</th><th>전략</th><th>수량</th><th>평가금액</th><th>진입가</th><th>현재가</th><th>PnL</th><th>비중</th><th>손절</th></tr></thead><tbody>${rows}</tbody></table>`;
     }
   } catch (e) {
     empty('risk-kpi', `오류: ${e.message}`);

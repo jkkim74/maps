@@ -64,7 +64,7 @@ def get_risk(db: Session = Depends(get_db)) -> RiskResponse:
             latest_kill[row.strategy_id] = row
 
     active_kills = [r for r in latest_kill.values() if r.event_type in ("trigger", "approved")]
-    position_count = len(active_kills)
+    active_kill_count = len(active_kills)
 
     # 전략별 최신 Monte Carlo 결과로 게이지 구성
     mc_rows = (
@@ -102,11 +102,14 @@ def get_risk(db: Session = Depends(get_db)) -> RiskResponse:
         long_term_risk=max_ratio,
         long_term_limit=1.0,        # 1.0 = 한도 100% 도달
         max_exposure_pct=max_exposure_pct,
-        position_count=max(position_count, broker_position_count),
+        # 보유 종목 수는 holdings 길이 그대로다. 과거에는 Kill Switch 수와
+        # max()로 합쳐서 kill이 많으면 KPI가 실제 행 수보다 커졌다.
+        position_count=broker_position_count,
         gauges=gauges,
         holdings=holdings,
         broker_status=broker_status,
         broker_error=broker_error,
+        active_kill_count=active_kill_count,
     )
 
 
@@ -212,6 +215,8 @@ def _broker_holdings(db: Session) -> tuple[list[HoldingItem], float, int, str, s
                     ),
                     exposure_pct=exposure,
                     stop_price=float(stop_price) if stop_price is not None else None,
+                    quantity=int(position.quantity),
+                    market_value=float(market_value),
                 )
             )
         max_exposure = max((item.exposure_pct for item in holdings), default=0.0)
