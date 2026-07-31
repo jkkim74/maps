@@ -309,6 +309,52 @@ def test_broker_holdings_falls_back_to_bought_picks_when_broker_unavailable(db, 
     assert holdings[0].market_value is None
 
 
+def test_holding_stop_uses_entry_atr_recorded_on_the_buy_order(db, monkeypatch) -> None:
+    """화면 손절가는 매수 주문에 기록된 진입 시점 ATR 을 쓴다.
+
+    OHLCV 로 매번 다시 계산하면 두 가지가 어긋난다.
+      1. 보유 중 ATR 이 커지면 손절가가 밀려 사이징이 가정한 위험을 넘는다.
+      2. 화면(예전 20봉)과 청산 판정(400봉)이 서로 다른 ATR 을 써서 표시가 거짓이 된다.
+
+    pullback_v3 · 진입 36,600 · ATR 1,874.4 → 36,600 − 2×1,874.4 = 32,851.2
+    → 호가 50원 내림 32,850. 고정 5%(34,770)보다 넓으므로 ATR 이 이긴다.
+    """
+    db.add(OrderLog(
+        order_id="filled-089860",
+        strategy_id="pullback_v3",
+        ticker="089860",
+        side="buy",
+        qty=113,
+        order_price=37_400,
+        fill_price=36_600,
+        fill_qty=113,
+        status="filled",
+        atr14=1_874.4,
+    ))
+    db.commit()
+
+    class FakeBroker:
+        def get_account_balance(self):
+            return AccountBalance(cash=1_000_000, positions_value=4_474_800)
+
+        def _fetch_positions_and_balance(self):
+            return {
+                "089860": Position(
+                    "089860", 113, 36_600,
+                    name="롯데렌탈", current_price=39_600, evaluation_value=4_474_800,
+                )
+            }, self.get_account_balance()
+
+    monkeypatch.setattr(risk, "get_broker", lambda: FakeBroker())
+    # OHLCV 기반 폴백이 쓰이면 즉시 드러나도록 다른 값을 돌려주게 만든다.
+    monkeypatch.setattr(risk, "_atr14_for_ticker", lambda *a, **k: 9_999.0)
+
+    holdings, _max_exposure, _count, status, _error = risk._broker_holdings(db)
+
+    assert status == "ok"
+    assert holdings[0].stop_price == 32_850.0
+
+
 def test_broker_holdings_unavailable_without_fallback_records(db, monkeypatch) -> None:
     monkeypatch.setattr(risk, "get_broker", lambda: _FailingBroker())
 

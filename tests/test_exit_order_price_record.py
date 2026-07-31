@@ -38,10 +38,11 @@ _ENTRY_PRICE = 10_000.0
 
 
 class _NoQuoteBroker(BrokerAdapter):
-    """현재가를 모르는 브로커 — 보유는 있으나 시세 조회가 비어 있다."""
+    """보유는 있으나 시세 조회가 비어 있는 브로커 (current_price=None 이 기본)."""
 
-    def __init__(self) -> None:
+    def __init__(self, current_price: float | None = None) -> None:
         self.placed: list = []
+        self._current_price = current_price
 
     def place_order(self, order) -> OrderResult:
         self.placed.append(order)
@@ -62,7 +63,8 @@ class _NoQuoteBroker(BrokerAdapter):
 
     def get_position(self, ticker: str) -> Position | None:
         return Position(
-            ticker=ticker, quantity=10, avg_price=_ENTRY_PRICE, current_price=None
+            ticker=ticker, quantity=10, avg_price=_ENTRY_PRICE,
+            current_price=self._current_price,
         )
 
     def get_positions(self) -> dict[str, int]:
@@ -75,7 +77,14 @@ class _NoQuoteBroker(BrokerAdapter):
         return True
 
 
-def _setup(monkeypatch, *, exit_signal: bool):
+def _setup(
+    monkeypatch,
+    *,
+    exit_signal: bool,
+    current_price: float | None = None,
+    entry_atr: float | None = None,
+    today_atr: float | None = None,
+):
     engine = create_engine(
         "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
     )
@@ -94,6 +103,7 @@ def _setup(monkeypatch, *, exit_signal: bool):
         side=OrderSide.BUY.value, qty=10,
         order_price=_ENTRY_PRICE, fill_price=_ENTRY_PRICE, fill_qty=10,
         status="filled", broker="kis", mode="mock",
+        atr14=entry_atr,
         created_at=dt.datetime(2026, 5, 4, 9, 0),
     ))
     db.commit()
@@ -102,10 +112,10 @@ def _setup(monkeypatch, *, exit_signal: bool):
         OperationalPipeline,
         "_latest_strategy_signal",
         staticmethod(lambda *a, **k: SimpleNamespace(
-            entry_signal=False, exit_signal=exit_signal, close=0.0, atr14=None
+            entry_signal=False, exit_signal=exit_signal, close=0.0, atr14=today_atr
         )),
     )
-    broker = _NoQuoteBroker()
+    broker = _NoQuoteBroker(current_price=current_price)
     manager = OrderManager(broker=broker, risk=RiskManager(broker, db), db=db)
     return pipeline, db, broker, manager, engine
 
@@ -137,6 +147,54 @@ def test_fallback_price_does_not_trigger_a_stop(monkeypatch) -> None:
         assert submitted == 0
         assert tickers == set()
         assert db.query(OrderLog).filter(OrderLog.side == OrderSide.SELL.value).count() == 0
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+# ── 진입 시점 ATR 고정 ────────────────────────────────────────────────────────
+#
+# pullback_v3: 고정 5%, ATR × 2.0. 진입가 10,000 기준
+#   고정 손절            9,500
+#   진입 ATR 300  → 손절 9,400   (ATR 이 이긴다)
+#   오늘 ATR 600  → 손절 8,800
+# 현재가 9,000 은 9,400 아래이므로 **진입 ATR 기준이면 손절**, 오늘 ATR 기준이면 아니다.
+
+def test_exit_uses_entry_atr_not_todays(monkeypatch) -> None:
+    """손절 판정은 진입 시점 ATR 로 한다 — 보유 중 ATR 이 커져도 손절선이 안 밀린다.
+
+    2026-07-31 확인: 089860 이 진입 시 ATR 1,874(위험 0.50%)로 사이징됐는데
+    청산 판정은 매일 재계산된 ATR(~2,057)을 써서 실제 위험이 0.55% 가 됐다.
+    사이징은 진입 시 한 번뿐이므로 손절폭도 그 시점 값으로 고정돼야 한다.
+    """
+    pipeline, db, broker, manager, engine = _setup(
+        monkeypatch, exit_signal=False,
+        current_price=9_000.0, entry_atr=300.0, today_atr=600.0,
+    )
+    try:
+        submitted, _skipped, tickers = pipeline._submit_exit_orders(
+            db=db, broker=broker, manager=manager, ref_date=dt.date(2026, 5, 5),
+        )
+        assert submitted == 1          # 오늘 ATR(600)을 쓰면 0건이 된다
+        assert tickers == {"AAAA"}
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def test_exit_falls_back_to_todays_atr_when_entry_atr_missing(monkeypatch) -> None:
+    """진입 ATR 기록이 없는 옛 주문은 기존대로 오늘 ATR 로 판정한다."""
+    pipeline, db, broker, manager, engine = _setup(
+        monkeypatch, exit_signal=False,
+        current_price=9_000.0, entry_atr=None, today_atr=600.0,
+    )
+    try:
+        submitted, _skipped, _tickers = pipeline._submit_exit_orders(
+            db=db, broker=broker, manager=manager, ref_date=dt.date(2026, 5, 5),
+        )
+        assert submitted == 0          # 오늘 ATR 기준 손절 8,800 < 현재가 9,000
     finally:
         db.close()
         Base.metadata.drop_all(engine)

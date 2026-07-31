@@ -193,6 +193,33 @@ def test_submit_exit_records_exit_reason(broker: MockBroker) -> None:
         engine.dispose()
 
 
+def test_buy_records_entry_atr(broker: MockBroker) -> None:
+    """매수 주문에 진입 시점 ATR 이 남아야 한다.
+
+    청산·화면이 이 값을 재사용해 손절가를 고정한다. 기록이 없으면 그날의 ATR 로
+    다시 계산돼 손절폭이 사이징 가정과 어긋난다(2026-07-31 확인).
+    """
+    engine = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+    try:
+        manager = OrderManager(
+            broker=broker, risk=RiskManager(broker=broker, db=db, config=RiskConfig()), db=db,
+        )
+        order = _buy()
+        order.atr14 = 1_874.4
+        manager.submit(order)
+
+        row = db.query(OrderLog).filter(OrderLog.side == "buy").one()
+        assert row.atr14 == pytest.approx(1_874.4)
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
 # ---------------------------------------------------------------------------
 # 5. order_log.mode 라벨 — 페이퍼 계좌 체결은 'live'가 아니다
 # ---------------------------------------------------------------------------

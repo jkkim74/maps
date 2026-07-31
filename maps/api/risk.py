@@ -29,14 +29,22 @@ logger = logging.getLogger(__name__)
 
 
 def _atr14_for_ticker(db: Session, ticker: str) -> float | None:
-    """DB에서 최근 OHLCV를 조회해 ATR(14) 최신값을 반환한다."""
+    """DB에서 최근 OHLCV를 조회해 ATR(14) 최신값을 반환한다.
+
+    ``order_log.atr14`` 가 없는 주문(옛 기록·외부 매수)에만 쓰는 폴백이다.
+
+    lookback 은 **400봉**으로 청산 경로(`scheduler._latest_strategy_signal`)와
+    맞춘다. Wilder 평활은 워밍업 길이에 따라 값이 달라져서, 20봉으로 재면
+    화면의 손절가가 실제 청산 기준과 다른 값이 된다(2026-07-30 실측:
+    400봉 1,874.4 vs 60봉 1,886.8).
+    """
     import pandas as pd
 
     rows = (
         db.query(HistoricalOHLCV)
         .filter(HistoricalOHLCV.ticker == ticker)
         .order_by(HistoricalOHLCV.date.desc())
-        .limit(20)
+        .limit(400)
         .all()
     )
     if len(rows) < 14:
@@ -157,6 +165,8 @@ def _broker_holdings(db: Session) -> tuple[list[HoldingItem], float, int, str, s
         } if tickers else {}
         strategy_map: dict[str, str] = {}
         entry_price_map: dict[str, float] = {}
+        # 진입 시점 ATR. 화면이 청산 판정과 같은 손절가를 보여주려면 같은 입력을 써야 한다.
+        entry_atr_map: dict[str, float | None] = {}
         if tickers:
             rows = (
                 db.query(OrderLog)
@@ -173,6 +183,7 @@ def _broker_holdings(db: Session) -> tuple[list[HoldingItem], float, int, str, s
                 ):
                     strategy_map[row.ticker] = row.strategy_id
                     entry_price_map[row.ticker] = row.fill_price or row.order_price or 0.0
+                    entry_atr_map[row.ticker] = row.atr14
             for row in rows:
                 position = position_map.get(row.ticker)
                 if (
@@ -184,6 +195,7 @@ def _broker_holdings(db: Session) -> tuple[list[HoldingItem], float, int, str, s
                 ):
                     strategy_map[row.ticker] = row.strategy_id
                     entry_price_map[row.ticker] = row.fill_price or row.order_price or position.avg_price
+                    entry_atr_map[row.ticker] = row.atr14
         for ticker, position in position_map.items():
             if position is None:
                 continue
@@ -198,7 +210,8 @@ def _broker_holdings(db: Session) -> tuple[list[HoldingItem], float, int, str, s
             )
             strategy_id = strategy_map.get(ticker, "broker")
             entry_price = round(entry_price_map.get(ticker) or position.avg_price)
-            atr14 = _atr14_for_ticker(db, ticker)
+            # 진입 시점 ATR 우선. 없을 때만(옛 주문·외부 매수) 현재 시점으로 폴백한다.
+            atr14 = entry_atr_map.get(ticker) or _atr14_for_ticker(db, ticker)
             raw_stop = effective_stop_price(strategy_map.get(ticker), entry_price, atr14)
             stop_price = round(raw_stop) if raw_stop is not None else None
             holdings.append(

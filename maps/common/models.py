@@ -391,6 +391,12 @@ class OrderLog(Base):
     # journald 로그에만 존재). BUY 주문에서는 항상 None.
     exit_reason: Mapped[str | None] = mapped_column(String(16), nullable=True)
     # stop_loss | plan_stop | emergency_stop | trailing_stop | take_profit | strategy_exit
+    # 진입 시점 ATR(14). 매수 주문에만 기록한다. 청산·화면이 이 값을 재사용해
+    # 손절가가 진입 후 매일 움직이는 것을 막는다 — 사이징은 진입 시 한 번뿐인데
+    # 손절폭만 매일 재계산되면 계좌 위험이 예산을 넘어간다(2026-07-31 확인:
+    # 089860 이 0.50% → 0.55%). **손절가 자체는 저장하지 않는다.**
+    # effective_stop_price() 가 유일한 산출 경로여야 하므로 그 입력만 고정한다.
+    atr14: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc)
     )

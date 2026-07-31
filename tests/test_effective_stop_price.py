@@ -228,3 +228,31 @@ def test_sizing_risk_matches_actual_stop_distance(pipeline: OperationalPipeline)
     intended_risk = equity * pipeline._settings.account_risk_per_trade
 
     assert loss_at_stop <= intended_risk * 1.05
+
+
+def test_growing_atr_would_breach_the_risk_budget_if_recomputed(
+    pipeline: OperationalPipeline,
+) -> None:
+    """보유 중 ATR 이 커지면 손절폭만 넓어져 계좌 위험이 예산을 넘는다.
+
+    사이징은 진입 시 한 번뿐인데 손절가를 매일 재계산했기 때문이다
+    (2026-07-31 운영: 089860 이 의도 0.50% → 실제 0.55%).
+    그래서 진입 시점 ATR 을 order_log 에 기록해 청산·화면이 재사용한다.
+    이 테스트는 **왜 고정해야 하는지**를 숫자로 고정한다.
+    """
+    equity, price, atr = 100_000_000.0, 10_000.0, 1_000.0
+    qty = pipeline._order_qty(
+        _cand("ath_breakout_v1"),
+        total_value=equity,
+        remaining_cash=equity,
+        price=price,
+        remaining_slots=1,
+        atr14=atr,
+    )
+    intended_risk = equity * pipeline._settings.account_risk_per_trade
+
+    frozen = effective_stop_price("ath_breakout_v1", price, atr)
+    grown = effective_stop_price("ath_breakout_v1", price, atr * 1.2)
+
+    assert qty * (price - frozen) <= intended_risk * 1.05   # 고정하면 예산 안
+    assert qty * (price - grown) > intended_risk            # 재계산하면 예산 초과

@@ -409,6 +409,7 @@ class OrderManager:
                     broker=get_settings().maps_broker_mode,
                     mode=_order_log_mode(),
                     exit_reason=exit_reason,
+                    atr14=order.atr14,
                 )
             )
             self._db.commit()

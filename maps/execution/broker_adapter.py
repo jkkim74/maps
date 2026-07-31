@@ -44,6 +44,9 @@ class Order:
     limit_price: float | None = None
     current_price: float | None = None   # 시장가 주문 시 노출 검사용 현재가
     memo: str = ""
+    # 진입 시점 ATR(14). 사이징에 쓴 값을 그대로 order_log 에 남겨 청산·화면이
+    # 재사용한다. memo 와 같은 MAPS 내부 필드이고 브로커 어댑터는 읽지 않는다.
+    atr14: float | None = None
 
 
 @dataclass

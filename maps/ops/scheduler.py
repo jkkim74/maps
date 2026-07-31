@@ -1796,6 +1796,9 @@ class OperationalPipeline:
                 quantity=qty,
                 limit_price=limit_price,
                 current_price=current_close,
+                # 사이징(_order_qty)에 넘긴 것과 **같은 변수**를 기록한다. 청산·화면이
+                # 이 값을 재사용해야 손절폭이 진입 후에도 사이징 가정과 일치한다.
+                atr14=signal.atr14,
                 memo=(
                     f"candidate_snapshot:{candidate.ref_date.isoformat()} "
                     f"signal={signal_close:.0f} gap={gap_pct:+.3f}"
@@ -1975,7 +1978,10 @@ class OperationalPipeline:
             # 못해 매매일지 손익이 추정값이나 null 로 떨어진다(2026-06 매도 13건).
             # 청산 판정에는 쓰지 않는다. 폴백 가격으로 손절을 발동시키면 가짜 손절이 나간다.
             record_price = current_price if current_price > 0 else (position.avg_price or 0.0)
-            atr14 = signal.atr14 if signal is not None else None
+            # 진입 시점 ATR 을 우선한다. 그날그날의 ATR 로 다시 계산하면 손절가가
+            # 보유 중에 움직여, 진입 시 한 번만 한 사이징이 가정한 손절폭과 어긋난다
+            # (2026-07-31: 089860 위험 0.50% → 0.55%). 기록이 없는 옛 주문만 폴백.
+            atr14 = entry.atr14 or (signal.atr14 if signal is not None else None)
             stop_price = effective_stop_price(entry.strategy_id, entry_price, atr14)
             strategy_exit = bool(signal and signal.exit_signal)
 
