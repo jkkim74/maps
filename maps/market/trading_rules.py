@@ -116,6 +116,24 @@ def round_up_krx_price(price: float, *, market: str = "KOSPI", security_type: st
     return int(math.ceil(price / tick) * tick)
 
 
+def round_down_krx_price(price: float, *, market: str = "KOSPI", security_type: str = "stock") -> int:
+    """Round a price **down** to a valid KRX quotation unit.
+
+    손절가 전용이다. 반올림(:func:`round_to_krx_tick`)을 쓰면 32,487 이 32,500 으로
+    올라가 손절이 **조여진다**. 손절가는 느슨해질지언정 조여지면 안 된다 —
+    백테스트·사이징이 가정한 손절폭보다 좁아져 실거래에서만 일찍 털린다.
+
+    :param price: 원본 가격.
+    :param market: 시장 구분 (주식은 분기하지 않는다. 호출부 호환성 유지용).
+    :param security_type: ETF/ETN/ELW 는 5원 고정.
+    :return: 유효 호가로 내림한 가격. 0 이하는 그대로 정수 변환해 반환한다.
+    """
+    if price <= 0:
+        return int(price)
+    tick = krx_tick_size(price, market=market, security_type=security_type)
+    return int(math.floor(price / tick) * tick)
+
+
 def round_to_krx_tick(price: float, *, market: str = "KOSPI", security_type: str = "stock") -> int:
     """Round a price to the nearest valid KRX quotation unit.
 

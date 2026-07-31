@@ -22,6 +22,7 @@ from sqlalchemy.pool import StaticPool
 
 import maps.common.models  # noqa: F401
 from maps.common.db import Base
+from maps.market.trading_rules import krx_tick_size, round_down_krx_price
 from maps.ops.scheduler import OperationalPipeline
 from maps.strategy.live_rules import (
     atr_stop_price,
@@ -41,7 +42,10 @@ def test_atr_wider_than_fixed_wins():
     atr_stop = atr_stop_price("donchian_v2", entry, atr)  # 62,868
 
     assert atr_stop < fixed
-    assert effective_stop_price("donchian_v2", entry, atr) == pytest.approx(atr_stop)
+    # 결과는 호가 단위로 내림된다 (62,868 → 62,800)
+    assert effective_stop_price("donchian_v2", entry, atr) == pytest.approx(
+        round_down_krx_price(atr_stop)
+    )
 
 
 def test_atr_narrower_than_fixed_keeps_fixed():
@@ -55,7 +59,9 @@ def test_atr_narrower_than_fixed_keeps_fixed():
     atr_stop = atr_stop_price("donchian_v2", entry, atr)  # 77,500
 
     assert atr_stop > fixed
-    assert effective_stop_price("donchian_v2", entry, atr) == pytest.approx(fixed)
+    assert effective_stop_price("donchian_v2", entry, atr) == pytest.approx(
+        round_down_krx_price(fixed)
+    )
 
 
 def test_missing_atr_falls_back_to_fixed():
@@ -81,6 +87,57 @@ def test_result_is_never_above_fixed_stop():
     fixed = stop_loss_price("ath_breakout_v1", entry)
     for atr in (1.0, 100.0, 1_000.0, 5_000.0, 20_000.0):
         assert effective_stop_price("ath_breakout_v1", entry, atr) <= fixed
+
+
+# ── 호가 정렬 ────────────────────────────────────────────────────────────────
+
+def test_stop_lands_on_a_valid_krx_tick():
+    """손절가가 시장에 존재하는 가격이어야 한다.
+
+    2026-07-31 운영 보유 3종목이 21,322 / 7,321 / 32,487 로 표시되고 있었다.
+    셋 다 호가 단위에 맞지 않아 그 가격에는 주문을 걸 수도, 체결될 수도 없다.
+    화면뿐 아니라 청산 판정(`현재가 <= 손절가`)과 사이징(`진입가 - 손절가`)이
+    모두 실제와 어긋난다.
+    """
+    live_cases = [
+        ("multi_asset_trend_v1", 23_344.026, 1_011.0, 21_300),
+        ("donchian_v1", 8_180.0, 429.5, 7_320),
+        ("pullback_v3", 36_600.0, 2_056.5, 32_450),
+    ]
+    for strategy_id, entry, atr, expected in live_cases:
+        stop = effective_stop_price(strategy_id, entry, atr)
+        assert stop == pytest.approx(expected)
+        assert stop % krx_tick_size(stop) == 0
+
+
+def test_alignment_never_tightens_the_stop():
+    """호가 정렬은 손절을 조이지 않는다 — 반올림이면 조여진다.
+
+    32,487 을 반올림하면 32,500 이 되어 손절폭이 13원 좁아진다. 백테스트·사이징이
+    가정한 폭보다 좁아지면 실거래에서만 더 일찍 털린다.
+    """
+    for strategy_id in ("pullback_v3", "donchian_v2", "ath_breakout_v1"):
+        for entry in (3_140.0, 8_180.0, 23_344.0, 36_600.0, 145_500.0, 620_000.0):
+            for atr in (0.0, 55.5, 429.5, 2_056.5):
+                stop = effective_stop_price(strategy_id, entry, atr)
+                if stop is None:
+                    continue
+                raw = min(
+                    p for p in (
+                        stop_loss_price(strategy_id, entry),
+                        atr_stop_price(strategy_id, entry, atr),
+                    ) if p is not None and p > 0
+                )
+                assert stop <= raw            # 조여지지 않는다
+                assert raw - stop < krx_tick_size(raw)   # 한 틱 이상 벌어지지도 않는다
+                assert stop % krx_tick_size(stop) == 0
+
+
+def test_etf_uses_five_won_tick():
+    """ETF·ETN·ELW 는 가격대와 무관하게 5원 고정이다."""
+    stop = effective_stop_price("donchian_v1", 36_600.0, 2_056.5, security_type="ETF")
+    assert stop % 5 == 0
+    assert stop == pytest.approx(32_485)   # 주식이면 32,450
 
 
 # ── 사이징이 정본을 쓰는지 ────────────────────────────────────────────────────

@@ -209,7 +209,10 @@ def test_order_cycle_submits_promoted_candidate_when_live_enabled(monkeypatch) -
         assert order.strategy_id == "pullback_v3"
         assert order.ticker == "AAAA"
         assert order.status == "filled"
-        assert order.fill_qty == 990  # limit_price = close(10_000)*1.01 = 10_100 → 10_000_000//10_100
+        # limit_price = close(10_000) × 1.01 = 10,100.
+        # 손절 10,100 × 0.95 = 9,595 → 호가 10원 단위 내림 9,590 → 손절폭 510.
+        # 계좌위험 0.5%(500,000) ÷ 510 = 980 주. 고정비중 상한(990)보다 작아 이쪽이 결정한다.
+        assert order.fill_qty == 980
         row = db.query(CollectionLog).filter(CollectionLog.source == "scheduler.orders").first()
         assert row is not None
         assert row.status == "success"

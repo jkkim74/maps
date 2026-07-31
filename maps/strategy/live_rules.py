@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from maps.market.trading_rules import round_down_krx_price
+
 
 _STOP_LOSS_PCTS: dict[str, float] = {
     "pullback_v3": 0.05,
@@ -98,6 +100,8 @@ def effective_stop_price(
     strategy_id: str | None,
     entry_price: float | None,
     atr14: float | None = None,
+    *,
+    security_type: str = "stock",
 ) -> float | None:
     """실제로 적용할 손절가 — **이것이 정본이다.**
 
@@ -113,10 +117,15 @@ def effective_stop_price(
     청산 판정·사이징·화면 표시가 모두 이 함수를 거쳐야 한다. 손절가가 경로마다
     달라지면 백테스트와 실거래 성과가 체계적으로 어긋난다.
 
+    결과는 **KRX 호가 단위로 내림**한다. 정렬하지 않으면 21,322 처럼 시장에 존재하지
+    않는 가격이 나와 화면·판정·사이징이 모두 실제와 어긋난다(2026-07-31 확인).
+    반올림이 아니라 내림인 이유는 위와 같다 — 호가 정렬이 손절을 조이면 안 된다.
+
     :param strategy_id: 전략 ID. 미등록 전략이면 ``None`` 을 반환한다.
     :param entry_price: 체결 진입가.
     :param atr14: ATR(14) 값. ``None`` 이거나 0 이하이면 고정% 손절만 쓴다.
-    :return: 손절가. 두 규칙 모두 산출 불가하면 ``None``.
+    :param security_type: 호가 단위 판정용. ETF/ETN/ELW 는 5원 고정이다.
+    :return: 손절가(유효 호가). 두 규칙 모두 산출 불가하면 ``None``.
     """
     candidates = [
         price
@@ -128,4 +137,5 @@ def effective_stop_price(
     ]
     if not candidates:
         return None
-    return min(candidates)
+    aligned = round_down_krx_price(min(candidates), security_type=security_type)
+    return float(aligned) if aligned > 0 else None

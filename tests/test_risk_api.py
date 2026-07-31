@@ -221,7 +221,8 @@ def test_broker_holdings_infers_strategy_from_matching_buy_order(db, monkeypatch
     assert status == "ok"
     assert error is None
     assert holdings[0].strategy_id == "donchian_v2"
-    assert holdings[0].stop_price == 317_250.0
+    # 352,500 × 0.90 = 317,250 → 호가 500원 단위로 내림 (317,250 은 유효 호가가 아니다)
+    assert holdings[0].stop_price == 317_000.0
 
 
 def test_broker_holdings_includes_stop_triggered_position_when_still_held(db, monkeypatch) -> None:
@@ -262,7 +263,8 @@ def test_broker_holdings_includes_stop_triggered_position_when_still_held(db, mo
     assert max_exposure == 7_252_000 / 8_152_000
     assert holdings[0].ticker == "009150"
     assert holdings[0].strategy_id == "donchian_v2"
-    assert holdings[0].stop_price == 1_860_300.0
+    # 2,067,000 × 0.90 = 1,860,300 → 호가 1,000원 단위로 내림
+    assert holdings[0].stop_price == 1_860_000.0
 
 
 class _FailingBroker:
