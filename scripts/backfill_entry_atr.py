@@ -24,6 +24,7 @@ Wilder 평활은 워밍업 길이에 따라 값이 달라져서, 여기서 20봉
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import sys
 from pathlib import Path
 
@@ -82,9 +83,10 @@ def backfill(*, apply: bool) -> int:
             print("대상 없음 — 보유 종목이 없거나 체결된 매수 기록이 없습니다.")
             return 0
 
+        today = dt.date.today()
         print(f"{'티커':<8} {'전략':<22} {'진입일':<12} {'진입가':>10} "
-              f"{'ATR14':>9} {'손절 전':>10} {'손절 후':>10}")
-        print("-" * 88)
+              f"{'진입ATR':>9} {'오늘ATR':>9} {'손절(현재)':>11} {'손절(고정후)':>12}")
+        print("-" * 100)
         for row in sorted(rows, key=lambda r: r.ticker):
             entry_price = row.fill_price or row.order_price
             entry_date = row.created_at.date() if row.created_at else None
@@ -105,11 +107,16 @@ def backfill(*, apply: bool) -> int:
                       f"{entry_price:>10,.0f} {'ATR 산출 불가 — 건너뜀':>9}")
                 continue
 
-            before = effective_stop_price(row.strategy_id, entry_price, None)
+            # 현재 손절가는 '오늘의 ATR' 로 재계산된 값이다 — 그게 이번에 고치는 대상이다.
+            today_signal = pipeline._latest_strategy_signal(
+                db, ticker=row.ticker, strategy_id=row.strategy_id, ref_date=today
+            )
+            today_atr = today_signal.atr14 if today_signal is not None else None
+            before = effective_stop_price(row.strategy_id, entry_price, today_atr)
             after = effective_stop_price(row.strategy_id, entry_price, atr14)
             print(f"{row.ticker:<8} {row.strategy_id:<22} {entry_date!s:<12} "
-                  f"{entry_price:>10,.0f} {atr14:>9,.1f} "
-                  f"{before or 0:>10,.0f} {after or 0:>10,.0f}")
+                  f"{entry_price:>10,.0f} {atr14:>9,.1f} {today_atr or 0:>9,.1f} "
+                  f"{before or 0:>11,.0f} {after or 0:>12,.0f}")
             row.atr14 = float(atr14)
             changed += 1
 
