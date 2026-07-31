@@ -15,7 +15,14 @@ from sqlalchemy.pool import StaticPool
 import maps.common.models  # noqa: F401 — 모델 등록
 from maps.common.db import Base
 from maps.common.models import OrderLog
-from maps.execution.broker_adapter import AccountBalance, BrokerAdapter, SameDayBuy
+from maps.execution.broker_adapter import (
+    AccountBalance,
+    BrokerAdapter,
+    OrderResult,
+    OrderSide,
+    OrderStatus,
+    SameDayBuy,
+)
 from maps.execution.order_manager import OrderManager
 from maps.risk.manager import RiskManager
 
@@ -123,6 +130,91 @@ def test_same_day_buy_at_0855_kst_is_reconciled() -> None:
         assert row.status == "filled"
         assert row.fill_qty == 52
         assert row.fill_price == 79_500.0
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def test_filled_result_with_zero_quantity_is_normalized() -> None:
+    """브로커가 status=filled + 체결수량 0 을 주면 주문 수량으로 채운다.
+
+    2026-07-31 운영 확인: 004490 매도가 `filled` + `fill_qty=0` 으로 남아 있었다.
+    하위 집계가 전부 `fill_qty > 0` 을 요구하므로(매매일지, mock_months) 그 체결은
+    통째로 사라진다. 포지션 폴백 경로에만 있던 보정 규칙을 브로커 결과 경로에도
+    같은 함수로 적용한다.
+    """
+
+    class _ZeroQtyFillBroker(_FakeBroker):
+        def get_daily_order_results(self):
+            return [
+                OrderResult(
+                    order_id="OID-004490", strategy_id="strategy_trade", ticker="004490",
+                    side=OrderSide.SELL, status=OrderStatus.FILLED,
+                    filled_quantity=0, avg_price=0.0,
+                    submitted_at=dt.datetime.utcnow(), filled_at=None,
+                ),
+            ]
+
+    engine, factory = _factory()
+    db = factory()
+    try:
+        db.add(OrderLog(
+            order_id="OID-004490", strategy_id="strategy_trade",
+            ticker="004490", side="sell", qty=172,
+            order_price=55_200.0, fill_price=None, fill_qty=0,
+            status="pending", broker="kis", mode="mock",
+            created_at=dt.datetime.utcnow(),
+        ))
+        db.commit()
+
+        broker = _ZeroQtyFillBroker(positions={})
+        mgr = OrderManager(broker=broker, risk=RiskManager(broker, db), db=db)
+        mgr.sync_broker_state()
+
+        row = db.query(OrderLog).filter(OrderLog.order_id == "OID-004490").one()
+        assert row.status == "filled"
+        assert row.fill_qty == 172        # 0 → 주문 수량으로 보정
+        assert row.fill_price == 55_200.0  # 체결가 미기록 → 주문가로 보정
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def test_partial_fill_quantity_is_not_overwritten() -> None:
+    """부분체결은 주문 수량으로 덮지 않는다 — 보유하지 않은 수량이 체결로 남는다."""
+
+    class _PartialBroker(_FakeBroker):
+        def get_daily_order_results(self):
+            return [
+                OrderResult(
+                    order_id="OID-002350", strategy_id="strategy_trade", ticker="002350",
+                    side=OrderSide.BUY, status=OrderStatus.PARTIALLY_FILLED,
+                    filled_quantity=21, avg_price=6_150.0,
+                    submitted_at=dt.datetime.utcnow(), filled_at=None,
+                ),
+            ]
+
+    engine, factory = _factory()
+    db = factory()
+    try:
+        db.add(OrderLog(
+            order_id="OID-002350", strategy_id="strategy_trade",
+            ticker="002350", side="buy", qty=1253,
+            order_price=6_800.0, fill_price=None, fill_qty=0,
+            status="pending", broker="kis", mode="mock",
+            created_at=dt.datetime.utcnow(),
+        ))
+        db.commit()
+
+        broker = _PartialBroker(positions={"002350": 21})
+        mgr = OrderManager(broker=broker, risk=RiskManager(broker, db), db=db)
+        mgr.sync_broker_state()
+
+        row = db.query(OrderLog).filter(OrderLog.order_id == "OID-002350").one()
+        assert row.status == "partially_filled"
+        assert row.fill_qty == 21   # 1253 으로 부풀지 않는다
     finally:
         db.close()
         Base.metadata.drop_all(engine)

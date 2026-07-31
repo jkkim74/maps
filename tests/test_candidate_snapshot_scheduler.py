@@ -13,6 +13,7 @@ from maps.common.db import Base
 from maps.common.models import CandidateSnapshot, OrderLog, PromotionHistory
 from maps.common.settings import MapsSettings
 from maps.data.security_repo import Security
+from maps.execution.broker_adapter import OrderSide, OrderStatus
 from maps.ops.scheduler import OperationalPipeline
 
 
@@ -101,19 +102,26 @@ def test_mock_candidate_orders_on_paper_account_only() -> None:
 
 
 def test_mock_track_months_counts_from_first_filled_buy() -> None:
-    """mock_months = 최초 '체결된' 매수 이후 경과 개월. 미체결 주문은 세지 않는다."""
+    """mock_months = 최초 '체결된' 매수 이후 경과 개월. 미체결 주문은 세지 않는다.
+
+    side 는 반드시 **실제 저장되는 값**(`OrderSide.BUY.value`)으로 시드한다.
+    이 테스트가 대문자 "BUY" 로 시드하던 동안 운영에서는 한 건도 집계되지
+    않았다 — 아래 회귀 테스트 참고.
+    """
     engine, factory = _memory_factory()
     db = factory()
     try:
         today = dt.date.today()
         db.add(OrderLog(  # 미체결 — 무시돼야 함
-            order_id="O-1", strategy_id="donchian_v2", ticker="AAAA", side="BUY",
-            qty=10, fill_qty=0, status="CANCELLED",
+            order_id="O-1", strategy_id="donchian_v2", ticker="AAAA",
+            side=OrderSide.BUY.value,
+            qty=10, fill_qty=0, status=OrderStatus.CANCELLED.value,
             created_at=dt.datetime.now() - dt.timedelta(days=200),
         ))
         db.add(OrderLog(
-            order_id="O-2", strategy_id="donchian_v2", ticker="AAAA", side="BUY",
-            qty=10, fill_qty=10, status="FILLED",
+            order_id="O-2", strategy_id="donchian_v2", ticker="AAAA",
+            side=OrderSide.BUY.value,
+            qty=10, fill_qty=10, status=OrderStatus.FILLED.value,
             created_at=dt.datetime.now() - dt.timedelta(days=95),
         ))
         db.commit()
@@ -122,6 +130,36 @@ def test_mock_track_months_counts_from_first_filled_buy() -> None:
         assert months["donchian_v2"] == pytest.approx(95 / 30.44)
         assert months["donchian_v2"] >= 3.0  # Live Small 진입 조건 충족
         assert months.get("pullback_v3", 0.0) == 0.0
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def test_mock_track_months_reads_side_as_stored_lowercase() -> None:
+    """side 비교가 대소문자를 틀리면 mock_months 가 영구히 0.0 이 된다.
+
+    2026-07-31 운영 확인: `_mock_track_months` 가 `side == "BUY"` 로 비교하고
+    있었는데 저장값은 소문자 "buy" 라 `SELECT ... WHERE side='BUY'` 가 0건이었다.
+    그 결과 두 달치 실체결 트랙레코드가 쌓여 있는데도 승격 게이트가
+    `mock_months=0.0` 으로 Live Small 진입을 영구히 막고 있었다.
+
+    OrderManager 가 기록하는 값을 그대로 시드해 같은 실수를 다시 잡는다.
+    """
+    engine, factory = _memory_factory()
+    db = factory()
+    try:
+        db.add(OrderLog(
+            order_id="O-3", strategy_id="pullback_v3", ticker="005930",
+            side="buy",   # OrderManager._log_order 가 저장하는 실제 문자열
+            qty=10, fill_qty=10, status="filled",
+            created_at=dt.datetime.now() - dt.timedelta(days=61),
+        ))
+        db.commit()
+
+        months = OperationalPipeline._mock_track_months(db, dt.date.today())
+        assert months.get("pullback_v3", 0.0) > 0.0
+        assert months["pullback_v3"] == pytest.approx(61 / 30.44)
     finally:
         db.close()
         Base.metadata.drop_all(engine)

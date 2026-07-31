@@ -1072,8 +1072,11 @@ class OperationalPipeline:
         운용 실적이 아니다.
         """
         rows = (
+            # side 는 소문자("buy")로 저장된다 — 리터럴 "BUY" 로 비교하면 항상 0건이
+            # 나와 mock_months 가 영구히 0.0 이 되고 Live Small 승격이 차단된다
+            # (2026-07-31 운영 확인: 실제로는 2개월치가 이미 쌓여 있었다).
             db.query(OrderLog.strategy_id, func.min(OrderLog.created_at))
-            .filter(OrderLog.side == "BUY", OrderLog.fill_qty > 0)
+            .filter(OrderLog.side == OrderSide.BUY.value, OrderLog.fill_qty > 0)
             .group_by(OrderLog.strategy_id)
             .all()
         )
@@ -1967,6 +1970,11 @@ class OperationalPipeline:
                 else self._latest_close(db, ticker, ref_date)
             )
             entry_price = entry.fill_price or entry.order_price or position.avg_price
+            # 감사 로그에 남길 가격. 현재가와 최근 종가가 모두 없으면(둘 다 0) 평균 단가로
+            # 채운다 — order_price 가 NULL 이면 포지션 기반 체결 보정이 체결가를 채우지
+            # 못해 매매일지 손익이 추정값이나 null 로 떨어진다(2026-06 매도 13건).
+            # 청산 판정에는 쓰지 않는다. 폴백 가격으로 손절을 발동시키면 가짜 손절이 나간다.
+            record_price = current_price if current_price > 0 else (position.avg_price or 0.0)
             atr14 = signal.atr14 if signal is not None else None
             stop_price = effective_stop_price(entry.strategy_id, entry_price, atr14)
             strategy_exit = bool(signal and signal.exit_signal)
@@ -2007,7 +2015,7 @@ class OperationalPipeline:
                 side=OrderSide.SELL,
                 order_type=OrderType.MARKET,
                 quantity=position.quantity,
-                current_price=current_price,
+                current_price=record_price,
                 memo=(
                     f"{reason} entry={entry_price:.0f} "
                     f"current={current_price:.0f} stop={stop_price or 0:.0f}"

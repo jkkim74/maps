@@ -37,6 +37,30 @@ def kst_day_bounds_utc(ref_date: date) -> tuple[datetime, datetime]:
     return start, start + timedelta(days=1)
 
 
+def _normalize_filled_row(row: OrderLog) -> bool:
+    """FILLED 로 확정된 주문의 빈 체결 수량·가격을 주문 값으로 채운다.
+
+    브로커가 ``status=filled`` 를 주면서 체결수량 0 을 함께 반환하는 경우가 있다
+    (2026-07-31 운영 확인: 004490 매도가 ``filled`` + ``fill_qty=0`` 으로 남았다).
+    하위 집계가 전부 ``fill_qty > 0`` 을 요구하므로 — 매매일지(`trade_review`),
+    승격 게이트의 `mock_months` — 수량이 비면 그 체결은 **통째로 사라진다**.
+
+    부분체결에는 적용하지 않는다. 실제 체결 수량이 중요한데 주문 수량으로 덮으면
+    보유하지 않은 수량을 체결로 기록하게 된다.
+
+    :param row: 갱신할 주문 로그 행.
+    :return: 값을 채웠으면 ``True``.
+    """
+    changed = False
+    if not row.fill_qty:
+        row.fill_qty = row.qty
+        changed = True
+    if not row.fill_price:
+        row.fill_price = row.order_price
+        changed = True
+    return changed
+
+
 def _kst_today_start_utc() -> datetime:
     """오늘(KST) 자정을 UTC naive 시각으로 반환한다."""
     return kst_day_bounds_utc(datetime.now(_KST).date())[0]
@@ -232,6 +256,8 @@ class OrderManager:
             if result.avg_price and row.fill_price != result.avg_price:
                 row.fill_price = result.avg_price
                 changed = True
+            if row.status == OrderStatus.FILLED.value:
+                changed = _normalize_filled_row(row) or changed
             if changed:
                 updated += 1
         broker_result_ids = {result.order_id for result in broker_results}
@@ -262,11 +288,9 @@ class OrderManager:
             for sell_row in pending_sells:
                 if sell_row.ticker not in current_positions:
                     sell_row.status = OrderStatus.FILLED.value
-                    # 제출 시점 브로커 응답의 체결수량 0이 그대로 남는 경우가 있어 0도 미기록으로 취급
-                    if not sell_row.fill_qty:
-                        sell_row.fill_qty = sell_row.qty
-                    if not sell_row.fill_price:
-                        sell_row.fill_price = sell_row.order_price
+                    # 제출 시점 브로커 응답의 체결수량 0이 그대로 남는 경우가 있어
+                    # 0도 미기록으로 취급한다 (브로커 결과 경로와 같은 규칙).
+                    _normalize_filled_row(sell_row)
                     updated += 1
                     logger.info(
                         "Position-based fill: sell [%s %s] marked filled (ticker absent from broker)",
