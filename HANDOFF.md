@@ -242,13 +242,7 @@ scheduler.py:1973   record_price — 현재가·종가가 모두 0이면 평균 
 
 ### 이월 (7/30 에서 그대로 남음)
 
-4. 🔵 **모바일 APK 재빌드·재설치 — 여전히 가장 급하다.** 7/30 보유 화면 개선이
-   전부 APK 안에 있다. 재설치 전까지 사용자는 신고한 그 화면을 계속 본다.
-   ```
-   cd apps/mobile && npm run cap:sync && cd android
-   JAVA_HOME="/c/Program Files/Eclipse Adoptium/jdk-21.0.11.10-hotspot" ./gradlew assembleDebug
-   ```
-   `JAVA_HOME` 미지정 시 jdk-17 로 빌드가 깨진다. PATH 의 `java` 는 21이라 속는다.
+4. ~~모바일 APK 재빌드·재설치~~ — ✅ **7/31 완료**(사용자 확인, 8/1 기록).
 5. **워치리스트·보유 화면 브라우저 확인.** HTTP·API 페이로드까지만 봤고 CSS 레이아웃
    (네비 1줄 복귀, 카드 2열)은 검증 못 했다.
 6. **픽 만료 가드 로그** — 현재 ARMED 픽 0건이라 아직 안 뜬다.
