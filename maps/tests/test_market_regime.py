@@ -37,6 +37,29 @@ def test_composite_scorer_returns_neutral_when_optional_data_missing() -> None:
     assert result.composite_regime == RegimeLabel.MIXED.value
 
 
+def test_composite_renormalizes_over_measured_factors_only() -> None:
+    """미측정 팩터(중립 50)를 점수에 섞지 않는다 — 가중치 35%가 상수가 되는 문제."""
+    result = MarketRegimeCompositeScorer().score(
+        MarketRegimeInput(
+            legacy_regime=RegimeLabel.MIXED.value,
+            vol_regime="high",
+            weekly_trend="pass",
+            price_trend_score=3.8,
+            volatility_score=25.0,
+            foreign_fx_score=60.0,
+        )
+    )
+
+    # (3.8×0.30 + 25×0.20 + 60×0.15) / 0.65 = 23.29 — 구식(자리표시자 포함)은 32.64
+    assert result.final_market_score == 23.29
+    assert result.composite_regime == RegimeLabel.WEAK.value
+    assert "미측정 제외: liquidity,psychology" in result.reason
+    assert "liquidity=" not in result.reason.split(";")[0]  # 실측 목록에 미측정이 없어야 함
+    # 표시 필드는 기존 호환을 위해 중립 50 유지
+    assert result.liquidity_score == 50.0
+    assert result.psychology_score == 50.0
+
+
 def test_strong_legacy_regime_is_downgraded_when_liquidity_is_bad() -> None:
     result = MarketRegimeCompositeScorer().score(
         MarketRegimeInput(

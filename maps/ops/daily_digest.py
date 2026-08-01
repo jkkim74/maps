@@ -147,6 +147,9 @@ def _build_market(db: Session, settings: MapsSettings, ref_date: dt.date) -> Dig
         kospi_above_ma10w=row.kospi_above_ma10w if row else result.kospi_above_ma10w,
         kospi_ts=result.kospi_ts,
         floor_applied=bool(row.floor_applied) if row else result.floor_applied,
+        korea_weak_guard_applied=(
+            bool(row.korea_weak_guard_applied) if row else result.korea_weak_applied
+        ),
         final_market_score=composite.final_market_score if composite else None,
         factors=factors,
         reason=composite.reason if composite else None,

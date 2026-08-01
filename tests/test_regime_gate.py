@@ -4,7 +4,9 @@ from __future__ import annotations
 import datetime as dt
 
 from maps.common.models import MarketRegimeLog
+from maps.common.settings import MapsSettings
 from maps.market.regime import (
+    BreadthLabel,
     MarketRegimeAnalyzer,
     RegimeLabel,
     RegimeResult,
@@ -147,3 +149,103 @@ def test_hysteresis_upserts_same_day_row(db) -> None:
     assert len(rows) == 1
     assert rows[0].applied_regime == "mixed"
     assert rows[0].source == "candidate_generation"
+
+
+# ── Korea weak guard (mixed→weak 하향) ───────────────────────────────────────
+
+
+def _mixed_below_mas(*, kospi_ts: float | None = None) -> RegimeResult:
+    """글로벌 투표는 MIXED(4/8)인데 KOSPI는 5·10주선 모두 하회인 결과."""
+    result = _raw_result(RegimeLabel.MIXED, up_count=4)
+    result.kospi_ts = kospi_ts
+    return result
+
+
+def test_korea_weak_guard_downgrades_mixed_on_low_trend_strength(db) -> None:
+    today = dt.date(2026, 7, 2)
+    raw = _mixed_below_mas(kospi_ts=3.8)
+
+    result = apply_hysteresis(db, raw, today)
+
+    assert result.regime == RegimeLabel.WEAK
+    assert result.korea_weak_applied is True
+    row = db.query(MarketRegimeLog).filter(MarketRegimeLog.ref_date == today).one()
+    assert row.raw_regime == "mixed"
+    assert row.applied_regime == "weak"
+    assert row.korea_weak_guard_applied is True
+
+
+def test_korea_weak_guard_triggers_on_weak_breadth_alone(db) -> None:
+    today = dt.date(2026, 7, 2)
+    raw = _mixed_below_mas(kospi_ts=60.0)     # 추세강도는 임계값 위
+    raw.breadth = BreadthLabel.WEAK           # 하지만 breadth가 약세
+
+    result = apply_hysteresis(db, raw, today)
+
+    assert result.regime == RegimeLabel.WEAK
+    assert result.korea_weak_applied is True
+
+
+def test_korea_weak_guard_not_triggered_above_ma5w(db) -> None:
+    today = dt.date(2026, 7, 2)
+    raw = _raw_result(RegimeLabel.MIXED, up_count=4, kospi_above_ma5w=True)
+    raw.kospi_ts = 3.8
+
+    result = apply_hysteresis(db, raw, today)
+
+    assert result.regime == RegimeLabel.MIXED
+    assert result.korea_weak_applied is False
+
+
+def test_korea_weak_guard_respects_disable_flag(db) -> None:
+    today = dt.date(2026, 7, 2)
+    raw = _mixed_below_mas(kospi_ts=3.8)
+    settings = MapsSettings(maps_korea_weak_guard_enabled=False)
+
+    result = apply_hysteresis(db, raw, today, settings=settings)
+
+    assert result.regime == RegimeLabel.MIXED
+    assert result.korea_weak_applied is False
+
+
+def test_korea_weak_guard_overrides_buffer_band_hold(db) -> None:
+    # band(3/8)가 직전 mixed를 유지해도, 한국 실측이 결정적으로 약하면 weak.
+    today = dt.date(2026, 7, 2)
+    _add_prev_log(db, today - dt.timedelta(days=1), applied="mixed")
+    raw = _raw_result(RegimeLabel.WEAK, up_count=3)   # band → mixed 유지
+    raw.kospi_ts = 3.8
+
+    result = apply_hysteresis(db, raw, today)
+
+    assert result.regime == RegimeLabel.WEAK
+    assert result.korea_weak_applied is True
+
+
+def test_korea_weak_guard_skips_override_results(db) -> None:
+    # 오버라이드/스텁(up_count=None)은 record-only — 가드도 적용하지 않는다.
+    today = dt.date(2026, 7, 2)
+    raw = RegimeResult(
+        regime=RegimeLabel.MIXED,
+        weekly_trend=WeeklyTrendLabel.PASS,
+        limit_ratio=0.0,
+        kospi_ts=3.8,
+    )
+
+    result = apply_hysteresis(db, raw, today)
+
+    assert result.regime == RegimeLabel.MIXED
+    assert result.korea_weak_applied is False
+
+
+def test_korea_weak_guard_entry_effects(db) -> None:
+    # 가드 발동 + 고변동성이면 진입 0% + CASH_DEFENSE — 실제 매매 효과 확인.
+    from maps.market.regime import VolRegimeLabel
+
+    today = dt.date(2026, 7, 2)
+    raw = _mixed_below_mas(kospi_ts=3.8)
+    raw.vol_regime = VolRegimeLabel.HIGH
+
+    result = apply_hysteresis(db, raw, today)
+
+    assert result.entry_limit_ratio == 0.0
+    assert result.market_mode().value == "CASH_DEFENSE"

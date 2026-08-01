@@ -769,6 +769,8 @@ class DigestMarket(BaseModel):
     kospi_above_ma10w: bool | None = None
     kospi_ts: float | None = None
     floor_applied: bool = False
+    # Korea weak guard(mixed→weak 하향) 적용 여부 — floor_applied의 대칭
+    korea_weak_guard_applied: bool = False
     final_market_score: float | None = None
     factors: list[DigestFactor] = []
     reason: str | None = None

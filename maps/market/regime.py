@@ -160,11 +160,14 @@ class PlaceholderKostolanyDataProvider:
 
 
 class LiquidityCycleScorer:
-    """Scores liquidity cycle quality on a 0-100 scale."""
+    """Scores liquidity cycle quality on a 0-100 scale.
+
+    입력이 하나도 없으면(피드 미연결) None — 측정 불가를 중립 50과 구분한다.
+    """
 
     neutral_score = 50.0
 
-    def score(self, data: MarketRegimeInput) -> float:
+    def score(self, data: MarketRegimeInput) -> float | None:
         values = [
             data.policy_rate_direction,
             data.yield_curve_change,
@@ -174,7 +177,7 @@ class LiquidityCycleScorer:
             data.customer_deposit_change,
             self._invert(data.credit_spread_risk),
         ]
-        return _average_or_neutral(values, self.neutral_score)
+        return _average_or_none(values)
 
     @staticmethod
     def _invert(value: float | None) -> float | None:
@@ -182,11 +185,14 @@ class LiquidityCycleScorer:
 
 
 class PsychologyScorer:
-    """Scores market psychology on a 0-100 scale."""
+    """Scores market psychology on a 0-100 scale.
+
+    입력이 하나도 없으면(피드 미연결) None — 측정 불가를 중립 50과 구분한다.
+    """
 
     neutral_score = 50.0
 
-    def score(self, data: MarketRegimeInput) -> float:
+    def score(self, data: MarketRegimeInput) -> float | None:
         values = [
             self._overheat_penalty(data.turnover_surge),
             self._overheat_penalty(data.retail_overheat),
@@ -195,7 +201,7 @@ class PsychologyScorer:
             data.new_high_ratio,
             self._invert(data.sharp_drop_ratio),
         ]
-        return _average_or_neutral(values, self.neutral_score)
+        return _average_or_none(values)
 
     @staticmethod
     def _invert(value: float | None) -> float | None:
@@ -230,25 +236,49 @@ class MarketRegimeCompositeScorer:
         self._psychology = psychology_scorer or PsychologyScorer()
 
     def score(self, data: MarketRegimeInput) -> MarketRegimeResult:
-        price_score = _clamp_score(data.price_trend_score if data.price_trend_score is not None else 50.0)
-        vol_score = _clamp_score(data.volatility_score if data.volatility_score is not None else 50.0)
-        liquidity_score = self._liquidity.score(data)
-        foreign_fx_score = _clamp_score(data.foreign_fx_score if data.foreign_fx_score is not None else 50.0)
-        psychology_score = self._psychology.score(data)
+        # 팩터별 실측값 — None이면 미측정(피드 미연결). 미측정 팩터는 점수에서
+        # 제외하고 실측 팩터의 가중치만으로 재정규화한다. 중립 50을 섞으면
+        # 가중치의 상당분이 상수가 되어 점수가 실제 데이터보다 온화해진다.
+        measured: dict[str, float] = {}
+        if data.price_trend_score is not None:
+            measured["price_trend"] = _clamp_score(data.price_trend_score)
+        if data.volatility_score is not None:
+            measured["volatility"] = _clamp_score(data.volatility_score)
+        liquidity_measured = self._liquidity.score(data)
+        if liquidity_measured is not None:
+            measured["liquidity"] = liquidity_measured
+        if data.foreign_fx_score is not None:
+            measured["foreign_fx"] = _clamp_score(data.foreign_fx_score)
+        psychology_measured = self._psychology.score(data)
+        if psychology_measured is not None:
+            measured["psychology"] = psychology_measured
 
-        final_score = round(
-            price_score * self._WEIGHTS["price_trend"]
-            + vol_score * self._WEIGHTS["volatility"]
-            + liquidity_score * self._WEIGHTS["liquidity"]
-            + foreign_fx_score * self._WEIGHTS["foreign_fx"]
-            + psychology_score * self._WEIGHTS["psychology"],
-            2,
-        )
+        # 표시 필드는 미측정이어도 중립 50을 유지한다 (기존 소비자 호환).
+        price_score = measured.get("price_trend", 50.0)
+        vol_score = measured.get("volatility", 50.0)
+        liquidity_score = measured.get("liquidity", self._liquidity.neutral_score)
+        foreign_fx_score = measured.get("foreign_fx", 50.0)
+        psychology_score = measured.get("psychology", self._psychology.neutral_score)
+
+        if measured:
+            weight_sum = sum(self._WEIGHTS[name] for name in measured)
+            final_score = round(
+                sum(self._WEIGHTS[name] * value for name, value in measured.items()) / weight_sum,
+                2,
+            )
+        else:
+            final_score = 50.0
+
         composite = self._classify(data.legacy_regime, final_score, liquidity_score)
-        reason = (
-            f"legacy={data.legacy_regime}, final={final_score:.1f}, "
-            f"liquidity={liquidity_score:.1f}, psychology={psychology_score:.1f}"
+        unmeasured = [name for name in self._WEIGHTS if name not in measured]
+        measured_parts = ", ".join(
+            f"{name}={measured[name]:.1f}" for name in self._WEIGHTS if name in measured
         )
+        reason = f"legacy={data.legacy_regime}, final={final_score:.1f}"
+        if measured_parts:
+            reason += f", {measured_parts}"
+        if unmeasured:
+            reason += f"; 미측정 제외: {','.join(unmeasured)}"
         if composite == "contrarian":
             reason += "; weak price trend with improving liquidity"
         elif data.legacy_regime == "strong" and composite == "mixed":
@@ -285,10 +315,11 @@ def _clamp_score(value: float) -> float:
     return max(0.0, min(100.0, float(value)))
 
 
-def _average_or_neutral(values: list[float | None], neutral: float) -> float:
+def _average_or_none(values: list[float | None]) -> float | None:
+    """비-None 입력들의 평균. 입력이 하나도 없으면 None (미측정)."""
     scored = [_clamp_score(v) for v in values if v is not None]
     if not scored:
-        return neutral
+        return None
     return round(sum(scored) / len(scored), 2)
 
 
@@ -306,6 +337,8 @@ class RegimeResult:
     composite: MarketRegimeResult | None = None
     # KOSPI 하한선으로 WEAK→MIXED 상향이 적용됐는지("빌려온 MIXED") 여부.
     floor_applied: bool = False
+    # Korea weak guard로 MIXED→WEAK 하향이 적용됐는지 여부 (플로어의 대칭).
+    korea_weak_applied: bool = False
     # 시장폭 국면 — 후보 생성 단계에서 DB 기반으로 주입(미주입 시 UNKNOWN).
     breadth: BreadthLabel = BreadthLabel.UNKNOWN
     # 히스테리시스·floor 판정 근거 (오버라이드/스텁 시 None)
@@ -438,6 +471,25 @@ class RegimeResult:
         if st == StrategyEntryType.CONTRARIAN_QUALITY:
             return StrategyEntryPolicy(st.value, market_mode, True, min(contrarian_ratio, 0.15), "strong_market_reduces_contrarian")
         return StrategyEntryPolicy(st.value, market_mode, True, self.entry_limit_ratio, "strong_market_allows_trend_breakout_pullback")
+
+
+def korea_weak_guard_triggered(result: RegimeResult, *, ts_threshold: float) -> bool:
+    """MIXED 라벨을 한국 실측 약세가 부정하는지 판정한다 (KOSPI 플로어의 대칭).
+
+    글로벌 8자산 투표에서 한국은 2표뿐이라, KOSPI가 주선을 깊게 깨고 종목 확산이
+    무너져도 해외 자산 몇 개로 라벨이 MIXED에 머물 수 있다. 조건 (모두 AND):
+
+    - 라벨이 MIXED (플로어 적용 후 — 플로어는 상회를 요구하므로 상호배타)
+    - KOSPI 5주선·10주선 모두 하회 (오버라이드/스텁의 None은 미충족)
+    - KOSPI 추세강도 ≤ ts_threshold **또는** breadth WEAK (아는 경우만)
+    """
+    if result.regime != RegimeLabel.MIXED:
+        return False
+    if result.kospi_above_ma5w is not False or result.kospi_above_ma10w is not False:
+        return False
+    ts_weak = result.kospi_ts is not None and result.kospi_ts <= ts_threshold
+    breadth_weak = result.breadth == BreadthLabel.WEAK
+    return ts_weak or breadth_weak
 
 
 def _normalize_strategy_type(strategy_type: str | Enum | None) -> StrategyEntryType:

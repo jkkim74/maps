@@ -56,6 +56,16 @@ KOSPI, KOSDAQ (pykrx) + S&P 500, NASDAQ, USD/KRW, 금(GC=F), WTI(CL=F), 구리(H
 - **MIXED**: ≥ 40% 가 MA5W 위
 - **WEAK**: < 40%
 
+투표 후 보정 2종 (모두 `market_regime_log`에 플래그 기록):
+- **KOSPI 플로어** (weak→mixed 상향): KOSPI가 5·10주선 모두 상회 + weekly PASS → `floor_applied`
+- **Korea weak guard** (mixed→weak 하향, `regime_history.apply_hysteresis`에서 적용):
+  KOSPI 5·10주선 모두 하회 + (추세강도 ≤ `MAPS_KOREA_WEAK_TS_THRESHOLD`(35) 또는
+  breadth WEAK) → `korea_weak_guard_applied`. `MAPS_KOREA_WEAK_GUARD_ENABLED`(기본 true).
+  buffer band 유지보다 우선한다.
+
+종합점수(kostolany composite)는 **실측 팩터만 가중 재정규화**한다 — 피드 미연결
+팩터(유동성·심리)는 점수에서 제외되고 reason에 `미측정 제외: ...`로 표기된다.
+
 ### WeeklyTrend 판단
 
 KOSPI 40주 데이터 기반: `MA10W > MA20W > MA40W` → PASS, 아니면 FAIL

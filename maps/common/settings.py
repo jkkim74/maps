@@ -150,6 +150,12 @@ class MapsSettings(BaseSettings):
     maps_breadth_ma_window: int = Field(default=20, ge=5, le=200)
     maps_breadth_weak_threshold: float = Field(default=0.40, ge=0.0, le=1.0)
 
+    # Korea weak guard — 글로벌 8자산 투표가 MIXED여도 KOSPI가 5·10주선을 모두
+    # 하회하고 추세강도 ≤ 임계값(또는 breadth WEAK)이면 WEAK로 하향. 매수를 막는
+    # 보수 방향 가드라 기본 활성. ts 35 ≈ KOSPI가 5주선 대비 -6% 이하.
+    maps_korea_weak_guard_enabled: bool = True
+    maps_korea_weak_ts_threshold: float = Field(default=35.0, ge=0.0, le=100.0)
+
     # 로그인(단일 공용 비밀번호) — 기본 비활성(옵트인). 운영에서만 켠다.
     # 활성화하면 모든 HTML 페이지/`/api/*`가 세션 쿠키를 요구한다.
     maps_auth_enabled: bool = False

@@ -612,6 +612,8 @@ class MarketRegimeLog(Base):
     weekly_trend: Mapped[str] = mapped_column(String(8), nullable=False, default="pass")
     vol_regime: Mapped[str] = mapped_column(String(8), nullable=False, default="normal")
     floor_applied: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Korea weak guard(mixed→weak 하향)가 적용됐는지 — floor_applied의 대칭.
+    korea_weak_guard_applied: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     breadth_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     kospi_above_ma5w: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     kospi_above_ma10w: Mapped[bool | None] = mapped_column(Boolean, nullable=True)

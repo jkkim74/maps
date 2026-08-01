@@ -211,6 +211,21 @@ def test_digest_survives_empty_database(db, settings) -> None:
     assert digest.market.source == "recomputed"
 
 
+def test_market_surfaces_korea_weak_guard_flag(db, settings) -> None:
+    """가드로 내린 WEAK인지 투표 결과 WEAK인지 글에서 구분할 수 있어야 한다."""
+    db.add(MarketRegimeLog(
+        ref_date=REF_DATE, raw_regime="mixed", applied_regime="weak",
+        up_count=4, total_assets=8, weekly_trend="pass", vol_regime="high",
+        floor_applied=False, korea_weak_guard_applied=True, breadth_pct=0.123,
+    ))
+    db.commit()
+
+    digest = build_daily_digest(db, settings, REF_DATE)
+
+    assert digest.market.regime == "weak"
+    assert digest.market.korea_weak_guard_applied is True
+
+
 def test_universe_stats_come_from_quality_log(db, settings) -> None:
     """제외 통계는 DQ 필터의 감사 로그가 정본이다 — 스냅샷 행 수를 세면 항상 0%가 된다."""
     _seed(db)
