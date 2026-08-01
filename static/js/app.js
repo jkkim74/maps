@@ -953,6 +953,18 @@ async function loadBacktest() {
         .join('');
     }
 
+    // 실행 설정 패널: DB 실측값으로 채운다 (하드코딩 문구 대체)
+    const period = document.getElementById('bt-period');
+    if (period && d.data_start && d.data_end) {
+      period.textContent = `${d.data_start} ~ ${d.data_end} (DB 보유 전체)`;
+    }
+    const universe = document.getElementById('bt-universe');
+    if (universe && d.max_tickers) {
+      universe.textContent = `히스토리 충분 종목 중 최대 ${d.max_tickers}개 (전략별 최소 봉 수 기준)`;
+    }
+    const cost = document.getElementById('bt-cost');
+    if (cost && d.cost_summary) cost.textContent = d.cost_summary;
+
     _renderBtProgress(runs.length > 0 ? runs[0] : null);
     _renderBtResultKpi(runs.find(r => r.status === 'done') ?? null);
     _renderBtRunsTable(runs);

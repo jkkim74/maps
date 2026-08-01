@@ -17,34 +17,21 @@
         </tr>
         <tr>
           <td class="bt-label">기간</td>
-          <td class="text-muted mono" style="font-size:12px">2015-01 ~ 2026-04&ensp;(IS 70% / OOS 30%)</td>
+          <td class="text-muted mono" style="font-size:12px" id="bt-period">DB 보유 데이터 전체</td>
         </tr>
         <tr>
           <td class="bt-label">유니버스</td>
-          <td class="text-muted">KOSPI200 + KOSDAQ150</td>
+          <td class="text-muted" id="bt-universe">히스토리 충분 종목 중 최대 30개 (전략별 최소 봉 수 기준)</td>
         </tr>
         <tr>
           <td class="bt-label">비용 모델</td>
-          <td class="text-muted">CostModel 2026Q2 기본값</td>
-        </tr>
-        <tr>
-          <td class="bt-label">동반 검증</td>
-          <td>
-            <span class="badge badge-info" style="margin-right:4px">Plateau ✓</span>
-            <span class="badge badge-info" style="margin-right:4px">WFA ✓</span>
-            <span class="badge badge-info" style="margin-right:4px">MC ✓</span>
-            <span class="badge badge-info">Bootstrap ✓</span>
-          </td>
-        </tr>
-        <tr>
-          <td class="bt-label">예상 시간</td>
-          <td class="text-muted">~ 2시간 30분</td>
+          <td class="text-muted" id="bt-cost">-</td>
         </tr>
       </tbody>
     </table>
     <div style="display:flex;flex-direction:column;align-items:flex-start;gap:12px;padding-top:8px">
       <button class="bt-run-btn" onclick="runBacktest()">▶ 실행</button>
-      <div class="text-muted" style="font-size:11px">대기 큐에 등록 · 비동기 실행</div>
+      <div class="text-muted" style="font-size:11px">즉시 실행 · 완료까지 수십 초 걸릴 수 있음</div>
     </div>
   </div>
 </div></div>

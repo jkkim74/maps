@@ -6,13 +6,20 @@ import datetime
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from maps.api.deps import get_db
 from maps.api.schemas import BacktestResponse, BacktestRunItem, BacktestRunRequest
+from maps.backtest.cost_model import (
+    BROKER_FEE_PER_SIDE,
+    SLIPPAGE_LARGE_CAP,
+    SLIPPAGE_SMALL_CAP,
+    TRANSACTION_TAX_SELL,
+)
 from maps.backtest.engine import BacktestEngine
 from maps.common.exceptions import BacktestError
-from maps.common.models import MonteCarloSequenceResults, WalkForwardResults
+from maps.common.models import HistoricalOHLCV, MonteCarloSequenceResults, WalkForwardResults
 from maps.data.ohlcv_repo import HistoricalOHLCVRepository
 from maps.strategy.base import BaseStrategy
 from maps.strategy.pullback_v3 import PullbackV3Strategy
@@ -24,6 +31,9 @@ from maps.strategy.donchian_v1 import DonchianV1Strategy
 from maps.strategy.donchian_v2 import DonchianV2Strategy
 
 router = APIRouter(prefix="/api/v1/backtest", tags=["SCR-07 Backtest"])
+
+# 콘솔 실행이 집계하는 종목 수 상한 (화면 표시와 실행 루프가 같은 값을 쓴다)
+MAX_TICKERS = 30
 
 # 실제 Python 클래스가 구현된 전략 레지스트리
 RUNNABLE_STRATEGIES: dict[str, type[BaseStrategy]] = {
@@ -74,9 +84,21 @@ def get_backtest_runs(db: Session = Depends(get_db)) -> BacktestResponse:
         for row in wfa_rows
     ]
 
+    data_start, data_end = (
+        db.query(func.min(HistoricalOHLCV.date), func.max(HistoricalOHLCV.date)).one()
+    )
+    cost_summary = (
+        f"수수료 {BROKER_FEE_PER_SIDE:.3%}/편도 · 거래세 {TRANSACTION_TAX_SELL:.2%} · "
+        f"슬리피지 {SLIPPAGE_LARGE_CAP:.2%}~{SLIPPAGE_SMALL_CAP:.2%}×변동성 배수"
+    )
+
     return BacktestResponse(
         recent_runs=runs,
         available_strategies=list(RUNNABLE_STRATEGIES.keys()),
+        data_start=data_start,
+        data_end=data_end,
+        max_tickers=MAX_TICKERS,
+        cost_summary=cost_summary,
     )
 
 
@@ -116,7 +138,7 @@ def run_backtest(req: BacktestRunRequest, db: Session = Depends(get_db)) -> Back
     results = []
     errors: list[str] = []
 
-    for ticker in tickers[:30]:
+    for ticker in tickers[:MAX_TICKERS]:
         df = repo.to_dataframe(ticker)
         if len(df) < min_bars:
             continue

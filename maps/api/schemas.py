@@ -304,6 +304,12 @@ class BacktestRunRequest(BaseModel):
 class BacktestResponse(BaseModel):
     recent_runs: list[BacktestRunItem]
     available_strategies: list[str] = []
+    # 실행 설정 패널 표시용 실측값 — 하드코딩 문구가 실제 동작과 어긋나
+    # "기간을 왜 못 바꾸나" 오해를 낳았다. 실행은 DB 보유 전체 기간을 쓴다.
+    data_start: datetime.date | None = None
+    data_end: datetime.date | None = None
+    max_tickers: int = 30
+    cost_summary: str | None = None
 
 
 # ── SCR-08 Robustness ─────────────────────────────────────────────────────────
