@@ -4,9 +4,12 @@
 약하면 WEAK로 내리는 Korea weak guard(플로어의 대칭)가 추가됐다. 어떤 날의 WEAK가
 투표 결과인지 가드 하향인지 감사 로그로 구분해야 한다.
 
-Revision ID: 0014_market_regime_korea_weak_guard
+Revision ID: 0014_regime_korea_weak_guard
 Revises: 0013_order_log_entry_atr
 Create Date: 2026-07-30
+
+주의: revision ID는 alembic_version.version_num이 varchar(32)라 32자를 넘으면
+운영 Postgres에서 UPDATE가 실패한다 (2026-08-02 배포 중 실제 발생, 35자였음).
 """
 
 from __future__ import annotations
@@ -16,7 +19,7 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0014_market_regime_korea_weak_guard"
+revision: str = "0014_regime_korea_weak_guard"
 down_revision: Union[str, None] = "0013_order_log_entry_atr"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
