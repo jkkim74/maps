@@ -150,10 +150,12 @@ def run_backtest(req: BacktestRunRequest, db: Session = Depends(get_db)) -> Back
         raise HTTPException(status_code=422, detail=detail)
 
     n = len(results)
-    avg_cagr = sum(r.cagr for r in results) / n
-    worst_mdd = min(r.mdd for r in results)
-    avg_sharpe = sum(r.sharpe for r in results) / n
-    total_trades = sum(r.total_trades for r in results)
+    # float()/int() 강제: 엔진 지표는 numpy 스칼라일 수 있고, psycopg2는
+    # np.float64를 적재하지 못한다 (2026-08-02 운영 INSERT 실패).
+    avg_cagr = float(sum(r.cagr for r in results) / n)
+    worst_mdd = float(min(r.mdd for r in results))
+    avg_sharpe = float(sum(r.sharpe for r in results) / n)
+    total_trades = int(sum(r.total_trades for r in results))
 
     run_id = f"bt_{req.strategy_id}_{uuid.uuid4().hex[:8]}"
 

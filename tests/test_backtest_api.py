@@ -113,15 +113,19 @@ def test_run_persists_result_to_log(client, monkeypatch) -> None:
     monkeypatch.setattr(
         bt.HistoricalOHLCVRepository, "to_dataframe", lambda self, ticker: df,
     )
+    import numpy as np
+
+    # numpy 스칼라 그대로 — psycopg2가 np.float64를 못 받아 운영에서 INSERT가
+    # 죽었던 회귀 재현 (라우터가 float/int로 강제 변환해야 한다).
     fake = BacktestResult(
         strategy_id="pullback_v3",
         start_date=dt.date(2020, 1, 1),
         end_date=dt.date(2021, 6, 1),
         initial_capital=100_000_000,
         final_value=110_000_000,
-        cagr=0.07,
-        mdd=-0.09,
-        sharpe=0.6,
+        cagr=np.float64(0.07),
+        mdd=np.float64(-0.09),
+        sharpe=np.float64(0.6),
         total_trades=17,
     )
     monkeypatch.setattr(bt.BacktestEngine, "run", lambda self, s, p, d: fake)
