@@ -330,6 +330,30 @@ class MonteCarloSequenceResults(Base):
     )
 
 
+class BacktestRunLog(Base):
+    """backtest_run_log — SCR-07 콘솔 백테스트 실행 결과.
+
+    실행 결과를 저장하지 않으면 최근 실행 목록의 NET CAGR·거래수가
+    영구히 빈다 (이전 목록의 원천이던 WFA 결과에는 두 값이 없다).
+    """
+
+    __tablename__ = "backtest_run_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    strategy_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    params_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="done")
+    net_cagr: Mapped[float | None] = mapped_column(Float, nullable=True)
+    mdd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    sharpe: Mapped[float | None] = mapped_column(Float, nullable=True)
+    trade_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ticker_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc)
+    )
+
+
 # ---------------------------------------------------------------------------
 # 승격 감사 로그
 # ---------------------------------------------------------------------------
