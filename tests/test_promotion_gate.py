@@ -195,3 +195,155 @@ def test_all_checks_executed(gate: PromotionGate) -> None:
     assert not decision.passed
     # 두 가드 모두 reason 에 포함
     assert len([r for r in decision.reasons if "cagr" in r.lower() or "sharpe" in r.lower()]) >= 2
+
+
+# ---------------------------------------------------------------------------
+# 자동 강등 (mock_candidate → research, 점수 연속 미달)
+# ---------------------------------------------------------------------------
+
+import datetime as _dt
+from types import SimpleNamespace
+
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
+import maps.promotion.gate as gate_module
+from maps.common.db import Base
+from maps.common.models import PromotionHistory
+
+_LOW_METRICS = {
+    # 점수 = (0.3·0.4 + 0.3·0.4 + 0.2·0.4 + 0.2·0.4)·100 = 40 < 강등 임계 50
+    "robustness": 0.4, "risk": 0.4, "recovery": 0.4, "return": 0.4,
+    "mc_mdd_p95": 0.10, "mock_months": 3.0, "mock_sharpe": 0.2,
+}
+
+
+def _db_gate():
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    db = factory()
+    return engine, db, PromotionGate(db=db)
+
+
+def _seed_failed(db, days_ago: int, score: float = 40.0, *,
+                 from_stage: str = "mock_candidate", passed: bool = False) -> None:
+    db.add(PromotionHistory(
+        strategy_id="pullback_v3",
+        from_stage=from_stage,
+        to_stage="mock_candidate" if passed else from_stage,
+        tradeability_score=score,
+        passed=passed,
+        evaluated_at=_dt.datetime.now() - _dt.timedelta(days=days_ago),
+    ))
+    db.commit()
+
+
+@pytest.fixture
+def demote_after_3(monkeypatch):
+    monkeypatch.setattr(
+        gate_module, "get_settings",
+        lambda: SimpleNamespace(maps_demotion_consecutive_evals=3),
+    )
+
+
+def test_demotes_after_consecutive_low_scores(demote_after_3) -> None:
+    """점수 <50이 연속 N회면 mock→research 강등 행(passed=True)이 기록된다."""
+    engine, db, gate = _db_gate()
+    try:
+        _seed_failed(db, 2)
+        _seed_failed(db, 1)
+
+        decision = gate.evaluate("pullback_v3", _LOW_METRICS, PromotionStage.MOCK_CANDIDATE)
+
+        assert decision.demoted is True
+        assert any("자동 강등" in r for r in decision.reasons)
+        demotion = (
+            db.query(PromotionHistory)
+            .filter(PromotionHistory.passed.is_(True))
+            .one()
+        )
+        assert demotion.from_stage == "mock_candidate"
+        assert demotion.to_stage == "research"
+        # 단계 판정 쿼리(최근 passed=True 행)가 강등 행을 집어야 한다
+        latest = (
+            db.query(PromotionHistory)
+            .filter(PromotionHistory.passed.is_(True))
+            .order_by(PromotionHistory.evaluated_at.desc(), PromotionHistory.id.desc())
+            .first()
+        )
+        assert latest.to_stage == "research"
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def test_no_demotion_below_consecutive_count(demote_after_3) -> None:
+    """미달이 N-1회뿐이면 강등하지 않는다."""
+    engine, db, gate = _db_gate()
+    try:
+        _seed_failed(db, 1)  # 오늘 실패 포함 2회 < 3회
+
+        decision = gate.evaluate("pullback_v3", _LOW_METRICS, PromotionStage.MOCK_CANDIDATE)
+
+        assert decision.demoted is False
+        assert db.query(PromotionHistory).filter(PromotionHistory.passed.is_(True)).count() == 0
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def test_no_demotion_when_window_has_score_above_threshold(demote_after_3) -> None:
+    """윈도 내 한 번이라도 임계(50) 이상 점수가 있으면 연속 미달이 아니다."""
+    engine, db, gate = _db_gate()
+    try:
+        _seed_failed(db, 2, score=55.0)  # 임계 이상
+        _seed_failed(db, 1)
+
+        decision = gate.evaluate("pullback_v3", _LOW_METRICS, PromotionStage.MOCK_CANDIDATE)
+
+        assert decision.demoted is False
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def test_no_demotion_when_window_contains_promotion_row(demote_after_3) -> None:
+    """윈도 안에 승격 행(passed=True)이 있으면 강등하지 않는다."""
+    engine, db, gate = _db_gate()
+    try:
+        _seed_failed(db, 2, score=70.0, from_stage="research", passed=True)  # 승격 행
+        _seed_failed(db, 1)
+
+        decision = gate.evaluate("pullback_v3", _LOW_METRICS, PromotionStage.MOCK_CANDIDATE)
+
+        assert decision.demoted is False
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def test_no_demotion_at_research_stage(demote_after_3) -> None:
+    """강등은 mock_candidate 전용 — research 저점수 반복은 대상 아님."""
+    engine, db, gate = _db_gate()
+    try:
+        _seed_failed(db, 2, from_stage="research")
+        _seed_failed(db, 1, from_stage="research")
+
+        decision = gate.evaluate("pullback_v3", _LOW_METRICS, PromotionStage.RESEARCH)
+
+        assert decision.demoted is False
+        assert db.query(PromotionHistory).filter(PromotionHistory.passed.is_(True)).count() == 0
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()

@@ -1760,3 +1760,99 @@ def test_eod_cleanup_purges_job_run_log_older_than_90_days() -> None:
     finally:
         Base.metadata.drop_all(engine)
         engine.dispose()
+
+
+# ── 자동 강등 E2E (검증 잡 → 강등 행 → 주문 자격 상실 → Slack) ─────────────
+
+def test_validation_auto_demotes_after_consecutive_low_scores(monkeypatch) -> None:
+    """점수 연속 미달 시 검증 잡이 mock→research 강등을 기록·알림해야 한다."""
+    from types import SimpleNamespace
+
+    import maps.promotion.gate as gate_module
+
+    monkeypatch.setattr(
+        gate_module, "get_settings",
+        lambda: SimpleNamespace(maps_demotion_consecutive_evals=3),
+    )
+
+    class RecordingNotifier:
+        def __init__(self) -> None:
+            self.sent = []
+
+        def send(self, notification) -> bool:
+            self.sent.append(notification)
+            return True
+
+        def send_job_failed(self, *args, **kwargs) -> bool:
+            return True
+
+    notifier = RecordingNotifier()
+    engine, factory = _session_factory()
+    settings = MapsSettings(
+        maps_broker_mode="mock",
+        maps_data_provider="mock",
+        maps_live_trading_enabled=False,
+    )
+    pipeline = OperationalPipeline(
+        settings=settings, session_factory=factory, notifier=notifier
+    )
+    ref_date = dt.date(2026, 8, 3)
+
+    db = factory()
+    try:
+        # 과거 승격 행 (윈도 밖) → 현재 단계 mock_candidate
+        db.add(PromotionHistory(
+            strategy_id="pullback_v3", from_stage="research", to_stage="mock_candidate",
+            tradeability_score=71.0, passed=True,
+            evaluated_at=dt.datetime.now() - dt.timedelta(days=30),
+        ))
+        # 직전 2회 연속 미달 (오늘 평가가 3회째)
+        for days_ago in (2, 1):
+            db.add(PromotionHistory(
+                strategy_id="pullback_v3", from_stage="mock_candidate",
+                to_stage="mock_candidate", tradeability_score=40.0, passed=False,
+                evaluated_at=dt.datetime.now() - dt.timedelta(days=days_ago),
+            ))
+        # 낮은 점수를 만드는 최신 메트릭 (점수 ≈ 21 < 50)
+        db.add(CandidateSnapshot(
+            ref_date=ref_date, strategy_id="pullback_v3", ticker="AAAA", name="AAAA",
+            market="KOSPI", factor_score=50, trend_strength=50, ts_bucket="S3",
+            final_score=50, weekly_pass=True,
+        ))
+        db.add(ParameterPlateauResults(
+            strategy_id="pullback_v3", run_date=ref_date, total_combinations=10,
+            positive_combinations=4, positive_ratio=0.4, grade="D",
+        ))
+        db.add(MonteCarloSequenceResults(
+            strategy_id="pullback_v3", strategy_group="pullback_short", run_date=ref_date,
+            n_simulations=100, mdd_p95=0.16, mdd_limit=0.18, mc_within_limit=True,
+        ))
+        db.add(WalkForwardResults(
+            strategy_id="pullback_v3", run_date=ref_date, n_folds=3,
+            sharpe_mean=0.2, sharpe_std=0.3, negative_folds=1, mean_g2p=0.4, passed=False,
+        ))
+        db.commit()
+    finally:
+        db.close()
+
+    db = factory()
+    try:
+        result = pipeline._evaluate_promotions(db, ref_date)
+
+        assert result["demoted"] == ["pullback_v3"]
+        demotion = (
+            db.query(PromotionHistory)
+            .filter(PromotionHistory.passed.is_(True), PromotionHistory.to_stage == "research")
+            .one()
+        )
+        assert demotion.from_stage == "mock_candidate"
+        # 주문 자격: 최신 passed=True 행 기준 research → eligible_stages 탈락
+        assert pipeline._latest_promotions(db)["pullback_v3"] == "research"
+        # Slack WARN 발송
+        assert len(notifier.sent) == 1
+        assert notifier.sent[0].level == "WARN"
+        assert "pullback_v3" in notifier.sent[0].title
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()

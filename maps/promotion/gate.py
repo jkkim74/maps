@@ -24,6 +24,7 @@ from maps.common.constants import (
 )
 from maps.common.exceptions import UnknownStrategyError
 from maps.common.models import PromotionHistory
+from maps.common.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +58,8 @@ class PromotionDecision:
     passed: bool
     reasons: list[str] = field(default_factory=list)
     evaluated_at: datetime.datetime = field(default_factory=datetime.datetime.now)
+    # 이번 평가에서 자동 강등(mock_candidate → research)이 발동했는가
+    demoted: bool = False
 
 
 class PromotionGate:
@@ -155,6 +158,10 @@ class PromotionGate:
             reasons=reasons,
         )
         self._log_decision(decision)
+        # 승격의 비대칭 보완: 점수가 강등 임계 미만으로 N회 연속이면 mock → research.
+        # live 계열 자동 강등은 하지 않는다 (실계좌 영향 — 사람 결정).
+        if not passed and current_stage == PromotionStage.MOCK_CANDIDATE:
+            self._maybe_demote(decision)
         return decision
 
     # ------------------------------------------------------------------
@@ -237,6 +244,52 @@ class PromotionGate:
             ),
         }
         return mapping.get(stage, (999, PromotionStage.REJECTED))
+
+    def _maybe_demote(self, decision: PromotionDecision) -> None:
+        """점수가 강등 임계 미만으로 N회 연속이면 mock_candidate → research 강등.
+
+        현재 단계는 어디서나 "최근 passed=True 행의 to_stage"로 읽히므로,
+        passed=True 인 강등 행 하나로 주문 자격·화면·게이트 입력이 전부 바뀐다.
+        재승격은 기존 경로 그대로 (research → mock, 점수 60 재통과 필요).
+        """
+        threshold = TRADEABILITY_THRESHOLDS["demotion"]
+        if decision.score >= threshold:
+            return
+        n = get_settings().maps_demotion_consecutive_evals
+        # 방금 _log_decision 으로 기록한 오늘 실패 행을 포함한 최근 n회
+        recent = (
+            self._db.query(PromotionHistory)
+            .filter(PromotionHistory.strategy_id == decision.strategy_id)
+            .order_by(PromotionHistory.evaluated_at.desc(), PromotionHistory.id.desc())
+            .limit(n)
+            .all()
+        )
+        # n회 미만이거나, 윈도 안에 승격 행(passed=True)·mock 외 단계·임계 이상
+        # 점수가 하나라도 섞여 있으면 연속 미달이 아니다.
+        if len(recent) < n or any(
+            row.passed
+            or row.from_stage != PromotionStage.MOCK_CANDIDATE.value
+            or row.tradeability_score >= threshold
+            for row in recent
+        ):
+            return
+
+        reason = f"자동 강등: 점수 {decision.score:.1f} < {threshold} 연속 {n}회 (mock→research)"
+        logger.warning("PromotionGate [%s]: %s", decision.strategy_id, reason)
+        self._db.add(
+            PromotionHistory(
+                strategy_id=decision.strategy_id,
+                from_stage=PromotionStage.MOCK_CANDIDATE.value,
+                to_stage=PromotionStage.RESEARCH.value,
+                tradeability_score=decision.score,
+                passed=True,  # 단계 판정은 최근 passed=True 행 기준 — 강등 행도 True
+                fail_reasons_json=json.dumps([reason], ensure_ascii=False),
+                evaluated_at=decision.evaluated_at,
+            )
+        )
+        self._db.commit()
+        decision.demoted = True
+        decision.reasons.append(reason)
 
     def _log_decision(self, decision: PromotionDecision) -> None:
         logger.info(

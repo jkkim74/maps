@@ -59,6 +59,10 @@ class MapsSettings(BaseSettings):
     maps_order_slippage_pct: float = Field(default=0.01, ge=0.0)   # 지정가 = 최신종가 * (1 + slippage)
     maps_order_max_gap_pct: float = Field(default=0.02, ge=0.0)    # 신호 이후 갭 상승 허용 상한 (초과 시 주문 스킵)
     maps_candidate_min_score: float = Field(default=10.0, ge=0.0)  # CandidateSnapshot final_score 최소 기준 (미만 종목 주문 제외)
+    # 자동 강등 판정 연속 평가 횟수. 검증 잡이 거래일 1회 돌므로 10회 ≈ 2주.
+    # 점수가 TRADEABILITY_THRESHOLDS["demotion"](50) 미만으로 이 횟수만큼 연속되면
+    # mock_candidate → research 강등 (신규 mock 주문 차단).
+    maps_demotion_consecutive_evals: int = Field(default=10, ge=2)
     maps_trade_rr_ratio: float = Field(default=2.0, ge=0.5)        # 목표가 = 매수가 + 손절폭 × 이 값 (MAPS_TRADE_RR_RATIO)
     # 전략매매(분석 워치리스트 브래킷 실행) 마스터 스위치. live_trading_enabled + 픽별 무장과 AND 게이트.
     maps_strategy_trade_enabled: bool = False

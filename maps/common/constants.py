@@ -142,6 +142,10 @@ PROMOTION_GATES: Final[dict[str, dict]] = {
 TRADEABILITY_THRESHOLDS: Final[dict[str, int]] = {
     "mock_candidate": 60,
     "live_candidate": 75,
+    # 자동 강등 임계 — 승격 기준(60)과 10점 히스테리시스 밴드를 둬서
+    # 60 언저리 점수의 승격·강등 진동을 막는다. 연속 미달 횟수는
+    # MAPS_DEMOTION_CONSECUTIVE_EVALS (기본 10회 = 약 2주 거래일).
+    "demotion": 50,
 }
 
 # ---------------------------------------------------------------------------

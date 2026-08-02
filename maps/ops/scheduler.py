@@ -72,7 +72,7 @@ from maps.market.trading_rules import (
     round_to_krx_tick,
     round_up_krx_price,
 )
-from maps.ops.notifications import SlackNotifier
+from maps.ops.notifications import Notification, SlackNotifier
 from maps.ops.order_state import claimed_candidate_tickers
 from maps.ops.pick_freshness import is_pick_stale, pick_cutoff_date
 from maps.promotion.gate import PromotionGate, PromotionStage
@@ -1044,6 +1044,7 @@ class OperationalPipeline:
         passed = 0
         failed = 0
         evaluated_strategies: list[str] = []
+        demoted_strategies: list[str] = []
         for strategy_id in strategy_ids:
             current_stage = self._promotion_stage(latest_promotions.get(strategy_id))
             metrics = self._promotion_metrics(
@@ -1063,11 +1064,25 @@ class OperationalPipeline:
                 passed += 1
             else:
                 failed += 1
+            if decision.demoted:
+                demoted_strategies.append(strategy_id)
+                self._notifier.send(
+                    Notification(
+                        level="WARN",
+                        title=f"전략 자동 강등: {strategy_id}",
+                        message=(
+                            f"점수 {decision.score:.1f} 연속 미달로 "
+                            "mock_candidate → research 강등. 신규 mock 주문이 차단됩니다 "
+                            "(기존 보유는 청산 로직이 계속 관리)."
+                        ),
+                    )
+                )
 
         return {
             "evaluated": len(evaluated_strategies),
             "passed": passed,
             "failed": failed,
+            "demoted": demoted_strategies,
             "strategies": evaluated_strategies,
         }
 
