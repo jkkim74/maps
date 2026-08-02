@@ -48,6 +48,7 @@ from maps.api.analysis_picks import router as analysis_picks_router
 from maps.api.telegram import router as telegram_router
 from maps.api.daily_digest import router as daily_digest_router
 from maps.api.blog import router as blog_router
+from maps.api.batch_monitor import router as batch_monitor_router
 
 logger = logging.getLogger(__name__)
 
@@ -146,6 +147,7 @@ app.include_router(analysis_picks_router)
 app.include_router(telegram_router)
 app.include_router(daily_digest_router)
 app.include_router(blog_router)
+app.include_router(batch_monitor_router)
 app.include_router(auth_router)
 
 
@@ -179,6 +181,7 @@ _SCREEN_MAP = {
     "stock-analysis":   "주식 종목 분석",
     "analysis-picks":   "분석 워치리스트",
     "blog":             "매매 기록",
+    "batch-monitor":    "배치 모니터",
     "maps-intro":       "MAPS 소개",
 }
 
@@ -302,6 +305,12 @@ async def analysis_picks_page(request: Request) -> HTMLResponse:
 async def blog_page(request: Request) -> HTMLResponse:
     """일일 매매 기록 — 저녁 cron이 생성한 Markdown 글 보기."""
     return templates.TemplateResponse(request, "blog.html", _ctx(request, "blog"))
+
+
+@app.get("/batch-monitor", response_class=HTMLResponse)
+async def scr21(request: Request) -> HTMLResponse:
+    """배치 모니터 — 일일 배치·cron 실행 상태 매트릭스."""
+    return templates.TemplateResponse(request, "batch_monitor.html", _ctx(request, "batch-monitor"))
 
 
 @app.get("/maps-intro", response_class=HTMLResponse)

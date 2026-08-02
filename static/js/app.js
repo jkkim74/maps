@@ -1608,6 +1608,7 @@ const PAGE_LOADERS = {
   'ops-config':     loadOpsConfig,
   'stock-report':   () => {},  // stock_report.html 인라인 스크립트로 처리
   'trade-review':   loadTradeReview,
+  'batch-monitor':  loadBatchMonitor,
 };
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -1724,5 +1725,83 @@ async function loadTradeReview() {
     empty('trade-review-kpi', `오류: ${e.message}`);
     empty('trade-review-strategy', '');
     empty('trade-review-table', '');
+  }
+}
+
+// ── SCR-21 배치 모니터 ───────────────────────────────────────────────────────
+let _bmDays = 14;
+
+function changeBatchMonitorDays(v) {
+  _bmDays = parseInt(v, 10) || 14;
+  loadBatchMonitor();
+}
+
+const _BM_STATUS = {
+  success: ['OK', 'pass'],
+  failed:  ['FAIL', 'fail'],
+  missed:  ['MISS', 'fail'],
+  running: ['실행중', 'info'],
+  pending: ['대기', 'info'],
+};
+
+function _bmCellHtml(job, cell, isToday) {
+  if (cell.status === 'skipped') return '<span class="text-muted">—</span>';
+  const [label, cls] = _BM_STATUS[cell.status] || [cell.status, 'info'];
+  const tip = [
+    cell.message,
+    cell.detail,
+    cell.duration_sec != null ? `${cell.duration_sec}초 소요` : null,
+  ].filter(Boolean).join(' · ');
+  let html = `<span title="${esc(tip)}">${badge(label, cls)}</span>`;
+  if (isToday && job.rerunnable && (cell.status === 'failed' || cell.status === 'missed')) {
+    html += ` <button class="topbar-btn" style="padding:0 6px" title="지금 재실행"
+      onclick="rerunBatchJob('${job.name}', this)">↻</button>`;
+  }
+  return html;
+}
+
+async function rerunBatchJob(name, btn) {
+  btn.disabled = true;
+  btn.textContent = '…';
+  try {
+    await apiPost('/ops/scheduler/run/' + name, {});
+    await loadBatchMonitor();
+  } catch (e) {
+    alert(`재실행 실패 [${name}]: ${e.message}`);
+    btn.disabled = false;
+    btn.textContent = '↻';
+  }
+}
+
+async function loadBatchMonitor() {
+  loading('bm-matrix');
+  try {
+    const d = await apiFetch(`/batch-monitor?days=${_bmDays}`);
+    const today = d.days[0];
+    const head = d.days.map(day =>
+      `<th class="mono" style="font-size:0.72rem">${day.slice(5)}</th>`).join('');
+    const rows = d.jobs.map(job => {
+      const cells = job.cells.map(c =>
+        `<td style="text-align:center">${_bmCellHtml(job, c, c.date === today)}</td>`).join('');
+      return `<tr>
+        <td><b>${esc(job.label)}</b><br>
+          <span class="mono text-muted" style="font-size:0.72rem">${esc(job.schedule)}</span></td>
+        ${cells}
+      </tr>`;
+    }).join('');
+    document.getElementById('bm-matrix').innerHTML = `
+      <div style="overflow-x:auto">
+        <table>
+          <thead><tr><th>잡</th>${head}</tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+      <div class="text-muted" style="font-size:0.75rem;margin-top:8px">
+        OK=성공 · FAIL=실패 · MISS=미실행 · 대기=예정 전 · —=비거래일.
+        셀에 마우스를 올리면 상세(오류 메시지·소요시간)가 보입니다.
+        ↻는 오늘 실패/미실행한 스케줄러 잡만 재실행합니다.
+      </div>`;
+  } catch (e) {
+    empty('bm-matrix', `오류: ${e.message}`);
   }
 }

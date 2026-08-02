@@ -16,6 +16,7 @@ from maps.common.models import (
     CandidateSnapshot,
     CollectionLog,
     HistoricalOHLCV,
+    JobRunLog,
     MonteCarloSequenceResults,
     OrderLog,
     ParameterPlateauResults,
@@ -1602,5 +1603,160 @@ def test_order_cycle_skips_buy_when_regime_not_preferred(monkeypatch) -> None:
         assert db.query(OrderLog).filter(OrderLog.side == "buy").count() == 0
     finally:
         db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+# ── job_run_log 영속 (SCR-21 배치 모니터) ────────────────────────────────────
+
+def _make_scheduler():
+    engine, factory = _session_factory()
+    settings = MapsSettings(
+        maps_broker_mode="mock",
+        maps_data_provider="mock",
+        maps_scheduler_enabled=False,
+    )
+    pipeline = OperationalPipeline(settings=settings, session_factory=factory)
+    return engine, factory, MapsOperationalScheduler(settings=settings, pipeline=pipeline)
+
+
+def test_run_once_persists_success_to_job_run_log() -> None:
+    """잡 성공이 job_run_log에 남는다 — 인메모리 _last_runs와 달리 재시작에 생존."""
+    engine, factory, scheduler = _make_scheduler()
+    try:
+        scheduler.run_once("validation")
+
+        db = factory()
+        try:
+            rows = db.query(JobRunLog).all()
+            assert len(rows) == 1
+            assert rows[0].name == "validation"
+            assert rows[0].status == "success"
+            assert rows[0].ref_date == dt.date.today()
+            assert rows[0].finished_at is not None
+        finally:
+            db.close()
+    finally:
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def test_run_once_persists_failure_to_job_run_log(monkeypatch) -> None:
+    """잡 실패가 DB에 남는다 — 기존에는 로그·Slack뿐이라 재시작 후 소실됐다."""
+    from maps.ops.scheduler import JobRun
+
+    engine, factory, scheduler = _make_scheduler()
+    try:
+        failed = JobRun(
+            name="validation",
+            status="failed",
+            started_at=dt.datetime.now(dt.timezone.utc),
+            finished_at=dt.datetime.now(dt.timezone.utc),
+            message="boom",
+        )
+        monkeypatch.setattr(scheduler._pipeline, "run_validation", lambda: failed)
+
+        run = scheduler.run_once("validation")
+        assert run.status == "failed"
+
+        db = factory()
+        try:
+            row = db.query(JobRunLog).one()
+            assert row.status == "failed"
+            assert row.message == "boom"
+        finally:
+            db.close()
+    finally:
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def test_broker_sync_success_is_not_persisted_but_failure_is(monkeypatch) -> None:
+    """broker_sync 성공은 60초마다라 노이즈 — 하트비트는 collection_log가 담당."""
+    from maps.ops.scheduler import JobRun
+
+    engine, factory, scheduler = _make_scheduler()
+    try:
+        scheduler.run_once("broker_sync")
+        db = factory()
+        try:
+            assert db.query(JobRunLog).count() == 0
+        finally:
+            db.close()
+
+        failed = JobRun(
+            name="broker_sync",
+            status="failed",
+            started_at=dt.datetime.now(dt.timezone.utc),
+            message="sync down",
+        )
+        monkeypatch.setattr(scheduler._pipeline, "sync_broker_state", lambda: failed)
+        scheduler.run_once("broker_sync")
+
+        db = factory()
+        try:
+            row = db.query(JobRunLog).one()
+            assert row.name == "broker_sync"
+            assert row.status == "failed"
+        finally:
+            db.close()
+    finally:
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def test_persist_failure_does_not_break_job(monkeypatch) -> None:
+    """job_run_log 기록 실패(DB 장애 등)가 잡 결과를 죽이면 안 된다."""
+    engine, factory, scheduler = _make_scheduler()
+    try:
+        run_ok = scheduler.run_once("validation")  # 워밍업: 정상 경로 확인
+        assert run_ok.status == "success"
+
+        def _broken_factory():
+            raise RuntimeError("db down")
+
+        monkeypatch.setattr(scheduler._pipeline, "_session_factory", _broken_factory)
+        # _persist_run 내부 예외가 삼켜지고 run은 그대로 반환돼야 한다
+        run = scheduler._record("validation", lambda: run_ok)
+        assert run.status == "success"
+    finally:
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def test_eod_cleanup_purges_job_run_log_older_than_90_days() -> None:
+    engine, factory, scheduler = _make_scheduler()
+    try:
+        today = dt.date.today()
+        db = factory()
+        try:
+            for age_days in (120, 30):
+                db.add(
+                    JobRunLog(
+                        name="validation",
+                        status="success",
+                        ref_date=today - dt.timedelta(days=age_days),
+                        started_at=dt.datetime.now(dt.timezone.utc),
+                    )
+                )
+            db.commit()
+        finally:
+            db.close()
+
+        run = scheduler.run_once("eod_cleanup")
+        assert run.status == "success"
+        assert run.details["job_run_log_purged"] == 1
+
+        db = factory()
+        try:
+            remaining = {
+                row.ref_date
+                for row in db.query(JobRunLog).filter(JobRunLog.name == "validation").all()
+            }
+            assert today - dt.timedelta(days=120) not in remaining
+            assert today - dt.timedelta(days=30) in remaining
+        finally:
+            db.close()
+    finally:
         Base.metadata.drop_all(engine)
         engine.dispose()

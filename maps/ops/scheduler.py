@@ -28,6 +28,7 @@ from maps.common.models import (
     CandidateSnapshot,
     CollectionLog,
     HistoricalOHLCV,
+    JobRunLog,
     MonteCarloSequenceResults,
     ParameterPlateauResults,
     PortfolioSnapshot,
@@ -730,6 +731,12 @@ class OperationalPipeline:
             # 만료 전 마지막 체결 동기화 — VTS 장전 주문 등 daily CCLD 누락 케이스 처리
             manager.sync_broker_state()
             expired = manager.expire_pending_orders(before=dt.datetime.now())
+            # ponytail: job_run_log 보존 90일 하드코딩 — 설정화는 요구가 생기면
+            purged = (
+                db.query(JobRunLog)
+                .filter(JobRunLog.ref_date < ref_date - dt.timedelta(days=90))
+                .delete()
+            )
             self._write_log(
                 db,
                 ref_date=ref_date,
@@ -743,6 +750,7 @@ class OperationalPipeline:
                 "open_orders_seen": len(open_orders),
                 "cancelled_orders": cancelled,
                 "expired_orders": expired,
+                "job_run_log_purged": purged,
             }
 
         return self._job("eod_cleanup", _run)
@@ -2805,12 +2813,42 @@ class MapsOperationalScheduler:
     def _record(self, name: str, fn: Callable[[], JobRun]) -> JobRun:
         run = fn()
         self._last_runs[name] = run
+        self._persist_run(run)
         details = json.dumps(run.details, ensure_ascii=False)
         if run.status == "failed":
             logger.error("Scheduler job %s: failed error=%s %s", name, run.message, details)
         else:
             logger.info("Scheduler job %s: %s %s", name, run.status, details)
         return run
+
+    def _persist_run(self, run: JobRun) -> None:
+        """잡 실행 결과를 job_run_log에 남긴다 (SCR-21 배치 모니터).
+
+        인메모리 `_last_runs`는 재시작에 소실되므로 성공·실패를 DB에 영속한다.
+        """
+        # ponytail: broker_sync 성공은 60초마다 → 하루 ~500행 노이즈.
+        # 성공 하트비트는 collection_log(source='scheduler.broker_sync')가 이미 담당.
+        if run.name == "broker_sync" and run.status == "success":
+            return
+        try:
+            db = self._pipeline._session_factory()
+            try:
+                db.add(
+                    JobRunLog(
+                        name=run.name,
+                        status=run.status,
+                        ref_date=dt.date.today(),
+                        started_at=run.started_at,
+                        finished_at=run.finished_at,
+                        message=run.message,
+                        details_json=json.dumps(run.details, ensure_ascii=False, default=str),
+                    )
+                )
+                db.commit()
+            finally:
+                db.close()
+        except Exception:  # noqa: BLE001 - 기록 실패가 잡 자체를 죽이면 안 된다
+            logger.exception("job_run_log persist failed: %s", run.name)
 
     @staticmethod
     def _serialize_run(run: JobRun) -> dict:

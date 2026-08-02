@@ -893,3 +893,27 @@ class DailyDigest(BaseModel):
     executions: list[DigestExecution] = []
     market_context: list[DigestReportExcerpt] = []
     errors: list[str] = []
+
+
+# ── SCR-21 Batch Monitor ──────────────────────────────────────────────────────
+class BatchJobCell(BaseModel):
+    date: str
+    status: str                        # success | failed | missed | skipped | pending | running
+    started_at: str | None = None
+    duration_sec: float | None = None
+    message: str | None = None
+    detail: str | None = None          # picks_count / 하트비트 경과 / 파일 크기 등 요약
+
+
+class BatchJobRow(BaseModel):
+    name: str
+    label: str                         # 한국어 표기
+    schedule: str                      # "16:40" / "60초 간격" / "cron 16:00"
+    rerunnable: bool                   # 오늘 실패/미실행 시 ↻ 버튼 노출 대상
+    cells: list[BatchJobCell]
+
+
+class BatchMonitorResponse(BaseModel):
+    days: list[str]                    # 최신순
+    jobs: list[BatchJobRow]
+    generated_at: str

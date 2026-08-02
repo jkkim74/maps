@@ -222,6 +222,29 @@ class CollectionLog(Base):
 
 
 # ---------------------------------------------------------------------------
+# 스케줄러 잡 실행 이력 (SCR-21 배치 모니터)
+# ---------------------------------------------------------------------------
+class JobRunLog(Base):
+    """job_run_log — 스케줄러 잡 실행 이력.
+
+    인메모리 `_last_runs`는 재시작(배포)에 소실되고 실패는 DB에 남지 않던
+    공백을 메운다. broker_sync 성공은 기록하지 않는다(60초마다 1행 노이즈 —
+    성공 하트비트는 collection_log source='scheduler.broker_sync'가 담당).
+    """
+
+    __tablename__ = "job_run_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)   # success | failed
+    ref_date: Mapped[datetime.date] = mapped_column(Date, nullable=False, index=True)
+    started_at: Mapped[datetime.datetime] = mapped_column(DateTime, nullable=False)
+    finished_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)
+    message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    details_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+# ---------------------------------------------------------------------------
 # 검증 결과
 # ---------------------------------------------------------------------------
 class PortfolioSnapshot(Base):

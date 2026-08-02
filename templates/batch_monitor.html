@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+
+{% block topbar_actions %}
+<select class="topbar-btn" id="bm-days-select" onchange="changeBatchMonitorDays(this.value)">
+  <option value="7">최근 7일</option>
+  <option value="14" selected>최근 14일</option>
+  <option value="30">최근 30일</option>
+</select>
+{% endblock %}
+
+{% block content %}
+<div class="section-header"><span class="section-title">일일 배치 실행 상태</span><hr></div>
+<div class="card"><div class="card-body" id="bm-matrix">
+  <div class="loading"><div class="spinner"></div></div>
+</div></div>
+{% endblock %}
