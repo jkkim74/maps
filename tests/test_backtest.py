@@ -225,3 +225,62 @@ def test_no_same_bar_reentry():
     # 손절봉(index 4)에서 청산만 일어나고 재진입은 차단 → 거래 1건
     assert len(result.trade_list) == 1
     assert result.trade_list[0].exit_reason == "stop_loss"
+
+
+# ---------------------------------------------------------------------------
+# Sharpe 노출 가중 rf (2026-08-02 재설계, 이월 20번 회귀 방지)
+# ---------------------------------------------------------------------------
+def _sharpe_fixture(exposure: float, alpha_daily: float = 0.0001, noise: float = 0.0005):
+    """노출 비중이 일정한 합성 계좌 곡선을 만든다.
+
+    투자분은 rf + alpha ± noise 를 벌고 나머지는 현금(무수익).
+    """
+    rf_daily = 0.03 / 252.0
+    n = 252
+    equity = [100_000_000.0]
+    for i in range(n):
+        r_asset = rf_daily + alpha_daily + (noise if i % 2 == 0 else -noise)
+        equity.append(equity[-1] * (1 + exposure * r_asset))
+    dates = pd.date_range("2024-01-02", periods=n + 1, freq="B")
+    data = pd.DataFrame({"close": 1.0}, index=dates)
+    exposure_curve = [exposure] * (n + 1)
+    return data, equity, exposure_curve
+
+
+def test_sharpe_not_penalized_for_idle_cash():
+    """저노출(10%) 전략이 유휴 현금 90%의 rf 기회비용에 얻어맞으면 안 된다.
+
+    종전 공식(총자산 수익률 − rf 전체 차감)은 이 시나리오에서 샤프 ≈ −33으로
+    왜곡됐다 — 운영 검증 8전략 전일 fail(sharpe_mean −2.9~−8.3)의 뿌리.
+    투자분이 rf보다 alpha만큼 더 벌고 있으므로 샤프는 양수여야 한다.
+    """
+    engine = BacktestEngine()
+    data, equity, exposure_curve = _sharpe_fixture(exposure=0.1)
+
+    result = engine._compute_metrics("s", data, equity, [], exposure_curve)
+
+    assert result.sharpe > 0, f"저노출 왜곡 재발: sharpe={result.sharpe}"
+
+
+def test_sharpe_matches_legacy_formula_when_fully_invested():
+    """완전 투자(노출 100%)면 종전 공식과 동일해야 한다 — 보정은 유휴 현금에만."""
+    engine = BacktestEngine()
+    data, equity, exposure_curve = _sharpe_fixture(exposure=1.0, alpha_daily=0.001)
+
+    result = engine._compute_metrics("s", data, equity, [], exposure_curve)
+
+    arr = np.array(equity)
+    rets = np.diff(arr) / arr[:-1]
+    legacy = (rets.mean() - 0.03 / 252.0) / (rets - 0.03 / 252.0).std() * np.sqrt(252)
+    assert result.sharpe == pytest.approx(float(legacy), rel=1e-9)
+
+
+def test_sharpe_exposure_scale_invariant():
+    """같은 전략이면 노출 10%든 50%든 샤프가 (부호·규모 면에서) 같아야 한다."""
+    engine = BacktestEngine()
+    sharpes = []
+    for exposure in (0.1, 0.5):
+        data, equity, exposure_curve = _sharpe_fixture(exposure=exposure)
+        sharpes.append(engine._compute_metrics("s", data, equity, [], exposure_curve).sharpe)
+
+    assert sharpes[0] == pytest.approx(sharpes[1], rel=1e-6)

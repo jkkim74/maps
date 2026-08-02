@@ -380,3 +380,21 @@ def test_extended_stats_payoff_and_win_rate() -> None:
     assert stats["payoff_ratio"] == pytest.approx(1.67, abs=0.01)
     assert stats["yearly_returns"] is None
     assert stats["tickers"] == ["T1", "T2"]
+
+
+def test_to_dataframe_sets_ticker_as_index_name() -> None:
+    """엔진이 index.name을 TradeRecord.ticker로 쓴다 — 미설정이면 전부 "unknown"."""
+    from maps.data.ohlcv_repo import HistoricalOHLCVRepository
+
+    engine, factory = _make_memory_factory()
+    db = factory()
+    try:
+        db.add(_ohlcv("005930", dt.date(2020, 1, 2), 100.0, 10))
+        db.commit()
+
+        df = HistoricalOHLCVRepository(db).to_dataframe("005930")
+        assert df.index.name == "005930"
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()

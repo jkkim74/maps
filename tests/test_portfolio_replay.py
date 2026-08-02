@@ -83,3 +83,26 @@ def test_cash_never_goes_negative() -> None:
 
     assert all(v > 0 for v in res.equity_curve)
     assert res.final_value > 0
+
+
+def test_portfolio_sharpe_not_penalized_for_idle_cash():
+    """포트폴리오 리플레이도 유휴 현금에 rf를 물리면 안 된다 (engine과 동일 규칙)."""
+    import datetime as _dt
+
+    import numpy as _np
+
+    from maps.backtest.portfolio_replay import PortfolioConfig, PortfolioReplayEngine
+
+    replay = PortfolioReplayEngine(PortfolioConfig())
+    rf_daily = 0.03 / 252.0
+    n = 252
+    equity = [100_000_000.0]
+    for i in range(n):
+        r_asset = rf_daily + 0.0001 + (0.0005 if i % 2 == 0 else -0.0005)
+        equity.append(equity[-1] * (1 + 0.1 * r_asset))  # 노출 10%
+    dates = [_dt.date(2024, 1, 1) + _dt.timedelta(days=i) for i in range(n + 1)]
+    exposure_curve = [0.1] * (n + 1)
+
+    result = replay._metrics("s", equity, dates, [], exposure_curve)
+
+    assert result.sharpe > 0, f"저노출 왜곡 재발: sharpe={result.sharpe}"

@@ -162,6 +162,7 @@ class PortfolioReplayEngine:
         last_close: dict[str, float] = {}
         trades: list[PortfolioTrade] = []
         equity_curve: list[float] = []
+        exposure_curve: list[float] = []      # 일별 투자 비중 (포지션 평가액 / 총자산)
         curve_dates: list[datetime.date] = []
 
         for dt in calendar:
@@ -245,11 +246,13 @@ class PortfolioReplayEngine:
                         free_slots -= 1
 
             # ── 일일 평가 ──
-            mark = cash + sum(
+            position_value = sum(
                 pos["qty"] * last_close.get(tk, pos["entry_price"])
                 for tk, pos in positions.items()
             )
+            mark = cash + position_value
             equity_curve.append(mark)
+            exposure_curve.append(position_value / mark if mark > 0 else 0.0)
             curve_dates.append(ref_date)
 
         # 잔여 포지션 강제 청산 (마지막 종가)
@@ -260,7 +263,9 @@ class PortfolioReplayEngine:
             cash += self._close_position(ticker, pos, exit_price, curve_dates[-1], p, trades)
             del positions[ticker]
 
-        return self._metrics(strategy.strategy_id, equity_curve, curve_dates, trades)
+        return self._metrics(
+            strategy.strategy_id, equity_curve, curve_dates, trades, exposure_curve
+        )
 
     # ------------------------------------------------------------------
 
@@ -326,6 +331,7 @@ class PortfolioReplayEngine:
         equity_curve: list[float],
         dates: list[datetime.date],
         trades: list[PortfolioTrade],
+        exposure_curve: list[float] | None = None,
     ) -> PortfolioResult:
         arr = np.array(equity_curve, dtype=float)
         if len(arr) < 2:
@@ -348,10 +354,17 @@ class PortfolioReplayEngine:
         dd = (arr - peak) / peak
         mdd = float(dd.min())
 
+        # 노출 가중 rf 초과수익 기준 Sharpe — engine._compute_metrics와 동일 규칙
+        # (유휴 현금에 rf를 물리면 저노출 구간에서 샤프가 구조적으로 음수가 된다).
         rf_daily = self._cfg.risk_free_rate / 252.0
+        if exposure_curve is not None and len(exposure_curve) == len(arr):
+            exposure = np.array(exposure_curve[:-1], dtype=float)
+        else:
+            exposure = np.ones_like(daily_rets)
+        excess = daily_rets - rf_daily * exposure
         sharpe = (
-            float((daily_rets.mean() - rf_daily) / daily_rets.std() * np.sqrt(252))
-            if daily_rets.std() > 0
+            float(excess.mean() / excess.std() * np.sqrt(252))
+            if excess.std() > 0
             else 0.0
         )
         wins = sum(1 for t in trades if t.net_pnl > 0)

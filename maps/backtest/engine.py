@@ -190,6 +190,7 @@ class BacktestEngine:
         equity = self._capital
         position: dict = {}       # {"qty": int, "entry_price": float, "entry_date": date, "stop": float}
         equity_curve: list[float] = [equity]
+        exposure_curve: list[float] = [0.0]   # 일별 투자 비중 (포지션 평가액 / 총자산)
         trade_list: list[TradeRecord] = []
 
         dates = df.index.tolist()
@@ -274,10 +275,14 @@ class BacktestEngine:
                     equity -= entry_price * qty
 
             # 포지션 평가액 포함한 총 자산
-            mark = equity + (position["qty"] * bar_close if position else 0)
+            position_value = position["qty"] * bar_close if position else 0.0
+            mark = equity + position_value
             equity_curve.append(mark)
+            exposure_curve.append(position_value / mark if mark > 0 else 0.0)
 
-        return self._compute_metrics(strategy.strategy_id, data, equity_curve, trade_list)
+        return self._compute_metrics(
+            strategy.strategy_id, data, equity_curve, trade_list, exposure_curve
+        )
 
     def _compute_metrics(
         self,
@@ -285,6 +290,7 @@ class BacktestEngine:
         data: pd.DataFrame,
         equity_curve: list[float],
         trade_list: list[TradeRecord],
+        exposure_curve: list[float] | None = None,
     ) -> BacktestResult:
         arr = np.array(equity_curve, dtype=float)
         daily_rets = np.diff(arr) / arr[:-1]
@@ -307,11 +313,21 @@ class BacktestEngine:
         dd = (arr - peak) / peak
         mdd = float(dd.min())
 
-        # 무위험수익률을 차감한 초과수익 기준 Sharpe (rf=0 가정은 과대평가, H-4).
+        # 노출 가중 rf 초과수익 기준 Sharpe (2026-08-02 재설계, 이월 20번).
+        # 종전에는 총자산 수익률에서 rf 3% 전체를 차감했는데, 단일 종목 백테스트는
+        # 리스크 사이징 탓에 노출이 ~10%뿐이라 유휴 현금 90%가 rf에 그대로 얻어맞아
+        # 샤프가 -3 ~ -12로 왜곡됐다 (검증 게이트 sharpe_mean>0 구조적 통과 불가).
+        # rf를 그날 투자 비중만큼만 차감하면 수학적으로 노출 규모와 무관해진다
+        # (완전 투자 시 종전 공식과 동일, 완전 현금 시 초과수익 0).
         rf_daily = self._rf / 252.0
+        if exposure_curve is not None and len(exposure_curve) == len(arr):
+            exposure = np.array(exposure_curve[:-1], dtype=float)
+        else:
+            exposure = np.ones_like(daily_rets)  # 노출 정보 없으면 종전(완전 투자) 가정
+        excess = daily_rets - rf_daily * exposure
         sharpe = (
-            float((daily_rets.mean() - rf_daily) / daily_rets.std() * np.sqrt(252))
-            if daily_rets.std() > 0
+            float(excess.mean() / excess.std() * np.sqrt(252))
+            if excess.std() > 0
             else 0.0
         )
 

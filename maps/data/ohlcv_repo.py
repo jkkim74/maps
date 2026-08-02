@@ -201,7 +201,11 @@ class HistoricalOHLCVRepository:
             return pd.DataFrame(columns=["open", "high", "low", "close", "volume", "adj_close"])
         df = pd.DataFrame(data)
         df["date"] = pd.to_datetime(df["date"])
-        return df.set_index("date")
+        df = df.set_index("date")
+        # BacktestEngine이 index.name을 TradeRecord.ticker로 쓴다 — 안 채우면
+        # 콘솔 경로 거래 기록이 전부 "unknown"이 된다 (스케줄러 경로 관례와 동일).
+        df.index.name = ticker
+        return df
 
 
 def pd_count(column):
