@@ -82,6 +82,13 @@ _KIS_ERROR_HINTS = {
 # 토큰 만료로 인한 서버측 세션 오류 코드 (자동 재발급 대상)
 _TOKEN_EXPIRED_CODES: frozenset[str] = frozenset({"90020000", "EGW00123"})
 
+# 연속조회(tr_cont) 페이지 상한 — 잔고·일별체결은 페이지당 약 20행이므로
+# 100페이지(약 2,000행)면 개인 계좌에서는 사실상 무한. 무한루프 방어용.
+_MAX_TR_CONT_PAGES = 100
+
+# 응답 헤더 tr_cont 가 이 값이면 다음 페이지가 남아 있다 (D/E/공백 = 마지막)
+_TR_CONT_HAS_MORE = frozenset({"F", "M"})
+
 
 @dataclass
 class _TokenCacheEntry:
@@ -124,6 +131,8 @@ class KISAdapter(BrokerAdapter):
         self._timeout = timeout if timeout is not None else self._settings.maps_kis_timeout
         self._token_cache_key = (self._base_url, self._app_key, self._account_no, self._real)
         self._token_cache_file = Path(self._settings.maps_log_dir) / ".kis_token_cache.json"
+        # 직전 _request 응답의 tr_cont 헤더 — _fetch_paged 의 연속조회 판정용
+        self._last_tr_cont = ""
 
         missing = [
             name
@@ -275,7 +284,7 @@ class KISAdapter(BrokerAdapter):
             "CTX_AREA_FK100": "",
             "CTX_AREA_NK100": "",
         }
-        data = self._request("GET", _DAILY_CCLD_PATH, tr_id=self._tr_id("daily_ccld"), params=params)
+        data = self._fetch_paged(_DAILY_CCLD_PATH, tr_id=self._tr_id("daily_ccld"), params=params)
         return self._as_list(data.get("output1"))
 
     def get_positions(self) -> dict[str, int]:
@@ -388,10 +397,44 @@ class KISAdapter(BrokerAdapter):
             "CTX_AREA_FK100": "",
             "CTX_AREA_NK100": "",
         }
-        data = self._request("GET", _BALANCE_PATH, tr_id=self._tr_id("balance"), params=params)
+        data = self._fetch_paged(_BALANCE_PATH, tr_id=self._tr_id("balance"), params=params)
         with _BALANCE_CACHE_LOCK:
             _BALANCE_CACHE[self._token_cache_key] = (time.monotonic(), data)
         return data
+
+    def _fetch_paged(
+        self,
+        path: str,
+        *,
+        tr_id: str,
+        params: dict[str, Any],
+        list_key: str = "output1",
+    ) -> dict[str, Any]:
+        """KIS 연속조회(tr_cont)를 따라가 전체 페이지의 `list_key` 행을 병합해 반환한다.
+
+        잔고·일별체결은 페이지당 약 20행만 내려온다. 응답 헤더 `tr_cont`가 F/M이면
+        body의 `ctx_area_fk100/nk100`을 다음 요청 파라미터에 싣고 요청 헤더
+        `tr_cont: N`으로 재호출한다. 반환값은 첫 페이지 payload에 이후 페이지의
+        `list_key` 행을 이어 붙인 것 (output2 등 요약 필드는 첫 페이지 값 유지).
+        """
+        params = dict(params)
+        merged: dict[str, Any] | None = None
+        tr_cont = ""
+        for _page in range(_MAX_TR_CONT_PAGES):
+            data = self._request("GET", path, tr_id=tr_id, params=params, tr_cont=tr_cont)
+            if merged is None:
+                merged = data
+            else:
+                merged[list_key] = self._as_list(merged.get(list_key)) + self._as_list(
+                    data.get(list_key)
+                )
+            if self._last_tr_cont not in _TR_CONT_HAS_MORE:
+                return merged
+            params["CTX_AREA_FK100"] = str(data.get("ctx_area_fk100") or "")
+            params["CTX_AREA_NK100"] = str(data.get("ctx_area_nk100") or "")
+            tr_cont = "N"
+        logger.warning("KIS 연속조회가 %d페이지 상한에 도달: %s", _MAX_TR_CONT_PAGES, path)
+        return merged if merged is not None else {}
 
     def _invalidate_balance_cache(self) -> None:
         """주문·취소로 포지션이 바뀐 뒤 오래된 잔고 캐시를 제거한다."""
@@ -516,6 +559,7 @@ class KISAdapter(BrokerAdapter):
         params: dict[str, Any] | None = None,
         json: dict[str, Any] | None = None,
         hash_body: dict[str, Any] | None = None,
+        tr_cont: str = "",
     ) -> dict[str, Any]:
         headers = {
             "content-type": "application/json; charset=utf-8",
@@ -525,10 +569,13 @@ class KISAdapter(BrokerAdapter):
             "tr_id": tr_id,
             "custtype": "P",
         }
+        if tr_cont:
+            headers["tr_cont"] = tr_cont
         if hash_body is not None:
             headers["hashkey"] = self._hashkey(hash_body)
 
         response = self._send_with_retry(method, path, headers=headers, params=params, json=json)
+        self._last_tr_cont = str(response.headers.get("tr_cont") or "").strip().upper()
         payload = self._decode_response(response)
         rt_cd = str(payload.get("rt_cd", "0"))
         if rt_cd not in {"0", ""}:
@@ -541,6 +588,7 @@ class KISAdapter(BrokerAdapter):
                 if hash_body is not None:
                     headers["hashkey"] = self._hashkey(hash_body)
                 response = self._send_with_retry(method, path, headers=headers, params=params, json=json)
+                self._last_tr_cont = str(response.headers.get("tr_cont") or "").strip().upper()
                 payload = self._decode_response(response)
                 rt_cd = str(payload.get("rt_cd", "0"))
                 if rt_cd not in {"0", ""}:

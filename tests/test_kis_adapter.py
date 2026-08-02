@@ -69,6 +69,8 @@ class FakeSession:
         }
         self.fail_next_requests = 0
         self.expire_token_500_next = 0
+        # url suffix → 순서대로 소비되는 페이지 응답 큐 (연속조회 테스트용)
+        self.paged: dict[str, list[FakeResponse]] = {}
 
     def post(self, url: str, **kwargs: Any) -> FakeResponse:
         self.calls.append({"method": "POST", "url": url, **kwargs})
@@ -84,6 +86,9 @@ class FakeSession:
 
     def request(self, method: str, url: str, **kwargs: Any) -> FakeResponse:
         self.calls.append({"method": method, "url": url, **kwargs})
+        for suffix, queue in self.paged.items():
+            if url.endswith(suffix) and queue:
+                return queue.pop(0)
         if self.fail_next_requests > 0:
             self.fail_next_requests -= 1
             return FakeResponse({"rt_cd": "1", "msg_cd": "EGW00201", "msg1": "rate"}, status_code=503)
@@ -298,6 +303,91 @@ def test_get_daily_order_results_maps_partial_fill(settings: MapsSettings) -> No
     assert results[0].order_id == "12345"
     assert results[0].status == OrderStatus.PARTIALLY_FILLED
     assert results[0].filled_quantity == 6
+
+
+def _balance_row(ticker: str, qty: str = "10") -> dict[str, str]:
+    return {
+        "pdno": ticker,
+        "prdt_name": ticker,
+        "hldg_qty": qty,
+        "pchs_avg_pric": "10000",
+        "prpr": "11000",
+        "evlu_amt": "110000",
+    }
+
+
+def test_balance_pagination_follows_tr_cont(settings: MapsSettings) -> None:
+    """잔고가 여러 페이지면 연속조회로 전 종목을 병합한다 (체결 누락 회귀 방지).
+
+    KIS는 페이지당 약 20행만 내려주고 응답 헤더 tr_cont=F/M + body의
+    ctx_area_fk100/nk100 으로 다음 페이지를 가리킨다. 이걸 안 따라가면
+    sync_broker_state 가 잘린 잔고를 보고 미체결 SELL을 FILLED로 오판한다.
+    """
+    http = FakeSession()
+    summary = {"prvs_rcdl_excc_amt": "300000", "scts_evlu_amt": "700000", "tot_evlu_amt": "1000000"}
+    http.paged["/inquire-balance"] = [
+        FakeResponse(
+            {
+                "rt_cd": "0",
+                "output1": [_balance_row("005930")],
+                "output2": [summary],
+                "ctx_area_fk100": "FK-1",
+                "ctx_area_nk100": "NK-1",
+            },
+            headers={"tr_cont": "F"},
+        ),
+        FakeResponse(
+            {"rt_cd": "0", "output1": [_balance_row("000660")], "output2": [summary]},
+            headers={"tr_cont": "D"},
+        ),
+    ]
+    broker = KISAdapter(settings, http=http)
+
+    positions = broker.get_positions()
+
+    assert positions == {"005930": 10, "000660": 10}
+    balance_calls = [c for c in http.calls if c["url"].endswith("/inquire-balance")]
+    assert len(balance_calls) == 2
+    # 2번째 호출은 이전 페이지의 CTX 키를 싣고 tr_cont=N 으로 나가야 한다
+    assert balance_calls[1]["params"]["CTX_AREA_FK100"] == "FK-1"
+    assert balance_calls[1]["params"]["CTX_AREA_NK100"] == "NK-1"
+    assert balance_calls[1]["headers"]["tr_cont"] == "N"
+    # 요약(output2)은 첫 페이지 값 유지
+    assert broker.get_account_balance().total_value == 1_000_000
+
+
+def test_daily_order_pagination_follows_tr_cont(settings: MapsSettings) -> None:
+    """당일 주문 조회도 연속조회를 따라가 전 주문을 반환한다."""
+    http = FakeSession()
+
+    def order_row(odno: str) -> dict[str, str]:
+        return {
+            "odno": odno,
+            "pdno": "005930",
+            "sll_buy_dvsn_cd": "01",
+            "ord_qty": "10",
+            "rmn_qty": "10",
+            "ord_unpr": "70000",
+            "ord_tmd": "091501",
+        }
+
+    http.paged["/inquire-daily-ccld"] = [
+        FakeResponse(
+            {
+                "rt_cd": "0",
+                "output1": [order_row("1")],
+                "ctx_area_fk100": "FK-1",
+                "ctx_area_nk100": "NK-1",
+            },
+            headers={"tr_cont": "M"},
+        ),
+        FakeResponse({"rt_cd": "0", "output1": [order_row("2")]}, headers={"tr_cont": ""}),
+    ]
+    broker = KISAdapter(settings, http=http)
+
+    orders = broker.get_open_orders()
+
+    assert [o.order_id for o in orders] == ["1", "2"]
 
 
 def test_request_retries_transient_http(settings: MapsSettings) -> None:
