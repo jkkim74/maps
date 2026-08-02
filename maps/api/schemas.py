@@ -294,22 +294,38 @@ class BacktestRunItem(BaseModel):
     sharpe: float | None
     trade_count: int | None
     started_at: str | None
+    # 기간 지정·판정 실행 (0017) — 구 실행 행은 전부 None
+    start_date: datetime.date | None = None
+    end_date: datetime.date | None = None
+    mode: str | None = None                      # per_ticker | portfolio
+    universe: str | None = None                  # all | market:KOSPI | sector:반도체 | ...
+    verdict: str | None = None                   # PASS | FAIL
+    verdict_criteria: list[dict] | None = None   # [{criterion, value, threshold, passed}]
+    stats: dict | None = None                    # {win_rate, payoff_ratio, yearly_returns, ...}
 
 
 class BacktestRunRequest(BaseModel):
     strategy_id: str = "pullback_v3"
     params: dict | None = None
+    start: datetime.date | None = None   # None = DB 보유 전체 (하위 호환)
+    end: datetime.date | None = None
+    mode: str = "per_ticker"             # per_ticker(종목별 평균) | portfolio(슬롯 리플레이)
+    universe: str = "all"                # all | market | sector | theme | index | recent_ipo | custom
+    universe_arg: str | None = None      # KOSPI·업종명·테마명·kospi200·일수 등
+    tickers: list[str] | None = None     # custom 전용 (최대 30)
 
 
 class BacktestResponse(BaseModel):
     recent_runs: list[BacktestRunItem]
     available_strategies: list[str] = []
     # 실행 설정 패널 표시용 실측값 — 하드코딩 문구가 실제 동작과 어긋나
-    # "기간을 왜 못 바꾸나" 오해를 낳았다. 실행은 DB 보유 전체 기간을 쓴다.
+    # "기간을 왜 못 바꾸나" 오해를 낳았다. 기간 미지정 시 DB 보유 전체를 쓴다.
     data_start: datetime.date | None = None
     data_end: datetime.date | None = None
     max_tickers: int = 30
     cost_summary: str | None = None
+    # 대상 선택 드롭다운 채움용 (업종·테마는 security_metadata distinct)
+    universe_options: dict = {}
 
 
 # ── SCR-08 Robustness ─────────────────────────────────────────────────────────

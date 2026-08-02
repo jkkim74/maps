@@ -372,6 +372,14 @@ class BacktestRunLog(Base):
     sharpe: Mapped[float | None] = mapped_column(Float, nullable=True)
     trade_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     ticker_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # 기간 지정·판정 실행 (0017). 구 실행 행은 전부 NULL — "전체 기간, 판정 없음".
+    start_date: Mapped[datetime.date | None] = mapped_column(Date, nullable=True)
+    end_date: Mapped[datetime.date | None] = mapped_column(Date, nullable=True)
+    mode: Mapped[str | None] = mapped_column(String(16), nullable=True)      # per_ticker | portfolio
+    universe: Mapped[str | None] = mapped_column(String(32), nullable=True)  # all | market:KOSPI | ...
+    verdict: Mapped[str | None] = mapped_column(String(8), nullable=True)    # PASS | FAIL
+    verdict_json: Mapped[str | None] = mapped_column(Text, nullable=True)    # 기준별 breakdown
+    stats_json: Mapped[str | None] = mapped_column(Text, nullable=True)      # 확장 지표 + 사용 종목
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc)
     )

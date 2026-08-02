@@ -17,11 +17,38 @@
         </tr>
         <tr>
           <td class="bt-label">기간</td>
-          <td class="text-muted mono" style="font-size:12px" id="bt-period">DB 보유 데이터 전체</td>
+          <td>
+            <input type="date" id="bt-start" class="topbar-btn"> ~
+            <input type="date" id="bt-end" class="topbar-btn">
+            <div class="text-muted mono" style="font-size:11px;margin-top:4px" id="bt-period"></div>
+          </td>
         </tr>
         <tr>
-          <td class="bt-label">유니버스</td>
-          <td class="text-muted" id="bt-universe">히스토리 충분 종목 중 최대 30개 (전략별 최소 봉 수 기준)</td>
+          <td class="bt-label">대상</td>
+          <td>
+            <select id="bt-universe" class="topbar-btn" onchange="onBtUniverseChange()">
+              <option value="all">전체 (거래대금 상위 30)</option>
+              <option value="market">시장별</option>
+              <option value="sector">업종별</option>
+              <option value="theme">테마별</option>
+              <option value="index">지수 구성종목</option>
+              <option value="recent_ipo">신규상장</option>
+              <option value="custom">직접 지정</option>
+            </select>
+            <select id="bt-universe-arg" class="topbar-btn" style="display:none"></select>
+            <input type="text" id="bt-universe-tickers" class="topbar-btn"
+                   style="display:none;width:260px" placeholder="티커 쉼표 구분 (예: 005930,000660)">
+            <div class="text-muted" style="font-size:11px;margin-top:4px" id="bt-universe-note"></div>
+          </td>
+        </tr>
+        <tr>
+          <td class="bt-label">실행 방식</td>
+          <td>
+            <select id="bt-mode" class="topbar-btn">
+              <option value="per_ticker">종목별 평균 (전략 체질검사)</option>
+              <option value="portfolio">포트폴리오 리플레이 (계좌 시뮬레이션 · 10슬롯)</option>
+            </select>
+          </td>
         </tr>
         <tr>
           <td class="bt-label">비용 모델</td>

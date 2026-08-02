@@ -956,11 +956,18 @@ async function loadBacktest() {
     // 실행 설정 패널: DB 실측값으로 채운다 (하드코딩 문구 대체)
     const period = document.getElementById('bt-period');
     if (period && d.data_start && d.data_end) {
-      period.textContent = `${d.data_start} ~ ${d.data_end} (DB 보유 전체)`;
+      period.textContent = `DB 보유: ${d.data_start} ~ ${d.data_end} (비우면 전체)`;
     }
-    const universe = document.getElementById('bt-universe');
-    if (universe && d.max_tickers) {
-      universe.textContent = `히스토리 충분 종목 중 최대 ${d.max_tickers}개 (전략별 최소 봉 수 기준)`;
+    // 기간 입력 프리필 — 사용자가 이미 입력했다면 덮어쓰지 않는다
+    const startInput = document.getElementById('bt-start');
+    const endInput = document.getElementById('bt-end');
+    if (startInput && !startInput.value && d.data_start) startInput.value = d.data_start;
+    if (endInput && !endInput.value && d.data_end) endInput.value = d.data_end;
+    _btUniverseOptions = d.universe_options || {};
+    onBtUniverseChange();  // 선택지 도착 후 종속 드롭다운 갱신
+    const note = document.getElementById('bt-universe-note');
+    if (note && d.max_tickers) {
+      note.textContent = `선택한 풀에서 기간 내 거래대금 상위 최대 ${d.max_tickers}개 종목`;
     }
     const cost = document.getElementById('bt-cost');
     if (cost && d.cost_summary) cost.textContent = d.cost_summary;
@@ -972,6 +979,32 @@ async function loadBacktest() {
     empty('bt-progress-section', `오류: ${e.message}`);
     empty('bt-result-kpi', `오류: ${e.message}`);
     empty('bt-runs-area', '');
+  }
+}
+
+// GET /backtest이 내려준 대상 선택지 (업종·테마 distinct)
+let _btUniverseOptions = {};
+
+function onBtUniverseChange() {
+  const kind = document.getElementById('bt-universe')?.value || 'all';
+  const argSel = document.getElementById('bt-universe-arg');
+  const tickersInput = document.getElementById('bt-universe-tickers');
+  if (!argSel || !tickersInput) return;
+
+  const argOptions = {
+    market: ['KOSPI', 'KOSDAQ'],
+    sector: _btUniverseOptions.sectors || [],
+    theme: _btUniverseOptions.themes || [],
+    index: _btUniverseOptions.indices || ['kospi200', 'kosdaq150'],
+    recent_ipo: ['90', '30', '60', '180'],
+  }[kind];
+
+  tickersInput.style.display = kind === 'custom' ? '' : 'none';
+  argSel.style.display = argOptions ? '' : 'none';
+  if (argOptions) {
+    argSel.innerHTML = argOptions
+      .map(v => `<option value="${esc(v)}">${kind === 'recent_ipo' ? `최근 ${v}일 상장` : esc(v)}</option>`)
+      .join('');
   }
 }
 
@@ -998,8 +1031,22 @@ async function runBacktest() {
       </div>`).join('')}
     </div>`;
 
+  const universeKind = document.getElementById('bt-universe')?.value || 'all';
+  const payload = {
+    strategy_id: strategyId,
+    start: document.getElementById('bt-start')?.value || null,
+    end: document.getElementById('bt-end')?.value || null,
+    mode: document.getElementById('bt-mode')?.value || 'per_ticker',
+    universe: universeKind,
+    universe_arg: document.getElementById('bt-universe-arg')?.value || null,
+    tickers: universeKind === 'custom'
+      ? (document.getElementById('bt-universe-tickers')?.value || '')
+          .split(',').map(t => t.trim()).filter(Boolean)
+      : null,
+  };
+
   try {
-    const result = await apiPost('/backtest/run', { strategy_id: strategyId });
+    const result = await apiPost('/backtest/run', payload);
 
     // 결과로 KPI 갱신
     _renderBtResultKpi(result);
@@ -1073,8 +1120,39 @@ function _renderBtResultKpi(run) {
   const mddCls  = run.mdd == null ? '' : Math.abs(run.mdd) > 0.18 ? 'warn' : '';
   const shpCls  = run.sharpe == null ? '' : run.sharpe >= 1.0 ? 'pass' : '';
 
+  const verdictCard = run.verdict ? `
+      <div class="kpi-card ${run.verdict === 'PASS' ? 'pass' : 'fail'}">
+        <div class="kpi-label">1차 판정</div>
+        <div class="kpi-value">${run.verdict}</div>
+        <div class="kpi-sub">승격 게이트 기준</div>
+      </div>` : '';
+
+  const criteriaNames = {
+    avg_sharpe: '샤프', worst_mdd: 'MDD', total_trades: '거래수', avg_cagr: 'CAGR',
+  };
+  const criteriaLine = (run.verdict_criteria || []).map(c => {
+    const mark = c.passed ? '✓' : '✗';
+    const val = typeof c.value === 'number' ? (Number.isInteger(c.value) ? c.value : c.value.toFixed(3)) : c.value;
+    return `<span class="${c.passed ? '' : 'text-fail'}" style="margin-right:12px">
+      ${mark} ${criteriaNames[c.criterion] ?? c.criterion} ${val} (기준 ${c.threshold})</span>`;
+  }).join('');
+
+  const s = run.stats || {};
+  const statsBits = [];
+  if (s.win_rate != null) statsBits.push(`승률 ${fmt.pct1(s.win_rate)}`);
+  if (s.payoff_ratio != null) statsBits.push(`손익비 ${s.payoff_ratio}`);
+  if (s.positive_month_ratio != null) statsBits.push(`양의 월 비율 ${fmt.pct1(s.positive_month_ratio)}`);
+  const yearlyTable = s.yearly_returns ? `
+    <table style="margin-top:8px"><thead><tr>
+      ${Object.keys(s.yearly_returns).map(y => `<th>${y}</th>`).join('')}
+    </tr></thead><tbody><tr>
+      ${Object.values(s.yearly_returns).map(v =>
+        `<td class="mono ${v >= 0 ? '' : 'text-fail'}">${fmt.pct(v)}</td>`).join('')}
+    </tr></tbody></table>` : '';
+
   document.getElementById('bt-result-kpi').innerHTML = `
     <div class="kpi-grid">
+      ${verdictCard}
       <div class="kpi-card ${cagrCls}">
         <div class="kpi-label">Net CAGR</div>
         <div class="kpi-value">${fmt.pct(run.net_cagr)}</div>
@@ -1096,8 +1174,11 @@ function _renderBtResultKpi(run) {
         <div class="kpi-sub">전략 기간 내</div>
       </div>
     </div>
+    ${criteriaLine ? `<div style="font-size:12px;margin-bottom:8px">${criteriaLine}</div>` : ''}
+    ${statsBits.length ? `<div class="text-muted" style="font-size:12px;margin-bottom:8px">${statsBits.join(' · ')}</div>` : ''}
+    ${yearlyTable}
     <div class="text-muted" style="font-size:11px;margin-bottom:24px">
-      전체 검증 완료 후 SCR-08 (Robustness)에 자동 등록됩니다.
+      1차 판정은 백테스트 집계 기준 — 정식 검증(WFA·MC·Plateau)은 매일 검증 잡이 수행합니다.
     </div>`;
 }
 
@@ -1105,25 +1186,36 @@ function _renderBtRunsTable(runs) {
   if (runs.length === 0) { empty('bt-runs-area', '실행 이력 없음'); return; }
 
   const statusCls = { done: 'pass', error: 'fail', running: 'warn', queued: 'info' };
-  const rows = runs.map(r => `
+  const rows = runs.map(r => {
+    const period = (r.start_date && r.end_date) ? `${r.start_date}~${r.end_date}` : '전체';
+    const verdictTip = (r.verdict_criteria || [])
+      .map(c => `${c.passed ? '✓' : '✗'} ${c.criterion}: ${c.value} (기준 ${c.threshold})`)
+      .join('\n');
+    const verdictCell = r.verdict
+      ? `<span title="${esc(verdictTip)}">${badge(r.verdict, r.verdict === 'PASS' ? 'pass' : 'fail')}</span>`
+      : '—';
+    return `
     <tr>
       <td class="mono text-muted" style="font-size:11px">${r.run_id}</td>
       <td class="mono">${r.strategy_id}</td>
       <td>${badge(r.status.toUpperCase(), statusCls[r.status] ?? 'info')}</td>
-      <td class="mono">${r.progress_pct.toFixed(0)}%</td>
+      <td class="mono" style="font-size:11px">${period}</td>
+      <td class="text-muted" style="font-size:11px">${r.mode === 'portfolio' ? '포트폴리오' : r.mode ? '종목별' : '—'}${r.universe ? ` · ${esc(r.universe)}` : ''}</td>
+      <td>${verdictCell}</td>
       <td class="mono">${r.net_cagr != null ? fmt.pct(r.net_cagr) : '—'}</td>
       <td class="mono">${r.mdd != null ? fmt.pct1(Math.abs(r.mdd)) : '—'}</td>
       <td class="mono">${fmt.num2(r.sharpe)}</td>
       <td class="mono">${r.trade_count ?? '—'}</td>
       <td class="mono text-muted">${fmt.date(r.started_at)}</td>
-    </tr>`).join('');
+    </tr>`;
+  }).join('');
 
   document.getElementById('bt-runs-area').innerHTML = `
-    <div class="text-muted mb-16" style="font-size:12px">총 ${runs.length}건 (WFA 기준 최근 50건)</div>
+    <div class="text-muted mb-16" style="font-size:12px">총 ${runs.length}건 (최근 50건)</div>
     <table>
       <thead><tr>
-        <th>Run ID</th><th>전략</th><th>상태</th><th>진행률</th>
-        <th>Net CAGR</th><th>MDD p95</th><th>Sharpe</th><th>거래수</th><th>시작일</th>
+        <th>Run ID</th><th>전략</th><th>상태</th><th>기간</th><th>방식·대상</th><th>판정</th>
+        <th>Net CAGR</th><th>MDD</th><th>Sharpe</th><th>거래수</th><th>시작일</th>
       </tr></thead>
       <tbody>${rows}</tbody>
     </table>`;

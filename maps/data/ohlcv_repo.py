@@ -37,6 +37,37 @@ class HistoricalOHLCVRepository:
         )
         return [row[0] for row in rows]
 
+    def top_tickers_by_trading_value(
+        self,
+        *,
+        start: dt.date | None = None,
+        end: dt.date | None = None,
+        min_bars: int = 1,
+        limit: int = 30,
+        pool: list[str] | None = None,
+    ) -> list[str]:
+        """기간 내 평균 거래대금(종가×거래량) 상위 종목을 반환한다.
+
+        SCR-07 백테스트 유니버스용 — 알파벳순 표본은 임의적이어서 거래대금
+        순으로 교체했다. ``pool``이 주어지면 그 안에서만 뽑는다(시장·업종·지수
+        등 상위 필터). 기간 내 봉이 ``min_bars`` 미만인 종목은 제외한다.
+        """
+        query = self._db.query(HistoricalOHLCV.ticker)
+        if start is not None:
+            query = query.filter(HistoricalOHLCV.date >= start)
+        if end is not None:
+            query = query.filter(HistoricalOHLCV.date <= end)
+        if pool is not None:
+            query = query.filter(HistoricalOHLCV.ticker.in_(pool))
+        rows = (
+            query.group_by(HistoricalOHLCV.ticker)
+            .having(pd_count(HistoricalOHLCV.id) >= min_bars)
+            .order_by(func.avg(HistoricalOHLCV.close * HistoricalOHLCV.volume).desc())
+            .limit(limit)
+            .all()
+        )
+        return [row[0] for row in rows]
+
     def list_tickers_with_counts(
         self,
         *,
