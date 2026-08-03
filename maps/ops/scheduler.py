@@ -158,6 +158,10 @@ _RUNNABLE_STRATEGIES: dict[str, type[BaseStrategy]] = {
 
 _VALIDATION_SAMPLE_TICKERS = 5
 
+# 전략 신호 계산에 쓰는 봉 수. 후보 생성과 주문 시점이 **같은 값**을 써야 한다 —
+# 워밍업 길이가 다르면 ATR 이 조용히 어긋난다 (CLAUDE.md 손절 항목).
+_SIGNAL_LOOKBACK_BARS = 400
+
 # WFA 에 사용할 선호 ticker 우선순위.
 # 알파벳순 첫 번째(소형주)가 아닌 유동성 높은 대형주로 WFA 를 실행하여
 # 전략 성과의 대표성을 높인다.
@@ -181,6 +185,23 @@ class JobRun:
     finished_at: dt.datetime | None = None
     message: str = ""
     details: dict = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class TickerContext:
+    """종목당 한 번만 계산하는 값들 — 전략 8개가 공유한다.
+
+    전략마다 유니버스를 다시 도는 구조에서 종목별 OHLCV 를 8번 읽던 것을 1번으로 줄인다
+    (운영 실측 하루 약 10,080회 → 1,260회). 전략에 **무관한** 값만 담는다 — 전략별
+    점수·신호는 `_save_candidate_snapshot` 이 이 컨텍스트를 받아 계산한다.
+    """
+
+    frame: pd.DataFrame
+    trend_strength: float
+    ts_bucket: str
+    close: float
+    atr14: float | None
+    valuation: object | None = None
 
 
 @dataclass(frozen=True)
@@ -393,6 +414,9 @@ class OperationalPipeline:
             saved_count = 0
             active_strategies: list[str] = []
             blocked_strategies: list[dict[str, str]] = []
+            # 종목별 OHLCV·추세강도·밸류에이션은 전략과 무관하다 — 루프 **밖에서** 한 번만.
+            ticker_contexts = self._build_ticker_contexts(db, result.universe, ref_date)
+            funnel_stats: dict[str, int] = {}
             for strategy_id, strategy_cls in _RUNNABLE_STRATEGIES.items():
                 entry_block_reason: str | None = None
                 if regime_label not in strategy_cls.preferred_regimes:
@@ -428,6 +452,8 @@ class OperationalPipeline:
                     result.universe,
                     weekly_pass=weekly_pass,
                     excluded_reason_by_ticker=sector_excluded_reason_by_ticker,
+                    contexts=ticker_contexts,
+                    stats=funnel_stats,
                 )
                 if entry_block_reason is None:
                     active_strategies.append(strategy_id)
@@ -450,6 +476,11 @@ class OperationalPipeline:
                 "breadth_pct": round(breadth_pct, 4) if breadth_pct is not None else None,
                 "breadth_label": regime.breadth.value,
                 "saved_count": saved_count,
+                # 후보가 0건일 때 어느 단계에서 끊겼는지 구분하기 위한 카운터.
+                # 유니버스가 0인지, 신호가 0인지, 상위 N에서 잘린 것인지가 갈린다.
+                "universe_size": len(result.universe),
+                "signal_count": funnel_stats.get("signals", 0),
+                "dropped_count": funnel_stats.get("dropped", 0),
                 "strategies_saved": list(_RUNNABLE_STRATEGIES.keys()),
                 "strategies_updated": active_strategies,
                 "strategies_blocked": blocked_strategies,
@@ -1239,6 +1270,79 @@ class OperationalPipeline:
             missing.add("volume")
         return missing
 
+    def _build_ticker_contexts(
+        self,
+        db: Session,
+        universe: list[Security],
+        ref_date: dt.date,
+    ) -> dict[str, TickerContext]:
+        """유니버스 전체의 종목별 컨텍스트를 **한 번만** 만든다.
+
+        전략 루프 **밖에서** 호출해 `_save_candidate_snapshot` 에 넘긴다. 여기서 만드는 값은
+        전부 전략과 무관하므로 전략 수만큼 다시 계산할 이유가 없다.
+
+        프레임은 `_SIGNAL_LOOKBACK_BARS` 봉으로 잘라 주문 시점 경로와 워밍업을 맞춘다.
+        `start` 는 거래일이 아니라 달력일이라 넉넉히 잡고 `tail()` 로 정확히 맞춘다.
+        """
+        repo = HistoricalOHLCVRepository(db)
+        ts_calc = TrendStrengthCalculator()
+        valuation_scorer = (
+            ValuationMarginScorer() if self._settings.maps_valuation_margin_enabled else None
+        )
+        fundamental_provider = (
+            FundamentalValuationProvider(db, ref_date)
+            if (
+                self._settings.maps_valuation_margin_enabled
+                or self._settings.maps_kostolany_price_calculator_enabled
+            )
+            else None
+        )
+        # 400 거래일을 확보하려면 달력으로는 그 1.5배 이상이 필요하다(주말·공휴일).
+        start = ref_date - dt.timedelta(days=_SIGNAL_LOOKBACK_BARS * 2)
+
+        contexts: dict[str, TickerContext] = {}
+        for stock in universe:
+            frame = pd.DataFrame()
+            trend_strength = 50.0
+            ts_bucket = "S3"
+            try:
+                frame = repo.to_dataframe(stock.ticker, start=start, end=ref_date)
+                if len(frame) > _SIGNAL_LOOKBACK_BARS:
+                    frame = frame.tail(_SIGNAL_LOOKBACK_BARS)
+                ts_score = ts_calc.score_one(stock.ticker, frame, ref_date)
+                if ts_score is not None:
+                    trend_strength = ts_score.score
+                    ts_bucket = ts_score.bucket
+            except Exception:  # noqa: BLE001
+                pass  # OHLCV 없으면 중립값 유지 (기존 동작)
+
+            close = float(frame["close"].iloc[-1]) if not frame.empty else 0.0
+            atr14: float | None = None
+            if len(frame) >= 14:
+                try:
+                    last_atr = _compute_atr14(frame).iloc[-1]
+                    atr14 = float(last_atr) if pd.notna(last_atr) else None
+                except Exception:  # noqa: BLE001
+                    pass
+
+            valuation = None
+            if valuation_scorer is not None and fundamental_provider is not None:
+                valuation = valuation_scorer.score(
+                    fundamental_provider.get(
+                        stock.ticker, current_price=close if close > 0 else None
+                    )
+                )
+
+            contexts[stock.ticker] = TickerContext(
+                frame=frame,
+                trend_strength=trend_strength,
+                ts_bucket=ts_bucket,
+                close=close,
+                atr14=atr14,
+                valuation=valuation,
+            )
+        return contexts
+
     def _save_candidate_snapshot(
         self,
         db: Session,
@@ -1248,6 +1352,8 @@ class OperationalPipeline:
         *,
         weekly_pass: bool = True,
         excluded_reason_by_ticker: dict[str, str] | None = None,
+        contexts: dict[str, TickerContext] | None = None,
+        stats: dict[str, int] | None = None,
     ) -> int:
         db.execute(
             delete(CandidateSnapshot).where(
@@ -1263,8 +1369,21 @@ class OperationalPipeline:
         max_turnover = max((stock.avg_turnover_20d_as_of(ref_date) for stock in ranked), default=0.0)
         excluded_reason_by_ticker = excluded_reason_by_ticker or {}
 
-        repo = HistoricalOHLCVRepository(db)
-        ts_calc = TrendStrengthCalculator()
+        # 전략 루프 밖에서 만들어 넘기는 것이 정상 경로다. 단독 호출(테스트·수동 실행)에
+        # 대비해 없으면 여기서 만든다 — 그 경우에만 전략 수만큼 재계산이 일어난다.
+        if contexts is None:
+            contexts = self._build_ticker_contexts(db, universe, ref_date)
+
+        # 신호 게이트: "유동성 좋고 추세 강한 종목"이 아니라 "이 전략이 오늘 사겠다고 한
+        # 종목"이 후보다. 신호는 전략별이라 컨텍스트에 담지 않고 여기서 계산한다(DB 접근 없음).
+        signal_by_ticker: dict[str, bool] = {}
+        for ticker, ctx in contexts.items():
+            signal = self._signal_from_frame(strategy_id, ctx.frame)
+            signal_by_ticker[ticker] = bool(signal is not None and signal.entry_signal)
+
+        # (final_score, entry_signal, row) — 전량 만든 뒤 저장 대상을 고른다.
+        # 상위 N은 전체 점수를 봐야 정해지므로 즉시 add 할 수 없다.
+        pending: list[tuple[float, bool, CandidateSnapshot]] = []
 
         ai_enabled = self._settings.maps_ai_technical_scoring_enabled
         ai_weight = self._settings.maps_ai_technical_score_weight if ai_enabled else 0.0
@@ -1283,7 +1402,7 @@ class OperationalPipeline:
             )
         contrarian_analyzer = AIContrarianAnalyzer.from_settings() if contrarian_check_enabled else None
         valuation_enabled = self._settings.maps_valuation_margin_enabled
-        valuation_scorer = ValuationMarginScorer() if valuation_enabled else None
+        # 밸류에이션은 종목 컨텍스트가 이미 계산해 뒀다 (전략 무관) — 여기서 다시 하지 않는다.
         holding_type_enabled = self._settings.maps_holding_type_classification_enabled
         holding_type_classifier = HoldingTypeClassifier() if holding_type_enabled else None
         price_calc_enabled = self._settings.maps_kostolany_price_calculator_enabled
@@ -1313,29 +1432,10 @@ class OperationalPipeline:
                     continue
                 turnover = stock.avg_turnover_20d_as_of(ref_date)
                 factor_score = (turnover / max_turnover * 100.0) if max_turnover > 0 else 0.0
-                trend_strength = 50.0
-                ts_bucket = "S3"
-                ohlcv_df = None
-                try:
-                    ohlcv_df = repo.to_dataframe(stock.ticker, end=ref_date)
-                    ts_score = ts_calc.score_one(stock.ticker, ohlcv_df, ref_date)
-                    if ts_score is not None:
-                        trend_strength = ts_score.score
-                        ts_bucket = ts_score.bucket
-                except Exception:  # noqa: BLE001
-                    pass
-
-                valuation_result = None
-                if valuation_scorer is not None and fundamental_provider is not None:
-                    valuation_input = fundamental_provider.get(
-                        stock.ticker,
-                        current_price=(
-                            float(ohlcv_df["close"].iloc[-1])
-                            if ohlcv_df is not None and not ohlcv_df.empty
-                            else None
-                        ),
-                    )
-                    valuation_result = valuation_scorer.score(valuation_input)
+                ctx = contexts.get(stock.ticker)
+                trend_strength = ctx.trend_strength if ctx else 50.0
+                ts_bucket = ctx.ts_bucket if ctx else "S3"
+                valuation_result = ctx.valuation if ctx else None
 
                 if strategy_score_calculator is not None:
                     score_result = strategy_score_calculator.calculate(
@@ -1375,7 +1475,9 @@ class OperationalPipeline:
             factor_score = (turnover / max_turnover * 100.0) if max_turnover > 0 else 0.0
             sector_excluded_reason = excluded_reason_by_ticker.get(stock.ticker)
             if sector_excluded_reason:
-                db.add(
+                pending.append((
+                    0.0,
+                    False,
                     CandidateSnapshot(
                         ref_date=ref_date,
                         strategy_id=strategy_id,
@@ -1393,22 +1495,16 @@ class OperationalPipeline:
                         excluded_reason=sector_excluded_reason,
                         weekly_pass=False,
                         estimated_qty=None,
-                    )
-                )
+                        entry_signal=None,
+                    ),
+                ))
                 continue
 
-            # 실제 추세강도 계산 (데이터 부족 시 중립값 50.0 / "S3" 사용)
-            trend_strength = 50.0
-            ts_bucket = "S3"
-            ohlcv_df = None
-            try:
-                ohlcv_df = repo.to_dataframe(stock.ticker, end=ref_date)
-                ts_score = ts_calc.score_one(stock.ticker, ohlcv_df, ref_date)
-                if ts_score is not None:
-                    trend_strength = ts_score.score
-                    ts_bucket = ts_score.bucket
-            except Exception:  # noqa: BLE001
-                pass  # OHLCV 없으면 중립값 유지
+            # 종목 컨텍스트에서 조회 (데이터 부족 시 중립값 50.0 / "S3")
+            ctx = contexts.get(stock.ticker)
+            trend_strength = ctx.trend_strength if ctx else 50.0
+            ts_bucket = ctx.ts_bucket if ctx else "S3"
+            ohlcv_df = ctx.frame if ctx is not None and not ctx.frame.empty else None
 
             # AI 기술적 분석 (활성화 시)
             ai_result = None
@@ -1431,13 +1527,7 @@ class OperationalPipeline:
             # final_score 계산
             # AI 비활성: 유동성 60% + 추세강도 40%
             # AI 활성:   유동성 (1-ai_w)×60% + 추세강도 (1-ai_w)×40% + AI ai_w%
-            valuation_result = None
-            if valuation_scorer is not None and fundamental_provider is not None:
-                valuation_input = fundamental_provider.get(
-                    stock.ticker,
-                    current_price=float(ohlcv_df["close"].iloc[-1]) if ohlcv_df is not None and not ohlcv_df.empty else None,
-                )
-                valuation_result = valuation_scorer.score(valuation_input)
+            valuation_result = ctx.valuation if ctx else None
 
             # Rule-based 3가지 가격 계획 (AI 없을 때도 항상 채운다)
             ai_technical_score = ai_result.technical_score if ai_result else None
@@ -1468,23 +1558,14 @@ class OperationalPipeline:
 
             slippage = self._settings.maps_order_slippage_pct
             rr = self._settings.maps_trade_rr_ratio
-            # ohlcv_df는 위 TS 계산에서 이미 로드됨 — 중복 조회 없이 재사용
-            if ohlcv_df is not None and len(ohlcv_df) > 0:
-                current_close_val = float(ohlcv_df["close"].iloc[-1])
-            else:
-                current_close_val = 0.0
-
-            atr14_val: float | None = None
+            # 종가·ATR 은 컨텍스트에서 온다 — 전략마다 다시 계산하지 않는다
+            current_close_val = ctx.close if ctx else 0.0
+            atr14_val = ctx.atr14 if ctx else None
             plan_buy: float | None = None
             plan_stop: float | None = None
             plan_target: float | None = None
             if current_close_val > 0:
                 plan_buy = float(round_up_krx_price(current_close_val * (1 + slippage), market=stock.market))
-                if ohlcv_df is not None and len(ohlcv_df) >= 14:
-                    try:
-                        atr14_val = float(_compute_atr14(ohlcv_df).iloc[-1])
-                    except Exception:  # noqa: BLE001
-                        pass
                 plan_stop = effective_stop_price(strategy_id, plan_buy, atr14_val)
                 if plan_stop is not None:
                     plan_stop = float(round_to_krx_tick(plan_stop, market=stock.market))
@@ -1583,13 +1664,17 @@ class OperationalPipeline:
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("코스톨라니 가격 산출 오류 [%s]: %s", stock.ticker, exc)
 
-            db.add(
+            entry_signal = signal_by_ticker.get(stock.ticker, False)
+            pending.append((
+                float(final_score),
+                entry_signal,
                 CandidateSnapshot(
                     ref_date=ref_date,
                     strategy_id=strategy_id,
                     ticker=stock.ticker,
                     name=stock.name,
                     market=stock.market,
+                    entry_signal=entry_signal,
                     factor_score=round(factor_score, 2),
                     trend_strength=round(trend_strength, 2),
                     ts_bucket=ts_bucket,
@@ -1621,10 +1706,31 @@ class OperationalPipeline:
                     value_target=price_result.value_target if price_result else None,
                     first_sell_price=price_result.first_sell_price if price_result else None,
                     final_sell_price=price_result.final_sell_price if price_result else None,
-                )
-            )
+                ),
+            ))
+
+        # 저장 대상 = 신호 있는 종목 **전수** ∪ 나머지 중 final_score 상위 N.
+        # 상위 N은 관측용이다 — 신호가 0건인 날에도 "왜 없었나"를 점수로 확인할 수 있어야 한다.
+        top_n = self._settings.maps_candidate_snapshot_top_n
+        signalled = [row for row in pending if row[1]]
+        observed = sorted(
+            (row for row in pending if not row[1]), key=lambda row: row[0], reverse=True
+        )[:top_n]
+        for _score, _signal, snapshot in signalled + observed:
+            db.add(snapshot)
         db.commit()
-        return len(ranked)
+
+        stored = len(signalled) + len(observed)
+        dropped = len(pending) - stored
+        logger.info(
+            "후보 저장 [%s]: universe=%d signals=%d stored=%d dropped=%d (top_n=%d)",
+            strategy_id, len(ranked), len(signalled), stored, dropped, top_n,
+        )
+        if stats is not None:
+            # 전략별 호출을 누적한다 — 잡 details 에서 "어느 단계에서 0이 됐나"를 답하기 위해.
+            stats["signals"] = stats.get("signals", 0) + len(signalled)
+            stats["dropped"] = stats.get("dropped", 0) + dropped
+        return stored
 
     @staticmethod
     def _save_portfolio_snapshot(
@@ -2405,6 +2511,31 @@ class OperationalPipeline:
         return float(row.close) if row and row.close > 0 else 0.0
 
     @staticmethod
+    def _signal_from_frame(strategy_id: str, frame: pd.DataFrame) -> StrategySignal | None:
+        """OHLCV 프레임에서 전략의 최신 신호를 뽑는다 — **신호 계산의 정본**.
+
+        후보 생성(프레임을 이미 들고 있음)과 주문 시점(DB 조회)이 이 함수를 공유한다.
+        같은 값을 두 곳에서 따로 계산하면 조용히 어긋난다 — 손절가에서 이미 겪었다
+        (CLAUDE.md 손절 항목). 미등록 전략·빈 프레임은 예외가 아니라 None.
+        """
+        strategy_cls = _RUNNABLE_STRATEGIES.get(strategy_id)
+        if strategy_cls is None or frame.empty:
+            return None
+        strategy = strategy_cls()
+        signals = strategy.generate_signals(frame, strategy.default_params)
+        if signals.empty:
+            return None
+        latest = signals.iloc[-1]
+        atr_series = _compute_atr14(frame)
+        last_atr = atr_series.iloc[-1] if not atr_series.empty else float("nan")
+        return StrategySignal(
+            entry_signal=bool(latest.get("entry_signal", False)),
+            exit_signal=bool(latest.get("exit_signal", False)),
+            close=float(latest.get("close", 0.0)),
+            atr14=float(last_atr) if pd.notna(last_atr) else None,
+        )
+
+    @staticmethod
     def _latest_strategy_signal(
         db: Session,
         *,
@@ -2412,14 +2543,14 @@ class OperationalPipeline:
         strategy_id: str,
         ref_date: dt.date,
     ) -> StrategySignal | None:
-        strategy_cls = _RUNNABLE_STRATEGIES.get(strategy_id)
-        if strategy_cls is None:
+        """DB에서 최근 400봉을 읽어 `_signal_from_frame`에 넘기는 래퍼 (주문 시점 경로)."""
+        if strategy_id not in _RUNNABLE_STRATEGIES:
             return None
         rows = (
             db.query(HistoricalOHLCV)
             .filter(HistoricalOHLCV.ticker == ticker, HistoricalOHLCV.date <= ref_date)
             .order_by(HistoricalOHLCV.date.desc())
-            .limit(400)
+            .limit(_SIGNAL_LOOKBACK_BARS)
             .all()
         )
         if not rows:
@@ -2435,20 +2566,7 @@ class OperationalPipeline:
             }
             for row in reversed(rows)
         ]).set_index("date")
-        strategy = strategy_cls()
-        signals = strategy.generate_signals(frame, strategy.default_params)
-        if signals.empty:
-            return None
-        latest = signals.iloc[-1]
-        atr_series = _compute_atr14(frame)
-        last_atr = atr_series.iloc[-1] if not atr_series.empty else float("nan")
-        atr14 = float(last_atr) if pd.notna(last_atr) else None
-        return StrategySignal(
-            entry_signal=bool(latest.get("entry_signal", False)),
-            exit_signal=bool(latest.get("exit_signal", False)),
-            close=float(latest.get("close", 0.0)),
-            atr14=atr14,
-        )
+        return OperationalPipeline._signal_from_frame(strategy_id, frame)
 
     def _order_qty(
         self,

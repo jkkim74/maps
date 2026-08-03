@@ -166,7 +166,16 @@ DB·로그만으로 확인(외부 KIS 호출 없음). 상세 절차는 계획서
    → 20종목을 넘는 순간 자동으로 드러나도록 **관측성 보강**함(아래 절). 재조사 불필요.
 8. 🟡 부분체결이 만료 처리된다 (`expire_pending_orders`)
 9. 🟡 매매일지 페어링이 티커 단위 (`trade_review.py:119`)
-10. 🔵 후보 퍼널 재설계 + AI 스코어링 — 계획서 `docs/plans/candidate-funnel-ai-scoring.md`, 착수 전
+10. 🟡 **후보 퍼널 재설계 — 재검토 완료, 착수 대기.** 개정 계획서
+    `C:\Users\jack\.claude\plans\2-snoopy-forest.md` (저장소 정본
+    `docs/plans/candidate-funnel-ai-scoring.md` 는 **아직 낡음** — 착수 시 이 개정본으로 갱신할 것).
+    8/3 재검토 결과: 진단은 유효(7/31 실측 10,288행/일·누적 397,429행/151MB,
+    donchian_v2 상위 5 = 대형주 2 + 유동성 0.0 종목 3). 원 계획서 정정 4건 —
+    ⑴ `down_revision` 0013→**0017**, ⑵ 테스트 기준선 581→**634**,
+    ⑶ "이중 순회 20,160회"는 AI 꺼진 현재 사실 아님(실제 10,080회),
+    ⑷ **Bedrock 호출자가 둘**(`technical_scorer`+`contrarian_analyzer`, `aws_bedrock_model_id` 공유).
+    범위 결정: **Phase 1(퍼널)만 먼저**, AI는 분리(운영 두 플래그 모두 false = 죽은 코드).
+    AI 착수 시 Opus 5 전환은 두 모듈 동시에.
 11. 🟡 후보 생성 누락일 2건 (7/01, 7/17) 잡 실패 로그 확인
 12. 🟡 분석 워치리스트 누적 2건뿐 — 게이트 전량 탈락 중
 13. `analysis_pick` id=1 CLOSED인데 exit_reason 빈 것

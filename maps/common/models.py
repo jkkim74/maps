@@ -97,6 +97,9 @@ class CandidateSnapshot(Base):
     excluded_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
     weekly_pass: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     estimated_qty: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # 후보 생성 시점의 전략 진입 신호. None = 신호를 계산하지 않은 행(구 데이터·상위 N 관측행).
+    # 주문 시점 재계산은 그대로 유지되므로 이 값은 감사·필터용 기록이다.
+    entry_signal: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     # AI 기술적 분석 결과 (maps_ai_technical_scoring_enabled=true 시 채워짐)
     ai_technical_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     ai_buy_price: Mapped[float | None] = mapped_column(Float, nullable=True)

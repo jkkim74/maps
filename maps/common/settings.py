@@ -139,6 +139,10 @@ class MapsSettings(BaseSettings):
     maps_valuation_margin_enabled: bool = True
     maps_strategy_aware_scoring_enabled: bool = False
 
+    # 후보 저장 정책: 신호 있는 종목은 전수 저장하고, 신호가 없는 종목은 관측용으로
+    # final_score 상위 N개만 남긴다. 0이면 신호 있는 종목만 저장한다.
+    maps_candidate_snapshot_top_n: int = Field(default=50, ge=0, le=2000)
+
     # 7단계: AI 역발상 검증 (코스톨라니식 투자 논리 검증)
     maps_ai_contrarian_check_enabled: bool = False
 
