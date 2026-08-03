@@ -1,5 +1,6 @@
 """WalkForwardAnalyzer 4가지 AND 조건 테스트 (Phase 2 + Phase 3)."""
 
+import math
 import datetime
 
 import numpy as np
@@ -151,3 +152,88 @@ def test_wfa_run_with_real_data() -> None:
     assert len(result.folds) == 3
     # passed/fail 여부는 데이터에 따라 다름 — 구조만 확인
     assert isinstance(result.passed, bool)
+
+
+# ── 무거래 fold / 비유한 G2P 가드 (2026-08-03) ────────────────────────────────
+#
+# OOS 구간에서 한 번도 거래하지 않으면 engine 이 G2P=inf 를 냈고, `inf < 0.6` 이
+# False 라 G2P 조건이 **조용히 통과**했다. 8/3 운영 실측에서 fold 13건이 이 상태였다.
+
+
+def _fold_full(
+    *,
+    oos_sharpe: float = 1.0,
+    is_sharpe: float = 1.0,
+    is_g2p: float = 1.0,
+    oos_g2p: float = 1.0,
+    oos_trades: int = 5,
+) -> FoldResult:
+    return FoldResult(
+        fold_idx=0,
+        is_start=datetime.date(2022, 1, 1),
+        is_end=datetime.date(2022, 12, 31),
+        oos_start=datetime.date(2023, 1, 1),
+        oos_end=datetime.date(2023, 3, 31),
+        is_sharpe=is_sharpe,
+        oos_sharpe=oos_sharpe,
+        is_return=0.1,
+        oos_return=0.05,
+        is_g2p=is_g2p,
+        oos_g2p=oos_g2p,
+        oos_trades=oos_trades,
+    )
+
+
+def test_non_finite_mean_g2p_fails_instead_of_passing_silently() -> None:
+    """mean_g2p 가 inf/NaN 이면 통과가 아니라 실패다.
+
+    `if mean_g2p < 0.6: 실패` 구조라 inf 도 NaN 도 비교가 False → 실패 사유가 붙지
+    않고 조건이 통과했다. 과잉 허용이므로 명시적으로 막는다.
+    """
+    analyzer = WalkForwardAnalyzer()
+
+    for label, ratio in (("inf", float("inf")), ("nan", float("nan"))):
+        result = _make_result([_fold_full(oos_g2p=ratio) for _ in range(5)])
+        assert not math.isfinite(result.mean_g2p) or True  # 값 자체는 구현에 맡긴다
+        _passed, reasons = analyzer._evaluate(result)
+        assert any("g2p" in r.lower() for r in reasons), (
+            f"mean_g2p={label} 인데 G2P 실패 사유가 없다 — 조용히 통과 중"
+        )
+
+
+def test_g2p_ratio_is_always_finite() -> None:
+    """어떤 입력에도 g2p_ratio 는 유한하다 (inf/inf = NaN 방지)."""
+    cases = [
+        (float("inf"), float("inf")),
+        (float("inf"), 1.0),
+        (1.0, float("inf")),
+        (0.0, float("inf")),
+    ]
+    for is_g2p, oos_g2p in cases:
+        fold = _fold_full(is_g2p=is_g2p, oos_g2p=oos_g2p)
+        assert math.isfinite(fold.g2p_ratio), f"is={is_g2p} oos={oos_g2p} → {fold.g2p_ratio}"
+
+
+def test_no_trade_folds_beyond_limit_add_dedicated_reason() -> None:
+    """OOS 무거래 fold 가 한도를 넘으면 전용 실패 사유가 붙는다.
+
+    "mean_g2p=0.213 < 0.6" 만 보면 진짜 이유(거래를 안 했다)를 모른다.
+    """
+    analyzer = WalkForwardAnalyzer()
+    folds = [_fold_full(oos_trades=0) for _ in range(3)] + [_fold_full() for _ in range(2)]
+    result = _make_result(folds)
+
+    assert result.no_trade_folds == 3
+    _passed, reasons = analyzer._evaluate(result)
+    assert any("무거래" in r for r in reasons), f"무거래 사유 없음: {reasons}"
+
+
+def test_single_no_trade_fold_is_tolerated() -> None:
+    """조용한 구간 1개까지는 허용한다 (음수 fold 한도와 같은 정신)."""
+    analyzer = WalkForwardAnalyzer()
+    folds = [_fold_full(oos_trades=0)] + [_fold_full() for _ in range(4)]
+    result = _make_result(folds)
+
+    assert result.no_trade_folds == 1
+    _passed, reasons = analyzer._evaluate(result)
+    assert not any("무거래" in r for r in reasons), f"1개는 허용해야 하는데: {reasons}"

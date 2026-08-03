@@ -1,9 +1,17 @@
 """Walk-Forward 검증기.
 
-통과 조건 3개 (AND):
-  1. sharpe_mean > 0     — 평균적으로 수익을 낸다
-  2. 음수 fold <= 1개    — 5번 중 4번은 플러스 (일관성)
-  3. OOS/IS G2P >= 0.6  — IS 성과의 60% 이상 OOS 재현 (과적합 아님)
+통과 조건 4개 (AND):
+  1. sharpe_mean > 0        — 평균적으로 수익을 낸다
+  2. 음수 fold <= 1개       — 5번 중 4번은 플러스 (일관성)
+  3. OOS/IS G2P >= 0.6      — IS 성과의 60% 이상 OOS 재현 (과적합 아님)
+  4. OOS 무거래 fold <= 1개 — 거래를 안 한 구간은 재현 성공이 아니다
+
+[조건 4 추가 배경 — 2026-08-03]
+  거래가 0건이면 일별 수익률이 전부 0이라 손실합도 0이 되고, 예전 engine 은 이를
+  G2P=inf 로 냈다. `inf < 0.6` 이 False 라 조건 3이 **조용히 통과**했다. 실측에서
+  contrarian_quality 는 5개 fold 전부 OOS 무거래인데 G2P 조건을 통과하고 있었다.
+  근본 수정은 engine._gain_to_pain(무거래=0.0, 무손실=상한)이고, 조건 4는 "왜 낮은지"를
+  사유로 드러내는 역할이다.
 
 [폐기된 조건]
   구 조건 2: std/|mean| <= X (변동계수)
@@ -24,7 +32,9 @@ import pandas as pd
 
 from maps.backtest.engine import BacktestEngine, BacktestResult
 from maps.common.constants import (
+    GAIN_TO_PAIN_CAP,
     WF_NEGATIVE_FOLD_MAX,
+    WF_NO_TRADE_FOLD_MAX,
     WF_OOS_IS_G2P_MIN,
     WF_SHARPE_MEAN_MIN,
 )
@@ -34,9 +44,11 @@ from maps.strategy.base import BaseStrategy
 logger = logging.getLogger(__name__)
 
 # H-1: IS 파라미터 선택 견고성 점수 가중치. Sharpe 단일 피크 과최적화를 완화하기 위해
-# gain-to-pain(일관성)을 보조 가중한다. g2p는 무손실 시 inf가 되므로 상한으로 캡한다.
+# gain-to-pain(일관성)을 보조 가중한다.
+# 캡은 `engine._gain_to_pain` 과 같은 값을 써야 한다 — 소스에서 이미 상한을 적용하므로
+# 여기 캡은 (구 데이터·외부 입력 대비) 방어층으로 남는다.
 _GAIN_TO_PAIN_SELECT_WEIGHT = 0.5
-_GAIN_TO_PAIN_CAP = 3.0
+_GAIN_TO_PAIN_CAP = GAIN_TO_PAIN_CAP
 
 
 @dataclass
@@ -54,13 +66,25 @@ class FoldResult:
     oos_return: float
     is_g2p: float = 0.0
     oos_g2p: float = 0.0
+    # OOS 구간 거래 수. 0이면 "재현 성공"이 아니라 **검증 표본 없음**이다.
+    # G2P 값만으로는 무거래와 무손실을 구분할 수 없어 별도로 센다.
+    #
+    # None = 측정 안 됨(구 데이터·합성 객체). 기본값을 0으로 두면 값을 안 채운 경로가
+    # 전부 "무거래"로 오인돼 거짓 실패를 낸다 — 미지와 실측 0은 반드시 구분한다.
+    oos_trades: int | None = None
 
     @property
     def g2p_ratio(self) -> float:
-        """OOS G2P / IS G2P 비율. G2P가 없으면 Sharpe 비율로 대체."""
+        """OOS G2P / IS G2P 비율. G2P가 없으면 Sharpe 비율로 대체.
+
+        **항상 유한값을 반환한다.** 구 데이터나 외부 입력에 inf가 섞이면
+        `inf/inf = NaN`이 되고, NaN은 어떤 비교에도 False라 게이트를 조용히 통과한다.
+        """
         if self.is_g2p > 0:
-            return self.oos_g2p / self.is_g2p
-        return self.oos_sharpe / self.is_sharpe if self.is_sharpe > 0 else 0.0
+            ratio = self.oos_g2p / self.is_g2p
+        else:
+            ratio = self.oos_sharpe / self.is_sharpe if self.is_sharpe > 0 else 0.0
+        return ratio if math.isfinite(ratio) else 0.0
 
     @property
     def g2p(self) -> float:
@@ -93,6 +117,11 @@ class WalkForwardResult:
     @property
     def mean_g2p(self) -> float:
         return float(np.mean([f.g2p_ratio for f in self.folds])) if self.folds else 0.0
+
+    @property
+    def no_trade_folds(self) -> int:
+        """OOS에서 한 번도 거래하지 않은 fold 수 (측정값이 있는 fold만 센다)."""
+        return sum(1 for f in self.folds if f.oos_trades == 0)  # None 은 세지 않는다
 
 
 class WalkForwardAnalyzer:
@@ -186,6 +215,7 @@ class WalkForwardAnalyzer:
                 oos_return=oos_bt.cagr,
                 is_g2p=is_g2p,
                 oos_g2p=oos_bt.gain_to_pain,
+                oos_trades=oos_bt.total_trades,
             )
             result.folds.append(fold)
             logger.debug("Fold %d: IS sharpe=%.2f, OOS sharpe=%.2f", i, is_sharpe, oos_bt.sharpe)
@@ -338,6 +368,7 @@ class WalkForwardAnalyzer:
                     oos_return=oos_bt.cagr,
                     is_g2p=is_g2p,
                     oos_g2p=oos_bt.gain_to_pain,
+                    oos_trades=oos_bt.total_trades,
                 )
                 result.stress_folds.append(stress_fold)
                 logger.info(
@@ -367,9 +398,19 @@ class WalkForwardAnalyzer:
             )
 
         # 조건 3: OOS/IS G2P >= 0.6 — IS 성과의 60% 이상 OOS 재현 (과적합 아님)
-        if result.mean_g2p < WF_OOS_IS_G2P_MIN:
+        # 비유한값은 통과가 아니라 실패다 — `inf < 0.6` 도 `NaN < 0.6` 도 False라
+        # 그냥 두면 조건이 조용히 통과한다 (2026-08-03 발견).
+        if not math.isfinite(result.mean_g2p) or result.mean_g2p < WF_OOS_IS_G2P_MIN:
             reasons.append(
                 f"mean_g2p={result.mean_g2p:.3f} < {WF_OOS_IS_G2P_MIN} (과적합 의심)"
+            )
+
+        # 조건 4: OOS 무거래 fold <= 1개 — 거래를 안 한 구간은 재현 성공이 아니다.
+        # G2P 수치만 보면 "왜 낮은지"를 모른다. 진짜 이유를 사유로 남긴다.
+        if result.no_trade_folds > WF_NO_TRADE_FOLD_MAX:
+            reasons.append(
+                f"OOS 무거래 fold={result.no_trade_folds}/{len(result.folds)} "
+                f"> {WF_NO_TRADE_FOLD_MAX} (검증 표본 없음)"
             )
 
         return len(reasons) == 0, reasons

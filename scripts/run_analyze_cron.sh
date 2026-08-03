@@ -79,7 +79,11 @@ fi
 # stream-json + --verbose 로 각 단계(에이전트 호출·도구 실행·텍스트·완료)를 실시간 이벤트로
 # 받아, scripts/analyze_stream_to_log.py가 사람이 읽는 진행로그로 변환해 $LOG에 남긴다.
 # 원본 JSON 이벤트는 디버깅용으로 $RAW_LOG에 그대로 보존한다.
-ANALYZE_TIMEOUT="${ANALYZE_TIMEOUT:-1800}"
+# 파이프라인 소요가 늘고 있다: 7/27 17분 → 7/30 28분 → 7/31 29분 → 8/3 30분 초과로
+# 강제 종료(0건, $8.25 소모). 1800s 는 이미 여유가 없었다. 45분으로 올린다.
+# 여전히 넘긴다면 시간을 더 늘릴 게 아니라 단계별 소요를 봐야 한다 — 8/3 실패는
+# strategy-selector 가 승격 단계를 HANDOFF.md 로 추측해 재선정을 한 번 더 돈 탓이 크다.
+ANALYZE_TIMEOUT="${ANALYZE_TIMEOUT:-2700}"
 RAW_LOG="$LOG_DIR/analyze_cron_${TS}.jsonl"
 log "claude -p /analyze 실행 시작 (timeout ${ANALYZE_TIMEOUT}s, 진행로그 스트리밍, raw=$RAW_LOG)"
 timeout "${ANALYZE_TIMEOUT}s" "$CLAUDE_BIN" -p "/analyze" "${perm_args[@]}" \

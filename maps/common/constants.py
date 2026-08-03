@@ -185,6 +185,14 @@ WF_SHARPE_MEAN_MIN: Final[float] = 0.0       # sharpe_mean > 0
 #       CV 조건은 조건 3(음수 fold)과 의미가 중복되면서 근거 없는 수치에 의존.
 WF_NEGATIVE_FOLD_MAX: Final[int] = 1          # 음수 fold <= 1개
 WF_OOS_IS_G2P_MIN: Final[float] = 0.6        # OOS/IS G2P >= 0.6
+# OOS 구간에서 한 번도 거래하지 않은 fold 허용 수. 무거래는 "재현 성공"이 아니라
+# 검증 표본 없음이다. 음수 fold 와 같은 정신으로 5개 중 1개까지만 허용한다
+# (2026-08-03: 무거래 fold 가 G2P=inf 를 만들어 게이트를 거짓 통과시키던 것을 차단).
+WF_NO_TRADE_FOLD_MAX: Final[int] = 1
+
+# gain-to-pain 상한. 손실이 0이면 수학적으로 무한대지만, inf 를 그대로 흘리면
+# `inf < 임계값` 이 항상 False 라 게이트를 **조용히 통과**한다. 유한한 상한으로 표현한다.
+GAIN_TO_PAIN_CAP: Final[float] = 3.0
 
 # ---------------------------------------------------------------------------
 # RiskManager 기본 한도
