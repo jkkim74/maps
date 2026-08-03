@@ -1,7 +1,7 @@
 # HANDOFF
 
 > 작성일: 2026-08-03 (월, 저녁) · 작성자: 세션 에이전트 (**회사 PC, 키 `D:\ssh_maps\`**)
-> 서버 = **`bd222d6`** 배포 완료, alembic **`0018_candidate_entry_signal`**, 테스트 **640 passed**.
+> 서버 = **`e32fa04`** 배포 완료, alembic **`0018_candidate_entry_signal`**, 테스트 **646 passed**.
 > 8/2 기록은 아래 "이전 날(8/2)" 절로 내렸다 — 전략 실험 결론은 여전히 유효하다.
 
 ## Goal — 이 작업이 향하는 곳
@@ -18,12 +18,17 @@ Sharpe 왜곡 수정(8/2)과 자동 강등(8/2)이 8/3에 처음 실측됐다.
 | `d913cf5` | feat: KIS 연속조회 발동·보유 종목 수를 로그에 남긴다 (관측성 보강) |
 | `0a186c0` | feat: 후보 퍼널을 신호 기반으로 재설계 (Phase 1) — `0018` |
 | `bd222d6` | Merge feat/candidate-funnel-signal-gate |
+| `e4aaa1b` | docs: 8/3 세션 핸드오프 |
+| `3728958` | fix: G2P가 무거래를 inf로 내 승격 게이트를 거짓 통과시키던 것 차단 (+ analyze 타임아웃 2700) |
+| `e32fa04` | Merge fix/g2p-no-trade-guard |
 
-배포 2회: 14:05 KST(`d913cf5`), 16:25 KST(`bd222d6` + `alembic upgrade head` → 0018).
-둘 다 `active (running)`, 기동 후 오류 없음. requirements 변경 없음.
+배포 3회: 14:05 KST(`d913cf5`), 16:25 KST(`bd222d6` + `alembic upgrade head` → 0018),
+17:48 KST(`e32fa04`, 마이그레이션 없음). 전부 `active`, 기동 후 오류 없음.
+requirements 변경 없음.
 
 > ⚠️ **배포 시 `alembic upgrade head` 를 반드시 넣을 것.** CLAUDE.md 의 원라이너 배포
 > 명령에는 마이그레이션 단계가 **빠져 있다**. 0018 은 수동으로 넣어 적용했다.
+> (CLAUDE.md `!deploy` 안전 수칙에 이 경고와 아래 배포 금지 시간대를 8/3에 추가했다.)
 
 ## 8/3 작업 ① — broker_sync 잔고 정합 확인 (이월 7번) → 종결
 
@@ -108,6 +113,69 @@ TDD로 진행(테스트 6건 먼저 실패시킨 뒤 구현), `tests/test_candid
 - **pullback_v2**: WFA 통과했으나 tradeability **43.5 < 60** 에서 차단
 - **ath_breakout_v1**: 점수 **78.7**(live_candidate 임계 75 초과)인데 `mock_months=0.0` 으로 차단
 
+## 8/3 작업 ④ — G2P `Infinity`/`NaN` (이월 결함표 🔴) → 수정·배포 완료
+
+### 8/3 낮 보고 정정
+
+낮에 "`NaN` 은 어떤 비교에도 False → G2P 조건이 **영구 실패**"라고 보고했는데 **반대였다.**
+`_evaluate` 는 `if mean_g2p < WF_OOS_IS_G2P_MIN: 실패사유 추가` 구조라 `NaN < 0.6` 도
+`inf < 0.6` 도 False → 사유가 붙지 않고 **조용히 통과**한다. 제한이 아니라 **과잉 허용**이었다.
+
+### 근본 원인 — "무손실"이 아니라 "무거래"
+
+`gains`/`losses` 는 일별 수익률에서 나온다. 거래가 0건이면 둘 다 0 → `losses > 0` 이
+False → `inf`. **"손실이 없다"와 "거래를 안 했다"가 같은 값**이 됐다.
+
+8/3 fold 15건 실측에서 `oos_g2p = Infinity` 는 **예외 없이 `oos_sharpe = 0.000`**
+(그 구간 무거래)과 동반했다. 관측된 13건이 전부 무거래다.
+
+| 전략 | 실태 |
+|---|---|
+| contrarian_quality | **5/5 폴드 OOS 무거래**인데 G2P 조건 통과 중이었다 |
+| multi_asset_trend_v1 | 3/5 무거래 + 음수폴드 1(통과) + Sharpe −0.015 → **Sharpe 가 0만 넘으면 WFA 전체 통과**할 상태였다 |
+| ath_breakout_v2 | fold 1 은 IS·OOS 둘 다 무거래 → `inf/inf` = `NaN` |
+
+부수: `_selection_score` 가 비유한 G2P 를 캡으로 바꿔 **파라미터 선택이 "거래 안 하는
+조합"에 G2P 만점**을 주고 있었다. 소스 수정으로 함께 해소.
+
+### 변경
+
+| 파일 | 내용 |
+|---|---|
+| `common/constants.py` | `GAIN_TO_PAIN_CAP=3.0`, `WF_NO_TRADE_FOLD_MAX=1` 신설 |
+| `backtest/engine.py` | `_gain_to_pain()` — 손실 있음→비율, 무손실→cap, **무거래→0.0**. `inf` 를 절대 반환하지 않는다 |
+| `validation/walk_forward.py` | `g2p_ratio` 비유한 시 0.0 / `FoldResult.oos_trades` + `no_trade_folds` / `_evaluate` 에 비유한 실패 처리 + 무거래 전용 사유 |
+
+> 📌 `oos_trades` 기본값은 **`None`(미지)** 이다. `0` 으로 뒀더니 값을 안 채운 경로가 전부
+> "무거래"로 오인돼 기존 테스트가 깨졌다 — **미지와 실측 0을 반드시 구분**할 것.
+
+WFA 통과 조건이 **3개 → 4개**가 됐다. `validation/CLAUDE.md` 와 모듈 docstring 갱신함.
+테스트 6건 추가(`test_backtest.py` 2, `test_walk_forward.py` 4). **DB 컬럼 추가 없음.**
+
+**예상 영향**: 8/3 데이터 기준 **판정이 뒤집히는 전략은 없다.** 잠재 거짓통과만 제거된다.
+
+## 8/3 작업 ⑤ — analyze 배치는 "안 돈 게" 아니라 **타임아웃으로 죽었다**
+
+`/etc/cron.d/maps-analyze` 정상, **16:00:01 에 실행됨**. `analysis_run` id=25:
+`status=failed`, `picks_count=0`, `error_message=timeout(1800s)`. 16:30:03 강제 종료
+— **$8.25 쓰고 0건**.
+
+**원인 1 — 여유가 이미 없었다**: 7/27 17분 → 7/30 28분 → 7/31 29분 → 8/3 **30분 초과**.
+→ 조치: `ANALYZE_TIMEOUT` **1800 → 2700**(배포 완료, 서버 반영 확인).
+
+**원인 2 🔴 — strategy-selector 가 승격 단계를 문서에서 추측한다 (미해결)**:
+`/opt/maps/.claude/agents/strategy-selector.md` 의
+`tools: Read, Task*, WebFetch, WebSearch` — **`Bash` 가 없다.** psql 을 못 써
+`promotion_history` 를 볼 수 없으니 사람용 문서인 `HANDOFF.md` 를 데이터 소스로 삼는다.
+8/3 에는 그 추측이 틀려 "stage 확인 불가 → 전량 배제"를 냈고, 오케스트레이터가 정정 후
+**재선정을 다시 돌려**(서브에이전트 1건 9.6분) 예산을 까먹었다. **타임아웃 상향은 증상
+완화일 뿐이다** → Next Steps 참고.
+
+**원인 3 — 내 배포가 실행 중에 겹쳤다 (과실)**: `HANDOFF.md` mtime = **16:25:20**.
+analyze 가 16:00~16:30 에 도는 중 `git pull` 이 **에이전트가 읽는 작업 트리를 바꾸고**
+`systemctl restart` 까지 했다. → 조치: CLAUDE.md `!deploy` 에 **16:00~16:45 배포 금지**
+와 `flock -n /tmp/maps_analyze.lock` 확인 절차 명시(17:48 배포 시 실제로 확인 후 진행).
+
 ## 이전 날(8/2) — 전략 실험 시리즈 (운영 콘솔 API 실행, backtest_run_log 에 전부 저장)
 
 새 백테스트 기능(기간·유니버스·판정)으로 pullback_v3 부진의 뿌리를 추적한 결론:
@@ -142,8 +210,12 @@ TDD로 진행(테스트 6건 먼저 실패시킨 뒤 구현), `tests/test_candid
 
 배포 서버: AWS Lightsail `3.37.117.246`, `/opt/maps`, systemd `maps`, `https://maps.magable.kr`.
 운영 DB PostgreSQL. **SSH 키는 PC마다 다름**: 회사 PC `D:\ssh_maps\`, 집 PC `D:\maps\`.
-서버는 **`bd222d6`** 배포 완료 (8/3 16:25 KST), alembic **`0018_candidate_entry_signal`**(head).
-테스트 **640 passed**. requirements 변경 없음. 로컬도 master = `bd222d6`, head 0018.
+서버는 **`e32fa04`** 배포 완료 (8/3 17:48 KST), alembic **`0018_candidate_entry_signal`**(head).
+테스트 **646 passed**. requirements 변경 없음. 로컬도 master = `e32fa04`, head 0018.
+
+> 🔴 **16:00~16:45 KST 는 배포 금지 시간대다** — `/etc/cron.d/maps-analyze` 가 매 거래일
+> 16:00 에 `/analyze` 를 45분 상한으로 돌린다. 배포 전 확인:
+> `flock -n /tmp/maps_analyze.lock true && echo 배포가능 || echo 대기`
 
 ## 8/2 낮 점검 세션 기록 (읽기 전용 — 발견 당시 기준)
 
@@ -166,7 +238,7 @@ TDD로 진행(테스트 6건 먼저 실패시킨 뒤 구현), `tests/test_candid
 | 🟡 | `api/wfa.py:142` `tickers[0]` — 스케줄러 `_pick_wfa_ticker` 개선 미반영 |
 | 🟡 | `scheduler._wfa_required_bars()` 2016 하드코딩 — analyzer 기본값과 어긋날 수 있음 |
 | 🟡 | `portfolio_replay.py:134` entry-only 신호 시 `sig["exit_signal"]` KeyError 가능; `exit_reason` 항상 `""` |
-| 🔴 | ~~🟡 `gain_to_pain=inf`~~ → **8/3 승격 판정을 실제로 왜곡 중임이 확인됨. 승격**. `walk_forward_results.mean_g2p` 가 8전략 중 4개에서 비정상: `Infinity` 3(contrarian·multi_asset_trend_v1·ath_breakout_v1), `NaN` 1(ath_breakout_v2). **`NaN` 은 어떤 비교에도 False → G2P≥0.6 조건이 조용히 영구 실패**(Sharpe 가 양수로 돌아서도 통과 불가). **`Infinity` 는 조건을 통과시킨다** — "손실 거래 0" 이라는 뜻이라 표본이 적으면 무의미한 거짓 통과. multi_asset_trend_v1 은 Sharpe −0.015 / 음수폴드 1 로 **통과 직전**이라 실재 위험 |
+| ✅ | ~~`gain_to_pain=inf`~~ → **8/3 저녁 수정·배포 완료** (`3728958`). 원인은 "무손실"이 아니라 **"무거래"** 였다. 상세는 "8/3 작업 ④" 절. 낮에 "NaN 은 영구 실패"라고 적었던 것은 **오보** — 실제로는 `inf` 도 `NaN` 도 조건을 **조용히 통과**시켰다 |
 | 🔵 | UI 진행률 5단계 장식(실제 1단계만), `progress_pct` 항상 100, "WFA 기준" 문구 낡음, `started_at` UTC naive(화면 9시간 어긋남) |
 | 🔵 | `cost_sensitivity.py` `net_cagr=None` 고정 · `engine.run()` `universe` 인자 미사용 · `backtest/CLAUDE.md` 낡음(모듈 3개 누락·상수명 오기) · `/api/v1/wfa`·`robustness` 라우터 테스트 부재 |
 
@@ -199,25 +271,37 @@ TDD로 진행(테스트 6건 먼저 실패시킨 뒤 구현), `tests/test_candid
    08:55 재계산 신호 집합이 일치하는지**(어긋나면 그게 곧 버그 — 같은 OHLCV·같은 400봉을
    쓰므로 일치해야 정상). 단 장세가 여전히 `weak` 면 전량 차단이라 확인 불가 — 그때는
    strong/mixed 로 바뀌는 날까지 이월.
-2. 🔴 **G2P `Infinity`/`NaN` 처리** (위 결함표 참고). 승격 판정을 이미 왜곡 중이다.
-   `NaN` → 영구 실패, `Infinity` → 거짓 통과. 8전략 중 4개가 해당.
-   손실 거래가 0인 폴드의 G2P 정의를 먼저 정해야 한다(상한 클램프 vs 별도 사유 코드).
-3. 🟡 **자동 강등 4건에 대한 판단.** `mock_candidate` 6개 → 2개. 의도된 동작이지만 규모가
+2. 🔴 **8/4 17:10 검증 잡 — G2P 수정 실효 확인.**
+   ```sql
+   SELECT strategy_id, mean_g2p, passed, fail_reasons_json
+   FROM walk_forward_results WHERE run_date = '2026-08-04';
+   ```
+   기대: `mean_g2p` 에 `Infinity`/`NaN` **0건**, 무거래가 많던 3전략
+   (contrarian 5/5, multi_asset_trend_v1 3/5, ath_breakout_v2 3/5)에
+   `OOS 무거래 fold=N/5` 사유가 붙는다. **통과 전략 수는 변하지 않아야 한다** —
+   늘거나 줄면 예상과 다르므로 조사할 것.
+3. 🔴 **strategy-selector 의 승격 단계 입력원** (8/3 작업 ⑤ 원인 2).
+   에이전트에 `Bash` 가 없어 `promotion_history` 를 못 읽고 사람용 문서인 `HANDOFF.md` 를
+   파싱한다. 타임아웃 상향(2700)은 증상 완화일 뿐이다. 두 방향 —
+   (a) 에이전트에 `Bash` 부여(무인 실행에 셸 권한을 늘린다),
+   (b) **파이프라인이 stage 를 미리 조회해 입력 JSON 으로 주입**(권장 — 에이전트가 사람용
+   문서를 파싱하는 구조 자체를 없앤다). 설계 필요.
+4. 🟡 **자동 강등 4건에 대한 판단.** `mock_candidate` 6개 → 2개. 의도된 동작이지만 규모가
    커서 모의 매매 관측 표본이 줄어든다. 강등 임계(연속 10회 <50)를 유지할지,
    새 Sharpe 기준으로 재산정할지 사용자 판단 필요.
-4. 🔵 **후보 퍼널 Phase 2 (AI 스코어링) — 착수 가능.** Phase 1 이 배포·실측을 마쳤으므로
+5. 🔵 **후보 퍼널 Phase 2 (AI 스코어링) — 착수 가능.** Phase 1 이 배포·실측을 마쳤으므로
    대상 선정이 비로소 의미를 갖는다(신호 종목 264건 중 상위 N). 사양·정정사항은
    `docs/plans/candidate-funnel-ai-scoring.md` 참고. **Bedrock 호출자 둘을 함께** 옮길 것
    (`technical_scorer` + `contrarian_analyzer`, `aws_bedrock_model_id` 공유).
-5. 블로그 21편 발행 — 원고 `docs/blog_series_backtest/`, 붙여넣기 검사 통과 상태.
+6. 블로그 21편 발행 — 원고 `docs/blog_series_backtest/`, 붙여넣기 검사 통과 상태.
    (신규 기능·Sharpe 수정으로 일부 원고 내용이 낡았을 수 있음 — 발행 전 콘솔 관련
    편의 스크린샷·문구 확인)
-6. `google-services.json` 커밋 여부 사용자 결정.
-7. 2015년 OHLCV 백필 (운영 절차) — 연 단위 청크로
+7. `google-services.json` 커밋 여부 사용자 결정.
+8. 2015년 OHLCV 백필 (운영 절차) — 연 단위 청크로
    `POST /api/v1/scheduler/backfill/ohlcv?start=2015-01-01&end=2015-12-31` → 2016-01-03까지.
    실패는 `job_run_log`에 남음. (운영 data_start 실측 2016-01-04)
-8. ath_breakout_v1 × `recent_ipo` 유니버스 검증 (IPO 전략 글 가설 — 콘솔에서 바로 가능)
-9. 🟡 **pullback_v3 청산 재설계 (v3.3) — 정식 과제.** 8/2 실험 11회로 좌표 확정:
+9. ath_breakout_v1 × `recent_ipo` 유니버스 검증 (IPO 전략 글 가설 — 콘솔에서 바로 가능)
+10. 🟡 **pullback_v3 청산 재설계 (v3.3) — 정식 과제.** 8/2 실험 11회로 좌표 확정:
    문제는 진입이 아니라 청산(MA5 상향 크로스 즉시 익절 하드코딩 → 손익비 상한 <1.25,
    승률 58~75%로도 비용을 못 이김).
    - 방향: 청산을 파라미터화 — ① 이익목표 P%/트레일링 스탑 도입(IPO 글의 P=20%/L=10%,
@@ -286,6 +370,12 @@ TDD로 진행(테스트 6건 먼저 실패시킨 뒤 구현), `tests/test_candid
 - `maps/common/settings.py` — `maps_candidate_snapshot_top_n`(기본 50).
 - `tests/test_candidate_funnel.py` — 신규 6건 (신호 경로 일치, N회 로드, 게이트, 카운터).
 - `alembic/versions/0018_candidate_entry_signal.py`.
+- `maps/backtest/engine.py` — `_gain_to_pain()` (무거래=0.0 / 무손실=cap, **inf 반환 없음**).
+- `maps/validation/walk_forward.py` — `FoldResult.oos_trades`(기본 `None`=미지),
+  `WalkForwardResult.no_trade_folds`, `g2p_ratio` 유한 보장, `_evaluate` 조건 4개.
+- `maps/common/constants.py` — `GAIN_TO_PAIN_CAP`, `WF_NO_TRADE_FOLD_MAX`.
+- `scripts/run_analyze_cron.sh` — `ANALYZE_TIMEOUT` 2700.
+- `CLAUDE.md` — `!deploy` 안전 수칙에 alembic 경고 + 16:00~16:45 배포 금지.
 
 ## 핵심 파일 맵 (8/2 점검에서 본 곳)
 
