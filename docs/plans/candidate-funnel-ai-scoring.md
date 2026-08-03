@@ -1,28 +1,42 @@
 # 후보 퍼널을 신호 기반으로 재설계하고 AI 스코어링을 붙인다
 
-> 상태: **계획 확정, 구현 착수 전** (2026-07-31 작성)
-> 기준 커밋: `6395666` (운영 배포 완료 상태). 테스트 기준선 **581 passed**.
+> 상태: **Phase 1(퍼널) 구현 완료 — Phase 2(AI) 착수 전** (2026-08-03 개정)
+> 최초 작성 2026-07-31, 기준 커밋 `6395666` / 테스트 기준선 581.
+> 개정 시점 기준 커밋 `d913cf5`, 테스트 기준선 **634 → 640 passed**.
 > 승인 범위: 퍼널 재설계 + AI 재설계. 저장은 신호 종목 전수 + 전략별 상위 N.
 > 모델은 Claude Opus 5. 성과 A/B 검증은 이번 범위에서 제외.
 
-## 다음 세션 착수점
+## 2026-08-03 재검토에서 정정한 것
 
-읽을 순서와 정확한 위치를 적어 둔다. 코드를 다시 뒤지지 않아도 되게.
-(행 번호는 `6395666` 기준. 파일이 바뀌었으면 함수명으로 찾을 것.)
+원안을 `d913cf5` 기준으로 대조한 결과. **진단은 유효했고**(아래 Context의 근거를 7/31
+실측으로 재확인), 다음 넷을 고쳤다:
 
-| 볼 곳 | 무엇이 있나 |
+1. **마이그레이션 체인** — 원안의 `down_revision = "0013_order_log_entry_atr"`는 틀렸다.
+   실제 head는 `0017_bt_run_period_verdict`. 새 마이그레이션은 `0018_candidate_entry_signal`.
+2. **테스트 기준선** — 581 → 634.
+3. **"AI를 켜면 유니버스를 두 번 훑는다 → 하루 20,160회"** — AI가 꺼진 현재
+   `ai_candidate_top_n=0`이라 pre-scoring 루프를 통째로 건너뛴다. 실제는 **10,080회**였다.
+   이중 순회 제거는 "지금 절반"이 아니라 "AI를 켤 때 2배가 되는 구조를 미리 없앰"이다.
+4. **Bedrock 호출자가 둘이다** — 원안은 `technical_scorer.py`만 다뤘으나
+   `contrarian_analyzer.py`도 같은 `boto3.invoke_model` + 같은 `aws_bedrock_model_id`를
+   공유한다. 한쪽만 옮기면 모델 ID 형식이 갈린다(`us.anthropic.*` vs Mantle `anthropic.*`).
+   → **Phase 2에서 두 모듈을 함께** 옮긴다.
+
+착수 전 확인사항이던 "운영 `.env`의 `MAPS_AI_CANDIDATE_TOP_N`"은 **미설정**으로 확인됐다
+(기본 5). 의미를 바꿔도 운영 오버라이드 조정은 필요 없다.
+
+## Phase 1 구현 결과 (완료)
+
+| 변경 | 위치 |
 |---|---|
-| `maps/ops/scheduler.py:395` | `for strategy_id in _RUNNABLE_STRATEGIES` — 전략마다 유니버스를 다시 도는 지점 |
-| `maps/ops/scheduler.py:1215` | `_save_candidate_snapshot` 본체. 1282~1344가 삭제할 pre-scoring 루프 |
-| `maps/ops/scheduler.py:1378` | 종목별 OHLCV 로드(`repo.to_dataframe`) — `start` 없이 전 기간을 읽는다 |
-| `maps/ops/scheduler.py:2370` | `_latest_strategy_signal` — 프레임 받는 함수로 분리할 대상 |
-| `maps/ai/technical_scorer.py:25` | `_PROMPT_TEMPLATE` — 2행에 `{ticker}`가 있어 캐시 접두사가 없다 |
-| `maps/ai/technical_scorer.py:265` | `max_tokens=512`, `temperature=0.1` — 둘 다 Opus 5에서 고쳐야 한다 |
-| `maps/common/settings.py:132` | `maps_ai_candidate_top_n` (기본 5, 전략별 적용 중) |
-| `alembic/versions/0013_order_log_entry_atr.py` | 새 마이그레이션의 본보기 (멱등 가드 포함) |
+| 신호 계산 정본 분리 | `scheduler.py` `_signal_from_frame(strategy_id, frame)` 신규, `_latest_strategy_signal`은 DB 래퍼로. 봉 수는 `_SIGNAL_LOOKBACK_BARS=400` 상수로 공유 |
+| 종목 컨텍스트 1회 계산 | `scheduler.py` `TickerContext` + `_build_ticker_contexts()`. `generate_candidates`가 전략 루프 **밖에서** 호출 |
+| 저장 정책 | 신호 종목 전수 ∪ 나머지 중 `final_score` 상위 N (`maps_candidate_snapshot_top_n`, 기본 50) |
+| 스키마 | `candidate_snapshot.entry_signal` (nullable bool) + `0018_candidate_entry_signal` |
+| 단계별 카운터 | 전략별 INFO 로그 `후보 저장 [id]: universe=.. signals=.. stored=.. dropped=..` + 잡 details 의 `universe_size`/`signal_count`/`dropped_count` |
 
-착수 전 확인할 것 하나: 운영 `.env`에 `MAPS_AI_CANDIDATE_TOP_N`이 설정돼 있는지.
-설정 의미가 전략별 → 하루 전체로 바뀌므로 값이 있으면 함께 조정해야 한다.
+테스트: `tests/test_candidate_funnel.py` 6건 신규. `_save_candidate_snapshot` 반환값이
+`len(universe)` → **저장된 행 수**로 바뀌었다(`saved_count` 의미가 정확해짐).
 
 ## Context
 
@@ -79,6 +93,9 @@
 ---
 
 ## 변경 내용
+
+> 아래 1~3은 **Phase 1 로 구현 완료**. 4~5(AI)는 착수 전이며, 위 "재검토에서 정정한 것"의
+> 4번(호출자 둘)과 Opus 5 관련 주의사항을 반드시 함께 적용할 것.
 
 ### 1. OHLCV·지표 계산을 한 번으로 (`maps/ops/scheduler.py`)
 
