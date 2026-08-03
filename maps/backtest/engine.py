@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 
 from maps.backtest.cost_model import VOL_MULTIPLIER_MAP, CostModel, Trade
+from maps.common.constants import GAIN_TO_PAIN_CAP
 from maps.common.exceptions import BacktestError
 from maps.common.sizing import risk_based_qty
 from maps.strategy.base import BaseStrategy
@@ -284,6 +285,23 @@ class BacktestEngine:
             strategy.strategy_id, data, equity_curve, trade_list, exposure_curve
         )
 
+    @staticmethod
+    def _gain_to_pain(gains: float, losses: float) -> float:
+        """이익합/손실합. **inf 를 절대 반환하지 않는다.**
+
+        `gains`/`losses` 는 일별 수익률에서 나오므로 거래가 한 건도 없으면 둘 다 0이 된다.
+        예전에는 `losses == 0` 을 전부 `inf` 로 내보내 **"손실이 없다"와 "거래를 안 했다"가
+        같은 값**이 됐고, `inf < 임계값` 이 항상 False 라 검증 게이트를 조용히 통과했다
+        (2026-08-03 실측: OOS 무거래 fold 13건이 전부 G2P=inf).
+
+        - 손실 있음 → 통상적인 비율
+        - 손실 0, 이익 있음 → 상한값(무손실은 좋은 것이지 무한대가 아니다)
+        - 둘 다 0 (무거래·무변동) → **0.0** — 평가 대상이 아니지 만점이 아니다
+        """
+        if losses > 0:
+            return gains / losses
+        return GAIN_TO_PAIN_CAP if gains > 0 else 0.0
+
     def _compute_metrics(
         self,
         strategy_id: str,
@@ -331,9 +349,9 @@ class BacktestEngine:
             else 0.0
         )
 
-        gains = daily_rets[daily_rets > 0].sum()
-        losses = abs(daily_rets[daily_rets < 0].sum())
-        g2p = float(gains / losses) if losses > 0 else float("inf")
+        gains = float(daily_rets[daily_rets > 0].sum())
+        losses = float(abs(daily_rets[daily_rets < 0].sum()))
+        g2p = self._gain_to_pain(gains, losses)
 
         wins = sum(1 for t in trade_list if t.net_pnl > 0)
         win_rate = wins / len(trade_list) if trade_list else 0.0

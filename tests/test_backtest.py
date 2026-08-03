@@ -284,3 +284,64 @@ def test_sharpe_exposure_scale_invariant():
         sharpes.append(engine._compute_metrics("s", data, equity, [], exposure_curve).sharpe)
 
     assert sharpes[0] == pytest.approx(sharpes[1], rel=1e-6)
+
+
+# ── G2P: "무손실"과 "무거래"를 구분한다 ────────────────────────────────────────
+#
+# 일별 수익률에서 gains/losses 를 구하므로, 거래가 한 건도 없으면 losses==0 이 되어
+# "손실이 없다"와 "거래를 안 했다"가 같은 값이 됐다. inf 를 내면 WFA 의 G2P 조건
+# (mean_g2p < 0.6 이면 실패)이 `inf < 0.6 == False` 로 **조용히 통과**한다.
+
+
+class _NeverTradesStrategy(BaseStrategy):
+    """진입 신호를 한 번도 내지 않는 전략 — OOS 무거래 폴드를 재현한다."""
+
+    strategy_id = "never_trades"
+
+    def generate_signals(self, data: pd.DataFrame, params: dict) -> pd.DataFrame:
+        df = data.copy()
+        df["entry_signal"] = False
+        df["exit_signal"] = False
+        return df
+
+    @property
+    def default_params(self) -> dict:
+        return {}
+
+    @property
+    def param_grid(self) -> dict:
+        return {}
+
+
+def test_gain_to_pain_is_zero_when_no_trades() -> None:
+    """거래가 0건이면 G2P 는 inf 가 아니라 0.0 이어야 한다.
+
+    inf 를 내면 "손실 한 번 없는 완벽한 전략"으로 오인돼 검증 게이트를 통과한다.
+    거래를 안 한 것은 평가 대상이 아니지 만점이 아니다.
+    """
+    engine = BacktestEngine()
+    result = engine.run(_NeverTradesStrategy(), {}, _make_ohlcv(120))
+
+    assert result.total_trades == 0
+    assert result.gain_to_pain == 0.0, (
+        f"무거래인데 G2P={result.gain_to_pain} — inf/양수면 게이트를 거짓 통과시킨다"
+    )
+
+
+def test_gain_to_pain_is_capped_when_no_losing_days() -> None:
+    """손실일이 없고 이익만 있으면 상한값으로 표현한다 (inf 금지)."""
+    import numpy as np
+
+    from maps.backtest.engine import BacktestEngine as _Engine
+    from maps.common.constants import GAIN_TO_PAIN_CAP
+
+    engine = _Engine()
+    # _compute_metrics 를 직접 두드린다 — 손실일 0인 수익률 시퀀스를 만들기 위해
+    daily = np.array([0.01, 0.02, 0.0, 0.015])
+    gains = float(daily[daily > 0].sum())
+    losses = float(abs(daily[daily < 0].sum()))
+    assert losses == 0.0 and gains > 0.0
+
+    g2p = engine._gain_to_pain(gains, losses)
+    assert g2p == GAIN_TO_PAIN_CAP
+    assert np.isfinite(g2p)

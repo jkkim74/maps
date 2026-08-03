@@ -321,6 +321,17 @@ When the user types `!deploy`, execute **in order**:
 > - Never deploy if tests fail.
 > - Never deploy a dirty working tree (uncommitted changes).
 > - If `systemctl restart` fails, immediately run `sudo journalctl -u maps -n 50 --no-pager` and report the error.
+> - **마이그레이션이 있으면 `alembic upgrade head` 를 반드시 포함**한다. 위 원라이너에는
+>   빠져 있다 — 빠뜨리면 새 컬럼 없이 기동해 런타임에서 깨진다.
+> - 🔴 **16:00~16:45 KST 에는 배포하지 않는다.** `/etc/cron.d/maps-analyze` 가 매 거래일
+>   16:00 에 `/analyze` 파이프라인을 45분 상한으로 돌린다. 이 시간에 `git pull` 하면
+>   **에이전트가 읽는 작업 트리가 실행 중에 바뀌고** `systemctl restart` 까지 겹친다
+>   (2026-08-03 실제 발생: 16:25 배포가 진행 중이던 analyze 와 겹쳤고 그 회차는 타임아웃).
+>   급하면 배포 전에 실행 여부를 확인한다:
+>   ```bash
+>   flock -n /tmp/maps_analyze.lock true && echo "analyze 미실행 — 배포 가능" \
+>     || echo "analyze 실행 중 — 대기"
+>   ```
 
 ### `!ship [commit message]` — Test → Commit → Push
 

@@ -16,13 +16,19 @@ validation/
 
 5-fold rolling window 방식으로 전략의 In-Sample / Out-of-Sample 성과를 검증한다.
 
-### 통과 조건 (AND 3개)
+### 통과 조건 (AND 4개)
 
 | 조건 | 기준 | 상수 |
 |---|---|---|
 | `sharpe_mean > 0` | 평균 Sharpe 양수 | `WF_SHARPE_MEAN_MIN = 0.0` |
 | `negative_folds ≤ 1` | 5개 fold 중 음수 fold 최대 1개 | `WF_NEGATIVE_FOLD_MAX = 1` |
-| `mean_g2p ≥ 0.6` | OOS/IS G2P 비율 평균 | `WF_OOS_IS_G2P_MIN = 0.6` |
+| `mean_g2p ≥ 0.6` **이고 유한** | OOS/IS G2P 비율 평균 | `WF_OOS_IS_G2P_MIN = 0.6` |
+| `no_trade_folds ≤ 1` | OOS 무거래 fold 최대 1개 | `WF_NO_TRADE_FOLD_MAX = 1` |
+
+> **비유한 `mean_g2p` 는 실패로 처리한다.** `inf < 0.6` 도 `NaN < 0.6` 도 False라
+> 그냥 두면 조건이 조용히 통과한다 (2026-08-03 발견, 8전략 중 4개가 이 상태였음).
+> 근본 원인은 `engine._gain_to_pain` 이 무거래와 무손실을 모두 `inf` 로 낸 것이며,
+> 지금은 무거래=0.0 / 무손실=`GAIN_TO_PAIN_CAP`(3.0) 으로 구분한다.
 
 > `std/|mean| ≤ 0.5` 조건은 제거됨. 사유: 임계값 근거 없음, 나머지 3개 조건이 이미 일관성·과적합을 충분히 통제.
 
