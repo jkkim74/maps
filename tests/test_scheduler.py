@@ -499,6 +499,82 @@ def test_broker_sync_submits_stop_loss_exit_during_market_hours(monkeypatch) -> 
         engine.dispose()
 
 
+def test_broker_sync_note_records_holdings_count(monkeypatch) -> None:
+    """broker_sync 감사 로그 note에 보유 종목 수가 남는다.
+
+    KIS 연속조회(tr_cont)가 잔고를 20종목에서 자르지 않는지 사후 확인하는 지표다.
+    portfolio_snapshot은 (ref_date, source) 유니크 upsert라 날짜당 마지막 값만 남지만,
+    이 note는 60초마다 한 행씩 쌓여 장중 변동까지 보존한다.
+    """
+    import maps.ops.scheduler as scheduler_module
+
+    engine, factory = _session_factory()
+    settings = MapsSettings(
+        maps_broker_mode="mock",
+        maps_data_provider="mock",
+        maps_live_trading_enabled=False,
+    )
+    pipeline = OperationalPipeline(settings=settings, session_factory=factory)
+    broker = MockBroker(initial_cash=1_000_000, price_feed={"AAAA": 10_000, "BBBB": 5_000})
+    for ticker in ("AAAA", "BBBB"):
+        broker.place_order(Order(
+            strategy_id="pullback_v3",
+            ticker=ticker,
+            side=OrderSide.BUY,
+            order_type=OrderType.MARKET,
+            quantity=10,
+        ))
+    monkeypatch.setattr(scheduler_module, "get_broker", lambda _mode: broker)
+
+    run = pipeline.sync_broker_state(dt.date(2026, 5, 5))
+
+    assert run.status == "success"
+    db = factory()
+    try:
+        row = db.query(CollectionLog).filter(CollectionLog.source == "scheduler.broker_sync").one()
+        assert "holdings=2" in (row.note or "")
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def test_broker_sync_note_marks_holdings_unavailable_when_broker_cannot_report(monkeypatch) -> None:
+    """포지션 조회를 지원하지 않는 브로커면 `holdings=n/a` — 0과 구분해야 한다.
+
+    `_broker_positions`는 미지원 시 None, 전량 미보유 시 빈 dict를 돌려준다. 둘을 같은
+    `holdings=0`으로 적으면 "잔고 조회가 죽었다"와 "정말 하나도 없다"를 구분할 수 없다.
+    """
+    import maps.ops.scheduler as scheduler_module
+
+    engine, factory = _session_factory()
+    settings = MapsSettings(
+        maps_broker_mode="mock",
+        maps_data_provider="mock",
+        maps_live_trading_enabled=False,
+    )
+    pipeline = OperationalPipeline(settings=settings, session_factory=factory)
+    broker = MockBroker(initial_cash=1_000_000)
+
+    def _unsupported() -> dict[str, int]:
+        raise NotImplementedError
+
+    monkeypatch.setattr(broker, "get_positions", _unsupported)
+    monkeypatch.setattr(scheduler_module, "get_broker", lambda _mode: broker)
+
+    run = pipeline.sync_broker_state(dt.date(2026, 5, 5))
+
+    assert run.status == "success"
+    db = factory()
+    try:
+        row = db.query(CollectionLog).filter(CollectionLog.source == "scheduler.broker_sync").one()
+        assert "holdings=n/a" in (row.note or "")
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
 def test_broker_sync_does_not_submit_exit_when_market_is_closed(monkeypatch) -> None:
     import maps.ops.scheduler as scheduler_module
 

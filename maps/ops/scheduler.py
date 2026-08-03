@@ -693,7 +693,11 @@ class OperationalPipeline:
                 note=(
                     f"open_orders={sync['open_orders']} "
                     f"exit_monitor={'on' if exit_monitor_active else 'off'} "
-                    f"submitted_sell_orders={submitted_sell_orders}"
+                    f"submitted_sell_orders={submitted_sell_orders} "
+                    # 보유 종목 수 — KIS 연속조회(tr_cont) 페이지네이션이 잔고를 20종목에서
+                    # 자르지 않는지 사후 확인하는 지표. portfolio_snapshot은 (ref_date, source)
+                    # 유니크 upsert라 날짜당 마지막 값만 남지만, 이 note는 장중 변동까지 남는다.
+                    f"holdings={'n/a' if holdings is None else len(holdings)}"
                 ),
             )
             return {

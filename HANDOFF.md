@@ -86,12 +86,34 @@
 - HANDOFF.md 이 갱신분만 미커밋.
 - `apps/mobile/google-services.json` — 커밋 여부 사용자 결정 대기.
 
-## 운영 확인 필요 (다음 거래일 = 8/3 월, KIS 페이지네이션 `86d5b7e` 후속)
+## 운영 확인 완료 (8/3 월, KIS 페이지네이션 `86d5b7e` 후속) — 결론: 무해하나 미검증
 
-- `broker_sync` 잔고 종목 수가 실제 보유와 일치하는지 — 특히 보유 20종목 초과 시.
-  기존 FILLED 오판 SELL이 있었다면 정합 복귀로 상태 변화 로그가 나올 수 있다.
-- 연속조회로 호출 수 증가 → 모의투자 초당 한도(EGW00201) 로그 증가 여부 한 번 확인
-  (기존 `_send_with_retry` 재시도로 자가복구되는 부류).
+DB·로그만으로 확인(외부 KIS 호출 없음). 상세 절차는 계획서
+`C:\Users\jack\.claude\plans\2-snoopy-forest.md`.
+
+| 항목 | 결과 |
+|---|---|
+| 보유 종목 수 (`portfolio_snapshot.holdings`, 6/15~8/3) | **최대 3** — 20 근처에 간 적 없음 → 페이지네이션 미발동, **실효 입증 불가** |
+| 재시도 소진 WARNING (`"재시도 모두 실패"`) | 배포 전 0건 / 후 0건 (journal 보존 5/21~) |
+| `sync_errors` | 전 사이클 0 |
+| broker_sync 하트비트 | 거래일 1,435~1,439회/일, 8/3도 정상 진행 |
+| 8/3 08:55 주문 사이클 | SELL 089860 ×113 `filled` 정상 |
+
+> ⚠️ **EGW00201은 로그로 셀 수 없다.** 재시도 단계가 `logger.debug`
+> (`kis_adapter.py:662`)라 INFO 레벨 journalctl에 안 남는다. 관측 가능한 신호는 전 재시도
+> 소진 시의 WARNING(`kis_adapter.py:676`)뿐 — 위 표는 그 기준이다.
+
+**관측성 보강 (미배포, 마이그레이션 없음)** — 다음에 20종목을 넘으면 별도 조사 없이 드러난다:
+- `kis_adapter._fetch_paged` — **2페이지 이상 읽었을 때만** INFO
+  (`"KIS 연속조회 %d페이지 병합: %s (output1 %d행)"`). 1페이지로 끝나는 평상시
+  (거래일 ~1,400회)에는 로그가 늘지 않는다. 기존 100페이지 상한 WARNING은 유지.
+- `scheduler.sync_broker_state` — `collection_log` note에 `holdings=<n>` 추가.
+  조회 미지원이면 `holdings=n/a`("잔고 조회가 죽었다"와 "정말 0종목"을 구분).
+  `holdings`는 같은 함수에서 이미 계산돼 있어 **새 API 호출이 없다**.
+- 테스트 3건 추가 (`test_kis_adapter.py` 1, `test_scheduler.py` 2). 전체 **634 passed**.
+
+**부수 확인**: `order_log` `0000031820` = buy `expired` qty 1253 / fill_qty 21 —
+이월 8번(부분체결이 만료 처리된다)의 실물 사례. 별건으로 남긴다.
 
 ## 주의 (이월, 계속 유효)
 
@@ -110,7 +132,9 @@
    기존 sharpe_mean −2.9~−8.3이 정상 범위로 돌아오며 8전략 승격 게이트가 처음으로
    의미 있게 갈린다. 실험 결과상 donchian_v2가 선두일 것. `/batch-monitor`에서 잡 성공
    여부, SCR-08/11에서 점수 확인 (이월 15·20번 연동).
-2. 8/3(월) broker_sync 잔고 정합 확인 (KIS 페이지네이션 후속 — 아래 절 참고).
+2. ~~8/3(월) broker_sync 잔고 정합 확인~~ → **완료** (이월 7번 참고). 미배포 코드 변경 있음:
+   연속조회 2페이지 이상일 때 INFO 로그(`kis_adapter._fetch_paged`) + broker_sync
+   `collection_log` note에 `holdings=<n>` 기록(`scheduler.sync_broker_state`). 마이그레이션 없음..
 3. 블로그 10편 발행 — 원고 `docs/blog_series_backtest/`, 붙여넣기 검사 통과 상태.
    (신규 기능·Sharpe 수정으로 일부 원고 내용이 낡았을 수 있음 — 발행 전 콘솔 관련
    편의 스크린샷·문구 확인)
@@ -134,7 +158,12 @@
 
 5. 워치리스트·보유 화면 브라우저 CSS 확인 (네비 1줄, 카드 2열)
 6. 픽 만료 가드 로그 — ARMED 픽 0건이라 아직 안 뜸
-7. ~~KIS 잔고·주문 페이지네이션~~ → `86d5b7e` 해소, **8/3 운영 확인만 남음** (위 절 참고)
+7. ~~KIS 잔고·주문 페이지네이션~~ → `86d5b7e` 해소. **8/3 운영 확인 완료 — 단 "미검증"**:
+   모의계좌 보유가 6/15~8/3 내내 **0~3종목**이라 페이지네이션이 발동한 적이 없다
+   (`portfolio_snapshot.holdings` 이력). 수정은 무해하나 실효는 입증 불가.
+   재시도 소진 WARNING은 배포 전(7/31~8/2) 0건 / 후(8/2~8/3) 0건, `sync_errors` 전 사이클 0,
+   broker_sync 하트비트 거래일 1,435~1,439회/일 정상. **초당 한도(EGW00201) 압박 징후 없음.**
+   → 20종목을 넘는 순간 자동으로 드러나도록 **관측성 보강**함(아래 절). 재조사 불필요.
 8. 🟡 부분체결이 만료 처리된다 (`expire_pending_orders`)
 9. 🟡 매매일지 페어링이 티커 단위 (`trade_review.py:119`)
 10. 🔵 후보 퍼널 재설계 + AI 스코어링 — 계획서 `docs/plans/candidate-funnel-ai-scoring.md`, 착수 전

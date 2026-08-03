@@ -416,11 +416,15 @@ class KISAdapter(BrokerAdapter):
         body의 `ctx_area_fk100/nk100`을 다음 요청 파라미터에 싣고 요청 헤더
         `tr_cont: N`으로 재호출한다. 반환값은 첫 페이지 payload에 이후 페이지의
         `list_key` 행을 이어 붙인 것 (output2 등 요약 필드는 첫 페이지 값 유지).
+
+        연속조회가 실제로 발동한 경우(2페이지 이상)에만 INFO를 남긴다. 1페이지로 끝나는
+        평상시(broker_sync 60초 간격 = 거래일 ~1,400회)에는 로그가 늘지 않으므로, 이
+        INFO 한 줄이 "페이지네이션이 실제로 동작했다"는 유일한 증거가 된다.
         """
         params = dict(params)
         merged: dict[str, Any] | None = None
         tr_cont = ""
-        for _page in range(_MAX_TR_CONT_PAGES):
+        for page in range(1, _MAX_TR_CONT_PAGES + 1):
             data = self._request("GET", path, tr_id=tr_id, params=params, tr_cont=tr_cont)
             if merged is None:
                 merged = data
@@ -429,6 +433,11 @@ class KISAdapter(BrokerAdapter):
                     data.get(list_key)
                 )
             if self._last_tr_cont not in _TR_CONT_HAS_MORE:
+                if page > 1:
+                    logger.info(
+                        "KIS 연속조회 %d페이지 병합: %s (%s %d행)",
+                        page, path, list_key, len(self._as_list(merged.get(list_key))),
+                    )
                 return merged
             params["CTX_AREA_FK100"] = str(data.get("ctx_area_fk100") or "")
             params["CTX_AREA_NK100"] = str(data.get("ctx_area_nk100") or "")

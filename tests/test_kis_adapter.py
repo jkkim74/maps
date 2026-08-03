@@ -390,6 +390,57 @@ def test_daily_order_pagination_follows_tr_cont(settings: MapsSettings) -> None:
     assert [o.order_id for o in orders] == ["1", "2"]
 
 
+def test_pagination_logs_info_only_when_more_than_one_page(
+    settings: MapsSettings, caplog: pytest.LogCaptureFixture
+) -> None:
+    """연속조회가 실제로 발동했을 때만 INFO 흔적을 남긴다.
+
+    1페이지로 끝나는 평상시(broker_sync 60초 간격)에는 로그가 늘면 안 되고, 2페이지
+    이상이면 반드시 남아야 한다 — 이 INFO 한 줄이 "페이지네이션이 운영에서 동작했다"를
+    사후 확인할 수 있는 유일한 증거다.
+    """
+    summary = {"prvs_rcdl_excc_amt": "0", "scts_evlu_amt": "0", "tot_evlu_amt": "0"}
+
+    # 1페이지로 끝나는 경우 — 로그 없음
+    http = FakeSession()
+    http.paged["/inquire-balance"] = [
+        FakeResponse(
+            {"rt_cd": "0", "output1": [_balance_row("005930")], "output2": [summary]},
+            headers={"tr_cont": "D"},
+        ),
+    ]
+    with caplog.at_level("INFO", logger=kis_adapter.logger.name):
+        KISAdapter(settings, http=http).get_positions()
+    assert not [r for r in caplog.records if "연속조회" in r.getMessage()]
+
+    # 2페이지인 경우 — 페이지 수와 병합 행 수가 남는다
+    caplog.clear()
+    kis_adapter._BALANCE_CACHE.clear()  # 모듈 레벨 5초 캐시가 위 1페이지 응답을 재사용하지 않도록
+    http = FakeSession()
+    http.paged["/inquire-balance"] = [
+        FakeResponse(
+            {
+                "rt_cd": "0",
+                "output1": [_balance_row("005930")],
+                "output2": [summary],
+                "ctx_area_fk100": "FK-1",
+                "ctx_area_nk100": "NK-1",
+            },
+            headers={"tr_cont": "F"},
+        ),
+        FakeResponse(
+            {"rt_cd": "0", "output1": [_balance_row("000660")], "output2": [summary]},
+            headers={"tr_cont": "D"},
+        ),
+    ]
+    with caplog.at_level("INFO", logger=kis_adapter.logger.name):
+        KISAdapter(settings, http=http).get_positions()
+    messages = [r.getMessage() for r in caplog.records if "연속조회" in r.getMessage()]
+    assert len(messages) == 1
+    assert "2페이지" in messages[0]
+    assert "output1 2행" in messages[0]
+
+
 def test_request_retries_transient_http(settings: MapsSettings) -> None:
     http = FakeSession()
     http.fail_next_requests = 1
