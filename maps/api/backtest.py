@@ -14,6 +14,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import uuid
+from typing import Literal
 
 import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException
@@ -232,6 +233,7 @@ def _run_item_from_row(row: BacktestRunLog) -> BacktestRunItem:
     return BacktestRunItem(
         run_id=row.run_id,
         strategy_id=row.strategy_id,
+        source=row.source,
         status=row.status,
         progress_pct=100.0,
         net_cagr=row.net_cagr,
@@ -250,16 +252,21 @@ def _run_item_from_row(row: BacktestRunLog) -> BacktestRunItem:
 
 
 @router.get("", response_model=BacktestResponse)
-def get_backtest_runs(db: Session = Depends(get_db)) -> BacktestResponse:
+def get_backtest_runs(
+    source: Literal["manual", "scheduled_validation"] | None = None,
+    db: Session = Depends(get_db),
+) -> BacktestResponse:
     """최근 콘솔 백테스트 실행 목록을 반환한다.
 
     과거에는 WFA 결과를 목록의 원천으로 써서 net_cagr/trade_count가 항상
     None이었다. 콘솔 실행이 backtest_run_log에 저장되므로 그 로그를 읽는다.
     (검증 잡의 WFA/MC 결과는 SCR-11/SCR-08 화면이 담당한다.)
     """
+    query = db.query(BacktestRunLog)
+    if source is not None:
+        query = query.filter(BacktestRunLog.source == source)
     rows = (
-        db.query(BacktestRunLog)
-        .order_by(BacktestRunLog.id.desc())
+        query.order_by(BacktestRunLog.created_at.desc(), BacktestRunLog.id.desc())
         .limit(50)
         .all()
     )
@@ -407,6 +414,7 @@ def run_backtest(req: BacktestRunRequest, db: Session = Depends(get_db)) -> Back
     log = BacktestRunLog(
         run_id=run_id,
         strategy_id=req.strategy_id,
+        source="manual",
         params_json=json.dumps(req.params, ensure_ascii=False) if req.params else None,
         status="done",
         net_cagr=avg_cagr,

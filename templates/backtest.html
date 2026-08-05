@@ -74,7 +74,14 @@
 <div id="bt-result-kpi"><div class="loading"><div class="spinner"></div></div></div>
 
 <!-- 최근 실행 목록 -->
-<div class="section-header"><span class="section-title">최근 실행 목록</span><hr></div>
+<div class="section-header">
+  <span class="section-title">최근 실행 목록</span><hr>
+  <select id="bt-source" class="topbar-btn" onchange="loadBacktest()">
+    <option value="">전체</option>
+    <option value="manual">수동</option>
+    <option value="scheduled_validation">자동</option>
+  </select>
+</div>
 <div class="card"><div class="card-body" id="bt-runs-area">
   <div class="loading"><div class="spinner"></div></div>
 </div></div>

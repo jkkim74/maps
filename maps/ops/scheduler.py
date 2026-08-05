@@ -8,6 +8,7 @@ broker state and records an audit log.
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import logging
 from dataclasses import dataclass, field
@@ -25,6 +26,7 @@ from maps.common.db import SessionLocal
 from maps.common.sizing import risk_based_qty
 from maps.common.models import (
     AnalysisPick,
+    BacktestRunLog,
     CandidateSnapshot,
     CollectionLog,
     HistoricalOHLCV,
@@ -844,6 +846,8 @@ class OperationalPipeline:
                 generated["skipped"].append({"strategy_id": strategy_id, "reason": "no_backtest_results"})
                 continue
 
+            self._save_scheduled_backtest(db, strategy, ref_date, backtests)
+
             if self._save_plateau_result(db, strategy, ref_date, backtests):
                 generated["plateau"] += 1
             if self._save_mc_result(db, strategy, ref_date, backtests):
@@ -908,6 +912,7 @@ class OperationalPipeline:
         rows: list[dict] = []
         for params in strategy.param_grid():
             results: list[BacktestResult] = []
+            successful_tickers: list[str] = []
             min_bars = max(strategy.required_bars(params), 30)
             for ticker in tickers:
                 df = repo.to_dataframe(ticker, end=ref_date)
@@ -916,6 +921,7 @@ class OperationalPipeline:
                 df.index.name = ticker
                 try:
                     results.append(engine.run(strategy, params, df))
+                    successful_tickers.append(ticker)
                 except BacktestError as exc:
                     logger.debug("Validation backtest skipped [%s %s]: %s", strategy.strategy_id, ticker, exc)
             if not results:
@@ -924,6 +930,12 @@ class OperationalPipeline:
             row["sharpe"] = sum(r.sharpe for r in results) / len(results)
             row["mdd"] = min(r.mdd for r in results)
             row["daily_returns"] = self._average_daily_returns(results)
+            row["_net_cagr"] = sum(r.cagr for r in results) / len(results)
+            row["_trade_count"] = sum(r.total_trades for r in results)
+            row["_ticker_count"] = len(results)
+            row["_tickers"] = successful_tickers
+            row["_start_date"] = min(r.start_date for r in results)
+            row["_end_date"] = max(r.end_date for r in results)
             rows.append(row)
         return rows
 
@@ -936,12 +948,60 @@ class OperationalPipeline:
         return frame.mean(axis=1).tolist()
 
     @staticmethod
+    def _save_scheduled_backtest(
+        db: Session,
+        strategy: BaseStrategy,
+        ref_date: dt.date,
+        rows: list[dict],
+    ) -> None:
+        """자동 검증의 대표 백테스트를 콘솔 최근 실행 이력에 upsert한다."""
+        best = max(rows, key=lambda row: float(row.get("sharpe", 0.0)))
+        digest = hashlib.sha1(strategy.strategy_id.encode("utf-8")).hexdigest()[:12]
+        run_id = f"val_{ref_date:%Y%m%d}_{digest}"
+        log = db.query(BacktestRunLog).filter(BacktestRunLog.run_id == run_id).one_or_none()
+        if log is None:
+            log = BacktestRunLog(run_id=run_id, strategy_id=strategy.strategy_id)
+            db.add(log)
+
+        metric_keys = {"sharpe", "mdd", "daily_returns"}
+        params = {
+            key: value
+            for key, value in best.items()
+            if key not in metric_keys and not key.startswith("_")
+        }
+        log.strategy_id = strategy.strategy_id
+        log.source = "scheduled_validation"
+        log.params_json = json.dumps(params, ensure_ascii=False)
+        log.status = "done"
+        log.net_cagr = float(best["_net_cagr"])
+        log.mdd = float(best["mdd"])
+        log.sharpe = float(best["sharpe"])
+        log.trade_count = int(best["_trade_count"])
+        log.ticker_count = int(best["_ticker_count"])
+        log.start_date = best["_start_date"]
+        log.end_date = best["_end_date"]
+        log.mode = "per_ticker"
+        log.universe = "validation_sample"
+        log.verdict = None
+        log.verdict_json = None
+        log.stats_json = json.dumps({
+            "tickers": best["_tickers"],
+            "selection": "max_sharpe",
+            "parameter_combinations": len(rows),
+        }, ensure_ascii=False)
+        log.created_at = dt.datetime.now(dt.timezone.utc)
+        db.commit()
+
+    @staticmethod
     def _save_plateau_result(db: Session, strategy: BaseStrategy, ref_date: dt.date, rows: list[dict]) -> bool:
         # param_keys: default_params 키 중 실제 row 에 존재하는 것만 사용한다.
         # param_grid() 에 포함되지 않은 파라미터(예: vol_period)가 default_params 에만
         # 있을 경우 KeyError 가 발생하므로 교집합으로 제한한다.
         _non_param = {"sharpe", "mdd", "daily_returns"}
-        actual_param_keys = [k for k in (rows[0] if rows else {}) if k not in _non_param]
+        actual_param_keys = [
+            key for key in (rows[0] if rows else {})
+            if key not in _non_param and not key.startswith("_")
+        ]
         param_keys = [k for k in strategy.default_params if k in set(actual_param_keys)]
         if not param_keys:
             logger.warning("Plateau validation skipped [%s]: no overlapping param keys", strategy.strategy_id)

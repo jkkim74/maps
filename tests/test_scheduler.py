@@ -13,6 +13,7 @@ import pytest
 from types import SimpleNamespace
 
 from maps.common.models import (
+    BacktestRunLog,
     CandidateSnapshot,
     CollectionLog,
     HistoricalOHLCV,
@@ -54,6 +55,59 @@ def _session_factory():
     )
     Base.metadata.create_all(engine)
     return engine, sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+
+def test_scheduled_backtest_summary_uses_best_sharpe_and_upserts() -> None:
+    """자동 검증 대표 이력은 최고 Sharpe 조합을 날짜·전략별 한 건으로 남긴다."""
+    engine, factory = _session_factory()
+    db = factory()
+    strategy = SimpleNamespace(strategy_id="pullback_v3")
+    ref_date = dt.date(2026, 8, 5)
+    rows = [
+        {
+            "rsi_period": 3,
+            "sharpe": 0.4,
+            "mdd": -0.12,
+            "daily_returns": [0.01] * 30,
+            "_net_cagr": 0.05,
+            "_trade_count": 20,
+            "_ticker_count": 2,
+            "_tickers": ["005930", "000660"],
+            "_start_date": dt.date(2020, 1, 2),
+            "_end_date": ref_date,
+        },
+        {
+            "rsi_period": 5,
+            "sharpe": 0.9,
+            "mdd": -0.18,
+            "daily_returns": [0.02] * 30,
+            "_net_cagr": 0.11,
+            "_trade_count": 35,
+            "_ticker_count": 2,
+            "_tickers": ["005930", "000660"],
+            "_start_date": dt.date(2020, 1, 2),
+            "_end_date": ref_date,
+        },
+    ]
+    try:
+        OperationalPipeline._save_scheduled_backtest(db, strategy, ref_date, rows)
+        first = db.query(BacktestRunLog).one()
+        assert first.source == "scheduled_validation"
+        assert first.sharpe == pytest.approx(0.9)
+        assert first.net_cagr == pytest.approx(0.11)
+        assert first.trade_count == 35
+        assert first.mode == "per_ticker"
+        assert first.universe == "validation_sample"
+        assert '"rsi_period": 5' in first.params_json
+
+        rows[1]["_net_cagr"] = 0.13
+        OperationalPipeline._save_scheduled_backtest(db, strategy, ref_date, rows)
+        assert db.query(BacktestRunLog).count() == 1
+        assert db.query(BacktestRunLog).one().net_cagr == pytest.approx(0.13)
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
 
 
 def _force_entry_signal(monkeypatch) -> None:

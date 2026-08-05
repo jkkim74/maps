@@ -140,11 +140,44 @@ def test_recent_runs_carry_cagr_and_trade_count(client) -> None:
     assert len(body["recent_runs"]) == 1
     run = body["recent_runs"][0]
     assert run["run_id"] == "bt_pullback_v3_seed0001"
+    assert run["source"] == "manual"
     assert run["net_cagr"] == pytest.approx(0.12)
     assert run["trade_count"] == 42
     assert run["mdd"] == pytest.approx(-0.18)
     assert run["verdict"] is None
     assert run["start_date"] is None
+
+
+def test_recent_runs_can_filter_scheduled_validation_source(client) -> None:
+    """최근 실행 목록은 수동·자동 출처를 구분해 조회할 수 있어야 한다."""
+    from main import app
+    from maps.api.deps import get_db
+
+    override = app.dependency_overrides[get_db]
+    session_generator = override()
+    db = next(session_generator)
+    try:
+        db.add(BacktestRunLog(
+            run_id="val_20260805_123456789abc",
+            strategy_id="pullback_v3",
+            source="scheduled_validation",
+            status="done",
+            net_cagr=0.08,
+            trade_count=31,
+        ))
+        db.commit()
+    finally:
+        session_generator.close()
+
+    automatic = client.get(
+        "/api/v1/backtest?source=scheduled_validation"
+    ).json()["recent_runs"]
+    manual = client.get("/api/v1/backtest?source=manual").json()["recent_runs"]
+
+    assert [row["run_id"] for row in automatic] == ["val_20260805_123456789abc"]
+    assert automatic[0]["source"] == "scheduled_validation"
+    assert [row["run_id"] for row in manual] == ["bt_pullback_v3_seed0001"]
+    assert client.get("/api/v1/backtest?source=unknown").status_code == 422
 
 
 def test_run_persists_result_to_log(client, monkeypatch) -> None:

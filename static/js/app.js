@@ -966,12 +966,17 @@ async function runWfa() {
 }
 
 // ── SCR-07 백테스트 콘솔 ──────────────────────────────────────────────────────
+function _btHistoryEndpoint() {
+  const source = document.getElementById('bt-source')?.value;
+  return source ? `/backtest?source=${encodeURIComponent(source)}` : '/backtest';
+}
+
 async function loadBacktest() {
   loading('bt-progress-section');
   loading('bt-result-kpi');
   loading('bt-runs-area');
   try {
-    const d = await apiFetch('/backtest');
+    const d = await apiFetch(_btHistoryEndpoint());
     const runs = d.recent_runs;
 
     // 전략 드롭다운을 API가 내려준 runnable 목록으로 채운다
@@ -1086,9 +1091,8 @@ async function runBacktest() {
 
     // 실행 목록 새로고침
     loading('bt-runs-area');
-    const d = await apiFetch('/backtest');
-    // 방금 실행한 결과를 목록 맨 앞에 추가해서 표시
-    _renderBtRunsTable([result, ...d.recent_runs]);
+    const d = await apiFetch(_btHistoryEndpoint());
+    _renderBtRunsTable(d.recent_runs);
 
   } catch (e) {
     document.getElementById('bt-progress-section').innerHTML =
@@ -1228,6 +1232,7 @@ function _renderBtRunsTable(runs) {
     <tr>
       <td class="mono text-muted" style="font-size:11px">${r.run_id}</td>
       <td class="mono">${r.strategy_id}</td>
+      <td>${r.source === 'scheduled_validation' ? badge('자동 검증', 'info') : badge('수동', 'research')}</td>
       <td>${badge(r.status.toUpperCase(), statusCls[r.status] ?? 'info')}</td>
       <td class="mono" style="font-size:11px">${period}</td>
       <td class="text-muted" style="font-size:11px">${r.mode === 'portfolio' ? '포트폴리오' : r.mode ? '종목별' : '—'}${r.universe ? ` · ${esc(r.universe)}` : ''}</td>
@@ -1244,7 +1249,7 @@ function _renderBtRunsTable(runs) {
     <div class="text-muted mb-16" style="font-size:12px">총 ${runs.length}건 (최근 50건)</div>
     <table>
       <thead><tr>
-        <th>Run ID</th><th>전략</th><th>상태</th><th>기간</th><th>방식·대상</th><th>판정</th>
+        <th>Run ID</th><th>전략</th><th>구분</th><th>상태</th><th>기간</th><th>방식·대상</th><th>판정</th>
         <th>Net CAGR</th><th>MDD</th><th>Sharpe</th><th>거래수</th><th>시작일</th>
       </tr></thead>
       <tbody>${rows}</tbody>

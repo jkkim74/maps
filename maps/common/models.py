@@ -368,6 +368,7 @@ class BacktestRunLog(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     run_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
     strategy_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    source: Mapped[str] = mapped_column(String(24), nullable=False, default="manual", index=True)
     params_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="done")
     net_cagr: Mapped[float | None] = mapped_column(Float, nullable=True)

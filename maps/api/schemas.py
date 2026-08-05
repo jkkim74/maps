@@ -294,6 +294,7 @@ class RiskResponse(BaseModel):
 class BacktestRunItem(BaseModel):
     run_id: str
     strategy_id: str
+    source: str = "manual"       # manual | scheduled_validation
     status: str         # queued | running | done | error
     progress_pct: float
     net_cagr: float | None
