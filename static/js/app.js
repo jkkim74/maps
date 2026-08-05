@@ -506,6 +506,25 @@ async function loadRisk() {
         <div class="kpi-card"><div class="kpi-label">보유 종목</div><div class="kpi-value">${d.position_count}</div><div class="kpi-sub">활성 Kill ${d.active_kill_count ?? 0}건</div></div>
       </div>`;
 
+    const killArea = document.getElementById('risk-kills');
+    if (!d.active_kills || d.active_kills.length === 0) {
+      killArea.innerHTML = '';
+    } else {
+      const rows = d.active_kills.map(k => `
+        <tr>
+          <td class="mono">${esc(k.strategy_id)}</td>
+          <td>${esc(k.reason)}</td>
+          <td class="mono">${k.created_at ? new Date(k.created_at).toLocaleString('ko-KR') : '—'}</td>
+          <td><button class="topbar-btn" style="color:var(--color-fail);border-color:var(--color-fail)" onclick="releaseKillSwitch('${esc(k.strategy_id)}')">해제</button></td>
+        </tr>`).join('');
+      killArea.innerHTML = `
+        <div class="section-header"><span class="section-title">🔴 Kill Switch 발동 중</span><hr></div>
+        <div class="card"><div class="card-body">
+          <table><thead><tr><th>전략</th><th>사유</th><th>발동 시각</th><th></th></tr></thead><tbody>${rows}</tbody></table>
+          <div class="kpi-sub">해제하면 해당 전략의 신규 진입이 다시 허용됩니다.</div>
+        </div></div>`;
+    }
+
     if (!d.gauges || d.gauges.length === 0) {
       empty('risk-gauges', '리스크 게이지 없음');
     } else {
@@ -559,6 +578,17 @@ async function loadRisk() {
     empty('risk-kpi', `오류: ${e.message}`);
     empty('risk-gauges', '');
     empty('risk-holdings', '');
+    document.getElementById('risk-kills').innerHTML = '';
+  }
+}
+
+async function releaseKillSwitch(strategyId) {
+  if (!confirm(`${strategyId} Kill Switch를 해제할까요?\n해제 즉시 신규 진입이 다시 허용됩니다.`)) return;
+  try {
+    await apiPost(`/live-monitor/${encodeURIComponent(strategyId)}/release`, { approved_by: 'dashboard' });
+    loadRisk();
+  } catch (e) {
+    alert(`해제 실패: ${e.message}`);
   }
 }
 

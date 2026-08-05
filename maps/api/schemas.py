@@ -268,6 +268,12 @@ class HoldingItem(BaseModel):
     market_value: float | None = None
 
 
+class ActiveKillItem(BaseModel):
+    strategy_id: str
+    reason: str
+    created_at: str     # ISO-8601 UTC — 화면에서 로컬 시각으로 변환
+
+
 class RiskResponse(BaseModel):
     short_term_risk: float
     short_term_limit: float
@@ -280,6 +286,7 @@ class RiskResponse(BaseModel):
     broker_status: str = "ok"           # ok | fallback | unavailable
     broker_error: str | None = None
     active_kill_count: int = 0          # 발동 중인 Kill Switch 수 (position_count와 별개)
+    active_kills: list[ActiveKillItem] = []
 
 
 # ── SCR-07 Backtest ───────────────────────────────────────────────────────────

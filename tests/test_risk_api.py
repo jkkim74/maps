@@ -156,6 +156,37 @@ def test_position_count_is_holdings_only_and_kills_reported_separately(db, monke
     assert response.active_kill_count == 3
 
 
+def test_active_kills_lists_only_triggered_strategies(db, monkeypatch) -> None:
+    """화면 해제 버튼용 active_kills — 해제된 전략은 빠지고 발동 중만 남아야 한다."""
+    db.add(KillSwitchLog(
+        strategy_id="ath_breakout_v1",
+        event_type="trigger",
+        reason="consecutive_failures",
+        new_entry_blocked=True,
+    ))
+    db.add(KillSwitchLog(
+        strategy_id="pullback_v3",
+        event_type="trigger",
+        reason="daily_loss",
+        new_entry_blocked=True,
+    ))
+    db.add(KillSwitchLog(
+        strategy_id="pullback_v3",
+        event_type="deactivate",
+        reason="daily_loss",
+        new_entry_blocked=False,
+    ))
+    db.commit()
+
+    monkeypatch.setattr(risk, "get_broker", lambda: _FailingBroker())
+
+    response = risk.get_risk(db)
+
+    assert [k.strategy_id for k in response.active_kills] == ["ath_breakout_v1"]
+    assert response.active_kills[0].reason == "consecutive_failures"
+    assert response.active_kills[0].created_at.endswith("+00:00")
+
+
 def test_broker_holdings_expose_quantity_and_market_value(db, monkeypatch) -> None:
     """화면이 '113주 · 평가 4,248,800원' 을 찍을 수 있어야 한다."""
     class FakeBroker:

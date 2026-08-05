@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import datetime
 import logging
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from maps.api.deps import get_db
-from maps.api.schemas import HoldingItem, RiskGaugeItem, RiskResponse
+from maps.api.schemas import ActiveKillItem, HoldingItem, RiskGaugeItem, RiskResponse
 from maps.common.constants import ALLOWED_MDD, STRATEGY_GROUP_MAP
 from maps.common.exceptions import BrokerAdapterError
 from maps.backtest.engine import _compute_atr14
@@ -73,6 +74,18 @@ def get_risk(db: Session = Depends(get_db)) -> RiskResponse:
 
     active_kills = [r for r in latest_kill.values() if r.event_type in ("trigger", "approved")]
     active_kill_count = len(active_kills)
+    active_kill_items = [
+        ActiveKillItem(
+            strategy_id=r.strategy_id or "",
+            reason=r.reason,
+            created_at=(
+                r.created_at.replace(tzinfo=datetime.timezone.utc).isoformat()
+                if r.created_at and r.created_at.tzinfo is None
+                else (r.created_at.isoformat() if r.created_at else "")
+            ),
+        )
+        for r in sorted(active_kills, key=lambda r: r.strategy_id or "")
+    ]
 
     # 전략별 최신 Monte Carlo 결과로 게이지 구성
     mc_rows = (
@@ -118,6 +131,7 @@ def get_risk(db: Session = Depends(get_db)) -> RiskResponse:
         broker_status=broker_status,
         broker_error=broker_error,
         active_kill_count=active_kill_count,
+        active_kills=active_kill_items,
     )
 
 
