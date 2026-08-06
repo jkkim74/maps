@@ -1,8 +1,8 @@
 # HANDOFF
 
 > 갱신일: 2026-08-06 (목, 오전) · 작성자: 세션 에이전트 (**회사 PC, 키 `D:\ssh_maps\`**)
-> 서버 = **`f941597`** 배포 완료 (10:44 KST), alembic **`0019_bt_run_source`**(head).
-> 로컬 후속 변경(strategy-selector 입력·계좌 이력 경계)은 **미커밋**, 전체 테스트 **656 passed**.
+> 서버 = **`e4cbc3b`** 배포 완료 (12:11 KST), alembic **`0019_bt_run_source`**(head).
+> strategy-selector 입력·계좌 이력 경계까지 운영 적용 완료, 전체 테스트 **656 passed**.
 > 8/3 기록은 "8/3 작업 ①~⑤" 절, 8/2 는 "이전 날(8/2)" 절 — 결론은 여전히 유효하다.
 
 ## Goal — 이 작업이 향하는 곳
@@ -38,7 +38,7 @@ Sharpe 왜곡 수정(8/2)과 자동 강등(8/2)이 8/3에 처음 실측됐다.
 - 전체 테스트 651 passed(배포 당시). 마이그레이션·requirements 변경 없음.
 - **장 종료 후 과제**: 두 주문의 체결·부분체결·만료와 DB `status/fill_qty` 정합 확인(진행 중).
 
-### strategy-selector 승격 단계 입력 개선 (로컬 구현 완료, 미커밋)
+### strategy-selector 승격 단계 입력 개선 (배포 완료)
 
 `promotion_history`의 전략별 최신 `passed=True` 행을 JSON으로 내는
 `scripts/export_strategy_stages.py` + `maps/promotion/stage_snapshot.py`를 추가했다.
@@ -46,13 +46,15 @@ cron이 Claude 실행 전에 JSON을 생성해 `/analyze` 프롬프트에 직접
 strategy-selector는 `HANDOFF.md`·메모리에서 현재 단계를 추측하지 못하도록 명시했다.
 대상 단계는 `mock_candidate`, `live_candidate`, `live`; 자동 강등의
 `passed=True → research`도 즉시 반영된다. 쉘 문법 검사 + 전체 656 passed.
+12:11 배포 후 exporter 실측 대상은 `ath_breakout_v1`, `donchian_v2`로 주문 자격과 일치했다.
 
-### 구 계좌 이력 분리 (로컬 구현 완료, 운영 적용 전)
+### 구 계좌 이력 분리 (배포·운영 적용 완료)
 
 원 체결을 삭제하거나 가짜 매도를 만들지 않는다. `MAPS_ACCOUNT_HISTORY_START_DATE`를 도입해
 이전 감사 행은 보존하면서 현재 계좌의 거래 리뷰·대시보드 수익률·MDD·슬리피지·
-`mock_months`에서 제외한다. 운영 적용 시 **`2026-08-05`**로 설정할 것.
+`mock_months`에서 제외한다. 운영 `.env`에 **`2026-08-05`**로 적용했다.
 부수로 UTC 주문시각을 그대로 `.date()` 해 `mock_months`가 하루 길어지던 문제도 KST 변환으로 수정.
+배포 후 거래 리뷰에서 002810 제외, initial/current assets 1억원을 직접 확인했다.
 
 ### 자동 강등 정책 결정 — 현행 유지
 
@@ -309,9 +311,9 @@ analyze 가 16:00~16:30 에 도는 중 `git pull` 이 **에이전트가 읽는 �
 
 배포 서버: AWS Lightsail `3.37.117.246`, `/opt/maps`, systemd `maps`, `https://maps.magable.kr`.
 운영 DB PostgreSQL. **SSH 키는 PC마다 다름**: 회사 PC `D:\ssh_maps\`, 집 PC `D:\maps\`.
-서버는 **`f941597`** 배포 완료 (8/6 10:44 KST), alembic **`0019_bt_run_source`**(head).
-배포 커밋 기준 테스트 **651 passed**. requirements 변경 없음. 로컬 master/서버 = `f941597`.
-로컬 작업 트리에는 8/6 후속 변경이 미커밋이며 전체 **656 passed**.
+서버는 **`e4cbc3b`** 배포 완료 (8/6 12:11 KST), alembic **`0019_bt_run_source`**(head).
+배포 커밋 기준 테스트 **656 passed**. requirements·migration 변경 없음.
+서버 `.env`의 계좌 이력 시작일은 `2026-08-05`; 배포 후 health 200과 broker_sync 정상 확인.
 KIS 모의계좌는 **`50200591-01`** (8/5 재생성 — 구 50185813-01 만료, 위 "8/5 세션" 절).
 
 > 🔴 **16:00~16:45 KST 는 배포 금지 시간대다** — `/etc/cron.d/maps-analyze` 가 매 거래일
@@ -345,8 +347,7 @@ KIS 모의계좌는 **`50200591-01`** (8/5 재생성 — 구 50185813-01 만료,
 
 ## 미커밋 상태
 
-- 8/6 로컬 후속 변경 미커밋: strategy-selector stage JSON 주입, 계좌 이력 기준일 분리,
-  관련 테스트·문서, 이 HANDOFF 갱신. 로컬 HEAD/서버는 `f941597`.
+- 8/6 후속 변경은 `e4cbc3b`로 커밋·푸시·배포 완료. 기능 변경 기준 로컬·서버 동일.
 - `apps/mobile/google-services.json` — 커밋 여부 사용자 결정 대기 (이월).
 
 **부수 확인 (8/3)**: `order_log` `0000031820` = buy `expired` qty 1253 / fill_qty 21 —
@@ -370,12 +371,13 @@ KIS 모의계좌는 **`50200591-01`** (8/5 재생성 — 구 50185813-01 만료,
    broker_sync와 EOD cleanup 로그를 대조한다. TR ID 수정 후 `open_orders=2`까지 확인됨.
 2. ~~🔴 8/4 17:10 검증 잡 — G2P 수정 실효 확인~~ → **✅ 8/5 확인·종결** (위 "8/5 세션" 절).
    Infinity/NaN 0건, 무거래 사유 정상 부착, 통과 수 불변.
-3. ✅ **strategy-selector 승격 단계 입력원** — 권장안인 DB→JSON 주입으로 로컬 구현 완료.
-   전체 656 passed. 커밋·배포 후 다음 16:00 analyze에서 stage 추측·재선정이 사라지는지 확인.
+3. ✅ **strategy-selector 승격 단계 입력원** — 권장안인 DB→JSON 주입으로 배포 완료.
+   전체 656 passed. 다음 16:00 analyze에서 stage 추측·재선정이 사라지는지 확인.
 4. ✅ **자동 강등 4건 정책 판단** — 현행 연속 10회 <50 강등 / ≥60 재승격 유지,
    기존 4건 강등도 유지. 운영 점수 이력으로 재확인 완료.
-5. 🟡 **구 계좌 성과 경계 운영 적용.** 로컬 구현을 배포하고 서버 `.env`에
-   `MAPS_ACCOUNT_HISTORY_START_DATE=2026-08-05` 설정 후 거래 리뷰·MDD·mock_months 확인.
+5. ✅ **구 계좌 성과 경계 운영 적용.** 서버 `.env`에
+   `MAPS_ACCOUNT_HISTORY_START_DATE=2026-08-05` 적용 완료. 거래 리뷰에서 002810 제외와
+   초기·현재 자산 1억원을 확인했다. 원 주문 감사 행은 보존.
 6. 🔵 **후보 퍼널 Phase 2 (AI 스코어링) — 착수 가능.** Phase 1 이 배포·실측을 마쳤으므로
    대상 선정이 비로소 의미를 갖는다(신호 종목 264건 중 상위 N). 사양·정정사항은
    `docs/plans/candidate-funnel-ai-scoring.md` 참고. **Bedrock 호출자 둘을 함께** 옮길 것
