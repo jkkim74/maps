@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 
 from maps.backtest.cost_model import VOL_MULTIPLIER_MAP, CostModel, Trade
+from maps.backtest.position_exit import evaluate_position_exit
 from maps.common.constants import GAIN_TO_PAIN_CAP
 from maps.common.exceptions import BacktestError
 from maps.common.sizing import risk_based_qty
@@ -57,6 +58,9 @@ class TradeRecord:
     gross_pnl: float
     net_pnl: float
     exit_reason: str   # "signal" | "stop_loss" | "end_of_period"
+    initial_risk: float | None = None
+    r_multiple: float | None = None
+    holding_days: int | None = None
 
 
 @dataclass
@@ -161,6 +165,7 @@ class BacktestEngine:
             raise BacktestError("데이터가 비어 있습니다.")
 
         df = strategy.generate_signals(data.copy(), params)
+        exit_policy = strategy.position_exit_policy(params)
         atr_series = _compute_atr14(df)
 
         # 체결 타이밍 (look-ahead 제거):
@@ -200,26 +205,48 @@ class BacktestEngine:
             row = df.loc[dt]
             ref_date = dt.date() if hasattr(dt, "date") else dt
             bar_open = float(row.get("open", row["close"]))
+            bar_high = float(row.get("high", row["close"]))
             bar_low = float(row.get("low", row["close"]))
             bar_close = float(row["close"])
             exited_this_bar = False
 
             # ── 보유 중: 청산/손절 체크 (체결은 당일 시가 또는 손절가) ──
             if position:
+                position["holding_days"] += 1
                 exit_reason = None
                 exit_price = bar_close
 
-                if bool(exit_fill.get(dt, False)):
-                    # 전일 종가 기준 청산 신호 → 당일 시가 체결
-                    exit_reason = "signal"
-                    exit_price = bar_open
-                elif bar_low <= position["stop"]:
-                    # 장중 손절 도달 → 갭하락 시 시가, 아니면 손절가 체결 (보수적)
-                    exit_reason = "stop_loss"
-                    exit_price = min(position["stop"], bar_open)
-                elif i == len(dates) - 1:
-                    exit_reason = "end_of_period"
-                    exit_price = bar_close
+                if exit_policy is not None:
+                    decision = evaluate_position_exit(
+                        exit_policy,
+                        bar_open=bar_open,
+                        bar_high=bar_high,
+                        bar_low=bar_low,
+                        bar_close=bar_close,
+                        entry_price=position["entry_price"],
+                        stop_price=position["stop"],
+                        initial_risk=position["initial_risk"],
+                        prior_high_water_mark=position["hwm"],
+                        strategy_exit=bool(exit_fill.get(dt, False)),
+                        next_open=True,
+                        is_last=i == len(dates) - 1,
+                    )
+                    if decision is not None:
+                        exit_reason, exit_price = decision.reason, decision.price
+                    else:
+                        position["hwm"] = max(position["hwm"], bar_high)
+                else:
+                    if bool(exit_fill.get(dt, False)):
+                        # 전일 종가 기준 청산 신호 → 당일 시가 체결
+                        exit_reason = "signal"
+                        exit_price = bar_open
+                    elif bar_low <= position["stop"]:
+                        # 장중 손절 도달 → 갭하락 시 시가, 아니면 손절가 체결 (보수적)
+                        exit_reason = "stop_loss"
+                        exit_price = min(position["stop"], bar_open)
+                    elif i == len(dates) - 1:
+                        exit_reason = "end_of_period"
+                        exit_price = bar_close
 
                 if exit_reason:
                     trade = Trade(
@@ -231,6 +258,7 @@ class BacktestEngine:
                         market_cap=market_cap,
                     )
                     net = self._cost.apply(trade)
+                    risk_amount = position["initial_risk"] * position["qty"]
                     # 매도 시 현금 = 매도대금 - 거래비용 (원금 복귀 + 순손익)
                     equity += position["qty"] * exit_price - (trade.gross_pnl - net)
                     trade_list.append(
@@ -244,6 +272,9 @@ class BacktestEngine:
                             gross_pnl=trade.gross_pnl,
                             net_pnl=net,
                             exit_reason=exit_reason,
+                            initial_risk=position["initial_risk"],
+                            r_multiple=(net / risk_amount) if risk_amount > 0 else None,
+                            holding_days=position["holding_days"],
                         )
                     )
                     position = {}
@@ -272,6 +303,9 @@ class BacktestEngine:
                         "entry_price": entry_price,
                         "entry_date": ref_date,
                         "stop": stop_price,
+                        "initial_risk": entry_price - stop_price,
+                        "hwm": max(entry_price, bar_high),
+                        "holding_days": 0,
                     }
                     equity -= entry_price * qty
 

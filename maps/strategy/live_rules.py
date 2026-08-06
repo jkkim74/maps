@@ -7,6 +7,7 @@ from maps.market.trading_rules import round_down_krx_price
 
 _STOP_LOSS_PCTS: dict[str, float] = {
     "pullback_v3": 0.05,
+    "pullback_v3_3": 0.05,
     "pullback_v2": 0.06,
     "ath_breakout_v1": 0.10,
     "ath_breakout_v2": 0.12,
@@ -34,6 +35,7 @@ _THESIS_STOP_TRIGGERS: dict[str, list[str]] = {
 # 손절 폭이 **넓은**(= 가격이 낮은) 쪽이다.
 _ATR_MULTIPLIERS: dict[str, float] = {
     "pullback_v3": 2.0,
+    "pullback_v3_3": 2.0,
     "pullback_v2": 2.0,
     "ath_breakout_v1": 2.5,
     "ath_breakout_v2": 2.5,

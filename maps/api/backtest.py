@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import statistics
 import uuid
+from collections import Counter
 from typing import Literal
 
 import pandas as pd
@@ -38,6 +40,7 @@ from maps.data.krx_auth import ensure_krx_login_guard
 from maps.data.ohlcv_repo import HistoricalOHLCVRepository
 from maps.strategy.base import BaseStrategy
 from maps.strategy.pullback_v3 import PullbackV3Strategy
+from maps.strategy.pullback_v3_3 import PullbackV33Strategy
 from maps.strategy.pullback_v2 import PullbackV2Strategy
 from maps.strategy.ath_breakout_v1 import ATHBreakoutV1Strategy
 from maps.strategy.ath_breakout_v2 import ATHBreakoutV2Strategy
@@ -56,6 +59,7 @@ MIN_TRADES_FOR_VERDICT = 30
 # 실제 Python 클래스가 구현된 전략 레지스트리
 RUNNABLE_STRATEGIES: dict[str, type[BaseStrategy]] = {
     "pullback_v3":          PullbackV3Strategy,
+    "pullback_v3_3":        PullbackV33Strategy,
     "pullback_v2":          PullbackV2Strategy,
     "ath_breakout_v1":      ATHBreakoutV1Strategy,
     "ath_breakout_v2":      ATHBreakoutV2Strategy,
@@ -188,18 +192,42 @@ def _payoff_ratio(results: list[BacktestResult]) -> float | None:
     return round(float((sum(wins) / len(wins)) / (sum(losses) / len(losses))), 2)
 
 
+def _payoff_ratio_from_trades(trades: list) -> float | None:
+    wins = [float(t.net_pnl) for t in trades if t.net_pnl > 0]
+    losses = [abs(float(t.net_pnl)) for t in trades if t.net_pnl < 0]
+    if not wins or not losses:
+        return None
+    return round((sum(wins) / len(wins)) / (sum(losses) / len(losses)), 2)
+
+
+def _trade_diagnostics(trades: list) -> dict:
+    """상태 기반 청산의 실효를 감사할 수 있는 거래 단위 통계."""
+    reasons = Counter(str(t.exit_reason) for t in trades if t.exit_reason)
+    r_multiples = [float(t.r_multiple) for t in trades if t.r_multiple is not None]
+    holding_days = [int(t.holding_days) for t in trades if t.holding_days is not None]
+    return {
+        "exit_reason_counts": dict(sorted(reasons.items())),
+        "avg_r_multiple": round(sum(r_multiples) / len(r_multiples), 4) if r_multiples else None,
+        "median_holding_days": (
+            round(float(statistics.median(holding_days)), 1) if holding_days else None
+        ),
+    }
+
+
 def _extended_stats_per_ticker(results: list[BacktestResult], tickers: list[str]) -> dict:
     """종목별 평균 모드의 확장 지표 — 연도별 집계는 곡선이 30개라 제외."""
     total = sum(r.total_trades for r in results)
     win_rate = (
         float(sum(r.win_rate * r.total_trades for r in results) / total) if total else 0.0
     )
+    trades = [trade for result in results for trade in result.trade_list]
     return {
         "win_rate": round(win_rate, 4),
         "payoff_ratio": _payoff_ratio(results),
         "yearly_returns": None,
         "positive_month_ratio": None,
         "tickers": tickers,
+        **_trade_diagnostics(trades),
     }
 
 
@@ -219,12 +247,14 @@ def _extended_stats_portfolio(result, tickers: list[str]) -> dict:
         monthly = series.resample("ME").last().dropna().pct_change().dropna()
         if len(monthly):
             positive_month_ratio = round(float((monthly > 0).mean()), 4)
+    trades = list(getattr(result, "trade_list", []))
     return {
         "win_rate": round(float(result.win_rate), 4),
-        "payoff_ratio": None,  # PortfolioResult는 거래 목록을 보존하지 않는다
+        "payoff_ratio": _payoff_ratio_from_trades(trades),
         "yearly_returns": yearly,
         "positive_month_ratio": positive_month_ratio,
         "tickers": tickers,
+        **_trade_diagnostics(trades),
     }
 
 

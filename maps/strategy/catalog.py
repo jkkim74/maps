@@ -29,6 +29,7 @@ from maps.strategy.live_rules import atr_multiplier, stop_loss_pct
 from maps.strategy.multi_asset_trend_v1 import MultiAssetTrendV1Strategy
 from maps.strategy.pullback_v2 import PullbackV2Strategy
 from maps.strategy.pullback_v3 import PullbackV3Strategy
+from maps.strategy.pullback_v3_3 import PullbackV33Strategy
 
 
 @dataclass(frozen=True)
@@ -65,6 +66,7 @@ class StrategyDescription:
 #: strategy_id → 전략 클래스. 숫자를 클래스에서 직접 읽기 위한 매핑이다.
 STRATEGY_CLASSES: dict[str, type[BaseStrategy]] = {
     "pullback_v3": PullbackV3Strategy,
+    "pullback_v3_3": PullbackV33Strategy,
     "pullback_v2": PullbackV2Strategy,
     "ath_breakout_v1": ATHBreakoutV1Strategy,
     "ath_breakout_v2": ATHBreakoutV2Strategy,
@@ -92,6 +94,27 @@ STRATEGY_PROSE: dict[str, StrategyProse] = {
         ),
         exit_rules=("종가가 MA5 를 아래에서 위로 돌파하는 순간",),
         guide_file="01_pullback_v3.txt",
+    ),
+    "pullback_v3_3": StrategyProse(
+        display_name="눌림목 매수 V3.3 연구 후보",
+        summary="눌림 뒤 첫 반등에 팔지 않고 2R 목표와 트레일링으로 수익 폭을 넓힌다",
+        idea=(
+            "V3.2는 승률은 높지만 MA5를 회복하자마자 팔아 평균 이익이 평균 손실보다 "
+            "작았다. 진입 논리는 그대로 두고 실제 손절폭을 1R로 고정해 손실과 목표를 "
+            "같은 단위로 관리하며, 큰 반등은 트레일링으로 보호한다."
+        ),
+        entry_rules=(
+            "MA5 가 MA20 위에 있다 (상승 흐름 확인)",
+            "MA20 이 20거래일 전보다 높다 (하락·횡보 국면 차단)",
+            "RSI(2) 가 기준값 아래로 떨어졌다 (짧고 날카로운 눌림)",
+            "당일 저가가 전일 저가보다 낮다 (추가 눌림 확인)",
+        ),
+        exit_rules=(
+            "진입 시 확정한 실제 손절폭의 2배(2R)에 목표 익절",
+            "고점이 1.5R에 도달하면 고점 대비 0.5R 되돌림에 트레일링 청산",
+            "종가가 장기 이동평균선 아래로 내려가면 추세 훼손 청산",
+        ),
+        guide_file="09_pullback_v3_3.txt",
     ),
     "pullback_v2": StrategyProse(
         display_name="눌림목 매수 V2",

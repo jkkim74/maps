@@ -1,6 +1,6 @@
 # strategy/
 
-매매 전략 정의 패키지. 추상 베이스 클래스와 7개의 구체 전략 구현을 포함한다.
+매매 전략 정의 패키지. 운영 전략과 연구 격리 후보 구현을 포함한다.
 
 ## Directory structure
 
@@ -11,6 +11,7 @@ strategy/
 ├── live_rules.py           # 전략별 실거래 손절 비율
 ├── pullback_v2.py          # PullbackV2Strategy
 ├── pullback_v3.py          # PullbackV3Strategy (주력)
+├── pullback_v3_3.py        # PullbackV33Strategy (2R+트레일링 연구 격리)
 ├── ath_breakout_v1.py      # ATHBreakoutV1Strategy
 ├── ath_breakout_v2.py      # ATHBreakoutV2Strategy
 ├── donchian_v1.py          # DonchianV1Strategy
@@ -38,6 +39,7 @@ strategy/
 | 전략 ID | 손절 비율 |
 |---|---|
 | `pullback_v3` | 5% |
+| `pullback_v3_3` | 5% |
 | `pullback_v2` | 6% |
 | `ath_breakout_v1` | 10% |
 | `ath_breakout_v2` | 12% |
@@ -51,7 +53,7 @@ strategy/
 
 | 전략 ID | 그룹 | 특징 |
 |---|---|---|
-| `pullback_v2`, `pullback_v3` | `pullback_short` | 단기 되돌림 매수 |
+| `pullback_v2`, `pullback_v3`, `pullback_v3_3` | `pullback_short` | 단기 되돌림 매수 |
 | `ath_breakout_v1`, `ath_breakout_v2` | `ath_outlier` | 신고가 돌파 |
 | `donchian_v1`, `donchian_v2` | `donchian_research` | 돈치안 채널 |
 | `multi_asset_trend_v1` | `multi_asset` | 다중 자산 추세 |
@@ -59,6 +61,11 @@ strategy/
 ## 구체 전략 등록
 
 `ops/scheduler.py`의 `_RUNNABLE_STRATEGIES` 딕셔너리에 등록된 전략만 일별 파이프라인에서 실행된다.
+
+`pullback_v3_3`은 연구 격리 예외다. 콘솔 백테스트와 수동 WFA에는 등록하지만
+`ops/scheduler.py:_RUNNABLE_STRATEGIES`에는 등록하지 않는다. 강세장 3구간,
+전체 기간, WFA/Plateau/MC를 통과하고 운영용 HWM 영속화를 구현하기 전에는 자동
+후보·승격·주문 경로에 넣지 않는다.
 
 새 전략 추가 시 체크리스트:
 1. `strategy/` 아래 구체 클래스 파일 생성

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import abc
 import datetime
+from dataclasses import dataclass
 from enum import Enum
 
 import pandas as pd
@@ -19,6 +20,20 @@ class StrategyType(str, Enum):
     MULTI_ASSET_TREND = "MULTI_ASSET_TREND"
     CONTRARIAN_QUALITY = "CONTRARIAN_QUALITY"
     CASH_ONLY = "CASH_ONLY"
+
+
+@dataclass(frozen=True)
+class PositionExitPolicy:
+    """진입 시 확정한 위험(R)을 기준으로 하는 상태 기반 청산 정책.
+
+    ``target_r``은 목표 익절 배수, ``trailing_activate_r``은 트레일링
+    활성화 고점, ``trailing_distance_r``은 고점에서 허용할 되돌림 폭이다.
+    모든 값은 진입가와 고정 손절가 사이의 최초 위험을 1R로 환산한다.
+    """
+
+    target_r: float
+    trailing_activate_r: float
+    trailing_distance_r: float
 
 
 class BaseStrategy(abc.ABC):
@@ -67,3 +82,7 @@ class BaseStrategy(abc.ABC):
         filter history using the same lookback assumptions as generate_signals.
         """
         return 1
+
+    def position_exit_policy(self, params: dict) -> PositionExitPolicy | None:
+        """상태 기반 청산 정책을 반환한다. 기존 전략은 신호 청산만 사용한다."""
+        return None

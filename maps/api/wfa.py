@@ -15,6 +15,7 @@ from maps.common.models import WalkForwardFoldResults, WalkForwardResults
 from maps.data.ohlcv_repo import HistoricalOHLCVRepository
 from maps.strategy.base import BaseStrategy
 from maps.strategy.pullback_v3 import PullbackV3Strategy
+from maps.strategy.pullback_v3_3 import PullbackV33Strategy
 from maps.strategy.pullback_v2 import PullbackV2Strategy
 from maps.strategy.ath_breakout_v1 import ATHBreakoutV1Strategy
 from maps.strategy.ath_breakout_v2 import ATHBreakoutV2Strategy
@@ -29,6 +30,7 @@ router = APIRouter(prefix="/api/v1/wfa", tags=["SCR-11 WFA"])
 
 RUNNABLE_STRATEGIES: dict[str, type[BaseStrategy]] = {
     "pullback_v3":          PullbackV3Strategy,
+    "pullback_v3_3":        PullbackV33Strategy,
     "pullback_v2":          PullbackV2Strategy,
     "ath_breakout_v1":      ATHBreakoutV1Strategy,
     "ath_breakout_v2":      ATHBreakoutV2Strategy,

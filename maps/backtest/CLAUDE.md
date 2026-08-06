@@ -8,6 +8,7 @@
 backtest/
 ├── __init__.py    # 빈 패키지 마커
 ├── cost_model.py  # CostModel + Trade — 거래 비용 계산
+├── position_exit.py # 두 엔진 공용 R 목표·트레일링 청산 판정
 └── engine.py      # BacktestEngine + PositionSizingEngine + 결과 데이터 클래스
 ```
 
@@ -60,7 +61,8 @@ CostModel(broker_fee=0.00015, slippage_large=0.0005, slippage_small=0.0015, tax_
 | `TradeRecord` | ticker, entry/exit_date, entry/exit_price, qty, gross/net_pnl, exit_reason |
 | `BacktestResult` | strategy_id, cagr, mdd, sharpe, gain_to_pain, win_rate, equity_curve, trade_list |
 
-`exit_reason`: `"signal"` | `"stop_loss"` | `"end_of_period"`
+`exit_reason`: `"signal"` | `"strategy_exit"` | `"stop_loss"` |
+`"trailing_stop"` | `"take_profit"` | `"end_of_period"`
 
 ### `PositionSizingEngine`
 
@@ -84,6 +86,10 @@ run(strategy, params, data, universe=None, market_cap=0.0, is_etf=False) → Bac
 1. `generate_signals()` 호출
 2. 날짜 순 반복: 손절/청산 체크 → 진입 체크
 3. 지표 계산: CAGR, MDD, Sharpe, G2P, 승률
+
+`BaseStrategy.position_exit_policy()`가 정책을 반환하면 두 엔진 모두
+`position_exit.evaluate_position_exit()`로 R 목표·트레일링·전략 신호를 같은
+우선순위로 판정한다. 기존 전략은 `None`이라 종전 신호 청산 동작을 유지한다.
 
 **주의**: `data`가 비어있으면 `BacktestError` 발생.
 

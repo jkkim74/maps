@@ -22,6 +22,7 @@
 | `06_donchian_v2.txt` | `donchian_v2` | 돈치안 채널 V2 (ROC·국면 필터) |
 | `07_multi_asset_trend_v1.txt` | `multi_asset_trend_v1` | 이중 이동평균 추세추종 |
 | `08_contrarian_quality_v1.txt` | `contrarian_quality_accumulation_v1` | 역발상 분할매수 (플래그 OFF) |
+| `09_pullback_v3_3.txt` | `pullback_v3_3` | 눌림목 매수 V3.3 (연구 격리) |
 
 각 편의 숫자는 아래 코드에서 그대로 가져왔다. **코드가 바뀌면 원고도 고쳐야 한다.**
 

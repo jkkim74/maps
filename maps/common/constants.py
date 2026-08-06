@@ -74,6 +74,7 @@ PLATEAU_GRADES: Final[dict[str, dict]] = {
 # ---------------------------------------------------------------------------
 STRATEGY_GROUP_MAP: Final[dict[str, str]] = {
     "pullback_v3":          "pullback_short",
+    "pullback_v3_3":        "pullback_short",
     "pullback_v2":          "pullback_short",
     "ath_breakout_v1":      "ath_outlier",
     "ath_breakout_v2":      "ath_outlier",

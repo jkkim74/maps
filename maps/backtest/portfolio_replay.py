@@ -23,6 +23,7 @@ import pandas as pd
 
 from maps.backtest.cost_model import VOL_MULTIPLIER_MAP, CostModel, Trade
 from maps.backtest.engine import _ATR_STOP_MULTIPLIER, _compute_atr14
+from maps.backtest.position_exit import evaluate_position_exit
 from maps.common.exceptions import BacktestError
 from maps.common.sizing import risk_based_qty
 from maps.strategy.base import BaseStrategy
@@ -56,6 +57,9 @@ class PortfolioTrade:
     qty: int
     net_pnl: float
     exit_reason: str
+    initial_risk: float | None = None
+    r_multiple: float | None = None
+    holding_days: int | None = None
 
 
 @dataclass
@@ -73,6 +77,7 @@ class PortfolioResult:
     win_rate: float = 0.0
     equity_curve: list[float] = field(default_factory=list)
     dates: list[datetime.date] = field(default_factory=list)
+    trade_list: list[PortfolioTrade] = field(default_factory=list)
 
 
 @dataclass
@@ -123,6 +128,7 @@ class PortfolioReplayEngine:
         market_caps = market_caps or {}
         etfs = etfs or set()
         next_open = self._cfg.fill_mode == "next_open"
+        exit_policy = strategy.position_exit_policy(params)
 
         prepared: dict[str, _Prepared] = {}
         for ticker, df in data.items():
@@ -175,16 +181,37 @@ class PortfolioReplayEngine:
                     continue
                 row = p.sig.loc[dt]
                 bar_open = float(row.get("open", row["close"]))
+                bar_high = float(row.get("high", row["close"]))
                 bar_low = float(row.get("low", row["close"]))
                 bar_close = float(row["close"])
                 last_close[ticker] = bar_close
                 pos = positions[ticker]
+                pos["holding_days"] += 1
 
                 exit_reason = None
                 exit_price = bar_close
                 is_last = dt == p.last_date
 
-                if next_open:
+                if exit_policy is not None:
+                    decision = evaluate_position_exit(
+                        exit_policy,
+                        bar_open=bar_open,
+                        bar_high=bar_high,
+                        bar_low=bar_low,
+                        bar_close=bar_close,
+                        entry_price=pos["entry_price"],
+                        stop_price=pos["stop"],
+                        initial_risk=pos["initial_risk"],
+                        prior_high_water_mark=pos["hwm"],
+                        strategy_exit=bool(p.exit_fill.get(dt, False)),
+                        next_open=next_open,
+                        is_last=is_last,
+                    )
+                    if decision is not None:
+                        exit_reason, exit_price = decision.reason, decision.price
+                    else:
+                        pos["hwm"] = max(pos["hwm"], bar_high)
+                elif next_open:
                     if bool(p.exit_fill.get(dt, False)):
                         exit_reason, exit_price = "signal", bar_open
                     elif bar_low <= pos["stop"]:
@@ -200,7 +227,9 @@ class PortfolioReplayEngine:
                         exit_reason, exit_price = "end_of_period", bar_close
 
                 if exit_reason:
-                    cash += self._close_position(ticker, pos, exit_price, ref_date, p, trades)
+                    cash += self._close_position(
+                        ticker, pos, exit_price, ref_date, exit_reason, p, trades
+                    )
                     del positions[ticker]
 
             # ── 신규 진입 (슬롯·현금 제약) ──
@@ -241,6 +270,9 @@ class PortfolioReplayEngine:
                             "entry_price": entry_price,
                             "entry_date": ref_date,
                             "stop": stop_price,
+                            "initial_risk": entry_price - stop_price,
+                            "hwm": max(entry_price, float(row.get("high", row["close"]))),
+                            "holding_days": 0,
                         }
                         last_close[ticker] = float(row["close"])
                         free_slots -= 1
@@ -260,7 +292,9 @@ class PortfolioReplayEngine:
             pos = positions[ticker]
             p = prepared[ticker]
             exit_price = last_close.get(ticker, pos["entry_price"])
-            cash += self._close_position(ticker, pos, exit_price, curve_dates[-1], p, trades)
+            cash += self._close_position(
+                ticker, pos, exit_price, curve_dates[-1], "end_of_period", p, trades
+            )
             del positions[ticker]
 
         return self._metrics(
@@ -297,6 +331,7 @@ class PortfolioReplayEngine:
         pos: dict,
         exit_price: float,
         exit_date: datetime.date,
+        exit_reason: str,
         p: _Prepared,
         trades: list[PortfolioTrade],
     ) -> float:
@@ -310,6 +345,7 @@ class PortfolioReplayEngine:
             market_cap=p.market_cap,
         )
         net = self._cost.apply(trade)
+        risk_amount = pos["initial_risk"] * pos["qty"]
         cash_delta = pos["qty"] * exit_price - (trade.gross_pnl - net)
         trades.append(
             PortfolioTrade(
@@ -320,7 +356,10 @@ class PortfolioReplayEngine:
                 exit_price=exit_price,
                 qty=pos["qty"],
                 net_pnl=net,
-                exit_reason="",
+                exit_reason=exit_reason,
+                initial_risk=pos["initial_risk"],
+                r_multiple=(net / risk_amount) if risk_amount > 0 else None,
+                holding_days=pos["holding_days"],
             )
         )
         return cash_delta
@@ -382,6 +421,7 @@ class PortfolioReplayEngine:
             win_rate=win_rate,
             equity_curve=equity_curve,
             dates=dates,
+            trade_list=trades,
         )
 
 
