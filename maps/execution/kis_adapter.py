@@ -58,14 +58,14 @@ _TR_IDS = {
         "sell": "VTTC0801U",
         "cancel": "VTTC0803U",
         "balance": "VTTC8434R",
-        "daily_ccld": "VTTC8001R",
+        "daily_ccld": "VTTC0081R",
     },
     "real": {
         "buy": "TTTC0802U",
         "sell": "TTTC0801U",
         "cancel": "TTTC0803U",
         "balance": "TTTC8434R",
-        "daily_ccld": "TTTC8001R",
+        "daily_ccld": "TTTC0081R",
     },
 }
 

@@ -305,6 +305,26 @@ def test_get_daily_order_results_maps_partial_fill(settings: MapsSettings) -> No
     assert results[0].filled_quantity == 6
 
 
+@pytest.mark.parametrize(
+    ("real_trading", "expected_tr_id"),
+    [(False, "VTTC0081R"), (True, "TTTC0081R")],
+)
+def test_daily_order_query_uses_current_kis_tr_id(
+    settings: MapsSettings,
+    real_trading: bool,
+    expected_tr_id: str,
+) -> None:
+    """체결조회는 KIS의 현재 실전·모의 TR ID를 사용한다."""
+    configured = settings.model_copy(update={"kis_real_trading": real_trading})
+    http = FakeSession()
+    broker = KISAdapter(configured, http=http)
+
+    broker.get_daily_order_results()
+
+    call = next(call for call in http.calls if call["url"].endswith("/inquire-daily-ccld"))
+    assert call["headers"]["tr_id"] == expected_tr_id
+
+
 def _balance_row(ticker: str, qty: str = "10") -> dict[str, str]:
     return {
         "pdno": ticker,
