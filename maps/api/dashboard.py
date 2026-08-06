@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from maps.api.deps import get_db
 from maps.api.schemas import AlertItem, DashboardResponse, DailyPnlResponse, DailyReturnItem, StrategyContribution
+from maps.common.account_history import clamp_history_start_date
 from maps.common.constants import STRATEGY_GROUP_MAP
 from maps.common.exceptions import BrokerAdapterError
 from maps.common.models import (
@@ -136,7 +137,7 @@ def _upsert_portfolio_snapshot(
 
 def _portfolio_metrics(db: Session, current_assets: float) -> dict[str, float]:
     today = _today()
-    start_1y = today - dt.timedelta(days=365)
+    start_1y = clamp_history_start_date(today - dt.timedelta(days=365))
     rows = (
         db.query(PortfolioSnapshot)
         .filter(PortfolioSnapshot.source == "broker", PortfolioSnapshot.ref_date >= start_1y)
@@ -283,7 +284,7 @@ def get_daily_pnl(
     PortfolioSnapshot(source='broker') 데이터를 기반으로 전일 대비 수익률과
     손익 금액을 계산한다. Kill Switch 모니터링 및 운용 현황 파악에 활용한다.
     """
-    cutoff = _today() - dt.timedelta(days=days)
+    cutoff = clamp_history_start_date(_today() - dt.timedelta(days=days))
     rows = (
         db.query(PortfolioSnapshot)
         .filter(PortfolioSnapshot.source == "broker", PortfolioSnapshot.ref_date >= cutoff)

@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from maps.api.deps import get_db
 from maps.api.schemas import KillSwitchLogItem, LiveMonitorResponse
 from maps.backtest.cost_model import SLIPPAGE_LARGE_CAP, SLIPPAGE_SMALL_CAP
+from maps.common.account_history import account_history_start_date, account_history_start_utc_naive
 from maps.common.constants import STRATEGY_GROUP_MAP
 from maps.common.models import KillSwitchLog, OrderLog, PortfolioSnapshot, SecurityMetadata
 
@@ -71,16 +72,18 @@ def get_live_monitor(db: Session = Depends(get_db)) -> LiveMonitorResponse:
     all_events = [_to_item(r) for r in recent]
 
     # ── 실측 MDD: PortfolioSnapshot broker 이력 ─────────────────────────────
-    snaps = (
+    snapshot_query = (
         db.query(PortfolioSnapshot)
         .filter(PortfolioSnapshot.source == "broker")
-        .order_by(PortfolioSnapshot.ref_date.asc())
-        .all()
     )
+    history_start_date = account_history_start_date()
+    if history_start_date is not None:
+        snapshot_query = snapshot_query.filter(PortfolioSnapshot.ref_date >= history_start_date)
+    snaps = snapshot_query.order_by(PortfolioSnapshot.ref_date.asc()).all()
     actual_mdd = _calc_mdd([float(s.total_assets) for s in snaps if s.total_assets])
 
     # ── 실측 슬리피지: 최근 50건 체결 기준 (KOSPI=대형주, KOSDAQ=중소형) ───
-    fill_rows = (
+    fill_query = (
         db.query(OrderLog)
         .filter(
             OrderLog.status.in_(["filled", "FILLED", "partially_filled", "PARTIAL"]),
@@ -88,10 +91,11 @@ def get_live_monitor(db: Session = Depends(get_db)) -> LiveMonitorResponse:
             OrderLog.order_price.isnot(None),
             OrderLog.order_price > 0,
         )
-        .order_by(OrderLog.created_at.desc())
-        .limit(50)
-        .all()
     )
+    history_start_utc = account_history_start_utc_naive()
+    if history_start_utc is not None:
+        fill_query = fill_query.filter(OrderLog.created_at >= history_start_utc)
+    fill_rows = fill_query.order_by(OrderLog.created_at.desc()).limit(50).all()
     tickers = {r.ticker for r in fill_rows}
     market_map: dict[str, str] = {}
     if tickers:

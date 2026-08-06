@@ -1,7 +1,8 @@
 # HANDOFF
 
-> 작성일: 2026-08-05 (수, 오전) · 작성자: 세션 에이전트 (**집 PC, 키 `D:\maps\`**)
-> 서버 = **`debe036`** 배포 완료 (10:42 KST), alembic **`0018`**(head, 변경 없음), 테스트 **647 passed**.
+> 갱신일: 2026-08-06 (목, 오전) · 작성자: 세션 에이전트 (**회사 PC, 키 `D:\ssh_maps\`**)
+> 서버 = **`f941597`** 배포 완료 (10:44 KST), alembic **`0019_bt_run_source`**(head).
+> 로컬 후속 변경(strategy-selector 입력·계좌 이력 경계)은 **미커밋**, 전체 테스트 **656 passed**.
 > 8/3 기록은 "8/3 작업 ①~⑤" 절, 8/2 는 "이전 날(8/2)" 절 — 결론은 여전히 유효하다.
 
 ## Goal — 이 작업이 향하는 곳
@@ -10,6 +11,55 @@
 **"이 전략이 오늘 사겠다고 말한 종목"** 으로 되돌리는 것. 그 위에 AI 스코어링을 붙인다
 (Phase 2, 착수 전). 병행 목표는 승격 게이트가 **실제 성과로** 갈리게 만드는 것 —
 Sharpe 왜곡 수정(8/2)과 자동 강등(8/2)이 8/3에 처음 실측됐다.
+
+## 8/6 세션 — 정상 주문 첫 검증 · KIS 체결조회 복구 · 승격 단계 입력 개선
+
+### 08:55 주문 사이클 — 신호 게이트·강등·신 계좌 정상 동작 확인
+
+장세 `strong`, 신 계좌 `50200591-01`에서 주문 사이클이 22.8초 만에 성공했다.
+
+- submitted 2 / skipped 74, 매도 0. `40910000`·Kill Switch 재발 없음.
+- 제출: `ath_breakout_v1` 051160 427주 @10,100원, 148780 689주 @3,925원.
+- 스킵 사유: 진입 신호 비활성 5, 장세 진입 한도 2건 도달 69, 기타 0.
+- 후보 생성 시 저장 신호와 주문 시점 400봉 재계산 신호 **76건 전부 일치(불일치 0)**.
+- 승격 단계 필터는 의도대로 `ath_breakout_v1`, `donchian_v2` 두 전략만 통과.
+- 002810은 브로커 보유 0, 8/6 오류 없음. 구 계좌의 7/29 매수 226주 감사 행만 남아 있다.
+
+### 🔴 추가 발견·즉시 복구 — KIS 일별주문체결조회 TR ID 오류
+
+주문 2건은 KIS에 실제 접수됐지만 기존 `get_daily_order_results()`/`get_open_orders()`가 0건을
+반환했다. 원인은 구 TR ID(`VTTC8001R`/`TTTC8001R`). KIS 현재 ID인
+`VTTC0081R`/`TTTC0081R`로 수정(`f941597`)하고 10:44 배포했다.
+
+- 운영 직접 조회: 주문 2건 모두 `pending`, fill 0으로 확인.
+- 11:29 재확인: KIS·DB 모두 잔량 전량(051160 427주, 148780 689주), 보유 0,
+  현금·총자산 1억원으로 일치. broker_sync도 `open_orders=2`, `items=0`, `holdings=0`.
+- 다음 broker_sync: `open_orders=2`, `sync_errors=0` — 동기화 경로 복구 실효 확인.
+- 전체 테스트 651 passed(배포 당시). 마이그레이션·requirements 변경 없음.
+- **장 종료 후 과제**: 두 주문의 체결·부분체결·만료와 DB `status/fill_qty` 정합 확인(진행 중).
+
+### strategy-selector 승격 단계 입력 개선 (로컬 구현 완료, 미커밋)
+
+`promotion_history`의 전략별 최신 `passed=True` 행을 JSON으로 내는
+`scripts/export_strategy_stages.py` + `maps/promotion/stage_snapshot.py`를 추가했다.
+cron이 Claude 실행 전에 JSON을 생성해 `/analyze` 프롬프트에 직접 주입하고,
+strategy-selector는 `HANDOFF.md`·메모리에서 현재 단계를 추측하지 못하도록 명시했다.
+대상 단계는 `mock_candidate`, `live_candidate`, `live`; 자동 강등의
+`passed=True → research`도 즉시 반영된다. 쉘 문법 검사 + 전체 656 passed.
+
+### 구 계좌 이력 분리 (로컬 구현 완료, 운영 적용 전)
+
+원 체결을 삭제하거나 가짜 매도를 만들지 않는다. `MAPS_ACCOUNT_HISTORY_START_DATE`를 도입해
+이전 감사 행은 보존하면서 현재 계좌의 거래 리뷰·대시보드 수익률·MDD·슬리피지·
+`mock_months`에서 제외한다. 운영 적용 시 **`2026-08-05`**로 설정할 것.
+부수로 UTC 주문시각을 그대로 `.date()` 해 `mock_months`가 하루 길어지던 문제도 KST 변환으로 수정.
+
+### 자동 강등 정책 결정 — 현행 유지
+
+정책은 **점수 <50 연속 10회면 mock→research, research에서 ≥60이면 재승격**으로 유지한다.
+10점 히스테리시스와 약 2주 관측창이 과도한 왕복을 막는다. 운영 이력 재확인 결과 4전략 모두
+실제 10회 연속 미달을 충족했고, 강등 후에도 3전략은 50 미만, ath_breakout_v2는 약 53으로
+재승격 60 미만이다. 따라서 기존 4건 강등도 되돌리지 않는다.
 
 ## 8/5 세션 — KIS 모의계좌 만료 사고 · 복구 · Kill Switch 해제 버튼
 
@@ -259,8 +309,9 @@ analyze 가 16:00~16:30 에 도는 중 `git pull` 이 **에이전트가 읽는 �
 
 배포 서버: AWS Lightsail `3.37.117.246`, `/opt/maps`, systemd `maps`, `https://maps.magable.kr`.
 운영 DB PostgreSQL. **SSH 키는 PC마다 다름**: 회사 PC `D:\ssh_maps\`, 집 PC `D:\maps\`.
-서버는 **`debe036`** 배포 완료 (8/5 10:42 KST), alembic **`0018_candidate_entry_signal`**(head).
-테스트 **647 passed**. requirements 변경 없음. 로컬도 master = `debe036`, head 0018.
+서버는 **`f941597`** 배포 완료 (8/6 10:44 KST), alembic **`0019_bt_run_source`**(head).
+배포 커밋 기준 테스트 **651 passed**. requirements 변경 없음. 로컬 master/서버 = `f941597`.
+로컬 작업 트리에는 8/6 후속 변경이 미커밋이며 전체 **656 passed**.
 KIS 모의계좌는 **`50200591-01`** (8/5 재생성 — 구 50185813-01 만료, 위 "8/5 세션" 절).
 
 > 🔴 **16:00~16:45 KST 는 배포 금지 시간대다** — `/etc/cron.d/maps-analyze` 가 매 거래일
@@ -294,7 +345,8 @@ KIS 모의계좌는 **`50200591-01`** (8/5 재생성 — 구 50185813-01 만료,
 
 ## 미커밋 상태
 
-- HANDOFF.md 이 갱신분만 미커밋. (로컬 master 는 `debe036` = origin = 서버)
+- 8/6 로컬 후속 변경 미커밋: strategy-selector stage JSON 주입, 계좌 이력 기준일 분리,
+  관련 테스트·문서, 이 HANDOFF 갱신. 로컬 HEAD/서버는 `f941597`.
 - `apps/mobile/google-services.json` — 커밋 여부 사용자 결정 대기 (이월).
 
 **부수 확인 (8/3)**: `order_log` `0000031820` = buy `expired` qty 1253 / fill_qty 21 —
@@ -313,37 +365,30 @@ KIS 모의계좌는 **`50200591-01`** (8/5 재생성 — 구 50185813-01 만료,
 
 ## Next Steps
 
-1. 🔴 **8/6(목) 08:55 주문 사이클 확인 — 최우선.** 8/5 는 계좌 만료로 관측 실패.
-   이제 ⑴ 신호 게이트, ⑵ 강등(주문 가능 2전략), ⑶ 새 계좌가 모두 정상 조건에서
-   처음 돌아간다. 확인할 것: 주문이 실제 나갔는지(40910000 재발 여부), `skipped_orders`
-   사유 분포, **후보 생성 시점 신호 집합과 08:55 재계산 신호 집합이 일치하는지**
-   (같은 OHLCV·같은 400봉이므로 일치해야 정상 — 어긋나면 그게 곧 버그).
-   장세가 weak 로 돌아가면 전량 차단이라 또 이월. 부수: 002810 잔여 전략 트레이드가
-   DB 에 열린 채 남아 오류를 내는지도 같이 볼 것 (브로커 보유는 0).
+1. 🔴 **8/6 주문 2건 장 종료 정합 확인 — 최우선, 15:35 이후.** 08:55 주문·신호 검증은
+   성공·종결(위 8/6 절). 051160/148780의 KIS 체결·미체결, DB `status/fill_qty`, 보유·현금,
+   broker_sync와 EOD cleanup 로그를 대조한다. TR ID 수정 후 `open_orders=2`까지 확인됨.
 2. ~~🔴 8/4 17:10 검증 잡 — G2P 수정 실효 확인~~ → **✅ 8/5 확인·종결** (위 "8/5 세션" 절).
    Infinity/NaN 0건, 무거래 사유 정상 부착, 통과 수 불변.
-3. 🔴 **strategy-selector 의 승격 단계 입력원** (8/3 작업 ⑤ 원인 2).
-   에이전트에 `Bash` 가 없어 `promotion_history` 를 못 읽고 사람용 문서인 `HANDOFF.md` 를
-   파싱한다. 타임아웃 상향(2700)은 증상 완화일 뿐이다. 두 방향 —
-   (a) 에이전트에 `Bash` 부여(무인 실행에 셸 권한을 늘린다),
-   (b) **파이프라인이 stage 를 미리 조회해 입력 JSON 으로 주입**(권장 — 에이전트가 사람용
-   문서를 파싱하는 구조 자체를 없앤다). 설계 필요.
-4. 🟡 **자동 강등 4건에 대한 판단.** `mock_candidate` 6개 → 2개. 의도된 동작이지만 규모가
-   커서 모의 매매 관측 표본이 줄어든다. 강등 임계(연속 10회 <50)를 유지할지,
-   새 Sharpe 기준으로 재산정할지 사용자 판단 필요.
-5. 🔵 **후보 퍼널 Phase 2 (AI 스코어링) — 착수 가능.** Phase 1 이 배포·실측을 마쳤으므로
+3. ✅ **strategy-selector 승격 단계 입력원** — 권장안인 DB→JSON 주입으로 로컬 구현 완료.
+   전체 656 passed. 커밋·배포 후 다음 16:00 analyze에서 stage 추측·재선정이 사라지는지 확인.
+4. ✅ **자동 강등 4건 정책 판단** — 현행 연속 10회 <50 강등 / ≥60 재승격 유지,
+   기존 4건 강등도 유지. 운영 점수 이력으로 재확인 완료.
+5. 🟡 **구 계좌 성과 경계 운영 적용.** 로컬 구현을 배포하고 서버 `.env`에
+   `MAPS_ACCOUNT_HISTORY_START_DATE=2026-08-05` 설정 후 거래 리뷰·MDD·mock_months 확인.
+6. 🔵 **후보 퍼널 Phase 2 (AI 스코어링) — 착수 가능.** Phase 1 이 배포·실측을 마쳤으므로
    대상 선정이 비로소 의미를 갖는다(신호 종목 264건 중 상위 N). 사양·정정사항은
    `docs/plans/candidate-funnel-ai-scoring.md` 참고. **Bedrock 호출자 둘을 함께** 옮길 것
    (`technical_scorer` + `contrarian_analyzer`, `aws_bedrock_model_id` 공유).
-6. 블로그 21편 발행 — 원고 `docs/blog_series_backtest/`, 붙여넣기 검사 통과 상태.
+7. 블로그 21편 발행 — 원고 `docs/blog_series_backtest/`, 붙여넣기 검사 통과 상태.
    (신규 기능·Sharpe 수정으로 일부 원고 내용이 낡았을 수 있음 — 발행 전 콘솔 관련
    편의 스크린샷·문구 확인)
-7. `google-services.json` 커밋 여부 사용자 결정.
-8. 2015년 OHLCV 백필 (운영 절차) — 연 단위 청크로
+8. `google-services.json` 커밋 여부 사용자 결정.
+9. 2015년 OHLCV 백필 (운영 절차) — 연 단위 청크로
    `POST /api/v1/scheduler/backfill/ohlcv?start=2015-01-01&end=2015-12-31` → 2016-01-03까지.
    실패는 `job_run_log`에 남음. (운영 data_start 실측 2016-01-04)
-9. ath_breakout_v1 × `recent_ipo` 유니버스 검증 (IPO 전략 글 가설 — 콘솔에서 바로 가능)
-10. 🟡 **pullback_v3 청산 재설계 (v3.3) — 정식 과제.** 8/2 실험 11회로 좌표 확정:
+10. ath_breakout_v1 × `recent_ipo` 유니버스 검증 (IPO 전략 글 가설 — 콘솔에서 바로 가능)
+11. 🟡 **pullback_v3 청산 재설계 (v3.3) — 정식 과제.** 8/2 실험 11회로 좌표 확정:
    문제는 진입이 아니라 청산(MA5 상향 크로스 즉시 익절 하드코딩 → 손익비 상한 <1.25,
    승률 58~75%로도 비용을 못 이김).
    - 방향: 청산을 파라미터화 — ① 이익목표 P%/트레일링 스탑 도입(IPO 글의 P=20%/L=10%,
@@ -371,7 +416,7 @@ KIS 모의계좌는 **`50200591-01`** (8/5 재생성 — 구 50185813-01 만료,
 9. 🟡 매매일지 페어링이 티커 단위 (`trade_review.py:119`)
 10. ~~🟡 후보 퍼널 재설계~~ → **Phase 1 배포·실측 완료 (8/3)**. 위 "8/3 작업 ②" 절 참고.
     저장소 정본 `docs/plans/candidate-funnel-ai-scoring.md` 를 개정본으로 갱신해 뒀다
-    (원안 정정 4건 포함). **Phase 2(AI)만 남았다** → Next Steps 4번.
+    (원안 정정 4건 포함). **Phase 2(AI)만 남았다** → Next Steps 6번.
 11. 🟡 후보 생성 누락일 2건 (7/01, 7/17) 잡 실패 로그 확인
 12. 🟡 분석 워치리스트 누적 2건뿐 — 게이트 전량 탈락 중
 13. `analysis_pick` id=1 CLOSED인데 exit_reason 빈 것
@@ -398,10 +443,22 @@ KIS 모의계좌는 **`50200591-01`** (8/5 재생성 — 구 50185813-01 만료,
     −2.9~−8.3 → 0 근처로 정상화, `pullback_v2` WFA 첫 통과. **이 항목 종결** (상세는
     "8/3 작업 ③" 절). 다만 G2P `Infinity`/`NaN` 이 새 병목으로 드러났다 → 결함표 참고.
 21. ~~🔴 로컬 `maps.db` alembic 스탬프 깨짐~~ → **해소**. 현재 로컬·운영 모두
-    head `0018_candidate_entry_signal`.
-22. 🟡 **자동 강등 규모** (8/3 신규) — 첫 가동에 4전략이 `mock_candidate → research`.
-    주문 가능 전략 6개 → 2개. 임계(연속 10회 <50) 유지 여부 사용자 판단 필요
-    (Next Steps 3번).
+    head `0019_bt_run_source`.
+22. ~~🟡 **자동 강등 규모** (8/3 신규)~~ — 첫 가동에 4전략이 `mock_candidate → research`.
+    주문 가능 전략 6개 → 2개. **8/6 운영 이력 재검토 후 현행 정책 유지로 결정·종결**:
+    연속 10회 <50 강등, research에서 ≥60 재승격(Next Steps 4번 및 8/6 절 참고).
+
+## 핵심 파일 맵 — 8/6 로컬 변경분
+
+- `maps/promotion/stage_snapshot.py` — 최신 통과 승격 이력으로 전략별 현재 단계 JSON 생성.
+- `scripts/export_strategy_stages.py` — analyze cron용 단계 컨텍스트 exporter.
+- `.claude/commands/analyze.md`, `.claude/agents/strategy-selector.md`,
+  `scripts/run_analyze_cron.sh` — DB 기반 단계 JSON 주입과 추측 금지 규약.
+- `maps/common/account_history.py`, `maps/common/settings.py` — 신 계좌 이력 기준일과 KST/UTC 경계.
+- `maps/api/trade_review.py`, `maps/api/dashboard.py`, `maps/api/live_monitor.py`,
+  `maps/ops/scheduler.py` — 구 계좌 감사 행을 보존한 채 현재 계좌 성과 지표에서 제외.
+- `tests/test_promotion_stage_snapshot.py`, `tests/test_account_history.py`,
+  `tests/test_trade_review.py` — 승격 단계·강등·계좌 경계 회귀 테스트.
 
 ## 핵심 파일 맵 — 8/3 변경분
 

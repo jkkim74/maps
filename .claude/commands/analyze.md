@@ -6,8 +6,20 @@ MAPS 매매 분석을 다음 순서로 실행한다. 각 단계는 해당 subage
 호출하고, 출력 JSON을 다음 단계 입력으로 넘긴다. 한 단계라도
 JSON 스키마 검증에 실패하면 즉시 중단하고 원인을 보고한다.
 
+## 사전 단계 — 승격 단계 입력 고정
+
+strategy-selector가 사람용 문서에서 승격 단계를 추측하지 않도록, 파이프라인 시작 시
+운영 DB의 정본을 JSON으로 확보한다.
+
+- 호출 프롬프트에 `STRATEGY_STAGE_CONTEXT_JSON` 블록이 있으면 그 값을 사용한다.
+- 블록이 없으면 프로젝트 루트에서 `python scripts/export_strategy_stages.py`를 한 번 실행한다.
+- JSON의 `source`는 `promotion_history.latest_passed`여야 한다. 생성·파싱에 실패하면
+  전략을 임의 선정하지 말고 파이프라인을 중단한다.
+- 이 JSON을 1단계 market-regime 결과와 함께 2단계 strategy-selector 입력에 넘긴다.
+- **승격 단계 확인을 위해 `HANDOFF.md`나 에이전트 메모리를 읽지 않는다.**
+
 1. market-regime subagent 호출 → 시장 국면 판단
-2. strategy-selector subagent 호출 (1의 결과 입력)
+2. strategy-selector subagent 호출 (1의 결과 + `STRATEGY_STAGE_CONTEXT_JSON` 입력)
 3. sector-rotation subagent 호출
 4. stock-screener subagent 호출
 5. margin-of-safety subagent 호출 (게이트: 미통과 종목 제거)

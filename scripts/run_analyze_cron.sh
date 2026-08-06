@@ -74,7 +74,17 @@ else
   log "권한 모드: allowedTools 화이트리스트 [$CLAUDE_ALLOWED_TOOLS]"
 fi
 
-# headless /analyze 실행 (명령은 고정 /analyze). 무인 hang 방지를 위해 timeout 적용.
+# strategy-selector 입력은 Claude가 문서에서 추측하지 않도록 DB에서 먼저 고정한다.
+if ! STRATEGY_STAGE_JSON="$(python "$APP_DIR/scripts/export_strategy_stages.py")"; then
+  log "strategy stage JSON 생성 실패 — analyze 중단"; exit 1
+fi
+if [ -z "$STRATEGY_STAGE_JSON" ]; then
+  log "strategy stage JSON 비어 있음 — analyze 중단"; exit 1
+fi
+ANALYZE_PROMPT="$(printf '/analyze\n\nSTRATEGY_STAGE_CONTEXT_JSON:\n%s' "$STRATEGY_STAGE_JSON")"
+log "strategy stage JSON 주입 완료"
+
+# headless /analyze 실행. 무인 hang 방지를 위해 timeout 적용.
 #
 # stream-json + --verbose 로 각 단계(에이전트 호출·도구 실행·텍스트·완료)를 실시간 이벤트로
 # 받아, scripts/analyze_stream_to_log.py가 사람이 읽는 진행로그로 변환해 $LOG에 남긴다.
@@ -86,7 +96,7 @@ fi
 ANALYZE_TIMEOUT="${ANALYZE_TIMEOUT:-2700}"
 RAW_LOG="$LOG_DIR/analyze_cron_${TS}.jsonl"
 log "claude -p /analyze 실행 시작 (timeout ${ANALYZE_TIMEOUT}s, 진행로그 스트리밍, raw=$RAW_LOG)"
-timeout "${ANALYZE_TIMEOUT}s" "$CLAUDE_BIN" -p "/analyze" "${perm_args[@]}" \
+timeout "${ANALYZE_TIMEOUT}s" "$CLAUDE_BIN" -p "$ANALYZE_PROMPT" "${perm_args[@]}" \
     --verbose --output-format stream-json 2>>"$LOG" \
   | tee -a "$RAW_LOG" \
   | python "$APP_DIR/scripts/analyze_stream_to_log.py" "$LOG"

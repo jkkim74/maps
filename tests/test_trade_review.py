@@ -106,3 +106,41 @@ def test_closed_position_keeps_exit_values(client) -> None:
     assert trade["status"] == "closed"
     assert trade["exit_price"] == 75000
     assert trade["pnl"] == (75000 - 70000) * 10
+
+
+def test_trade_review_excludes_orders_before_current_account_start(client, monkeypatch) -> None:
+    """계좌 재생성 전 002810 매수는 현 계좌 거래 리뷰에서 제외한다."""
+    from maps.common.settings import reload_settings
+
+    monkeypatch.setenv("MAPS_ACCOUNT_HISTORY_START_DATE", "2026-08-05")
+    reload_settings()
+    try:
+        with client.session_factory() as s:
+            s.add_all([
+                PortfolioSnapshot(
+                    ref_date=dt.date(2026, 8, 1), source="broker",
+                    total_assets=85_000_000, cash=75_000_000,
+                    positions_value=10_000_000, holdings={"002810": 226},
+                ),
+                PortfolioSnapshot(
+                    ref_date=dt.date(2026, 8, 6), source="broker",
+                    total_assets=100_000_000, cash=100_000_000,
+                    positions_value=0, holdings={},
+                ),
+                OrderLog(
+                    order_id="old-account-002810", strategy_id="multi_asset_trend_v1",
+                    ticker="002810", side="buy", qty=226, order_price=45_000,
+                    fill_price=45_000, fill_qty=226, status="filled",
+                    created_at=dt.datetime(2026, 7, 28, 23, 55),
+                ),
+            ])
+            s.commit()
+
+        data = client.get("/api/v1/trade-review").json()
+
+        assert all(trade["ticker"] != "002810" for trade in data["trades"])
+        assert data["summary"]["initial_assets"] == 100_000_000
+        assert data["summary"]["total_return_pct"] == 0.0
+    finally:
+        monkeypatch.delenv("MAPS_ACCOUNT_HISTORY_START_DATE")
+        reload_settings()

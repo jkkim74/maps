@@ -7,6 +7,7 @@ MAPS 전체의 공통 기반 인프라 패키지. DB 연결, 설정, ORM 모델,
 ```
 common/
 ├── __init__.py        # 빈 패키지 마커
+├── account_history.py # 계좌 교체 기준일의 KST 날짜·UTC created_at 경계
 ├── constants.py       # 전역 상수 (ALLOWED_MDD, STRATEGY_GROUP_MAP, PROMOTION_GATES 등)
 ├── db.py              # SQLAlchemy 엔진 · 세션 팩토리
 ├── exceptions.py      # MAPS 커스텀 예외 계층
@@ -42,6 +43,12 @@ common/
 | `make_session(url)` | 테스트·스크립트용 독립 세션 생성 |
 
 SQLite: 기본. PostgreSQL: `pool_pre_ping=True`, `pool_recycle=1800` 적용.
+
+## account_history.py
+
+`MAPS_ACCOUNT_HISTORY_START_DATE`가 설정되면 그 KST 날짜 이전의 주문·브로커 스냅샷은
+감사용으로 DB에 남기되 현재 계좌의 성과, MDD, 슬리피지, 거래 리뷰, `mock_months`에서
+제외한다. 계좌를 재생성하거나 교체할 때 반드시 새 계좌 시작일로 갱신한다.
 
 ## exceptions.py — 예외 계층
 

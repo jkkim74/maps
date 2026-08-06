@@ -7,8 +7,16 @@
 ```
 promotion/
 ├── __init__.py  # 빈 패키지 마커
-└── gate.py      # PromotionGate, PromotionStage, PromotionDecision
+├── gate.py      # PromotionGate, PromotionStage, PromotionDecision
+└── stage_snapshot.py # strategy-selector용 최신 성공 승격 단계 JSON
 ```
+
+## stage_snapshot.py
+
+`build_strategy_stage_context(db)`는 `promotion_history`의 전략별 최신 `passed=True` 행을
+selector 입력 JSON으로 만든다. 승격 실패는 기존 단계를 박탈하지 않고, 자동 강등의
+`passed=True, to_stage=research`는 즉시 반영한다. selector 대상 단계는
+`mock_candidate`, `live_candidate`, `live`다.
 
 ## gate.py
 

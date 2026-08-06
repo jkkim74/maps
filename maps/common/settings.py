@@ -7,6 +7,7 @@ modules when the value belongs to application configuration.
 
 from __future__ import annotations
 
+import datetime as dt
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Literal
@@ -40,6 +41,9 @@ class MapsSettings(BaseSettings):
 
     maps_broker_mode: BrokerMode = "mock"
     maps_live_trading_enabled: bool = False
+    # 브로커 계좌 재생성·교체 시 현재 계좌의 성과 이력을 시작할 KST 날짜.
+    # 이전 주문·스냅샷은 감사용으로 보존하되 성과·mock_months 계산에서는 제외한다.
+    maps_account_history_start_date: dt.date | None = None
     # 실거래(real) 안전 확인 스위치. KIS_REAL_TRADING=true + 주문 활성 상태에서
     # 이 값이 true가 아니면 기동을 거부한다(모의투자 paper 운영을 실거래로 오인 방지).
     maps_confirm_real_trading: bool = False

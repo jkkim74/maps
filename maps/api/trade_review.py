@@ -15,6 +15,7 @@ from maps.api.schemas import (
     TradeReviewResponse,
     TradeReviewSummary,
 )
+from maps.common.account_history import account_history_start_date, account_history_start_utc_naive
 from maps.common.models import (
     HistoricalOHLCV,
     OrderLog,
@@ -44,12 +45,15 @@ def get_trade_review(db: Session = Depends(get_db)) -> TradeReviewResponse:
     name_map = {m.ticker: m.name for m in db.query(SecurityMetadata).all()}
 
     # 초기 자산: source='broker' 중 가장 오래된 스냅샷
-    all_snaps = (
+    account_start_date = account_history_start_date()
+    account_start_utc = account_history_start_utc_naive()
+    snapshot_query = (
         db.query(PortfolioSnapshot)
         .filter(PortfolioSnapshot.source == "broker")
-        .order_by(PortfolioSnapshot.ref_date.asc())
-        .all()
     )
+    if account_start_date is not None:
+        snapshot_query = snapshot_query.filter(PortfolioSnapshot.ref_date >= account_start_date)
+    all_snaps = snapshot_query.order_by(PortfolioSnapshot.ref_date.asc()).all()
     initial_assets = float(all_snaps[0].total_assets) if all_snaps else 100_000_000.0
     latest_snap = all_snaps[-1] if all_snaps else None
     current_assets = float(latest_snap.total_assets) if latest_snap else initial_assets
@@ -58,7 +62,7 @@ def get_trade_review(db: Session = Depends(get_db)) -> TradeReviewResponse:
     today = datetime.date.today()
 
     # ── 체결 매수 주문 ────────────────────────────────────────────────────
-    buy_orders = (
+    buy_query = (
         db.query(OrderLog)
         .filter(
             OrderLog.side == "buy",
@@ -66,17 +70,19 @@ def get_trade_review(db: Session = Depends(get_db)) -> TradeReviewResponse:
             OrderLog.fill_price.isnot(None),
             OrderLog.fill_qty > 0,
         )
-        .order_by(OrderLog.created_at.asc())
-        .all()
     )
+    if account_start_utc is not None:
+        buy_query = buy_query.filter(OrderLog.created_at >= account_start_utc)
+    buy_orders = buy_query.order_by(OrderLog.created_at.asc()).all()
 
     # ── 매도 주문 (체결 포함, 만료 포함) ──────────────────────────────────
-    sell_orders = (
+    sell_query = (
         db.query(OrderLog)
         .filter(OrderLog.side == "sell")
-        .order_by(OrderLog.created_at.asc())
-        .all()
     )
+    if account_start_utc is not None:
+        sell_query = sell_query.filter(OrderLog.created_at >= account_start_utc)
+    sell_orders = sell_query.order_by(OrderLog.created_at.asc()).all()
     # 티커별 매도 주문 매핑 (가장 최근 것이 최종 청산으로 가정)
     sell_by_ticker: dict[str, list[OrderLog]] = defaultdict(list)
     for s in sell_orders:

@@ -22,6 +22,7 @@ from sqlalchemy import delete, func
 from sqlalchemy.orm import Session
 
 from maps.common.constants import STRATEGY_GROUP_MAP
+from maps.common.account_history import account_history_start_utc_naive, utc_datetime_to_kst_date
 from maps.common.db import SessionLocal
 from maps.common.sizing import risk_based_qty
 from maps.common.models import (
@@ -1135,7 +1136,7 @@ class OperationalPipeline:
             return {"evaluated": 0, "passed": 0, "failed": 0, "strategies": []}
 
         gate = PromotionGate(db=db)
-        mock_months = self._mock_track_months(db, ref_date)
+        mock_months = self._mock_track_months(db, ref_date, self._settings)
         passed = 0
         failed = 0
         evaluated_strategies: list[str] = []
@@ -1182,24 +1183,30 @@ class OperationalPipeline:
         }
 
     @staticmethod
-    def _mock_track_months(db: Session, ref_date: dt.date) -> dict[str, float]:
+    def _mock_track_months(
+        db: Session,
+        ref_date: dt.date,
+        settings: MapsSettings | None = None,
+    ) -> dict[str, float]:
         """전략별 최초 체결 매수 이후 경과 개월 수를 반환한다.
 
         승격 게이트의 `mock_months`(Live Small 진입에 필요한 실체결 트랙레코드
         길이) 입력값이다. 체결(fill_qty > 0)된 BUY 주문만 센다 — 미체결·취소는
         운용 실적이 아니다.
         """
-        rows = (
+        query = (
             # side 는 소문자("buy")로 저장된다 — 리터럴 "BUY" 로 비교하면 항상 0건이
             # 나와 mock_months 가 영구히 0.0 이 되고 Live Small 승격이 차단된다
             # (2026-07-31 운영 확인: 실제로는 2개월치가 이미 쌓여 있었다).
             db.query(OrderLog.strategy_id, func.min(OrderLog.created_at))
             .filter(OrderLog.side == OrderSide.BUY.value, OrderLog.fill_qty > 0)
-            .group_by(OrderLog.strategy_id)
-            .all()
         )
+        account_start = account_history_start_utc_naive(settings)
+        if account_start is not None:
+            query = query.filter(OrderLog.created_at >= account_start)
+        rows = query.group_by(OrderLog.strategy_id).all()
         return {
-            strategy_id: max((ref_date - first_at.date()).days, 0) / 30.44
+            strategy_id: max((ref_date - utc_datetime_to_kst_date(first_at)).days, 0) / 30.44
             for strategy_id, first_at in rows
             if strategy_id and first_at
         }
