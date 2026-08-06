@@ -3,6 +3,7 @@
 > 갱신일: 2026-08-06 (목, 오후) · 작성자: 세션 에이전트 (**회사 PC, 키 `D:\ssh_maps\`**)
 > 운영 코드 = **`afcbf09`** 배포 완료 (14:16 KST), alembic **`0019_bt_run_source`**(head).
 > pullback_v3.3 청산 연구 후보까지 운영 배포 완료, 전체 테스트 **666 passed**.
+> 운영 서버는 최신 `master`까지 fast-forward 완료. `maps=active`, health **HTTP 200** 확인.
 > 8/3 기록은 "8/3 작업 ①~⑤" 절, 8/2 는 "이전 날(8/2)" 절 — 결론은 여전히 유효하다.
 
 ## Goal — 이 작업이 향하는 곳
@@ -93,6 +94,10 @@ strategy-selector는 `HANDOFF.md`·메모리에서 현재 단계를 추측하지
 재현성이 없으므로 **선정 조합 없음, 전체 기간/WFA/Plateau/MC 미실행, research 유지**가 결론이다.
 운영 재기동 뒤 `broker_sync`는 `open_orders=2`, `sync_errors=0`; 기존 051160/148780 주문도
 영향 없이 유지됐다.
+
+**배포 확인:** 기능 커밋 `afcbf09`, 최초 HANDOFF 반영 `3655d86`. 운영 서버에서 두 커밋을
+순서대로 fast-forward했고, 기능 배포 때만 서비스를 재기동했다. 이후 HANDOFF 문서 동기화는
+재기동 없이 반영했다. 최종 확인 시 서비스 `active`, `/health` 200, 추적 파일 변경 없음.
 
 ## 8/5 세션 — KIS 모의계좌 만료 사고 · 복구 · Kill Switch 해제 버튼
 
