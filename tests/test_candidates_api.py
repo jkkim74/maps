@@ -117,3 +117,45 @@ def test_candidates_returns_latest_snapshot(ctx) -> None:
     assert data["missing_count"] == 1
     assert data["final_count"] == 2
     assert [item["ticker"] for item in data["candidates"]] == ["005930", "000660"]
+
+
+def test_candidates_exposes_score_provenance(ctx) -> None:
+    """Candidate API separates rule, AI, recommendation, and source metadata."""
+    client, factory = ctx
+    db = factory()
+    try:
+        db.add(
+            CandidateSnapshot(
+                ref_date=dt.date(2026, 8, 7),
+                strategy_id="pullback_v3",
+                ticker="005930",
+                name="삼성전자",
+                market="KOSPI",
+                factor_score=70,
+                trend_strength=75,
+                ts_bucket="S4",
+                final_score=72,
+                rule_score=70,
+                ai_technical_score=80,
+                recommendation_score=72,
+                score_source="AI",
+                ai_scoring_mode="rerank",
+                ai_status="SUCCESS",
+                ai_confidence=0.82,
+                ai_reason_codes=["UPTREND", "HEALTHY_PULLBACK"],
+                ai_model_id="test-model",
+                weekly_pass=True,
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    item = client.get("/api/v1/candidates").json()["candidates"][0]
+
+    assert item["rule_score"] == 70
+    assert item["ai_score"] == 80
+    assert item["recommendation_score"] == item["final_score"] == 72
+    assert item["score_source"] == "AI"
+    assert item["ai_scoring_mode"] == "rerank"
+    assert item["ai_reason_codes"] == ["UPTREND", "HEALTHY_PULLBACK"]

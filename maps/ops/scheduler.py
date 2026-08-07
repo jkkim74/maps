@@ -76,6 +76,10 @@ from maps.market.trading_rules import (
     round_up_krx_price,
 )
 from maps.ops.notifications import Notification, SlackNotifier
+from maps.ops.candidate_selection import (
+    candidate_min_score_expression,
+    candidate_recommendation_eligible_expression,
+)
 from maps.ops.order_state import claimed_candidate_tickers
 from maps.ops.pick_freshness import is_pick_stale, pick_cutoff_date
 from maps.promotion.gate import PromotionGate, PromotionStage
@@ -92,8 +96,7 @@ from maps.strategy.pullback_v2 import PullbackV2Strategy
 from maps.strategy.pullback_v3 import PullbackV3Strategy
 from maps.strategy.scoring import LegacyFinalScoreCalculator, StrategyAwareScoreCalculator, StrategyScoreInput
 from maps.indicator.trend_strength import TrendStrengthCalculator
-from maps.ai.contrarian_analyzer import AIContrarianAnalyzer
-from maps.ai.technical_scorer import AITechnicalScorer
+from maps.ai.scoring_service import AIScoringRunSummary, AIStockScoringService
 from maps.ai.valuation_margin import ValuationMarginScorer
 from maps.data.fundamental_repo import FundamentalValuationProvider
 from maps.strategy.holding_type import HoldingTypeClassifier, HoldingTypeInput
@@ -460,6 +463,34 @@ class OperationalPipeline:
                 )
                 if entry_block_reason is None:
                     active_strategies.append(strategy_id)
+
+            ai_summary = AIScoringRunSummary()
+            if self._settings.maps_ai_scoring_mode != "off":
+                frames = {
+                    ticker: context.frame
+                    for ticker, context in ticker_contexts.items()
+                }
+                ai_summary = AIStockScoringService(settings=self._settings).apply(
+                    db,
+                    ref_date,
+                    frames,
+                    set(active_strategies),
+                )
+                logger.info(
+                    "AI scoring: mode=%s model=%s targets=%d calls=%d "
+                    "cache_hits=%d success=%d failed=%d skipped_limit=%d "
+                    "input_tokens=%d output_tokens=%d",
+                    self._settings.maps_ai_scoring_mode,
+                    self._settings.maps_ai_scoring_model_id,
+                    ai_summary.targets,
+                    ai_summary.calls,
+                    ai_summary.cache_hits,
+                    ai_summary.successes,
+                    ai_summary.failures,
+                    ai_summary.skipped_limit,
+                    ai_summary.input_tokens,
+                    ai_summary.output_tokens,
+                )
             self._last_universe = result
             return {
                 "ref_date": ref_date.isoformat(),
@@ -491,6 +522,14 @@ class OperationalPipeline:
                     sid for sid, cls in _RUNNABLE_STRATEGIES.items()
                     if regime_label not in cls.preferred_regimes
                 ],
+                "ai_targets": ai_summary.targets,
+                "ai_calls": ai_summary.calls,
+                "ai_cache_hits": ai_summary.cache_hits,
+                "ai_successes": ai_summary.successes,
+                "ai_failures": ai_summary.failures,
+                "ai_skipped_limit": ai_summary.skipped_limit,
+                "ai_input_tokens": ai_summary.input_tokens,
+                "ai_output_tokens": ai_summary.output_tokens,
             }
 
         return self._job("candidate_generation", _run)
@@ -1452,22 +1491,6 @@ class OperationalPipeline:
         # 상위 N은 전체 점수를 봐야 정해지므로 즉시 add 할 수 없다.
         pending: list[tuple[float, bool, CandidateSnapshot]] = []
 
-        ai_enabled = self._settings.maps_ai_technical_scoring_enabled
-        ai_weight = self._settings.maps_ai_technical_score_weight if ai_enabled else 0.0
-        ai_scorer = AITechnicalScorer.from_settings() if ai_enabled else None
-        contrarian_check_enabled = (
-            self._settings.maps_ai_contrarian_check_enabled
-            and self._settings.maps_ai_analysis_mode == "all"
-        )
-        if (
-            self._settings.maps_ai_contrarian_check_enabled
-            and self._settings.maps_ai_analysis_mode == "technical_only"
-        ):
-            logger.info(
-                "AI contrarian check skipped [%s]: MAPS_AI_ANALYSIS_MODE=technical_only",
-                strategy_id,
-            )
-        contrarian_analyzer = AIContrarianAnalyzer.from_settings() if contrarian_check_enabled else None
         valuation_enabled = self._settings.maps_valuation_margin_enabled
         # 밸류에이션은 종목 컨텍스트가 이미 계산해 뒀다 (전략 무관) — 여기서 다시 하지 않는다.
         holding_type_enabled = self._settings.maps_holding_type_classification_enabled
@@ -1489,54 +1512,6 @@ class OperationalPipeline:
             if self._settings.maps_strategy_aware_scoring_enabled
             else None
         )
-        ai_target_tickers: set[str] = set()
-        ai_requested = ai_scorer is not None or contrarian_analyzer is not None
-        ai_candidate_top_n = self._settings.maps_ai_candidate_top_n if ai_requested else 0
-        if ai_candidate_top_n > 0:
-            pre_scored: list[tuple[float, float, str]] = []
-            for stock in ranked:
-                if excluded_reason_by_ticker.get(stock.ticker):
-                    continue
-                turnover = stock.avg_turnover_20d_as_of(ref_date)
-                factor_score = (turnover / max_turnover * 100.0) if max_turnover > 0 else 0.0
-                ctx = contexts.get(stock.ticker)
-                trend_strength = ctx.trend_strength if ctx else 50.0
-                ts_bucket = ctx.ts_bucket if ctx else "S3"
-                valuation_result = ctx.valuation if ctx else None
-
-                if strategy_score_calculator is not None:
-                    score_result = strategy_score_calculator.calculate(
-                        StrategyScoreInput(
-                            strategy_type=strategy_type,
-                            liquidity_score=factor_score,
-                            trend_strength=trend_strength,
-                            ts_bucket=ts_bucket,
-                            valuation_margin_score=(
-                                valuation_result.valuation_score if valuation_result else None
-                            ),
-                            ai_technical_score=None,
-                            ai_weight=0.0,
-                        )
-                    )
-                else:
-                    score_result = legacy_score_calculator.calculate(
-                        factor_score=factor_score,
-                        trend_strength=trend_strength,
-                        ai_technical_score=None,
-                        ai_weight=0.0,
-                        strategy_type=strategy_type,
-                    )
-                pre_scored.append((score_result.final_score, trend_strength, stock.ticker))
-
-            pre_scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
-            ai_target_tickers = {ticker for _score, _trend, ticker in pre_scored[:ai_candidate_top_n]}
-            logger.info(
-                "Bedrock AI candidate limit [%s]: top %d of %d rule-based candidates",
-                strategy_id,
-                len(ai_target_tickers),
-                len(pre_scored),
-            )
-
         for stock in ranked:
             turnover = stock.avg_turnover_20d_as_of(ref_date)
             factor_score = (turnover / max_turnover * 100.0) if max_turnover > 0 else 0.0
@@ -1555,6 +1530,10 @@ class OperationalPipeline:
                         trend_strength=50.0,
                         ts_bucket="S3",
                         final_score=0.0,
+                        rule_score=0.0,
+                        recommendation_score=0.0,
+                        score_source="RULE",
+                        ai_scoring_mode=self._settings.maps_ai_scoring_mode,
                         score_type="SECTOR_FILTER",
                         strategy_type=getattr(strategy_type, "value", str(strategy_type)),
                         component_scores={},
@@ -1573,31 +1552,10 @@ class OperationalPipeline:
             ts_bucket = ctx.ts_bucket if ctx else "S3"
             ohlcv_df = ctx.frame if ctx is not None and not ctx.frame.empty else None
 
-            # AI 기술적 분석 (활성화 시)
-            ai_result = None
-            if (
-                ai_scorer is not None
-                and stock.ticker in ai_target_tickers
-                and ohlcv_df is not None
-                and not ohlcv_df.empty
-            ):
-                try:
-                    ai_result = ai_scorer.score(
-                        stock.ticker, stock.name, ohlcv_df, strategy_id,
-                        trend_strength, ts_bucket, ref_date.isoformat(),
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    # 점수는 기존 공식으로 유지하되, 조용히 삼키면 "AI 켰는데 전부
-                    # null"의 원인을 로그로도 못 잡는다
-                    logger.warning("AI 기술 스코어링 실패 [%s]: %s", stock.ticker, exc)
-
-            # final_score 계산
-            # AI 비활성: 유동성 60% + 추세강도 40%
-            # AI 활성:   유동성 (1-ai_w)×60% + 추세강도 (1-ai_w)×40% + AI ai_w%
+            # 전략별 저장은 항상 rule-only다. 모든 전략 저장이 끝난 뒤 전역 AI pass가
+            # 고유 ticker를 한 번씩 평가하고 recommendation_score만 갱신한다.
             valuation_result = ctx.valuation if ctx else None
 
-            # Rule-based 3가지 가격 계획 (AI 없을 때도 항상 채운다)
-            ai_technical_score = ai_result.technical_score if ai_result else None
             if strategy_score_calculator is not None:
                 score_result = strategy_score_calculator.calculate(
                     StrategyScoreInput(
@@ -1608,16 +1566,16 @@ class OperationalPipeline:
                         valuation_margin_score=(
                             valuation_result.valuation_score if valuation_result else None
                         ),
-                        ai_technical_score=ai_technical_score,
-                        ai_weight=ai_weight,
+                        ai_technical_score=None,
+                        ai_weight=0.0,
                     )
                 )
             else:
                 score_result = legacy_score_calculator.calculate(
                     factor_score=factor_score,
                     trend_strength=trend_strength,
-                    ai_technical_score=ai_technical_score,
-                    ai_weight=ai_weight,
+                    ai_technical_score=None,
+                    ai_weight=0.0,
                     strategy_type=strategy_type,
                     ts_bucket=ts_bucket,
                 )
@@ -1640,51 +1598,6 @@ class OperationalPipeline:
                         round_to_krx_tick(plan_buy + (plan_buy - plan_stop) * rr, market=stock.market)
                     )
 
-            # AI 우선, None이면 rule-based 폴백. AI가 낸 가격도 KRX 호가 단위로 스냅한다
-            # (매수가는 올림으로 plan_buy와 일관, 목표가·손절가는 최근접 호가).
-            ai_buy = (
-                float(round_up_krx_price(ai_result.ai_buy_price, market=stock.market))
-                if ai_result and ai_result.ai_buy_price else None
-            )
-            ai_stop = (
-                float(round_to_krx_tick(ai_result.ai_stop_price, market=stock.market))
-                if ai_result and ai_result.ai_stop_price else None
-            )
-            ai_target = (
-                float(round_to_krx_tick(ai_result.ai_target_price, market=stock.market))
-                if ai_result and ai_result.ai_target_price else None
-            )
-            final_buy = ai_buy or plan_buy
-            final_stop = ai_stop or plan_stop
-            final_target = ai_target or plan_target
-
-            # 7단계: AI 역발상 검증 (contrarian_check_enabled 시에만 실행)
-            contrarian_result = None
-            if contrarian_analyzer is not None and stock.ticker in ai_target_tickers:
-                try:
-                    val_score = valuation_result.valuation_score if valuation_result else 50.0
-                    high52w = float(ohlcv_df["high"].rolling(min(252, len(ohlcv_df))).max().iloc[-1]) if ohlcv_df is not None and not ohlcv_df.empty else current_close_val
-                    drop_pct = round((high52w - current_close_val) / high52w * 100, 1) if high52w > 0 else 0.0
-                    contrarian_result = contrarian_analyzer.analyze(
-                        ticker=stock.ticker,
-                        name=stock.name,
-                        ref_date=str(ref_date),
-                        close=current_close_val,
-                        drop_pct=drop_pct,
-                        liquidity_score=factor_score,
-                        trend_strength=trend_strength,
-                        valuation_margin_score=val_score,
-                        sector=getattr(stock, "sector", "") or "",
-                    )
-                    # REJECT → final_score 감산
-                    if contrarian_result.final_opinion == "REJECT":
-                        final_score = max(0.0, final_score - 20.0)
-                    # WATCH → final_score 소폭 감산
-                    elif contrarian_result.final_opinion == "WATCH":
-                        final_score = max(0.0, final_score - 5.0)
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("AI 역발상 검증 오류 [%s]: %s", stock.ticker, exc)
-
             # 9단계: 보유 성격 분류 (CORE/SWING/TRADING/WATCH/BAN)
             computed_holding_type: str | None = None
             if holding_type_classifier is not None:
@@ -1692,7 +1605,7 @@ class OperationalPipeline:
                     strategy_type=score_result.strategy_type,
                     valuation_margin_score=valuation_result.valuation_score if valuation_result else None,
                     excluded_reason=score_result.excluded_reason,
-                    ai_contrarian_opinion=contrarian_result.final_opinion if contrarian_result else None,
+                    ai_contrarian_opinion=None,
                 )
                 computed_holding_type = holding_type_classifier.classify(ht_inp).value
 
@@ -1746,6 +1659,10 @@ class OperationalPipeline:
                     trend_strength=round(trend_strength, 2),
                     ts_bucket=ts_bucket,
                     final_score=final_score,
+                    rule_score=final_score,
+                    recommendation_score=final_score,
+                    score_source="RULE",
+                    ai_scoring_mode=self._settings.maps_ai_scoring_mode,
                     score_type=score_result.score_type,
                     strategy_type=score_result.strategy_type,
                     component_scores=score_result.component_scores,
@@ -1753,18 +1670,18 @@ class OperationalPipeline:
                     excluded_reason=score_result.excluded_reason,
                     weekly_pass=weekly_pass,
                     estimated_qty=None,
-                    ai_technical_score=round(ai_result.technical_score, 2) if ai_result else None,
-                    ai_buy_price=final_buy,
-                    ai_stop_price=final_stop,
-                    ai_target_price=final_target,
-                    ai_analysis_memo=ai_result.raw_memo if ai_result else None,
+                    ai_technical_score=None,
+                    ai_buy_price=plan_buy,
+                    ai_stop_price=plan_stop,
+                    ai_target_price=plan_target,
+                    ai_analysis_memo=None,
                     valuation_margin_score=valuation_result.valuation_score if valuation_result else None,
                     valuation_margin_reason=valuation_result.reason if valuation_result else None,
-                    ai_contrarian_score=round(contrarian_result.contrarian_score, 2) if contrarian_result else None,
-                    ai_contrarian_opinion=contrarian_result.final_opinion if contrarian_result else None,
-                    ai_contrarian_reason=contrarian_result.reason if contrarian_result else None,
-                    ai_contrarian_thesis=contrarian_result.thesis_summary if contrarian_result else None,
-                    ai_contrarian_anti_thesis=contrarian_result.anti_thesis if contrarian_result else None,
+                    ai_contrarian_score=None,
+                    ai_contrarian_opinion=None,
+                    ai_contrarian_reason=None,
+                    ai_contrarian_thesis=None,
+                    ai_contrarian_anti_thesis=None,
                     holding_type=computed_holding_type,
                     technical_stop=price_result.technical_stop if price_result else None,
                     thesis_stop=price_result.thesis_stop if price_result else None,
@@ -2509,7 +2426,8 @@ class OperationalPipeline:
             db.query(CandidateSnapshot)
             .filter(CandidateSnapshot.ref_date == latest_date)
             .filter(CandidateSnapshot.weekly_pass.is_(True))
-            .filter(CandidateSnapshot.final_score >= min_score)
+            .filter(candidate_min_score_expression() >= min_score)
+            .filter(candidate_recommendation_eligible_expression())
             .order_by(CandidateSnapshot.final_score.desc(), CandidateSnapshot.trend_strength.desc())
             .all()
         )

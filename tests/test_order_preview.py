@@ -7,7 +7,7 @@ from maps.common.settings import MapsSettings
 from maps.execution.broker_adapter import OrderSide, OrderStatus
 from maps.api.orders import get_orders
 from maps.market.trading_rules import previous_trading_day
-from maps.ops.order_preview import build_order_preview, next_trading_day
+from maps.ops.order_preview import _get_order_candidates, build_order_preview, next_trading_day
 
 
 def _seed_candidate(db, *, ref_date: dt.date) -> None:
@@ -67,6 +67,51 @@ def test_preview_hides_candidate_after_order_submission(db, monkeypatch) -> None
     after = build_order_preview(db, MapsSettings())
     assert after.data_available is True
     assert after.items == []
+
+
+def test_preview_candidate_query_matches_ai_order_semantics(db) -> None:
+    """Preview selection shares rerank gating and replace-limit exclusion."""
+    ref_date = dt.date.today()
+    for ticker, mode, rule, recommendation, status in (
+        ("A", "rerank", 11, 2, "SUCCESS"),
+        ("B", "rerank", 12, 9, "SUCCESS"),
+        ("LOW", "rerank", 9, 99, "SUCCESS"),
+        ("LIMIT", "replace", 90, 90, "SKIPPED_LIMIT"),
+    ):
+        db.add(
+            CandidateSnapshot(
+                ref_date=ref_date,
+                strategy_id="donchian_v2",
+                ticker=ticker,
+                name=ticker,
+                market="KOSPI",
+                factor_score=80,
+                trend_strength=70,
+                ts_bucket="S4",
+                final_score=recommendation,
+                rule_score=rule,
+                recommendation_score=recommendation,
+                score_source="AI",
+                ai_scoring_mode=mode,
+                ai_status=status,
+                weekly_pass=True,
+            )
+        )
+    db.add(
+        PromotionHistory(
+            strategy_id="donchian_v2",
+            from_stage="alert_only",
+            to_stage="mock_candidate",
+            tradeability_score=70,
+            passed=True,
+            evaluated_at=dt.datetime.now(),
+        )
+    )
+    db.commit()
+
+    rows = _get_order_candidates(db, min_score=10)
+
+    assert [row.ticker for row in rows] == ["B", "A"]
 
 
 def test_preview_shows_prior_session_before_todays_generation(db) -> None:

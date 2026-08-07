@@ -57,3 +57,26 @@
 - `MAPS_BROKER_MODE=mock`이면 실제 주문 어댑터를 만들지 않습니다.
 - 실전 전환은 `MAPS_BROKER_MODE=kis` 같은 브로커 선택과 `MAPS_LIVE_TRADING_ENABLED=true`를 모두 의식적으로 바꾸는 방식으로 처리합니다.
 - `/ops-config`는 값의 존재 여부와 마스킹된 일부만 보여주며, 전체 키/시크릿은 노출하지 않습니다.
+
+## 6. 후보 AI 스코어링
+
+후보 AI 스코어링은 기본적으로 꺼져 있으며 `off → rerank → replace` 순서로만 단계적으로
+활성화합니다. 모드 전환은 `.env`의 명시적 변경과 프로세스 재시작이 필요합니다.
+
+| 변수 | 기본값 | 설명 |
+|---|---:|---|
+| `MAPS_AI_SCORING_MODE` | `off` | `off`, `rerank`, `replace` 중 하나입니다. |
+| `MAPS_AI_DAILY_CALL_LIMIT` | `5` | 전체 전략을 합친 하루 고유 ticker 호출 상한입니다. 시작·성공·실패 호출을 모두 셉니다. |
+| `MAPS_AI_RERANK_WEIGHT` | `0.20` | rerank 추천점수에 반영할 AI 비중입니다. 후보 최소점수는 계속 규칙점수를 사용합니다. |
+| `MAPS_AI_SCORING_MODEL_ID` | `us.anthropic.claude-sonnet-4-6` | 후보 점수 전용 Bedrock 모델입니다. |
+| `MAPS_AI_REQUEST_TIMEOUT_SECONDS` | `60` | 개별 Bedrock 요청 제한시간입니다. 자동 재시도는 하지 않습니다. |
+
+비용을 우선할 경우 모델을 `us.anthropic.claude-haiku-4-5-20251001-v1:0`으로 바꿀 수
+있습니다. 동일 거래일·ticker·입력·모델·프롬프트 결과는 DB에서 재사용하며, 실패 결과도
+같은 날 재호출하지 않습니다. 프롬프트 캐싱, 배치 추론, 자동 네트워크 재시도는 사용하지
+않습니다. 후보 생성 로그의 `ai_calls`, `ai_cache_hits`, `ai_input_tokens`,
+`ai_output_tokens`를 비용·실패율 관측의 정본으로 사용합니다.
+
+`replace`는 한도 안에 든 종목만 주문 후보가 됩니다. AI 오류는 규칙점수로 복구하지만,
+AI가 시장 국면, 진입 신호, 유동성, 신선도 또는 주문 안전 조건을 우회하지는 않습니다.
+매수가·손절가·목표가는 모든 모드에서 기존 규칙 기반 계획을 유지합니다.

@@ -8,17 +8,19 @@ modules when the value belongs to application configuration.
 from __future__ import annotations
 
 import datetime as dt
+import warnings
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 BrokerMode = Literal["mock", "kis", "kiwoom"]
 DataProvider = Literal["pykrx", "mock"]
 AIAnalysisMode = Literal["technical_only", "all"]
+AIScoringMode = Literal["off", "rerank", "replace"]
 
 
 class MapsSettings(BaseSettings):
@@ -138,6 +140,11 @@ class MapsSettings(BaseSettings):
     maps_ai_technical_scoring_enabled: bool = False  # 명시적으로 켜야 작동
     maps_ai_technical_score_weight: float = Field(default=0.20, ge=0.0, le=1.0)
     maps_ai_candidate_top_n: int = Field(default=5, ge=0, le=100)
+    maps_ai_scoring_mode: AIScoringMode = "off"
+    maps_ai_daily_call_limit: int = Field(default=5, ge=0, le=100)
+    maps_ai_rerank_weight: float = Field(default=0.20, ge=0.0, le=1.0)
+    maps_ai_scoring_model_id: str = "us.anthropic.claude-sonnet-4-6"
+    maps_ai_request_timeout_seconds: float = Field(default=60.0, ge=1.0, le=300.0)
     # 안전마진 스코어링(요건 5) — pykrx 펀더멘털 연동 완료로 기본 활성.
     # 후보 점수/스냅샷에만 영향하며, 실주문은 maps_live_trading_enabled로 별도 게이트된다.
     maps_valuation_margin_enabled: bool = True
@@ -206,6 +213,26 @@ class MapsSettings(BaseSettings):
     daily_loss_limit: float = Field(default=0.015, ge=0.0)
     max_single_exposure: float = Field(default=0.10, ge=0.0)
     account_risk_per_trade: float = Field(default=0.005, ge=0.0)
+
+    @model_validator(mode="after")
+    def _map_legacy_ai_scoring_settings(self) -> "MapsSettings":
+        """Map deprecated AI candidate settings when Phase 2 values are absent."""
+        supplied = self.model_fields_set
+        if "maps_ai_scoring_mode" not in supplied and self.maps_ai_technical_scoring_enabled:
+            self.maps_ai_scoring_mode = "rerank"
+            warnings.warn(
+                "MAPS_AI_TECHNICAL_SCORING_ENABLED is deprecated; use MAPS_AI_SCORING_MODE",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        if (
+            "maps_ai_rerank_weight" not in supplied
+            and "maps_ai_technical_score_weight" in supplied
+        ):
+            self.maps_ai_rerank_weight = self.maps_ai_technical_score_weight
+        if "maps_ai_daily_call_limit" not in supplied and "maps_ai_candidate_top_n" in supplied:
+            self.maps_ai_daily_call_limit = self.maps_ai_candidate_top_n
+        return self
 
     @property
     def kis_account_prefix(self) -> str:
@@ -373,6 +400,11 @@ def get_config_status(settings: MapsSettings | None = None) -> list[ConfigSectio
                 _field(s, "aws_bedrock_model_id", "AWS_BEDROCK_MODEL_ID", "Bedrock Claude model ID"),
                 _field(s, "maps_ai_analysis_mode", "MAPS_AI_ANALYSIS_MODE", "AI validation mode: technical_only or all"),
                 _field(s, "maps_ai_candidate_top_n", "MAPS_AI_CANDIDATE_TOP_N", "Maximum rule-based top candidates sent to Bedrock AI"),
+                _field(s, "maps_ai_scoring_mode", "MAPS_AI_SCORING_MODE", "AI candidate scoring mode: off, rerank, or replace"),
+                _field(s, "maps_ai_daily_call_limit", "MAPS_AI_DAILY_CALL_LIMIT", "Global daily AI scoring call limit"),
+                _field(s, "maps_ai_rerank_weight", "MAPS_AI_RERANK_WEIGHT", "AI weight used only for reranking"),
+                _field(s, "maps_ai_scoring_model_id", "MAPS_AI_SCORING_MODEL_ID", "Bedrock model used for candidate scoring"),
+                _field(s, "maps_ai_request_timeout_seconds", "MAPS_AI_REQUEST_TIMEOUT_SECONDS", "AI scoring request timeout seconds"),
                 _field(s, "maps_valuation_margin_enabled", "MAPS_VALUATION_MARGIN_ENABLED", "Enable valuation margin scoring on candidate snapshots"),
                 _field(s, "maps_strategy_aware_scoring_enabled", "MAPS_STRATEGY_AWARE_SCORING_ENABLED", "Enable strategy-specific final_score formulas"),
                 _field(s, "maps_sector_filter_enabled", "MAPS_SECTOR_FILTER_ENABLED", "Enable sector filter before candidate generation"),

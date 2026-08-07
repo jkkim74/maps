@@ -389,6 +389,28 @@ function aiScoreBadge(score) {
   return `<span class="badge${cls ? ' badge-'+cls : ''}" title="AI 기술적 분석 점수">${v}</span>`;
 }
 
+function scoreSourceBadge(source) {
+  if (source === 'AI') return '<span class="badge badge-info">AI 적용</span>';
+  if (source === 'RULE_FALLBACK') return '<span class="badge badge-warn">규칙 대체</span>';
+  return '<span class="badge">규칙</span>';
+}
+
+const _AI_REASON_LABELS = {
+  UPTREND: '상승 추세', DOWNTREND: '하락 추세',
+  MOMENTUM_POSITIVE: '모멘텀 양호', MOMENTUM_WEAK: '모멘텀 약화',
+  VOLUME_CONFIRMED: '거래량 확인', VOLUME_WEAK: '거래량 부족',
+  LOW_VOLATILITY: '변동성 안정', HIGH_VOLATILITY: '고변동성',
+  HEALTHY_PULLBACK: '건전한 눌림', BREAKOUT_CONFIRMED: '돌파 확인',
+  OVEREXTENDED: '과도한 이격', NEAR_SUPPORT: '지지선 근접',
+  RESISTANCE_OVERHEAD: '상단 저항', CONFLICTING_SIGNALS: '지표 충돌',
+  INSUFFICIENT_DATA: '판단 자료 부족',
+};
+
+function aiReasonText(codes) {
+  if (!codes || codes.length === 0) return '<span class="text-muted">—</span>';
+  return codes.map(code => esc(_AI_REASON_LABELS[code] || code)).join(', ');
+}
+
 function krPrice(p) {
   if (p == null) return '<span class="text-muted">—</span>';
   return `<span class="mono">${Math.round(p).toLocaleString('ko-KR')}</span>`;
@@ -408,7 +430,8 @@ async function loadCandidates() {
     const d = await apiFetch(`/candidates?strategy_id=${encodeURIComponent(strategyId)}`);
 
     // AI 분석 활성 여부 — 하나라도 점수가 있으면 활성
-    const aiActive = d.candidates && d.candidates.some(c => c.ai_technical_score != null);
+    const aiActive = d.candidates && d.candidates.some(c =>
+      c.ai_score != null || (c.ai_scoring_mode && c.ai_scoring_mode !== 'off'));
 
     // AI 범례 섹션 표시/숨김
     const aiSection = document.getElementById('candidates-ai-section');
@@ -417,7 +440,7 @@ async function loadCandidates() {
     if (aiLegend) aiLegend.style.display = aiActive ? '' : 'none';
 
     const aiKpi = aiActive
-      ? `<div class="kpi-card info"><div class="kpi-label">AI 분석</div><div class="kpi-value">ON</div><div class="kpi-sub">매수가·손절가·목표가</div></div>`
+      ? `<div class="kpi-card info"><div class="kpi-label">AI 스코어링</div><div class="kpi-value">ON</div><div class="kpi-sub">점수 출처 및 추천 순위</div></div>`
       : `<div class="kpi-card"><div class="kpi-label">AI 분석</div><div class="kpi-value">—</div><div class="kpi-sub">비활성 (설정 필요)</div></div>`;
 
     document.getElementById('candidates-kpi').innerHTML = `
@@ -435,7 +458,9 @@ async function loadCandidates() {
 
     const rows = d.candidates.map(c => {
       // AI 분석 행 (메모 툴팁)
-      const aiMemo = c.ai_analysis_memo ? ` title="${c.ai_analysis_memo.replace(/"/g, '&quot;')}"` : '';
+      const confidence = c.ai_confidence == null
+        ? '<span class="text-muted">—</span>'
+        : `<span class="mono">${Math.round(c.ai_confidence * 100)}%</span>`;
       // 목표 수익률 표시 (목표가/매수가 - 1)
       let rrHtml = '<span class="text-muted">—</span>';
       if (c.ai_target_price && c.ai_buy_price && c.ai_buy_price > 0) {
@@ -443,14 +468,17 @@ async function loadCandidates() {
         rrHtml = `<span class="mono text-muted">+${rr}%</span>`;
       }
       return `
-      <tr${aiMemo}>
+      <tr>
         <td class="mono">${c.ticker}</td>
         <td>${c.name} <span class="text-muted" style="font-size:10px">${c.market}</span></td>
         <td>${badge(c.ts_bucket, 'info')}</td>
         <td class="mono">${fmt.score(c.factor_score)}</td>
         <td class="mono">${fmt.score(c.trend_strength)}</td>
-        <td class="mono"><strong>${fmt.score(c.final_score)}</strong></td>
-        <td>${aiScoreBadge(c.ai_technical_score)}</td>
+        <td class="mono">${fmt.score(c.rule_score)}</td>
+        <td>${aiScoreBadge(c.ai_score)}</td>
+        <td class="mono"><strong>${fmt.score(c.recommendation_score)}</strong> ${scoreSourceBadge(c.score_source)}</td>
+        <td>${confidence}</td>
+        <td>${aiReasonText(c.ai_reason_codes)}</td>
         <td>${krPrice(c.ai_buy_price)}</td>
         <td>${krPrice(c.ai_stop_price)}</td>
         <td>${krPrice(c.ai_target_price)}</td>
@@ -465,12 +493,13 @@ async function loadCandidates() {
         <thead>
           <tr>
             <th>티커</th><th>종목명</th><th>TS</th>
-            <th>Factor</th><th>Trend</th><th>Final</th>
-            <th title="Claude AI 기술적 분석 점수 (0-100)">AI점수</th>
-            <th title="AI 적정 매수가">매수가</th>
-            <th title="AI 손절가 (지지선 기반)">손절가</th>
-            <th title="AI 3개월 목표가">목표가</th>
-            <th title="목표 수익률 (목표가/매수가)">목표수익</th>
+            <th>Factor</th><th>Trend</th><th>규칙점수</th>
+            <th title="구조화 AI 항목의 서버 합산 점수 (0-100)">AI점수</th>
+            <th>추천점수·출처</th><th>신뢰도</th><th>AI 사유</th>
+            <th title="규칙 기반 계획 매수가">계획 매수가</th>
+            <th title="규칙 기반 계획 손절가">계획 손절가</th>
+            <th title="규칙 기반 계획 목표가">계획 목표가</th>
+            <th title="규칙 기반 목표 수익률">목표수익</th>
             <th>Weekly</th><th>수량</th>
           </tr>
         </thead>

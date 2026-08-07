@@ -13,6 +13,10 @@ from maps.api.schemas import OrderPreviewResponse, PreviewOrderItem
 from maps.common.models import CandidateSnapshot, HistoricalOHLCV, PortfolioSnapshot, PromotionHistory
 from maps.common.settings import MapsSettings
 from maps.market.trading_rules import previous_trading_day, round_up_krx_price
+from maps.ops.candidate_selection import (
+    candidate_min_score_expression,
+    candidate_recommendation_eligible_expression,
+)
 from maps.ops.order_state import claimed_candidate_tickers
 from maps.ops.scheduler import OperationalPipeline, _RUNNABLE_STRATEGIES, _is_krx_market_day
 
@@ -74,7 +78,8 @@ def _get_order_candidates(db: Session, min_score: float = 0.0) -> list[Candidate
         db.query(CandidateSnapshot)
         .filter(CandidateSnapshot.ref_date == latest_date)
         .filter(CandidateSnapshot.weekly_pass.is_(True))
-        .filter(CandidateSnapshot.final_score >= min_score)
+        .filter(candidate_min_score_expression() >= min_score)
+        .filter(candidate_recommendation_eligible_expression())
         .order_by(CandidateSnapshot.final_score.desc(), CandidateSnapshot.trend_strength.desc())
         .all()
     )

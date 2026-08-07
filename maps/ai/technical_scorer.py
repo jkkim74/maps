@@ -1,74 +1,229 @@
-"""Claude AI 기반 기술적 분석 스코어러.
-
-AWS Bedrock(Claude)를 호출해 OHLCV 데이터로부터 기술적 분석 점수와
-적정 매수가·손절가·목표가를 산출한다.
-
-설계 원칙:
-- 오류(API 타임아웃, JSON 파싱 실패, AWS 미설정) 시 None 반환 → 기존 점수 유지
-- 후보 생성 시점(16:20 KST)에 호출 — 주문 사이클(08:55)과 분리
-- 비스트리밍 JSON 응답 (구조화 출력 파싱용)
-"""
+"""Compact derived features and a no-retry Bedrock AI scoring adapter."""
 
 from __future__ import annotations
 
 import json
-import logging
+import math
 from dataclasses import dataclass
+from typing import Mapping
 
 import pandas as pd
 
-logger = logging.getLogger(__name__)
+from maps.ai.scoring import AIStockScore
+from maps.common.exceptions import (
+    AIScoringError,
+    AIScoringProviderError,
+    AIScoringResponseError,
+    AIScoringUnavailableError,
+)
 
-_PROMPT_TEMPLATE = """당신은 한국 주식시장 기술적 분석 전문가입니다.
-아래 데이터를 바탕으로 {ticker}({name})의 단기 매수 적합성을 평가하세요.
-전략 유형: {strategy_id}
 
-[기술적 지표 (기준일: {ref_date})]
-현재가(전일종가): {close:,}원
-MA5: {ma5} / MA20: {ma20} / MA60: {ma60}
-정배열 여부: {ma_align}
-RSI(14): {rsi14} ({rsi_status})
-MACD: {macd} / Signal: {macd_signal} / 히스토그램: {macd_hist}
-거래량비율(20일 평균 대비): {vol_ratio:.2f}x
-ATR(14): {atr14:,}원
-트렌드강도: {ts_score:.1f}/100 ({ts_bucket})
-52주 고가: {h52:,}원 / 저가: {l52:,}원
+PROMPT_VERSION = "ai-score-v1"
 
-[최근 30거래일 OHLCV]
-{recent_ohlcv}
 
-다음 JSON 형식으로만 응답하세요. 다른 텍스트는 포함하지 마세요:
-{{
-  "technical_score": <0-100 정수, 매수 적합성. 80이상=매우적합, 60-79=적합, 40-59=보통, 20-39=부적합, 0-19=매우부적합>,
-  "pattern": "<감지된 주요 기술적 패턴 한 줄 (예: 골든크로스+거래량 확인, 쌍바닥 형성 중)>",
-  "support": <주요 지지선 가격 (정수)>,
-  "resistance": <주요 저항선 가격 (정수)>,
-  "ai_buy_price": <적정 매수가 (정수, 현재가 대비 ±8% 이내)>,
-  "ai_stop_price": <손절가 (정수, 주요 지지선 또는 ATR 기반, 반드시 현재가보다 낮게)>,
-  "ai_target_price": <3개월 목표가 (정수, 반드시 현재가보다 높게)>,
-  "risk_factors": ["<리스크1>", "<리스크2>"],
-  "reasoning": "<핵심 근거 2-3문장>"
-}}"""
+def _rounded(value: float, digits: int = 4) -> float:
+    """Return one finite rounded feature value or reject invalid input data."""
+    if not math.isfinite(value):
+        raise AIScoringResponseError("Derived feature is not finite")
+    return round(float(value), digits)
 
 
 @dataclass(frozen=True)
-class AIScore:
-    """Claude 기술적 분석 결과."""
+class AIStockFeatures:
+    """Small normalized indicator set sent to Bedrock for one ticker."""
 
-    technical_score: float          # 0-100, 매수 적합성 점수
-    pattern: str                    # 감지된 주요 패턴
-    support: float                  # 지지선
-    resistance: float               # 저항선
-    ai_buy_price: float             # 적정 매수가
-    ai_stop_price: float            # 손절가
-    ai_target_price: float          # 목표가
-    risk_factors: list[str]         # 리스크 요인
-    reasoning: str                  # 핵심 근거
-    raw_memo: str                   # DB 저장용 요약 (500자 이내)
+    ticker: str
+    name: str
+    ref_date: str
+    close: float
+    rsi14: float
+    macd_pct: float
+    macd_signal_pct: float
+    macd_hist_pct: float
+    volume_ratio: float
+    atr_pct: float
+    ma20_distance_pct: float
+    ma60_distance_pct: float
+    return_5d_pct: float
+    return_20d_pct: float
+    price_52w_position: float
+    ma_alignment: str
+    breakout: bool
+    pullback: bool
+    overextended: bool
+    trend_strength: float
+    ts_bucket: str
+    strategy_ids: tuple[str, ...]
+
+    @classmethod
+    def from_frame(
+        cls,
+        *,
+        ticker: str,
+        name: str,
+        ref_date: str,
+        frame: pd.DataFrame,
+        strategy_ids: tuple[str, ...],
+        trend_strength: float,
+        ts_bucket: str,
+    ) -> "AIStockFeatures":
+        """Derive normalized technical indicators without retaining raw bars."""
+        required = {"open", "high", "low", "close", "volume"}
+        if len(frame) < 60:
+            raise AIScoringResponseError("At least 60 OHLCV bars are required")
+        if not required.issubset(frame.columns):
+            raise AIScoringResponseError("OHLCV frame is missing required columns")
+        normalized_strategy_ids = tuple(sorted(set(strategy_ids)))
+        if not normalized_strategy_ids:
+            raise AIScoringResponseError("At least one strategy ID is required")
+
+        values = frame.sort_index().copy()
+        close = pd.to_numeric(values["close"], errors="coerce")
+        high = pd.to_numeric(values["high"], errors="coerce")
+        low = pd.to_numeric(values["low"], errors="coerce")
+        volume = pd.to_numeric(values["volume"], errors="coerce")
+        if close.tail(60).isna().any() or high.tail(60).isna().any() or low.tail(60).isna().any():
+            raise AIScoringResponseError("OHLCV frame contains invalid price values")
+
+        last_close = float(close.iloc[-1])
+        if last_close <= 0:
+            raise AIScoringResponseError("Latest close must be positive")
+        ma20 = float(close.rolling(20).mean().iloc[-1])
+        ma60 = float(close.rolling(60).mean().iloc[-1])
+
+        delta = close.diff()
+        average_gain = delta.clip(lower=0).rolling(14).mean().iloc[-1]
+        average_loss = (-delta.clip(upper=0)).rolling(14).mean().iloc[-1]
+        if pd.isna(average_gain) or pd.isna(average_loss):
+            raise AIScoringResponseError("Unable to derive RSI14")
+        if float(average_loss) == 0.0:
+            rsi14 = 100.0 if float(average_gain) > 0.0 else 50.0
+        else:
+            relative_strength = float(average_gain) / float(average_loss)
+            rsi14 = 100.0 - (100.0 / (1.0 + relative_strength))
+
+        ema12 = close.ewm(span=12, adjust=False).mean()
+        ema26 = close.ewm(span=26, adjust=False).mean()
+        macd = ema12 - ema26
+        macd_signal = macd.ewm(span=9, adjust=False).mean()
+
+        true_range = pd.concat(
+            [
+                high - low,
+                (high - close.shift()).abs(),
+                (low - close.shift()).abs(),
+            ],
+            axis=1,
+        ).max(axis=1)
+        atr14 = float(true_range.rolling(14).mean().iloc[-1])
+        volume_average = float(volume.rolling(20).mean().iloc[-1])
+        volume_ratio = (
+            float(volume.iloc[-1]) / volume_average if volume_average > 0 else 1.0
+        )
+
+        recent_close = close.tail(252)
+        period_low = float(recent_close.min())
+        period_high = float(recent_close.max())
+        position = (
+            (last_close - period_low) / (period_high - period_low)
+            if period_high > period_low
+            else 0.5
+        )
+        ma20_distance = (last_close / ma20 - 1.0) * 100.0
+        ma60_distance = (last_close / ma60 - 1.0) * 100.0
+        ma_alignment = (
+            "BULLISH"
+            if last_close > ma20 > ma60
+            else "BEARISH"
+            if last_close < ma20 < ma60
+            else "MIXED"
+        )
+        prior_20_high = float(close.iloc[-21:-1].max())
+
+        return cls(
+            ticker=ticker,
+            name=name,
+            ref_date=str(ref_date),
+            close=_rounded(last_close, 2),
+            rsi14=_rounded(rsi14, 2),
+            macd_pct=_rounded(float(macd.iloc[-1]) / last_close * 100.0),
+            macd_signal_pct=_rounded(
+                float(macd_signal.iloc[-1]) / last_close * 100.0
+            ),
+            macd_hist_pct=_rounded(
+                float(macd.iloc[-1] - macd_signal.iloc[-1])
+                / last_close
+                * 100.0
+            ),
+            volume_ratio=_rounded(volume_ratio, 3),
+            atr_pct=_rounded(atr14 / last_close * 100.0, 3),
+            ma20_distance_pct=_rounded(ma20_distance, 3),
+            ma60_distance_pct=_rounded(ma60_distance, 3),
+            return_5d_pct=_rounded(
+                (last_close / float(close.iloc[-6]) - 1.0) * 100.0, 3
+            ),
+            return_20d_pct=_rounded(
+                (last_close / float(close.iloc[-21]) - 1.0) * 100.0, 3
+            ),
+            price_52w_position=_rounded(position, 4),
+            ma_alignment=ma_alignment,
+            breakout=last_close >= prior_20_high,
+            pullback=abs(ma20_distance) <= 3.0 and last_close >= ma60,
+            overextended=ma20_distance >= 8.0 or rsi14 >= 75.0,
+            trend_strength=_rounded(float(trend_strength), 2),
+            ts_bucket=ts_bucket,
+            strategy_ids=normalized_strategy_ids,
+        )
+
+    def to_payload(self) -> dict[str, object]:
+        """Return the stable compact request payload."""
+        return {
+            "ticker": self.ticker,
+            "name": self.name,
+            "ref_date": self.ref_date,
+            "close": self.close,
+            "rsi14": self.rsi14,
+            "macd_pct": self.macd_pct,
+            "macd_signal_pct": self.macd_signal_pct,
+            "macd_hist_pct": self.macd_hist_pct,
+            "volume_ratio": self.volume_ratio,
+            "atr_pct": self.atr_pct,
+            "ma20_distance_pct": self.ma20_distance_pct,
+            "ma60_distance_pct": self.ma60_distance_pct,
+            "return_5d_pct": self.return_5d_pct,
+            "return_20d_pct": self.return_20d_pct,
+            "price_52w_position": self.price_52w_position,
+            "ma_alignment": self.ma_alignment,
+            "breakout": self.breakout,
+            "pullback": self.pullback,
+            "overextended": self.overextended,
+            "trend_strength": self.trend_strength,
+            "ts_bucket": self.ts_bucket,
+            "strategy_ids": list(self.strategy_ids),
+        }
+
+    def canonical_json(self) -> str:
+        """Serialize features deterministically for hashing and provider input."""
+        return json.dumps(
+            self.to_payload(),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+
+@dataclass(frozen=True)
+class BedrockScoreResponse:
+    """Validated score and provider usage metadata for one network call."""
+
+    score: AIStockScore
+    input_tokens: int
+    output_tokens: int
+    raw_payload: dict[str, object]
 
 
 class AITechnicalScorer:
-    """AWS Bedrock Claude로 기술적 분석 점수와 가격 목표를 산출한다."""
+    """Invoke Bedrock once with compact features and strict structured output."""
 
     def __init__(
         self,
@@ -76,262 +231,145 @@ class AITechnicalScorer:
         aws_secret_access_key: str = "",
         aws_region: str = "us-east-1",
         model_id: str = "us.anthropic.claude-sonnet-4-6",
+        timeout_seconds: float = 60.0,
     ) -> None:
         self._key_id = aws_access_key_id
         self._key_secret = aws_secret_access_key
         self._region = aws_region
         self._model_id = model_id
+        self._timeout_seconds = timeout_seconds
 
     @classmethod
     def from_settings(cls) -> "AITechnicalScorer":
-        """MapsSettings에서 인스턴스를 생성한다."""
+        """Build the adapter from central Phase 2 scoring settings."""
         from maps.common.settings import get_settings
-        s = get_settings()
+
+        settings = get_settings()
         return cls(
-            aws_access_key_id=s.aws_access_key_id,
-            aws_secret_access_key=s.aws_secret_access_key,
-            aws_region=s.aws_region,
-            model_id=s.aws_bedrock_model_id,
+            aws_access_key_id=settings.aws_access_key_id,
+            aws_secret_access_key=settings.aws_secret_access_key,
+            aws_region=settings.aws_region,
+            model_id=settings.maps_ai_scoring_model_id,
+            timeout_seconds=settings.maps_ai_request_timeout_seconds,
         )
 
-    def score(
-        self,
-        ticker: str,
-        name: str,
-        ohlcv_df: pd.DataFrame,
-        strategy_id: str,
-        ts_score: float,
-        ts_bucket: str,
-        ref_date: str = "",
-    ) -> AIScore | None:
-        """OHLCV DataFrame을 분석해 AIScore를 반환한다.
+    @property
+    def is_configured(self) -> bool:
+        """Return whether explicit access-key credentials are available."""
+        return bool(self._key_id and self._key_secret)
 
-        Args:
-            ticker: 종목 코드 (예: "005930")
-            name: 종목명 (예: "삼성전자")
-            ohlcv_df: HistoricalOHLCVRepository.to_dataframe() 결과.
-                      date 인덱스, open/high/low/close/volume 컬럼.
-            strategy_id: 전략 ID (예: "pullback_v3")
-            ts_score: TrendStrength 점수 (0-100)
-            ts_bucket: TrendStrength 버킷 ("S1"~"S5")
-            ref_date: 기준일 문자열 (표시용)
+    @property
+    def model_id(self) -> str:
+        """Return the configured model identifier for logs and persistence."""
+        return self._model_id
 
-        Returns:
-            AIScore 또는 None (오류 시)
-        """
-        if not self._key_id or not self._key_secret:
-            logger.debug("[AITechnicalScorer] AWS 자격증명 미설정 — 스킵 (%s)", ticker)
-            return None
-
-        if ohlcv_df.empty or len(ohlcv_df) < 30:
-            logger.debug("[AITechnicalScorer] OHLCV 데이터 부족 (%s, %d행)", ticker, len(ohlcv_df))
-            return None
-
-        try:
-            indicators = self._calc_indicators(ohlcv_df)
-            prompt = self._build_prompt(
-                ticker, name, strategy_id, ref_date, indicators, ohlcv_df, ts_score, ts_bucket
-            )
-            raw_json = self._call_bedrock(prompt)
-            return self._parse_response(raw_json, indicators["close"])
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[AITechnicalScorer] %s 분석 실패: %s", ticker, exc)
-            return None
-
-    # ── 내부 메서드 ───────────────────────────────────────────────────────────
-
-    def _calc_indicators(self, df: pd.DataFrame) -> dict:
-        """기술적 지표를 사전 계산한다."""
-        c = df["close"]
-        vol = df["volume"]
-
-        ma5 = c.rolling(5).mean()
-        ma20 = c.rolling(20).mean()
-        ma60 = c.rolling(60).mean()
-
-        delta = c.diff()
-        gain = delta.clip(lower=0).rolling(14).mean()
-        loss = (-delta.clip(upper=0)).rolling(14).mean()
-        rs = gain / loss.replace(0, float("nan"))
-        rsi14 = (100 - (100 / (1 + rs))).iloc[-1]
-
-        ema12 = c.ewm(span=12, adjust=False).mean()
-        ema26 = c.ewm(span=26, adjust=False).mean()
-        macd_line = ema12 - ema26
-        macd_sig = macd_line.ewm(span=9, adjust=False).mean()
-
-        atr_high_low = df["high"] - df["low"]
-        atr_high_prev = (df["high"] - c.shift()).abs()
-        atr_low_prev = (df["low"] - c.shift()).abs()
-        true_range = pd.concat([atr_high_low, atr_high_prev, atr_low_prev], axis=1).max(axis=1)
-        atr14 = true_range.rolling(14).mean().iloc[-1]
-
-        vol_ma20 = vol.rolling(20).mean().iloc[-1]
-        vol_ratio = vol.iloc[-1] / vol_ma20 if vol_ma20 > 0 else 1.0
-
-        last_close = float(c.iloc[-1])
-        last_ma5 = float(ma5.iloc[-1]) if pd.notna(ma5.iloc[-1]) else 0.0
-        last_ma20 = float(ma20.iloc[-1]) if pd.notna(ma20.iloc[-1]) else 0.0
-        last_ma60 = float(ma60.iloc[-1]) if pd.notna(ma60.iloc[-1]) else 0.0
-        last_rsi = float(rsi14) if pd.notna(rsi14) else 50.0
-        last_macd = float(macd_line.iloc[-1]) if pd.notna(macd_line.iloc[-1]) else 0.0
-        last_sig = float(macd_sig.iloc[-1]) if pd.notna(macd_sig.iloc[-1]) else 0.0
-
-        h52 = int(c.tail(252).max())
-        l52 = int(c.tail(252).min())
-
-        rsi_status = "과매수" if last_rsi >= 70 else "과매도" if last_rsi <= 30 else "중립"
-        ma_align = (
-            "정배열" if last_ma5 > last_ma20 > last_ma60 > 0
-            else "역배열" if last_ma5 < last_ma20 < last_ma60
-            else "혼조"
+    def _system_prompt(self) -> str:
+        """Return static rubric instructions with no ticker-specific content."""
+        return (
+            "Evaluate Korean equity entry suitability using only the supplied derived "
+            "indicators. Return rubric components, not a total: trend 0-25, momentum "
+            "0-20, volume 0-15, risk 0-15 where safer is higher, timing 0-15, and one "
+            "strategy_fit 0-10 for every requested strategy ID. Return confidence 0-1 "
+            "and at most three allowed reason codes. Do not create buy, stop, or target "
+            "prices. Use contrarian_opinion NONE and contrarian_score null unless the "
+            "features justify the optional combined contrarian assessment."
         )
 
-        return {
-            "close": last_close,
-            "ma5": f"{last_ma5:,.0f}" if last_ma5 > 0 else "N/A",
-            "ma20": f"{last_ma20:,.0f}" if last_ma20 > 0 else "N/A",
-            "ma60": f"{last_ma60:,.0f}" if last_ma60 > 0 else "N/A",
-            "ma_align": ma_align,
-            "rsi14": round(last_rsi, 1),
-            "rsi_status": rsi_status,
-            "macd": round(last_macd, 1),
-            "macd_signal": round(last_sig, 1),
-            "macd_hist": round(last_macd - last_sig, 1),
-            "vol_ratio": float(vol_ratio),
-            "atr14": int(atr14) if pd.notna(atr14) else 0,
-            "h52": h52,
-            "l52": l52,
+    def _response_schema(self) -> dict[str, object]:
+        """Return one stable JSON Schema shared by every strategy combination."""
+        return AIStockScore.model_json_schema()
+
+    def _request_body(self, features: AIStockFeatures) -> dict[str, object]:
+        """Build the structured Anthropic Messages request body."""
+        output_config: dict[str, object] = {
+            "format": {
+                "type": "json_schema",
+                "schema": self._response_schema(),
+            }
         }
-
-    def _build_prompt(
-        self,
-        ticker: str,
-        name: str,
-        strategy_id: str,
-        ref_date: str,
-        ind: dict,
-        df: pd.DataFrame,
-        ts_score: float,
-        ts_bucket: str,
-    ) -> str:
-        """분석 프롬프트를 생성한다."""
-        recent = df.tail(30)[["open", "high", "low", "close", "volume"]].copy()
-        ohlcv_lines = ["날짜|시가|고가|저가|종가|거래량"]
-        for date_idx, row in recent.iterrows():
-            date_str = date_idx.strftime("%m/%d") if hasattr(date_idx, "strftime") else str(date_idx)
-            ohlcv_lines.append(
-                f"{date_str}|{int(row['open']):,}|{int(row['high']):,}|"
-                f"{int(row['low']):,}|{int(row['close']):,}|{int(row['volume']):,}"
-            )
-
-        return _PROMPT_TEMPLATE.format(
-            ticker=ticker,
-            name=name,
-            strategy_id=strategy_id,
-            ref_date=ref_date,
-            close=int(ind["close"]),
-            ma5=ind["ma5"],
-            ma20=ind["ma20"],
-            ma60=ind["ma60"],
-            ma_align=ind["ma_align"],
-            rsi14=ind["rsi14"],
-            rsi_status=ind["rsi_status"],
-            macd=ind["macd"],
-            macd_signal=ind["macd_signal"],
-            macd_hist=ind["macd_hist"],
-            vol_ratio=ind["vol_ratio"],
-            atr14=ind["atr14"],
-            ts_score=ts_score,
-            ts_bucket=ts_bucket,
-            h52=ind["h52"],
-            l52=ind["l52"],
-            recent_ohlcv="\n".join(ohlcv_lines),
-        )
-
-    def _call_bedrock(self, prompt: str) -> str:
-        """AWS Bedrock Claude를 호출하고 응답 텍스트를 반환한다."""
-        import boto3
-
-        client_kwargs: dict = {"region_name": self._region}
-        if self._key_id and self._key_secret:
-            client_kwargs["aws_access_key_id"] = self._key_id
-            client_kwargs["aws_secret_access_key"] = self._key_secret
-
-        client = boto3.client("bedrock-runtime", **client_kwargs)
-
-        body = json.dumps({
+        body: dict[str, object] = {
             "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": 512,
-            "temperature": 0.1,
-            "messages": [{"role": "user", "content": prompt}],
-        })
+            "max_tokens": 1024,
+            "system": self._system_prompt(),
+            "messages": [
+                {"role": "user", "content": features.canonical_json()}
+            ],
+            "output_config": output_config,
+        }
+        if "sonnet-4-6" in self._model_id:
+            body["thinking"] = {"type": "adaptive"}
+            output_config["effort"] = "low"
+        return body
 
+    def _invoke(self, body: Mapping[str, object]) -> dict[str, object]:
+        """Make one Bedrock Runtime request with SDK retry disabled."""
+        import boto3
+        from botocore.config import Config
+
+        config = Config(
+            connect_timeout=min(10.0, self._timeout_seconds),
+            read_timeout=self._timeout_seconds,
+            retries={"max_attempts": 0, "mode": "standard"},
+        )
+        client = boto3.client(
+            "bedrock-runtime",
+            region_name=self._region,
+            config=config,
+            aws_access_key_id=self._key_id,
+            aws_secret_access_key=self._key_secret,
+        )
         response = client.invoke_model(
             modelId=self._model_id,
-            body=body,
+            body=json.dumps(body, ensure_ascii=False),
             contentType="application/json",
             accept="application/json",
         )
-        result = json.loads(response["body"].read())
-        return result["content"][0]["text"]
+        raw_body = response["body"].read()
+        decoded = json.loads(raw_body)
+        if not isinstance(decoded, dict):
+            raise AIScoringResponseError("Bedrock response must be an object")
+        return decoded
 
-    def _parse_response(self, text: str, current_close: float) -> AIScore | None:
-        """JSON 응답을 파싱해 AIScore를 반환한다."""
-        text = text.strip()
-        # JSON 블록 추출 (```json ... ``` 형식 대응)
-        if "```" in text:
-            start = text.find("{")
-            end = text.rfind("}") + 1
-            if start >= 0 and end > start:
-                text = text[start:end]
-
+    def score(self, features: AIStockFeatures) -> BedrockScoreResponse:
+        """Invoke Bedrock once and validate its structured score payload."""
+        if not self.is_configured:
+            raise AIScoringUnavailableError("AWS credentials are not configured")
         try:
-            data = json.loads(text)
+            response = self._invoke(self._request_body(features))
+        except AIScoringError:
+            raise
+        except Exception as exc:
+            raise AIScoringProviderError(type(exc).__name__) from exc
+
+        content = response.get("content")
+        if not isinstance(content, list):
+            raise AIScoringResponseError("Bedrock response content is missing")
+        text = next(
+            (
+                block.get("text")
+                for block in content
+                if isinstance(block, Mapping)
+                and block.get("type") == "text"
+                and isinstance(block.get("text"), str)
+            ),
+            None,
+        )
+        if not text:
+            raise AIScoringResponseError("Bedrock response has no text block")
+        try:
+            payload = json.loads(text)
         except json.JSONDecodeError as exc:
-            logger.warning("[AITechnicalScorer] JSON 파싱 실패: %s | text=%s", exc, text[:200])
-            return None
-
-        score = float(data.get("technical_score", 50))
-        score = max(0.0, min(100.0, score))
-
-        def _price(key: str, default: float) -> float:
-            val = data.get(key)
-            try:
-                p = float(val)
-                return p if p > 0 else default
-            except (TypeError, ValueError):
-                return default
-
-        support = _price("support", current_close * 0.95)
-        resistance = _price("resistance", current_close * 1.10)
-        ai_buy_price = _price("ai_buy_price", current_close)
-        ai_stop_price = _price("ai_stop_price", current_close * 0.93)
-        ai_target_price = _price("ai_target_price", current_close * 1.15)
-
-        # 이상값 보정
-        ai_buy_price = max(current_close * 0.92, min(current_close * 1.08, ai_buy_price))
-        ai_stop_price = min(ai_stop_price, current_close * 0.99)
-        ai_target_price = max(ai_target_price, current_close * 1.01)
-
-        risk_factors = list(data.get("risk_factors", []))
-        reasoning = str(data.get("reasoning", ""))
-        pattern = str(data.get("pattern", ""))
-
-        memo = (
-            f"score={score:.0f} pattern={pattern[:30]} "
-            f"buy={ai_buy_price:.0f} stop={ai_stop_price:.0f} target={ai_target_price:.0f}"
-        )[:500]
-
-        return AIScore(
-            technical_score=score,
-            pattern=pattern,
-            support=support,
-            resistance=resistance,
-            ai_buy_price=ai_buy_price,
-            ai_stop_price=ai_stop_price,
-            ai_target_price=ai_target_price,
-            risk_factors=risk_factors,
-            reasoning=reasoning,
-            raw_memo=memo,
+            raise AIScoringResponseError("Bedrock returned invalid JSON") from exc
+        if not isinstance(payload, dict):
+            raise AIScoringResponseError("AI score payload must be an object")
+        score = AIStockScore.from_payload(payload, features.strategy_ids)
+        usage = response.get("usage")
+        usage = usage if isinstance(usage, Mapping) else {}
+        input_tokens = usage.get("input_tokens", 0)
+        output_tokens = usage.get("output_tokens", 0)
+        return BedrockScoreResponse(
+            score=score,
+            input_tokens=int(input_tokens) if isinstance(input_tokens, int) else 0,
+            output_tokens=int(output_tokens) if isinstance(output_tokens, int) else 0,
+            raw_payload=score.to_payload(),
         )

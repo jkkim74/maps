@@ -136,6 +136,15 @@ class CandidateItem(BaseModel):
     trend_strength: float
     ts_bucket: str
     final_score: float
+    rule_score: float
+    ai_score: float | None = None
+    recommendation_score: float
+    score_source: str
+    ai_scoring_mode: str
+    ai_status: str | None = None
+    ai_confidence: float | None = None
+    ai_reason_codes: list[str] | None = None
+    ai_model_id: str | None = None
     score_type: str | None = None
     strategy_type: str | None = None
     component_scores: dict[str, float] | None = None

@@ -101,6 +101,123 @@ def test_mock_candidate_orders_on_paper_account_only() -> None:
         engine.dispose()
 
 
+def _seed_ai_order_candidate(
+    db,
+    *,
+    ticker: str,
+    mode: str,
+    rule_score: float,
+    recommendation_score: float,
+    ai_status: str = "SUCCESS",
+) -> None:
+    """Persist one AI-provenance candidate eligible by promotion stage."""
+    db.add(
+        CandidateSnapshot(
+            ref_date=dt.date.today(),
+            strategy_id="donchian_v2",
+            ticker=ticker,
+            name=ticker,
+            market="KOSPI",
+            factor_score=80,
+            trend_strength=70,
+            ts_bucket="S4",
+            final_score=recommendation_score,
+            rule_score=rule_score,
+            recommendation_score=recommendation_score,
+            score_source="AI",
+            ai_scoring_mode=mode,
+            ai_status=ai_status,
+            weekly_pass=True,
+        )
+    )
+
+
+def _promote_ai_test_strategy(db) -> None:
+    """Promote the shared test strategy to paper-order eligibility."""
+    db.add(
+        PromotionHistory(
+            strategy_id="donchian_v2",
+            from_stage="alert_only",
+            to_stage="mock_candidate",
+            tradeability_score=70,
+            passed=True,
+            evaluated_at=dt.datetime.now(),
+        )
+    )
+    db.commit()
+
+
+def test_rerank_uses_rule_minimum_but_recommendation_order() -> None:
+    """Rerank cannot change the rule gate but controls candidate ordering."""
+    engine, factory = _memory_factory()
+    db = factory()
+    try:
+        _seed_ai_order_candidate(
+            db, ticker="A", mode="rerank", rule_score=11, recommendation_score=2
+        )
+        _seed_ai_order_candidate(
+            db, ticker="B", mode="rerank", rule_score=12, recommendation_score=9
+        )
+        _promote_ai_test_strategy(db)
+        pipeline = OperationalPipeline(
+            settings=MapsSettings(maps_candidate_min_score=10),
+            session_factory=factory,
+        )
+
+        assert [row.ticker for row in pipeline._order_candidates(db, dt.date.today())] == [
+            "B",
+            "A",
+        ]
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def test_rerank_low_rule_score_is_not_rescued_by_ai() -> None:
+    """A high AI recommendation cannot rescue a rule-ineligible row."""
+    engine, factory = _memory_factory()
+    db = factory()
+    try:
+        _seed_ai_order_candidate(
+            db, ticker="A", mode="rerank", rule_score=9, recommendation_score=99
+        )
+        _promote_ai_test_strategy(db)
+        pipeline = OperationalPipeline(
+            settings=MapsSettings(maps_candidate_min_score=10),
+            session_factory=factory,
+        )
+
+        assert pipeline._order_candidates(db, dt.date.today()) == []
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def test_replace_skipped_limit_is_excluded_from_orders() -> None:
+    """Replace mode never mixes an unscored over-limit row into orders."""
+    engine, factory = _memory_factory()
+    db = factory()
+    try:
+        _seed_ai_order_candidate(
+            db,
+            ticker="A",
+            mode="replace",
+            rule_score=90,
+            recommendation_score=90,
+            ai_status="SKIPPED_LIMIT",
+        )
+        _promote_ai_test_strategy(db)
+        pipeline = OperationalPipeline(session_factory=factory)
+
+        assert pipeline._order_candidates(db, dt.date.today()) == []
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
 def test_mock_track_months_counts_from_first_filled_buy() -> None:
     """mock_months = 최초 '체결된' 매수 이후 경과 개월. 미체결 주문은 세지 않는다.
 

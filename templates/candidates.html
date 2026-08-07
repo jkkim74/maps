@@ -26,23 +26,25 @@
 </div>
 
 <div class="section-header" id="candidates-ai-section" style="display:none;">
-  <span class="section-title">AI 기술적 분석 안내</span><hr>
+  <span class="section-title">AI 스코어링 안내</span><hr>
 </div>
 <div class="card" id="candidates-ai-legend" style="display:none;">
   <div class="card-body" style="font-size:12px;color:var(--text-muted);line-height:1.8;">
-    <strong style="color:var(--text);">AI 분석 컬럼 설명</strong><br>
-    <b>AI점수</b> — Claude가 OHLCV·이동평균·RSI·MACD 등을 분석한 매수 적합성 점수 (0-100)<br>
+    <strong style="color:var(--text);">점수와 출처</strong><br>
+    <b>규칙점수</b> — 기존 유동성·추세·전략 규칙이 산출하며 후보 자격과 안전 게이트의 기준입니다.<br>
+    <b>AI점수</b> — 파생 기술 지표의 구조화 항목을 서버가 검증·합산한 점수입니다.<br>
+    <b>추천점수</b> — off는 규칙점수, rerank는 규칙·AI 가중합, replace는 정상 AI점수입니다.<br>
+    <span class="badge">규칙</span> 미호출 &nbsp;
+    <span class="badge badge-info">AI 적용</span> 정상 반영 &nbsp;
+    <span class="badge badge-warn">규칙 대체</span> 호출·검증 실패 폴백<br>
     &nbsp;&nbsp;
     <span class="badge badge-pass">80+</span> 매우적합 &nbsp;
     <span class="badge badge-info">60+</span> 적합 &nbsp;
     <span class="badge">40+</span> 보통 &nbsp;
     <span class="badge badge-warn">20+</span> 부적합 &nbsp;
     <span class="badge badge-fail">0+</span> 매우부적합<br>
-    <b>매수가</b> — AI가 제안하는 적정 지정가 진입 가격 (현재가 ±8% 이내)<br>
-    <b>손절가</b> — AI가 산출한 지지선 기반 손절 기준가<br>
-    <b>목표가</b> — AI 3개월 기술적 목표가<br>
-    <b>목표수익</b> — 목표가/매수가 기준 예상 수익률<br>
-    <span style="color:var(--text-muted);">※ 행 위에 마우스를 올리면 AI 분석 메모를 확인할 수 있습니다.</span>
+    <b>계획 매수가</b> · <b>계획 손절가</b> · <b>계획 목표가</b>는 모두 기존 규칙 기반 가격 계획입니다.<br>
+    AI는 가격을 생성하지 않으며 시장·신호·신선도·주문 안전 조건을 우회하지 않습니다.
   </div>
 </div>
 {% endblock %}

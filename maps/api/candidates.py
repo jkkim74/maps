@@ -79,6 +79,21 @@ def get_candidates(
                 trend_strength=row.trend_strength,
                 ts_bucket=row.ts_bucket,
                 final_score=row.final_score,
+                rule_score=(
+                    row.rule_score if row.rule_score is not None else row.final_score
+                ),
+                ai_score=row.ai_technical_score,
+                recommendation_score=(
+                    row.recommendation_score
+                    if row.recommendation_score is not None
+                    else row.final_score
+                ),
+                score_source=row.score_source or "RULE",
+                ai_scoring_mode=row.ai_scoring_mode or "off",
+                ai_status=row.ai_status,
+                ai_confidence=row.ai_confidence,
+                ai_reason_codes=row.ai_reason_codes,
+                ai_model_id=row.ai_model_id,
                 score_type=row.score_type,
                 strategy_type=row.strategy_type,
                 component_scores=row.component_scores,

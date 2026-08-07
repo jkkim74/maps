@@ -90,6 +90,18 @@ class CandidateSnapshot(Base):
     trend_strength: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     ts_bucket: Mapped[str] = mapped_column(String(8), nullable=False, default="S3")
     final_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    rule_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    recommendation_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    score_source: Mapped[str | None] = mapped_column(
+        String(24), nullable=True, default="RULE"
+    )
+    ai_scoring_mode: Mapped[str | None] = mapped_column(
+        String(16), nullable=True, default="off"
+    )
+    ai_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    ai_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    ai_reason_codes: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    ai_model_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     score_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
     strategy_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
     component_scores: Mapped[dict | None] = mapped_column(JSON, nullable=True)
@@ -100,7 +112,7 @@ class CandidateSnapshot(Base):
     # 후보 생성 시점의 전략 진입 신호. None = 신호를 계산하지 않은 행(구 데이터·상위 N 관측행).
     # 주문 시점 재계산은 그대로 유지되므로 이 값은 감사·필터용 기록이다.
     entry_signal: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
-    # AI 기술적 분석 결과 (maps_ai_technical_scoring_enabled=true 시 채워짐)
+    # AI 기술적 점수 (Phase 2 rerank/replace에서 채워짐)
     ai_technical_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     ai_buy_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     ai_stop_price: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -133,6 +145,42 @@ class CandidateSnapshot(Base):
 
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc)
+    )
+
+
+# ---------------------------------------------------------------------------
+# AI 후보 점수 호출·캐시
+# ---------------------------------------------------------------------------
+class AIScoringInvocation(Base):
+    """Durable AI request reservation, usage record, and same-day cache."""
+
+    __tablename__ = "ai_scoring_invocation"
+    __table_args__ = (
+        UniqueConstraint(
+            "ref_date",
+            "ticker",
+            "input_hash",
+            "model_id",
+            "prompt_version",
+            name="uq_ai_scoring_invocation_cache_key",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ref_date: Mapped[datetime.date] = mapped_column(Date, nullable=False, index=True)
+    ticker: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    input_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    model_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, index=True)
+    score_payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    input_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    output_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+        default=lambda: datetime.datetime.now(datetime.timezone.utc),
     )
 
 

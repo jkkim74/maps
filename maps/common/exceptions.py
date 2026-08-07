@@ -63,6 +63,24 @@ class DataCollectionError(MAPSError):
     """데이터 수집 실패."""
 
 
+# --- AI scoring ---
+
+class AIScoringError(MAPSError):
+    """Base error for bounded candidate AI scoring."""
+
+
+class AIScoringUnavailableError(AIScoringError):
+    """AI scoring cannot start because required configuration is absent."""
+
+
+class AIScoringProviderError(AIScoringError):
+    """The Bedrock provider failed before a valid response was available."""
+
+
+class AIScoringResponseError(AIScoringError):
+    """The provider response violated the approved scoring schema."""
+
+
 # --- 승격 ---
 
 class PromotionGateError(MAPSError):
