@@ -127,6 +127,9 @@ def test_bedrock_request_uses_structured_output_and_low_effort(
     assert body["thinking"] == {"type": "adaptive"}
     assert body["output_config"]["effort"] == "low"
     assert body["output_config"]["format"]["type"] == "json_schema"
+    schema = json.dumps(body["output_config"]["format"]["schema"])
+    for unsupported in ("minimum", "maximum", "minLength", "maxLength", "maxItems"):
+        assert f'"{unsupported}"' not in schema
     assert body["max_tokens"] == 1024
     assert "temperature" not in body
     assert "top_p" not in body

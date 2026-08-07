@@ -277,7 +277,21 @@ class AITechnicalScorer:
 
     def _response_schema(self) -> dict[str, object]:
         """Return one stable JSON Schema shared by every strategy combination."""
-        return AIStockScore.model_json_schema()
+        schema = AIStockScore.model_json_schema()
+        unsupported = {"minimum", "maximum", "minLength", "maxLength", "maxItems"}
+
+        def strip_constraints(value: object) -> None:
+            if isinstance(value, dict):
+                for key in unsupported & value.keys():
+                    del value[key]
+                for child in value.values():
+                    strip_constraints(child)
+            elif isinstance(value, list):
+                for child in value:
+                    strip_constraints(child)
+
+        strip_constraints(schema)
+        return schema
 
     def _request_body(self, features: AIStockFeatures) -> dict[str, object]:
         """Build the structured Anthropic Messages request body."""
