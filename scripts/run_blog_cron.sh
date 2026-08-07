@@ -19,6 +19,7 @@
 #
 # 사전조건은 run_analyze_cron.sh 와 동일하다 (claude CLI + ubuntu 사용자 OAuth 인증).
 set -uo pipefail
+umask 077
 
 APP_DIR="${MAPS_APP_DIR:-/opt/maps}"
 SECRETS_FILE="${MAPS_ANTHROPIC_ENV:-/etc/maps/anthropic.env}"
@@ -99,6 +100,14 @@ if ! command -v "$CLAUDE_BIN" >/dev/null 2>&1; then
   log "claude CLI 없음 (CLAUDE_BIN=$CLAUDE_BIN) — npm i -g @anthropic-ai/claude-code"; exit 1
 fi
 
+redact_args=(--env-file "$APP_DIR/.env")
+if [ -f "$SECRETS_FILE" ]; then
+  redact_args+=(--env-file "$SECRETS_FILE")
+fi
+if ! python "$APP_DIR/scripts/redact_stream_secrets.py" "${redact_args[@]}" --check; then
+  log "비밀 마스킹 초기화 실패 — 블로그 생성 중단"; exit 1
+fi
+
 BLOG_TIMEOUT="${BLOG_TIMEOUT:-900}"
 RAW_LOG="$LOG_DIR/blog_cron_${TS}.jsonl"
 OUT="$BLOG_DIR/${REF_DATE}.txt"
@@ -108,9 +117,16 @@ timeout "${BLOG_TIMEOUT}s" "$CLAUDE_BIN" -p "/blog $DIGEST $OUT" \
     --allowedTools Read Write \
     --disallowedTools "${BLOG_DENY[@]}" \
     --verbose --output-format stream-json 2>>"$LOG" \
+  | python "$APP_DIR/scripts/redact_stream_secrets.py" "${redact_args[@]}" \
   | tee -a "$RAW_LOG" \
   | python "$APP_DIR/scripts/analyze_stream_to_log.py" "$LOG"
-rc=${PIPESTATUS[0]}
+pipeline_status=("${PIPESTATUS[@]}")
+rc=${pipeline_status[0]}
+if [ "${pipeline_status[1]}" -ne 0 ]; then
+  log "비밀 마스킹 스트림 실패 — 로그 저장 중단"; rc=70
+elif [ "${pipeline_status[2]}" -ne 0 ] || [ "${pipeline_status[3]}" -ne 0 ]; then
+  log "blog 로그 파이프라인 실패"; rc=74
+fi
 
 if [ "$rc" -ne 0 ]; then
   if [ "$rc" -eq 124 ]; then

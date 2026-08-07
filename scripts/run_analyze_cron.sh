@@ -13,6 +13,7 @@
 #   - cron은 반드시 인증된 그 사용자(ubuntu)로 실행 → 기존 ~/.claude 인증 재사용(별도 API키 불필요)
 #   - (선택) API 키 방식을 쓰려면 /etc/maps/anthropic.env 에 ANTHROPIC_API_KEY=... 를 둔다
 set -uo pipefail
+umask 077
 
 APP_DIR="${MAPS_APP_DIR:-/opt/maps}"
 SECRETS_FILE="${MAPS_ANTHROPIC_ENV:-/etc/maps/anthropic.env}"
@@ -62,6 +63,16 @@ if ! command -v "$CLAUDE_BIN" >/dev/null 2>&1; then
   log "claude CLI 없음 (CLAUDE_BIN=$CLAUDE_BIN) — npm i -g @anthropic-ai/claude-code"; exit 1
 fi
 
+# raw JSONL에는 Claude가 실행한 Bash 명령도 들어간다. 알려진 비밀값을 tee보다
+# 앞에서 제거해 원본·진행 로그 어느 쪽에도 자격증명이 기록되지 않게 한다.
+redact_args=(--env-file "$APP_DIR/.env")
+if [ -f "$SECRETS_FILE" ]; then
+  redact_args+=(--env-file "$SECRETS_FILE")
+fi
+if ! python "$APP_DIR/scripts/redact_stream_secrets.py" "${redact_args[@]}" --check; then
+  log "비밀 마스킹 초기화 실패 — analyze 중단"; exit 1
+fi
+
 # 권한 모드: 무인 cron이라 대화형 승인이 불가하다. 기본은 **필요한 도구만 허용하는
 # 화이트리스트**로 두어 전체 권한 우회를 피한다(헤드리스 권장 패턴). 목록이 부족하면
 # 첫 수동 테스트에서 조정한다. 전체 우회가 꼭 필요하면 CLAUDE_SKIP_PERMISSIONS=1 로 명시.
@@ -98,9 +109,16 @@ RAW_LOG="$LOG_DIR/analyze_cron_${TS}.jsonl"
 log "claude -p /analyze 실행 시작 (timeout ${ANALYZE_TIMEOUT}s, 진행로그 스트리밍, raw=$RAW_LOG)"
 timeout "${ANALYZE_TIMEOUT}s" "$CLAUDE_BIN" -p "$ANALYZE_PROMPT" "${perm_args[@]}" \
     --verbose --output-format stream-json 2>>"$LOG" \
+  | python "$APP_DIR/scripts/redact_stream_secrets.py" "${redact_args[@]}" \
   | tee -a "$RAW_LOG" \
   | python "$APP_DIR/scripts/analyze_stream_to_log.py" "$LOG"
-rc=${PIPESTATUS[0]}  # claude의 종료코드 (tee/python이 아니라)
+pipeline_status=("${PIPESTATUS[@]}")
+rc=${pipeline_status[0]}
+if [ "${pipeline_status[1]}" -ne 0 ]; then
+  log "비밀 마스킹 스트림 실패 — 로그 저장 중단"; rc=70
+elif [ "${pipeline_status[2]}" -ne 0 ] || [ "${pipeline_status[3]}" -ne 0 ]; then
+  log "analyze 로그 파이프라인 실패"; rc=74
+fi
 if [ "$rc" -eq 0 ]; then
   log "analyze cron 완료 (성공) — 로그: $LOG"
   exit 0
