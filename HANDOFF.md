@@ -1,9 +1,12 @@
 # HANDOFF
 
-> 갱신일: 2026-08-06 (목, 오후) · 작성자: 세션 에이전트 (**회사 PC, 키 `D:\ssh_maps\`**)
-> 운영 코드 = **`afcbf09`** 배포 완료 (14:16 KST), alembic **`0019_bt_run_source`**(head).
+> 갱신일: 2026-08-07 (금, 오전) · 작성자: 세션 에이전트 (**회사 PC, 키 `D:\ssh_maps\`**)
+> 운영 서버 HEAD = **`2dd36af`** (기능 코드 `afcbf09`, 이후 HANDOFF 문서 커밋),
+> alembic **`0019_bt_run_source`**(head).
 > pullback_v3.3 청산 연구 후보까지 운영 배포 완료, 전체 테스트 **666 passed**.
-> 운영 서버는 최신 `master`까지 fast-forward 완료. `maps=active`, health **HTTP 200** 확인.
+> 운영 서버는 최신 `master`까지 fast-forward 완료. 8/7 오전 `maps=active`, analyze cron·lock 정상 확인.
+> 로컬에는 AI Scoring 설계·구현 계획 문서 커밋 `4bc76d0`, `9bf9441`이 추가됐으며
+> **기능 코드 구현·운영 배포는 아직 시작하지 않았다.**
 > 8/3 기록은 "8/3 작업 ①~⑤" 절, 8/2 는 "이전 날(8/2)" 절 — 결론은 여전히 유효하다.
 
 ## Goal — 이 작업이 향하는 곳
@@ -12,6 +15,95 @@
 **"이 전략이 오늘 사겠다고 말한 종목"** 으로 되돌리는 것. 그 위에 AI 스코어링을 붙인다
 (Phase 2, 착수 전). 병행 목표는 승격 게이트가 **실제 성과로** 갈리게 만드는 것 —
 Sharpe 왜곡 수정(8/2)과 자동 강등(8/2)이 8/3에 처음 실측됐다.
+
+## 8/7 AI Scoring 설계·구현 계획 확정 — 다음 세션 시작점
+
+설계 검토와 구현 계획 작성까지 완료했고 **프로덕션 코드는 아직 미구현**이다. 다음 세션에서는
+아래 최종 문서를 먼저 읽고 TDD 순서로 구현한다.
+
+- 최종 설계: `docs/superpowers/specs/2026-08-07-ai-scoring-design.md`
+- 실행 계획: `docs/superpowers/plans/2026-08-07-ai-scoring.md` (Task 1~10)
+- 문서 커밋: `4bc76d0 docs: design cost-aware AI scoring`,
+  `9bf9441 docs: plan AI scoring implementation`
+- 기존 `docs/plans/candidate-funnel-ai-scoring.md`는 Phase 1 및 Phase 2 초기안 기록이다.
+  **AI Scoring 구현 기준은 위 최종 설계·실행 계획**으로 한다.
+
+### 확정 동작
+
+- `ai_scoring_mode=off|rerank|replace`, 기본값 `off`. 명시적 환경설정 없이 기존 동작을 바꾸지 않는다.
+- `rerank`: 후보 자격과 최소 점수는 계속 `rule_score`로 판정하고, 순위만
+  `rule_score * (1 - ai_weight) + ai_score * ai_weight`로 조정한다. 기본 `ai_weight=0.20`.
+- `replace`: 시장·신호·유동성·제외·신선도·주문 안전 게이트는 유지하되, AI 평가 대상으로
+  전역 최대 5개의 고유 ticker를 먼저 추리고 AI 점수가 추천 점수를 대체한다. 한도 밖 종목은
+  관찰 기록만 남기고 최종 추천·주문 대상에서는 제외한다.
+- 일일 AI 호출 한도는 **전체 전략 합산 5개 고유 ticker**가 기본이며 환경설정으로 변경 가능하다.
+  여러 전략에 같은 ticker가 있으면 AI 호출은 1회만 하고 결과를 공유한다.
+- AI 실패·잘못된 응답은 `rule_score`로 대체하고 `score_source=RULE_FALLBACK`을 표시한다.
+  한도 초과는 `score_source=RULE`, `ai_status=SKIPPED_LIMIT`; 자격증명 미설정은 호출과 예산을
+  사용하지 않고 `score_source=RULE`, `ai_status=SKIPPED_UNCONFIGURED`로 남긴다.
+- AI 점수는 추세 25, 모멘텀 20, 거래량 15, 위험 15, 진입 타이밍 15, 전략 적합도 10점으로
+  산출한다. 모델은 항목별 점수를 반환하고 서버가 범위를 검증한 뒤 합산한다.
+- 당일 캐시는 `ref_date+ticker+input_hash+model_id+prompt_version` 기준이다.
+- 원시 30봉 OHLCV 대신 파생 지표만 전송하고 AI가 진입가·손절가·목표가를 만들지 않는다.
+  prompt caching, batch inference, 자동 재시도는 사용하지 않는다.
+- AWS Bedrock Runtime의 구조화 출력을 사용한다. 기본 모델은 **Claude Sonnet 4.6**이고
+  Claude Haiku 4.5는 환경설정으로 선택 가능하다. Sonnet 4.6은 adaptive thinking과
+  `output_config.effort="low"`를 사용하며 `thinking=disabled`나 sampling 파라미터를 보내지 않는다.
+- 배포 순서는 `off` → `rerank` → `replace`이며 모드 전환은 항상 명시적 환경설정으로 한다.
+
+### 다음 세션 실행
+
+새 세션에서 `use superpowers. docs/superpowers/plans/2026-08-07-ai-scoring.md 계획을
+Inline Execution으로 실행해줘`라고 요청하면 된다. 먼저 최종 설계와 계획을 다시 읽고,
+계획의 Task 1~10을 순서대로 TDD로 수행한다. 기능 구현 시 새 DB 마이그레이션이 필요하지만
+현재 alembic head는 여전히 `0019_bt_run_source`이다.
+
+## 8/7 오전 운영 점검 — 8/6 analyze stage 주입 실효·실패 원인·재실행 확인
+
+### 8/6 16:00 정규 cron — stage JSON 주입 성공, selector 전 단계에서 `exit=143`
+
+- `16:00:05` exporter가 DB 기반 stage JSON을 생성했고 `claude -p` 프로세스 인자에도
+  `source=promotion_history.latest_passed` JSON 전체가 정상 주입됐다.
+- 다만 시장국면 단계의 breadth 조회가 장시간 걸려 진단하던 중 에이전트가 부모
+  `timeout` 프로세스까지 종료했다. `16:13:45`, `claude exit=143`으로 실패했으며
+  **2700초 타임아웃은 아니다**.
+- selector 단계에 도달하지 못했으므로 이 회차만으로는 selector 입력 실효를 판정할 수 없다.
+- DB `analysis_run` id=29: `status=failed`, `picks_count=0`,
+  `error_message='claude exit=143'`.
+
+### 8/6 17:57 수동 재실행 — JSON 실제 전달·재선정 제거 실효 확인
+
+- market-regime 결과와 운영 DB stage JSON이 `strategy-selector` 프롬프트에 함께 전달됐다.
+  적격 전략은 `ath_breakout_v1`, `donchian_v2` 두 개, 나머지 네 전략은 `research`로 정확했다.
+- `strategy-selector` 호출은 **정확히 1회**. raw 이벤트의 Read 도구에는 `HANDOFF.md`가 없고,
+  단계 확인 불가·추측·재선정도 없었다.
+- selector 결과도 두 적격 전략만 선정(`ath_breakout_v1` 24.74%, `donchian_v2` 25.26%,
+  현금 50%)해 exporter JSON과 일치했다.
+- 전체 파이프라인은 `18:41:03` 성공. Claude 소요 **2,580.769초(약 43분 1초)**로
+  2,700초 제한까지 여유가 약 **119초뿐**이었다. 타임아웃은 피했지만 여유가 작다.
+- DB `analysis_run` id=30: `status=completed`, `regime=strong`, `candidates_count=1`,
+  `picks_count=0`, 오류 없음.
+
+### 🔴 새 운영 위험 — 서버 dirty 코드와 로그 내 DB 자격증명
+
+- 재실행 에이전트가 운영 서버의 추적 파일 `maps/market/breadth.py`를 직접 수정했다.
+  `recent_dataframes()`에 `start=ref_date-(ma_window*3+10일)`을 넣어 586만 행 전체 정렬을
+  피하는 7줄 패치다. 이 패치로 재실행은 진행됐지만 **미커밋·미배포 상태**이며,
+  서버 작업 트리는 dirty다. 무심코 `git pull`하지 말고 패치를 먼저 보존·테스트·정식 커밋할 것.
+- 17:57 진행 로그와 raw JSONL에 DB 자격증명이 Bash 명령 문자열로 평문 기록됐다.
+  두 파일 권한도 **664**다. 실제 값은 HANDOFF에 기록하지 않는다.
+  **DB 자격증명 교체 + 노출 로그 접근 제한/정리 + analyze 로그 비밀 마스킹**이 필요하다.
+- 서버에는 과거 analyze가 만든 untracked scripts/reports 등이 다수 있다. 이번 핵심 tracked
+  변경은 위 `breadth.py` 1개다.
+
+### 8/7 16:00 관찰 대기
+
+- 8/7 09:42 기준 서버 HEAD `2dd36af`, `maps=active`, analyze lock `idle`, cron은
+  `0 16 * * 1-5`로 정상이다.
+- 회사 PC에 15:58~16:55 읽기 전용 감시를 걸었다. lock, 오늘 로그, stage JSON 주입,
+  selector 진입·호출 횟수, 완료/실패/타임아웃을 확인한다.
+  로컬 기록: `%TEMP%\maps_analyze_monitor_20260807.log`.
+- **16:00~16:45 배포·재기동 금지.** 관찰 중 운영 서버를 변경하지 않는다.
 
 ## 8/6 세션 — 정상 주문 첫 검증 · KIS 체결조회 복구 · 승격 단계 입력 개선
 
@@ -347,8 +439,10 @@ analyze 가 16:00~16:30 에 도는 중 `git pull` 이 **에이전트가 읽는 �
 
 배포 서버: AWS Lightsail `3.37.117.246`, `/opt/maps`, systemd `maps`, `https://maps.magable.kr`.
 운영 DB PostgreSQL. **SSH 키는 PC마다 다름**: 회사 PC `D:\ssh_maps\`, 집 PC `D:\maps\`.
-서버는 **`e4cbc3b`** 배포 완료 (8/6 12:11 KST), alembic **`0019_bt_run_source`**(head).
-배포 커밋 기준 테스트 **656 passed**. requirements·migration 변경 없음.
+서버 HEAD는 **`2dd36af`** (기능 코드 `afcbf09`, 이후 HANDOFF 문서 커밋),
+alembic **`0019_bt_run_source`**(head). 기능 배포 기준 테스트 **666 passed**.
+requirements·migration 변경 없음. 단 8/6 analyze 재실행이 `maps/market/breadth.py`를
+운영 서버에서 직접 수정해 현재 tracked worktree는 dirty다(위 8/7 절).
 서버 `.env`의 계좌 이력 시작일은 `2026-08-05`; 배포 후 health 200과 broker_sync 정상 확인.
 KIS 모의계좌는 **`50200591-01`** (8/5 재생성 — 구 50185813-01 만료, 위 "8/5 세션" 절).
 
@@ -383,8 +477,13 @@ KIS 모의계좌는 **`50200591-01`** (8/5 재생성 — 구 50185813-01 만료,
 
 ## 미커밋 상태
 
-- 8/6 후속 변경은 `e4cbc3b`로 커밋·푸시·배포 완료. 기능 변경 기준 로컬·서버 동일.
-- `apps/mobile/google-services.json` — 커밋 여부 사용자 결정 대기 (이월).
+- 로컬 `master`는 `origin/master`보다 AI Scoring 문서 커밋 2개(`4bc76d0`, `9bf9441`) 앞서며,
+  이 HANDOFF 갱신을 별도 커밋한다. 아직 푸시·배포하지 않았고 기능 코드는 미구현이다.
+- 운영 서버 HEAD도 `2dd36af`지만 8/6 analyze 재실행이 만든
+  **`maps/market/breadth.py` tracked 수정 1건**이 있어 로컬·서버가 완전히 동일하지 않다.
+  정식 반영 전 패치 보존·테스트가 필요하다. 과거 analyze 산출 untracked 파일도 다수 존재.
+- `apps/mobile/google-services.json`은 8/7 로컬에 존재하지 않는다. 파일이 다시 제공·생성되기
+  전에는 커밋 여부를 처리할 수 없다.
 
 **부수 확인 (8/3)**: `order_log` `0000031820` = buy `expired` qty 1253 / fill_qty 21 —
 이월 8번(부분체결이 만료 처리된다)의 **실물 사례**. 별건으로 남긴다.
@@ -407,17 +506,20 @@ KIS 모의계좌는 **`50200591-01`** (8/5 재생성 — 구 50185813-01 만료,
    broker_sync와 EOD cleanup 로그를 대조한다. TR ID 수정 후 `open_orders=2`까지 확인됨.
 2. ~~🔴 8/4 17:10 검증 잡 — G2P 수정 실효 확인~~ → **✅ 8/5 확인·종결** (위 "8/5 세션" 절).
    Infinity/NaN 0건, 무거래 사유 정상 부착, 통과 수 불변.
-3. ✅ **strategy-selector 승격 단계 입력원** — 권장안인 DB→JSON 주입으로 배포 완료.
-   전체 656 passed. 다음 16:00 analyze에서 stage 추측·재선정이 사라지는지 확인.
+3. 🟠 **analyze stage 입력 실효는 확인, 운영 후속 남음.** 8/6 17:57 재실행에서 DB JSON이
+   selector에 실제 전달됐고 호출 1회·HANDOFF Read 0·재선정 0을 확인했다. 43분 1초로 성공해
+   타임아웃 여유는 약 119초. 8/7 16:00 정규 cron을 15:58~16:55 관찰한다.
+   별도로 서버의 미커밋 `breadth.py` 패치를 정식화하고, 로그에 노출된 DB 자격증명을
+   교체하며 로그 권한·비밀 마스킹을 보강해야 한다(위 8/7 절).
 4. ✅ **자동 강등 4건 정책 판단** — 현행 연속 10회 <50 강등 / ≥60 재승격 유지,
    기존 4건 강등도 유지. 운영 점수 이력으로 재확인 완료.
 5. ✅ **구 계좌 성과 경계 운영 적용.** 서버 `.env`에
    `MAPS_ACCOUNT_HISTORY_START_DATE=2026-08-05` 적용 완료. 거래 리뷰에서 002810 제외와
    초기·현재 자산 1억원을 확인했다. 원 주문 감사 행은 보존.
-6. 🔵 **후보 퍼널 Phase 2 (AI 스코어링) — 착수 가능.** Phase 1 이 배포·실측을 마쳤으므로
-   대상 선정이 비로소 의미를 갖는다(신호 종목 264건 중 상위 N). 사양·정정사항은
-   `docs/plans/candidate-funnel-ai-scoring.md` 참고. **Bedrock 호출자 둘을 함께** 옮길 것
-   (`technical_scorer` + `contrarian_analyzer`, `aws_bedrock_model_id` 공유).
+6. 🔵 **후보 퍼널 Phase 2 (AI 스코어링) — 설계·계획 완료, 구현 착수 전.** 최종 사양은
+   `docs/superpowers/specs/2026-08-07-ai-scoring-design.md`, 실행 순서는
+   `docs/superpowers/plans/2026-08-07-ai-scoring.md`를 따른다. 기본 5개 고유 ticker만 호출하며
+   `off|rerank|replace`, Rule fallback/source 표시, Sonnet 4.6 기본값까지 확정했다.
 7. 블로그 21편 발행 — 원고 `docs/blog_series_backtest/`, 붙여넣기 검사 통과 상태.
    (신규 기능·Sharpe 수정으로 일부 원고 내용이 낡았을 수 있음 — 발행 전 콘솔 관련
    편의 스크린샷·문구 확인)
