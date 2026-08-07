@@ -4,6 +4,21 @@
   <div class="loading"><div class="spinner"></div>Loading...</div>
 </div>
 
+<div class="section-header"><span class="section-title">AI Candidate Scoring</span><hr></div>
+<div class="card">
+  <div class="card-body">
+    <label for="ai-scoring-mode">Operating mode</label>
+    <select id="ai-scoring-mode" class="topbar-btn">
+      <option value="off">off — 기존 점수만 사용</option>
+      <option value="rerank">rerank — 기존 점수에 AI 점수 반영</option>
+      <option value="replace">replace — AI 점수로 대체</option>
+    </select>
+    <button id="ai-scoring-save" class="topbar-btn" onclick="saveAIScoringMode()">저장</button>
+    <span id="ai-scoring-result" class="text-muted"></span>
+    <div class="text-muted" style="margin-top:10px;font-size:12px">다음 후보 생성부터 적용되며 재시작 후에도 유지됩니다.</div>
+  </div>
+</div>
+
 <div class="section-header"><span class="section-title">External Integration Settings</span><hr></div>
 <div class="card">
   <div class="card-body" id="ops-config-area">

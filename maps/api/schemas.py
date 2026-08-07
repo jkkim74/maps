@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel
 
@@ -552,9 +552,18 @@ class OpsConfigResponse(BaseModel):
     broker_mode: str
     live_trading_enabled: bool
     data_provider: str
+    ai_scoring_mode: Literal["off", "rerank", "replace"]
     missing_required: list[str]
     warnings: list[str]
     sections: list[OpsConfigSection]
+
+
+class AIScoringModeUpdate(BaseModel):
+    mode: Literal["off", "rerank", "replace"]
+
+
+class AIScoringModeResponse(AIScoringModeUpdate):
+    previous_mode: Literal["off", "rerank", "replace"]
 
 
 class BrokerHealthResponse(BaseModel):

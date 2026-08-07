@@ -1299,6 +1299,7 @@ async function loadOpsConfig() {
         <div class="kpi-card"><div class="kpi-label">Broker</div><div class="kpi-value">${d.broker_mode}</div><div class="kpi-sub">${d.live_trading_enabled ? 'live switch on' : 'live switch off'}</div></div>
         <div class="kpi-card"><div class="kpi-label">Data</div><div class="kpi-value">${d.data_provider}</div><div class="kpi-sub">market data provider</div></div>
       </div>`;
+    document.getElementById('ai-scoring-mode').value = d.ai_scoring_mode;
 
     const warnings = d.warnings.length
       ? `<div class="alert-item"><div class="alert-dot WARN"></div><div class="alert-msg">${d.warnings.join('<br>')}</div></div>`
@@ -1320,6 +1321,24 @@ async function loadOpsConfig() {
   } catch (e) {
     empty('ops-summary', `Error: ${e.message}`);
     empty('ops-config-area', '');
+  }
+}
+
+async function saveAIScoringMode() {
+  const select = document.getElementById('ai-scoring-mode');
+  const button = document.getElementById('ai-scoring-save');
+  const result = document.getElementById('ai-scoring-result');
+  if (select.value === 'replace' && !confirm('기존 점수를 AI 점수로 대체할까요?')) return;
+  button.disabled = true;
+  result.textContent = '저장 중...';
+  try {
+    const data = await apiPost('/ops/config/ai-scoring-mode', { mode: select.value });
+    result.textContent = `${data.previous_mode} → ${data.mode}`;
+    await loadOpsConfig();
+  } catch (e) {
+    result.textContent = `오류: ${e.message}`;
+  } finally {
+    button.disabled = false;
   }
 }
 
