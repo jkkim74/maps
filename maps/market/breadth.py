@@ -39,7 +39,16 @@ def compute_pct_above_ma(
     if len(tickers) < min_tickers:
         return None
 
-    frames = repo.recent_dataframes(tickers, end=ref_date, bars=ma_window)
+    # ``recent_dataframes``의 row_number() 윈도우 함수는 ``start`` 없이 호출하면
+    # 종목별 전체 이력을 정렬한다. 운영 데이터가 수백만 행으로 커지면서 이 한 번의
+    # 조회가 수 분 이상 걸렸으므로, 필요한 거래일 수를 넉넉히 덮는 캘린더 구간만 읽는다.
+    start = ref_date - dt.timedelta(days=ma_window * 3 + 10)
+    frames = repo.recent_dataframes(
+        tickers,
+        start=start,
+        end=ref_date,
+        bars=ma_window,
+    )
     up = 0
     valid = 0
     for df in frames.values():
