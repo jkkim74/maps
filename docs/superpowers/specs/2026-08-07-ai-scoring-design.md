@@ -205,8 +205,11 @@ us.anthropic.claude-haiku-4-5-20251001-v1:0
 
 Bedrock Mantle의 Anthropic Messages 경로는 구조화 출력을 지원하지 않으므로 사용하지
 않는다. 기존 `boto3`의 `bedrock-runtime` 클라이언트와 Converse 또는 InvokeModel API를
-사용하고 JSON Schema 구조화 출력을 강제한다. Sonnet 4.6은 낮은 effort, 확장 사고 비활성,
-작은 출력 상한으로 호출한다. AI Scoring 모델 설정은 기존 공용
+사용하고 JSON Schema 구조화 출력을 강제한다. Sonnet 4.6은 낮은 effort와 작은 출력
+상한으로 호출한다. Bedrock의 Sonnet 4.6은 adaptive thinking을
+비활성화하는 요청을 허용하지 않으므로 `thinking={"type": "adaptive"}`와
+`output_config.effort="low"`를 사용한다. `temperature`, `top_p`, `top_k` 같은 샘플링
+파라미터는 보내지 않는다. AI Scoring 모델 설정은 기존 공용
 `AWS_BEDROCK_MODEL_ID`와 분리한다.
 
 관련 공식 자료:
@@ -240,6 +243,7 @@ Bedrock Mantle의 Anthropic Messages 경로는 구조화 출력을 지원하지 
 - 기존 `ai_technical_score`를 `ai_score` 응답 필드로 노출
 - `recommendation_score: float`
 - `score_source: str`
+- `ai_scoring_mode: str`
 - `ai_status: str | None`
 - `ai_confidence: float | None`
 - `ai_reason_codes: JSON | None`
