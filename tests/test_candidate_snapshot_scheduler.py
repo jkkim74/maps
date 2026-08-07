@@ -112,17 +112,18 @@ def test_mock_track_months_counts_from_first_filled_buy() -> None:
     db = factory()
     try:
         today = dt.date.today()
+        now_utc = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
         db.add(OrderLog(  # 미체결 — 무시돼야 함
             order_id="O-1", strategy_id="donchian_v2", ticker="AAAA",
             side=OrderSide.BUY.value,
             qty=10, fill_qty=0, status=OrderStatus.CANCELLED.value,
-            created_at=dt.datetime.now() - dt.timedelta(days=200),
+            created_at=now_utc - dt.timedelta(days=200),
         ))
         db.add(OrderLog(
             order_id="O-2", strategy_id="donchian_v2", ticker="AAAA",
             side=OrderSide.BUY.value,
             qty=10, fill_qty=10, status=OrderStatus.FILLED.value,
-            created_at=dt.datetime.now() - dt.timedelta(days=95),
+            created_at=now_utc - dt.timedelta(days=95),
         ))
         db.commit()
 
@@ -149,11 +150,12 @@ def test_mock_track_months_reads_side_as_stored_lowercase() -> None:
     engine, factory = _memory_factory()
     db = factory()
     try:
+        now_utc = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
         db.add(OrderLog(
             order_id="O-3", strategy_id="pullback_v3", ticker="005930",
             side="buy",   # OrderManager._log_order 가 저장하는 실제 문자열
             qty=10, fill_qty=10, status="filled",
-            created_at=dt.datetime.now() - dt.timedelta(days=61),
+            created_at=now_utc - dt.timedelta(days=61),
         ))
         db.commit()
 
