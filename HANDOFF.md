@@ -1,21 +1,44 @@
 # HANDOFF
 
-> 갱신일: 2026-08-07 (금, 저녁) · 작성자: 세션 에이전트 (**현재 PC, 키 `D:\maps\`**)
-> 운영 서버 기능 HEAD = **`88450ce`** (이후 HANDOFF 문서 커밋),
-> alembic **`0019_bt_run_source`**(head).
-> 운영 긴급 조치(자격증명 교체·로그 권한/마스킹·breadth 정식화) 배포 완료, 전체 테스트 **671 passed**.
-> 운영 서버는 최신 `master`까지 fast-forward 완료. `maps=active`, `/health` 내·외부 200,
-> `UMask=0077`, analyze·blog lock idle, broker sync 정상.
-> AI Scoring 설계·구현 계획 문서 커밋 `4bc76d0`, `9bf9441`은 반영됐으며
-> **기능 코드 구현·운영 배포는 아직 시작하지 않았다.**
+> 갱신일: 2026-08-07 23:20 KST · 작성자: 세션 에이전트 (**현재 PC, 키 `D:\maps\`**)
+> 운영 서버 기능 HEAD = **`54c29e9`** (이후 HANDOFF 문서 커밋),
+> alembic **`0020_ai_scoring`**(head).
+> 후보 퍼널 Phase 2 AI Scoring 구현·마이그레이션·운영 배포와 Ops Config 모드 제어까지 완료,
+> 전체 테스트 **707 passed**. `maps=active`, `/health` 내·외부 200, 운영 tracked worktree/index clean.
+> 실제 Bedrock Sonnet 4.6 호출도 구조화 응답 검증까지 성공했다. 현재 운영 모드는 안전하게
+> **`off`**이며, AI 점수 기반 후보 선정은 아직 실행하지 않았다.
 > 8/3 기록은 "8/3 작업 ①~⑤" 절, 8/2 는 "이전 날(8/2)" 절 — 결론은 여전히 유효하다.
 
 ## Goal — 이 작업이 향하는 곳
 
 후보 생성이 **전략 신호를 보지 않는** 구조를 고쳐, "후보"를 유동성·추세 상위 종목이 아니라
-**"이 전략이 오늘 사겠다고 말한 종목"** 으로 되돌리는 것. 그 위에 AI 스코어링을 붙인다
-(Phase 2, 착수 전). 병행 목표는 승격 게이트가 **실제 성과로** 갈리게 만드는 것 —
+**"이 전략이 오늘 사겠다고 말한 종목"** 으로 되돌리는 것. 그 위에 비용이 제한되고 출처가
+투명한 AI 스코어링을 붙인다. Phase 1·2 구현과 배포는 완료했다. 병행 목표는 승격 게이트가
+**실제 성과로** 갈리게 만드는 것 —
 Sharpe 왜곡 수정(8/2)과 자동 강등(8/2)이 8/3에 처음 실측됐다.
+
+## 8/7 밤 후보 퍼널 Phase 2 AI Scoring 구현·배포 완료
+
+- 기능 커밋 `ad3c79b`에서 `off|rerank|replace`, 일일 전역 5회 한도, 당일 캐시,
+  Rule fallback/source 표시, Sonnet 4.6 구조화 출력, 후보 API·UI provenance, 평가 CLI와
+  마이그레이션 `0020_ai_scoring`을 구현했다.
+- 첫 운영 호출은 Pydantic JSON Schema의 `minimum`, `maximum`, `minLength`, `maxLength`,
+  `maxItems`가 Bedrock 지원 범위를 벗어나 즉시 provider 오류가 났다(기록 토큰 0).
+  `39fefb3`에서 도메인 검증은 유지하고 Bedrock 전송 스키마에서만 미지원 제약을 제거했다.
+- 수정 후 실제 Sonnet 4.6 호출 성공: 기준일 `2026-08-07`, ticker `002020`, AI 점수 `20.0`,
+  schema success, input 1,240 / output 97 tokens, latency 19.23초. 이는 평가 CLI가 기존
+  `entry_signal=true`, `weekly_pass=true`, `final_score` 상위 후보 1개를 사후 평가한 것으로,
+  AI 점수로 종목을 먼저 추출한 실행은 아니다. 결과는 `/tmp/ai-scoring-evaluation-39fefb3.json`.
+- 운영 모드 변경 기능 누락을 `54c29e9`에서 보완했다. `/ops-config` 화면에서 `off`, `rerank`,
+  `replace`를 선택할 수 있고, 저장 즉시 단일 worker 스케줄러 설정 객체에 반영되며 `.env`에
+  원자적으로 저장돼 재시작 후에도 유지된다. `replace`는 확인창을 거친다.
+- 운영 API로 동일 모드 저장(`off → off`)을 실측해 HTTP 200, `.env` 권한 `600`, health 정상까지
+  확인했다. **현재 모드는 `off`**다. 다음 후보 생성부터 AI를 반영하려면 사용자가 명시적으로
+  `rerank`를 선택한 뒤 candidate generation을 실행해야 한다. 기존 후보는 자동 재평가되지 않는다.
+- 배포 커밋: `ad3c79b feat: add bounded AI candidate scoring`,
+  `39fefb3 fix: sanitize Bedrock scoring schema`, `54c29e9 feat: add AI scoring mode control`.
+- 검증: AI 집중 테스트 20 passed, 최종 전체 테스트 **707 passed**, JS 문법 검사 통과,
+  운영 PostgreSQL alembic `0020_ai_scoring (head)`, 서비스 active, 내·외부 health 200.
 
 ## 8/7 저녁 운영 긴급 조치 완료 — 보안·breadth·주문 정합
 
@@ -40,10 +63,9 @@ Sharpe 왜곡 수정(8/2)과 자동 강등(8/2)이 8/3에 처음 실측됐다.
 - 8/7 16:00 analyze는 run id=31 `completed`, strong, 후보 1·픽 0으로 정상 종료했다.
   재기동 후 현재 KIS 미체결 0, 보유 `051900` 12주·`073240` 270주, broker sync 오류 0이다.
 
-## 8/7 AI Scoring 설계·구현 계획 확정 — 다음 세션 시작점
+## 8/7 AI Scoring 설계·구현 계획 확정 — 구현 기준 기록
 
-설계 검토와 구현 계획 작성까지 완료했고 **프로덕션 코드는 아직 미구현**이다. 다음 세션에서는
-아래 최종 문서를 먼저 읽고 TDD 순서로 구현한다.
+아래 문서는 Phase 2 구현의 기준이 된 최종 설계와 계획이다. 구현·배포 결과는 바로 위 절을 따른다.
 
 - 최종 설계: `docs/superpowers/specs/2026-08-07-ai-scoring-design.md`
 - 실행 계획: `docs/superpowers/plans/2026-08-07-ai-scoring.md` (Task 1~10)
@@ -75,12 +97,10 @@ Sharpe 왜곡 수정(8/2)과 자동 강등(8/2)이 8/3에 처음 실측됐다.
   `output_config.effort="low"`를 사용하며 `thinking=disabled`나 sampling 파라미터를 보내지 않는다.
 - 배포 순서는 `off` → `rerank` → `replace`이며 모드 전환은 항상 명시적 환경설정으로 한다.
 
-### 다음 세션 실행
+### 구현 결과
 
-새 세션에서 `use superpowers. docs/superpowers/plans/2026-08-07-ai-scoring.md 계획을
-Inline Execution으로 실행해줘`라고 요청하면 된다. 먼저 최종 설계와 계획을 다시 읽고,
-계획의 Task 1~10을 순서대로 TDD로 수행한다. 기능 구현 시 새 DB 마이그레이션이 필요하지만
-현재 alembic head는 여전히 `0019_bt_run_source`이다.
+계획 Task 1~10은 완료됐다. 현재 alembic head는 `0020_ai_scoring`이며, 다음 작업은 재구현이
+아니라 운영 모드를 명시적으로 `rerank`로 전환해 실제 candidate generation을 관찰하는 것이다.
 
 ## 8/7 오전 운영 점검 — 8/6 analyze stage 주입 실효·실패 원인·재실행 확인
 
@@ -463,10 +483,9 @@ analyze 가 16:00~16:30 에 도는 중 `git pull` 이 **에이전트가 읽는 �
 
 배포 서버: AWS Lightsail `3.37.117.246`, `/opt/maps`, systemd `maps`, `https://maps.magable.kr`.
 운영 DB PostgreSQL. **SSH 키는 PC마다 다름**: 회사 PC `D:\ssh_maps\`, 집 PC `D:\maps\`.
-서버 HEAD는 **`2dd36af`** (기능 코드 `afcbf09`, 이후 HANDOFF 문서 커밋),
-alembic **`0019_bt_run_source`**(head). 기능 배포 기준 테스트 **666 passed**.
-requirements·migration 변경 없음. 단 8/6 analyze 재실행이 `maps/market/breadth.py`를
-운영 서버에서 직접 수정해 현재 tracked worktree는 dirty다(위 8/7 절).
+서버 HEAD는 **`54c29e9`** (이후 HANDOFF 문서 커밋), alembic
+**`0020_ai_scoring`**(head). 기능 배포 기준 테스트 **707 passed**.
+운영 tracked worktree와 index는 clean이며 서비스 `active`, 내·외부 health 200이다.
 서버 `.env`의 계좌 이력 시작일은 `2026-08-05`; 배포 후 health 200과 broker_sync 정상 확인.
 KIS 모의계좌는 **`50200591-01`** (8/5 재생성 — 구 50185813-01 만료, 위 "8/5 세션" 절).
 
@@ -501,13 +520,10 @@ KIS 모의계좌는 **`50200591-01`** (8/5 재생성 — 구 50185813-01 만료,
 
 ## 미커밋 상태
 
-- 로컬 `master`는 `origin/master`보다 AI Scoring 문서 커밋 2개(`4bc76d0`, `9bf9441`) 앞서며,
-  이 HANDOFF 갱신을 별도 커밋한다. 아직 푸시·배포하지 않았고 기능 코드는 미구현이다.
-- 운영 서버 HEAD도 `2dd36af`지만 8/6 analyze 재실행이 만든
-  **`maps/market/breadth.py` tracked 수정 1건**이 있어 로컬·서버가 완전히 동일하지 않다.
-  정식 반영 전 패치 보존·테스트가 필요하다. 과거 analyze 산출 untracked 파일도 다수 존재.
-- `apps/mobile/google-services.json`은 8/7 로컬에 존재하지 않는다. 파일이 다시 제공·생성되기
-  전에는 커밋 여부를 처리할 수 없다.
+- HANDOFF 갱신 직전 로컬 `master`와 `origin/master`, 운영 서버는 모두 `54c29e9`다.
+  운영 tracked worktree/index는 clean이다. 과거 analyze 산출 untracked 파일은 운영에 다수 존재한다.
+- 로컬 untracked `apps/mobile/google-services.json`, `maps/AGENTS.md`는 사용자 소유로 간주해
+  AI Scoring 및 HANDOFF 커밋에서 제외했다. 임의 삭제·수정·커밋하지 말 것.
 
 **부수 확인 (8/3)**: `order_log` `0000031820` = buy `expired` qty 1253 / fill_qty 21 —
 이월 8번(부분체결이 만료 처리된다)의 **실물 사례**. 별건으로 남긴다.
@@ -537,10 +553,12 @@ KIS 모의계좌는 **`50200591-01`** (8/5 재생성 — 구 50185813-01 만료,
 5. ✅ **구 계좌 성과 경계 운영 적용.** 서버 `.env`에
    `MAPS_ACCOUNT_HISTORY_START_DATE=2026-08-05` 적용 완료. 거래 리뷰에서 002810 제외와
    초기·현재 자산 1억원을 확인했다. 원 주문 감사 행은 보존.
-6. 🔵 **후보 퍼널 Phase 2 (AI 스코어링) — 설계·계획 완료, 구현 착수 전.** 최종 사양은
-   `docs/superpowers/specs/2026-08-07-ai-scoring-design.md`, 실행 순서는
-   `docs/superpowers/plans/2026-08-07-ai-scoring.md`를 따른다. 기본 5개 고유 ticker만 호출하며
-   `off|rerank|replace`, Rule fallback/source 표시, Sonnet 4.6 기본값까지 확정했다.
+6. ✅ **후보 퍼널 Phase 2 AI 스코어링 구현·배포 완료.** `ad3c79b`, `39fefb3`, `54c29e9`.
+   기본 5개 고유 ticker, `off|rerank|replace`, Rule fallback/source, Sonnet 4.6 구조화 출력,
+   일일 예산·캐시·평가 CLI·Ops Config 모드 저장까지 반영했다. 현재 운영 모드는 `off`.
+   **다음 명시적 운영 단계:** `/ops-config`에서 `rerank` 선택 → candidate generation 실행 →
+   AI provenance·호출 예산·순위 변화 확인. 실제 Bedrock 평가 1회는 성공했지만 AI 기반 후보
+   선정 실행은 아직 하지 않았다.
 7. 블로그 21편 발행 — 원고 `docs/blog_series_backtest/`, 붙여넣기 검사 통과 상태.
    (신규 기능·Sharpe 수정으로 일부 원고 내용이 낡았을 수 있음 — 발행 전 콘솔 관련
    편의 스크린샷·문구 확인)
@@ -594,8 +612,8 @@ KIS 모의계좌는 **`50200591-01`** (8/5 재생성 — 구 50185813-01 만료,
     **잔여 후속 → 8/3 해소**: 8/3 17:10 검증 잡에서 새 공식 첫 산출. 8전략 전부
     −2.9~−8.3 → 0 근처로 정상화, `pullback_v2` WFA 첫 통과. **이 항목 종결** (상세는
     "8/3 작업 ③" 절). 다만 G2P `Infinity`/`NaN` 이 새 병목으로 드러났다 → 결함표 참고.
-21. ~~🔴 로컬 `maps.db` alembic 스탬프 깨짐~~ → **해소**. 현재 로컬·운영 모두
-    head `0019_bt_run_source`.
+21. ~~🔴 로컬 `maps.db` alembic 스탬프 깨짐~~ → **해소**. 현재 운영 head는
+    `0020_ai_scoring`; 오염 없는 임시 로컬 DB에도 전체 migration chain 적용을 검증했다.
 22. ~~🟡 **자동 강등 규모** (8/3 신규)~~ — 첫 가동에 4전략이 `mock_candidate → research`.
     주문 가능 전략 6개 → 2개. **8/6 운영 이력 재검토 후 현행 정책 유지로 결정·종결**:
     연속 10회 <50 강등, research에서 ≥60 재승격(Next Steps 4번 및 8/6 절 참고).
