@@ -43,6 +43,9 @@ env/
 htmlcov/
 .tox/
 
+# Local isolated feature workspaces
+.worktrees/
+
 # Logs
 *.log
 logs/
