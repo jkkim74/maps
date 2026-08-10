@@ -8,10 +8,44 @@ from __future__ import annotations
 
 import abc
 import datetime
+import hashlib
 from dataclasses import dataclass, field
 from enum import Enum
 
 from maps.common.settings import get_settings
+
+
+_KST = datetime.timezone(datetime.timedelta(hours=9))
+
+
+def order_log_id(
+    raw_order_id: str,
+    *,
+    broker: str,
+    account_no: str,
+    submitted_at: datetime.datetime,
+) -> str:
+    """Return the globally unique audit ID for a broker order.
+
+    KIS reuses ODNO values across trading days.  The account fingerprint and
+    KST submission date scope that raw value without persisting the account
+    number itself.  Other brokers keep their existing identifiers.
+    """
+    if broker != "kis" or raw_order_id.startswith("kis:"):
+        return raw_order_id
+    submitted = submitted_at
+    if submitted.tzinfo is None:
+        submitted = submitted.replace(tzinfo=_KST)
+    day = submitted.astimezone(_KST).date()
+    account_key = hashlib.sha256(account_no.encode("utf-8")).hexdigest()[:8]
+    return f"kis:{account_key}:{day:%Y%m%d}:{raw_order_id}"
+
+
+def raw_broker_order_id(order_id: str) -> str:
+    """Return the broker-native ID from an internal audit ID."""
+    if order_id.startswith("kis:"):
+        return order_id.rsplit(":", 1)[-1]
+    return order_id
 
 
 class OrderSide(str, Enum):

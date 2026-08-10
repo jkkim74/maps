@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import time
 import zoneinfo
+from dataclasses import replace
 from datetime import date, datetime, time as dt_time, timedelta
 
 from sqlalchemy.exc import IntegrityError
@@ -13,7 +14,14 @@ from sqlalchemy.orm import Session
 from maps.common.exceptions import BrokerAdapterError, DuplicateOrderError, ResearchStrategyError
 from maps.common.models import OrderLog
 from maps.common.settings import get_settings
-from maps.execution.broker_adapter import BrokerAdapter, Order, OrderResult, OrderSide, OrderStatus
+from maps.execution.broker_adapter import (
+    BrokerAdapter,
+    Order,
+    OrderResult,
+    OrderSide,
+    OrderStatus,
+    order_log_id,
+)
 from maps.ops.notifications import SlackNotifier
 from maps.risk.manager import RiskManager
 
@@ -162,6 +170,16 @@ class OrderManager:
 
         try:
             result = self._place_with_retry(order)
+            settings = get_settings()
+            result = replace(
+                result,
+                order_id=order_log_id(
+                    result.order_id,
+                    broker=settings.maps_broker_mode,
+                    account_no=settings.kis_account_no,
+                    submitted_at=result.submitted_at,
+                ),
+            )
             if result.status == OrderStatus.REJECTED:
                 logger.warning(
                     "주문 거부됨 [%s %s %s]: 브로커가 REJECTED 반환",

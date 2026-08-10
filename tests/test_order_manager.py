@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 from unittest.mock import MagicMock
 
 import pytest
@@ -19,6 +20,8 @@ from maps.execution.broker_adapter import (
     OrderSide,
     OrderStatus,
     OrderType,
+    order_log_id,
+    raw_broker_order_id,
 )
 from maps.execution.mock_broker import MockBroker
 from maps.common.settings import MapsSettings
@@ -58,6 +61,72 @@ def _buy(ticker: str = "AAAA", strategy: str = "live_strat") -> Order:
         quantity=10,
         limit_price=10_000,
     )
+
+
+def test_kis_order_log_id_includes_account_and_kst_day() -> None:
+    """같은 KIS ODNO라도 거래일이 다르면 감사 ID가 충돌하지 않아야 한다."""
+    first = order_log_id(
+        "0000000755",
+        broker="kis",
+        account_no="11111111-01",
+        submitted_at=dt.datetime(2026, 8, 6, 8, 55),
+    )
+    later = order_log_id(
+        "0000000755",
+        broker="kis",
+        account_no="11111111-01",
+        submitted_at=dt.datetime(2026, 8, 10, 8, 55),
+    )
+
+    assert first != later
+    assert first.endswith(":20260806:0000000755")
+    assert later.endswith(":20260810:0000000755")
+    assert "11111111" not in first
+    assert raw_broker_order_id(later) == "0000000755"
+
+
+def test_non_kis_order_log_id_is_unchanged() -> None:
+    """Mock 등 ODNO 재사용 문제가 없는 기존 브로커 ID는 바꾸지 않는다."""
+    assert order_log_id(
+        "mock-1",
+        broker="mock",
+        account_no="",
+        submitted_at=dt.datetime(2026, 8, 10),
+    ) == "mock-1"
+
+
+def test_submit_namespaces_kis_order_id_in_result_and_audit_log(db, monkeypatch) -> None:
+    """KIS 제출 결과와 감사 행은 같은 전역 유일 ID를 사용해야 한다."""
+    submitted_at = dt.datetime(2026, 8, 10, 8, 55)
+    live_broker = MagicMock()
+    live_broker.get_account_balance.return_value = AccountBalance(
+        cash=10_000_000,
+        positions_value=0,
+    )
+    live_broker.place_order.return_value = OrderResult(
+        order_id="0000000755",
+        strategy_id="live_strat",
+        ticker="AAAA",
+        side=OrderSide.BUY,
+        status=OrderStatus.PENDING,
+        submitted_at=submitted_at,
+    )
+    settings = MapsSettings(
+        maps_broker_mode="kis",
+        kis_account_no="11111111-01",
+    )
+    monkeypatch.setattr("maps.execution.order_manager.get_settings", lambda: settings)
+    manager = OrderManager(
+        broker=live_broker,
+        risk=RiskManager(broker=live_broker, db=db, config=RiskConfig()),
+        db=db,
+    )
+
+    result = manager.submit(_buy())
+
+    row = db.query(OrderLog).one()
+    assert result.order_id.endswith(":20260810:0000000755")
+    assert row.order_id == result.order_id
 
 
 # ---------------------------------------------------------------------------
