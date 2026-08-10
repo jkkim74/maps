@@ -51,8 +51,12 @@ Sharpe 왜곡 수정(8/2)과 자동 강등(8/2)이 8/3에 처음 실측됐다.
   `python scripts/build_stock_analysis_ui_ppt.py`, 집중 검증은
   `python -m pytest tests/test_ui_design_deliverables.py -q`로 수행한다.
 - 다음 세션은 `feat/ui-design-ppt`를 체크아웃하고 위 집중 테스트부터 실행하면 된다.
-  마지막 안전 재검증 반영 후 전체 710개 회귀 테스트는 다시 끝까지 돌리지 않았다. 직전 완료 결과는
-  **709 passed, 1 failed**이며 실패는 기존 `promotion_history` 테이블 미생성 1건이다.
+  마지막 전체 회귀 테스트는 산출물 테스트가 3개이던 시점의 **710개**를 실행했으며 결과는
+  **709 passed, 1 failed**였다. 이후 집중 테스트를 7개로 보강하고 안전 재검증을 반영한 뒤에는
+  사용자 중단 요청에 따라 전체 테스트를 다시 끝까지 돌리지 않았다. 기존 실패는
+  `promotion_history` 테이블 미생성 1건이다.
+- 원격 브랜치 `origin/feat/ui-design-ppt`, 초안 PR은
+  `https://github.com/jkkim74/maps/pull/2`에 있다.
 - 이 브랜치는 화면설계 문서·프로토타입만 추가하며 실제 MAPS 주문 API, 운영 DB, 운영 서버에는
   어떤 변경도 적용하지 않았다.
 
