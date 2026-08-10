@@ -237,19 +237,42 @@ class OrderManager:
             broker_results = []
             logger.warning("Broker daily fill sync unavailable: %s", exc)
 
+        settings = get_settings()
+        broker_result_ids: set[str] = set()
         for result in broker_results:
             if not result.order_id:
                 continue
+            stored_order_id = order_log_id(
+                result.order_id,
+                broker=settings.maps_broker_mode,
+                account_no=settings.kis_account_no,
+                submitted_at=result.submitted_at,
+            )
+            broker_result_ids.add(stored_order_id)
             row = (
                 self._db.query(OrderLog)
-                .filter(OrderLog.order_id == result.order_id)
+                .filter(OrderLog.order_id == stored_order_id)
                 .first()
             )
+            if row is None and stored_order_id != result.order_id:
+                submitted = result.submitted_at
+                if submitted.tzinfo is not None:
+                    submitted = submitted.astimezone(_KST).replace(tzinfo=None)
+                day_start, day_end = kst_day_bounds_utc(submitted.date())
+                row = (
+                    self._db.query(OrderLog)
+                    .filter(OrderLog.order_id == result.order_id)
+                    .filter(OrderLog.ticker == result.ticker)
+                    .filter(OrderLog.side == result.side.value)
+                    .filter(OrderLog.created_at >= day_start)
+                    .filter(OrderLog.created_at < day_end)
+                    .first()
+                )
             if row is None:
                 # MAPS 외부(MTS 등)에서 제출된 주문 — DB에 삽입하여 화면에 표시
                 self._db.add(
                     OrderLog(
-                        order_id=result.order_id,
+                        order_id=stored_order_id,
                         strategy_id="external_mts",
                         ticker=result.ticker,
                         side=result.side.value,
@@ -263,6 +286,18 @@ class OrderManager:
                     )
                 )
                 updated += 1
+                continue
+            broker_result_ids.add(row.order_id)
+            if row.ticker != result.ticker or row.side != result.side.value:
+                sync_errors += 1
+                logger.error(
+                    "Broker order identity mismatch: order_id=%s db=%s/%s broker=%s/%s",
+                    row.order_id,
+                    row.ticker,
+                    row.side,
+                    result.ticker,
+                    result.side.value,
+                )
                 continue
             changed = False
             if row.status != result.status.value:
@@ -278,7 +313,6 @@ class OrderManager:
                 changed = _normalize_filled_row(row) or changed
             if changed:
                 updated += 1
-        broker_result_ids = {result.order_id for result in broker_results}
         updated += self._reconcile_same_day_buys(broker_result_ids)
 
         # 포지션 기반 매도 체결 폴백: KIS VTS는 장전 시장가 주문을 daily CCLD에서

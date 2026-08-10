@@ -9,7 +9,17 @@ import pytest
 
 from maps.common.exceptions import BrokerAdapterError, DuplicateOrderError
 from maps.common.models import OrderLog
-from maps.execution.broker_adapter import AccountBalance, Order, OrderResult, OrderSide, OrderStatus, OrderType, SameDayBuy
+from maps.common.settings import MapsSettings
+from maps.execution.broker_adapter import (
+    AccountBalance,
+    Order,
+    OrderResult,
+    OrderSide,
+    OrderStatus,
+    OrderType,
+    SameDayBuy,
+    order_log_id,
+)
 from maps.execution.mock_broker import MockBroker
 from maps.execution.order_manager import OrderManager
 from maps.risk.manager import RiskConfig, RiskManager
@@ -77,6 +87,125 @@ def test_sync_broker_state_updates_fill_status(db) -> None:
     assert row.status == OrderStatus.FILLED.value
     assert row.fill_qty == 10
     assert row.fill_price == 10_100
+
+
+def test_sync_reused_kis_order_id_does_not_update_prior_day_ticker(
+    db,
+    monkeypatch,
+) -> None:
+    """다른 거래일에 재사용된 ODNO가 과거 다른 종목 행을 덮으면 안 된다."""
+    settings = MapsSettings(
+        maps_broker_mode="kis",
+        kis_account_no="11111111-01",
+    )
+    monkeypatch.setattr("maps.execution.order_manager.get_settings", lambda: settings)
+    broker = MagicMock()
+    broker.get_account_balance.return_value = AccountBalance(
+        cash=1_000_000,
+        positions_value=500_000,
+    )
+    broker.get_open_orders.return_value = []
+    broker.get_daily_order_results.return_value = [
+        OrderResult(
+            order_id="0000000755",
+            strategy_id="",
+            ticker="041830",
+            side=OrderSide.BUY,
+            status=OrderStatus.FILLED,
+            filled_quantity=35,
+            avg_price=69_200,
+            submitted_at=dt.datetime(2026, 8, 10, 8, 55),
+        )
+    ]
+    old = OrderLog(
+        order_id="0000000755",
+        strategy_id="ath_breakout_v1",
+        ticker="051160",
+        side=OrderSide.BUY.value,
+        qty=427,
+        order_price=57_200,
+        fill_qty=0,
+        status="expired",
+        broker="kis",
+        mode="mock",
+        created_at=dt.datetime(2026, 8, 5, 23, 55),
+    )
+    db.add(old)
+    db.commit()
+    manager = OrderManager(
+        broker=broker,
+        risk=RiskManager(broker=broker, db=db, config=RiskConfig()),
+        db=db,
+    )
+
+    manager.sync_broker_state()
+
+    db.refresh(old)
+    current = db.query(OrderLog).filter(OrderLog.ticker == "041830").one()
+    assert (old.status, old.fill_qty, old.fill_price) == ("expired", 0, None)
+    assert current.order_id.endswith(":20260810:0000000755")
+    assert (current.status, current.fill_qty, current.fill_price) == ("filled", 35, 69_200)
+
+
+def test_sync_refuses_current_identity_with_ticker_mismatch(db, monkeypatch) -> None:
+    """내부 ID가 같아도 종목이 다르면 손상된 행을 갱신하지 않는다."""
+    settings = MapsSettings(
+        maps_broker_mode="kis",
+        kis_account_no="11111111-01",
+    )
+    monkeypatch.setattr("maps.execution.order_manager.get_settings", lambda: settings)
+    submitted_at = dt.datetime(2026, 8, 10, 8, 55)
+    internal_id = order_log_id(
+        "0000000755",
+        broker="kis",
+        account_no=settings.kis_account_no,
+        submitted_at=submitted_at,
+    )
+    broker = MagicMock()
+    broker.get_account_balance.return_value = AccountBalance(
+        cash=1_000_000,
+        positions_value=500_000,
+    )
+    broker.get_open_orders.return_value = []
+    broker.get_daily_order_results.return_value = [
+        OrderResult(
+            order_id="0000000755",
+            strategy_id="",
+            ticker="041830",
+            side=OrderSide.BUY,
+            status=OrderStatus.FILLED,
+            filled_quantity=35,
+            avg_price=69_200,
+            submitted_at=submitted_at,
+        )
+    ]
+    damaged = OrderLog(
+        order_id=internal_id,
+        strategy_id="ath_breakout_v1",
+        ticker="051160",
+        side=OrderSide.BUY.value,
+        qty=427,
+        order_price=57_200,
+        fill_qty=0,
+        status="filled",
+        broker="kis",
+        mode="mock",
+        created_at=dt.datetime(2026, 8, 9, 23, 55),
+    )
+    db.add(damaged)
+    db.commit()
+    manager = OrderManager(
+        broker=broker,
+        risk=RiskManager(broker=broker, db=db, config=RiskConfig()),
+        db=db,
+    )
+
+    result = manager.sync_broker_state()
+
+    db.refresh(damaged)
+    assert result["updated_orders"] == 0
+    assert result["sync_errors"] == 1
+    assert (damaged.status, damaged.fill_qty, damaged.fill_price) == ("filled", 0, None)
 
 
 def test_sync_broker_state_tolerates_daily_fill_lookup_error(db) -> None:
