@@ -34,6 +34,7 @@ from maps.execution.broker_adapter import (
     PendingOrder,
     Position,
     SameDayBuy,
+    raw_broker_order_id,
 )
 
 logger = logging.getLogger(__name__)
@@ -196,7 +197,7 @@ class KISAdapter(BrokerAdapter):
             "CANO": self._account_prefix,
             "ACNT_PRDT_CD": self._account_product_code,
             "KRX_FWDG_ORD_ORGNO": "",
-            "ORGN_ODNO": order_id,
+            "ORGN_ODNO": raw_broker_order_id(order_id),
             "ORD_DVSN": "00",
             "RVSE_CNCL_DVSN_CD": "02",
             "ORD_QTY": "0",

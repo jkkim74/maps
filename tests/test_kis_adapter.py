@@ -505,6 +505,17 @@ def test_cancel_order_uses_cancel_tr_id(settings: MapsSettings) -> None:
     assert cancel_call["json"]["QTY_ALL_ORD_YN"] == "Y"
 
 
+def test_cancel_order_extracts_raw_odno_from_internal_id(settings: MapsSettings) -> None:
+    """DB 내부 복합 ID가 아니라 KIS 원주문번호만 취소 API에 보내야 한다."""
+    http = FakeSession()
+    broker = KISAdapter(settings, http=http)
+
+    assert broker.cancel_order("kis:deadbeef:20260810:0000000755") is True
+
+    cancel_call = next(call for call in http.calls if call["url"].endswith("/order-rvsecncl"))
+    assert cancel_call["json"]["ORGN_ODNO"] == "0000000755"
+
+
 def test_kis_error_is_mapped(settings: MapsSettings) -> None:
     http = FakeSession()
     http.order_payload = {"rt_cd": "1", "msg_cd": "APBK0919", "msg1": "insufficient"}
