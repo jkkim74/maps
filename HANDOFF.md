@@ -1,12 +1,15 @@
 # HANDOFF
 
-> 갱신일: 2026-08-07 23:20 KST · 작성자: 세션 에이전트 (**현재 PC, 키 `D:\maps\`**)
+> 갱신일: 2026-08-10 18:03 KST · 작성자: 세션 에이전트 (**현재 PC, 키 `D:\ssh_maps\`**)
 > 운영 서버 기능 HEAD = **`54c29e9`** (이후 HANDOFF 문서 커밋),
 > alembic **`0020_ai_scoring`**(head).
 > 후보 퍼널 Phase 2 AI Scoring 구현·마이그레이션·운영 배포와 Ops Config 모드 제어까지 완료,
-> 전체 테스트 **707 passed**. `maps=active`, `/health` 내·외부 200, 운영 tracked worktree/index clean.
-> 실제 Bedrock Sonnet 4.6 호출도 구조화 응답 검증까지 성공했다. 현재 운영 모드는 안전하게
-> **`off`**이며, AI 점수 기반 후보 선정은 아직 실행하지 않았다.
+> 기능 배포 기준 전체 테스트 **707 passed**. 8/10 읽기 전용 확인에서 `maps=active`, 운영
+> tracked worktree/index clean. 현재 AI 모드는 **`rerank`**지만, 오늘 주문은 8/7 `off` 모드에서
+> 생성된 Rule 후보를 사용했다. **인바디(041830)는 KIS 주문번호 재사용 충돌로 DB 진입 행과
+> 자동 손절 감시가 누락된 상태라 최우선 복구가 필요하다.**
+> 별도 브랜치 `feat/ui-design-ppt`에는 종목 분석→전략 설정→워치리스트 자동매수 흐름의
+> 독립형 HTML 프로토타입과 18장 PPT 화면설계서가 구현되어 있다.
 > 8/3 기록은 "8/3 작업 ①~⑤" 절, 8/2 는 "이전 날(8/2)" 절 — 결론은 여전히 유효하다.
 
 ## Goal — 이 작업이 향하는 곳
@@ -16,6 +19,68 @@
 투명한 AI 스코어링을 붙인다. Phase 1·2 구현과 배포는 완료했다. 병행 목표는 승격 게이트가
 **실제 성과로** 갈리게 만드는 것 —
 Sharpe 왜곡 수정(8/2)과 자동 강등(8/2)이 8/3에 처음 실측됐다.
+
+## 8/10 화면설계 — 종목 분석에서 전략매매·자동매수까지
+
+- 기능 브랜치: `feat/ui-design-ppt` (worktree `.worktrees/ui-design-ppt`). 실제 MAPS API나
+  주문을 호출하지 않는 독립형 HTML 화면설계 프로토타입을 구현했다.
+- HTML: `docs/ui-design/maps-analysis-trade-prototype.html`. 분석 결과에서 사용자가
+  `매매 설정`을 누른 뒤 단일매매 또는 3분할매매를 선택하고, 분석 가격·목표·손절값이
+  자동 입력되는 흐름을 제공한다. 3분할 기본 비중은 **30/30/40**이다.
+- 사용자 작업은 파란색 `U`, 시스템 자동처리는 초록색 `S`로 화면과 설명 패널에 연결했다.
+  정상 흐름 외 AI 실패/수동입력, 주문가능 현금 부족, 중복, 자동매매 게이트 OFF,
+  부분체결 시나리오를 포함한다.
+- 안전 최대금액은 브로커 주문가능 현금과 리스크 한도 중 작은 값으로 제한하며, 초과 시
+  `최종 확인`을 비활성화한다. 단일/분할 선택은 ARMED·워치리스트·상세까지 유지된다.
+- PPT: `docs/ui-design/MAPS_종목분석_전략매매_화면설계서.pptx` — HTML 실제 화면 캡처
+  16개를 포함한 **18장 16:9** 화면설계서다. 생성기는
+  `scripts/build_stock_analysis_ui_ppt.py`, 계약 테스트는
+  `tests/test_ui_design_deliverables.py`다.
+- 검증: 산출물 테스트 **7 passed**, 화면 캡처 16개 1120×740, PPT 18장·내장 이미지 16개
+  동기화 확인. 전체 테스트는 작업 전부터 있던 `promotion_history` 테이블 미생성 1건 때문에
+  `709 passed, 1 failed`였고, 최종 재실행은 사용자 요청 전환으로 중단됐다.
+
+### 화면설계 작업 중단·인계 지점
+
+- 2026-08-10 18:03 KST 사용자 요청에 따라 추가 구현은 중단했다. HTML, 캡처 16개와 PPT는
+  마지막 안전 재검증 수정까지 다시 생성된 상태다.
+- 독립 코드 리뷰에서 발견한 안전한도 우회, 단일→분할 상태 유실, 수동입력값 유실,
+  회차 수량·부분체결 상태 불일치, 문서 의존성 미선언을 모두 반영했다. 후속 재검토에서 발견된
+  최종 확인 화면의 현금 부족·게이트 OFF·중복 우회도 `tradeBlocks()` 재검증과 버튼 비활성화로 막았다.
+- `requirements.txt`에 `pillow`, `python-pptx`를 선언했다. 재생성은
+  `python scripts/build_stock_analysis_ui_ppt.py`, 집중 검증은
+  `python -m pytest tests/test_ui_design_deliverables.py -q`로 수행한다.
+- 다음 세션은 `feat/ui-design-ppt`를 체크아웃하고 위 집중 테스트부터 실행하면 된다.
+  마지막 안전 재검증 반영 후 전체 710개 회귀 테스트는 다시 끝까지 돌리지 않았다. 직전 완료 결과는
+  **709 passed, 1 failed**이며 실패는 기존 `promotion_history` 테이블 미생성 1건이다.
+- 이 브랜치는 화면설계 문서·프로토타입만 추가하며 실제 MAPS 주문 API, 운영 DB, 운영 서버에는
+  어떤 변경도 적용하지 않았다.
+
+## 8/10 운영 점검 — rerank 전환·매수 2건·인바디 자동 손절 누락
+
+- 사용자가 `/ops-config`에서 AI Scoring 모드를 `rerank`로 변경했고, 운영 설정값도
+  **`rerank`**로 확인했다. 기존 후보는 자동 재평가되지 않는다. 8/10 08:55 주문은 8/7 생성
+  스냅샷(`ai_mode=off`, `score_source=RULE`)을 사용했으므로 AI 재정렬 결과가 아니다.
+- 08:55 주문 사이클은 `ath_breakout_v1` 매수 2건을 제출하고 92건을 스킵했으며 매도는 없었다.
+  KIS 모의계좌에서 두 건 모두 전량 체결됐다.
+
+| 종목 | KIS 주문번호 | 체결 | %/ATR 손절가 | Rule 매수 사유 |
+|---|---|---:|---:|---|
+| 인바디 `041830` | `0000000755` | 35주 @ 69,200원 | 55,100원 | 신고가 돌파 신호, 추세강도 100·신고가 95, 점수 59.12 |
+| BGF리테일 `282330` | `0000000751` | 25주 @ 150,700원 | 130,700원 | 신고가 돌파 신호, 추세강도 100·신고가 95, 점수 59.14 |
+
+- **미해결 운영 위험:** KIS가 8/6 `051160` 주문에 썼던 `0000000755`를 8/10 인바디 주문에
+  재사용했다. `order_log.order_id`는 전 기간 unique라 인바디 행 INSERT가 `IntegrityError`로
+  스킵됐고, 다음 broker sync는 `order_id`만으로 과거 `051160` 행을 찾아 인바디의
+  `status=filled`, `fill_qty=35`, `fill_price=69200`을 덮어썼다. 종목·전략·주문수량·ATR은
+  과거 값이 남은 혼합 행이다.
+- KIS 실제 보유에는 인바디 35주가 있지만 DB에는 `041830` 진입 행이 없다. 청산 감시는 보유
+  ticker와 DB BUY 행을 연결하지 못해 매분 `skipped_sell_orders=1`이며, **55,100원 자동 손절은
+  현재 적용되지 않는다.** `maps_plan_based_exits_enabled=false`; 위 손절가는 체결가와 주문 시점
+  ATR(14)=5638.281459를 사용한 실제 `%/ATR` 규칙 산출값이다.
+- 원인은 AI Scoring과 무관하다. 영구 수정은 raw KIS `ODNO` 단독이 아니라
+  `broker+account+KST 주문일+ODNO`를 주문 식별자로 쓰고, sync에서 날짜·ticker·side까지 검증해
+  불일치 행 갱신을 거부하는 것이다. 수정·DB 복구·배포는 아직 수행하지 않았다.
 
 ## 8/7 밤 후보 퍼널 Phase 2 AI Scoring 구현·배포 완료
 
@@ -33,7 +98,7 @@ Sharpe 왜곡 수정(8/2)과 자동 강등(8/2)이 8/3에 처음 실측됐다.
   `replace`를 선택할 수 있고, 저장 즉시 단일 worker 스케줄러 설정 객체에 반영되며 `.env`에
   원자적으로 저장돼 재시작 후에도 유지된다. `replace`는 확인창을 거친다.
 - 운영 API로 동일 모드 저장(`off → off`)을 실측해 HTTP 200, `.env` 권한 `600`, health 정상까지
-  확인했다. **현재 모드는 `off`**다. 다음 후보 생성부터 AI를 반영하려면 사용자가 명시적으로
+  확인했다. **당시 모드는 `off`**였다. 다음 후보 생성부터 AI를 반영하려면 사용자가 명시적으로
   `rerank`를 선택한 뒤 candidate generation을 실행해야 한다. 기존 후보는 자동 재평가되지 않는다.
 - 배포 커밋: `ad3c79b feat: add bounded AI candidate scoring`,
   `39fefb3 fix: sanitize Bedrock scoring schema`, `54c29e9 feat: add AI scoring mode control`.
@@ -518,12 +583,12 @@ KIS 모의계좌는 **`50200591-01`** (8/5 재생성 — 구 50185813-01 만료,
 | 🔵 | UI 진행률 5단계 장식(실제 1단계만), `progress_pct` 항상 100, "WFA 기준" 문구 낡음, `started_at` UTC naive(화면 9시간 어긋남) |
 | 🔵 | `cost_sensitivity.py` `net_cagr=None` 고정 · `engine.run()` `universe` 인자 미사용 · `backtest/CLAUDE.md` 낡음(모듈 3개 누락·상수명 오기) · `/api/v1/wfa`·`robustness` 라우터 테스트 부재 |
 
-## 미커밋 상태
+## 브랜치·작업공간 상태
 
-- HANDOFF 갱신 직전 로컬 `master`와 `origin/master`, 운영 서버는 모두 `54c29e9`다.
-  운영 tracked worktree/index는 clean이다. 과거 analyze 산출 untracked 파일은 운영에 다수 존재한다.
-- 로컬 untracked `apps/mobile/google-services.json`, `maps/AGENTS.md`는 사용자 소유로 간주해
-  AI Scoring 및 HANDOFF 커밋에서 제외했다. 임의 삭제·수정·커밋하지 말 것.
+- 화면설계 작업은 `feat/ui-design-ppt`에만 있으며 원본 작업공간의 사용자 `HANDOFF.md` 변경을
+  보존해 이 문서에 합쳤다. 원본 작업공간의 다른 파일은 수정하지 않았다.
+- 운영 서버는 기능 HEAD `54c29e9`, tracked worktree/index clean이다. 과거 analyze 산출 untracked
+  파일은 운영에 다수 존재하므로 임의 삭제·커밋하지 말 것.
 
 **부수 확인 (8/3)**: `order_log` `0000031820` = buy `expired` qty 1253 / fill_qty 21 —
 이월 8번(부분체결이 만료 처리된다)의 **실물 사례**. 별건으로 남긴다.
@@ -541,6 +606,12 @@ KIS 모의계좌는 **`50200591-01`** (8/5 재생성 — 구 50185813-01 만료,
 
 ## Next Steps
 
+- 🔴 **최우선 — 인바디 자동 손절·감사 이력 복구.** 운영 DB를 백업하고 단일 트랜잭션으로
+  8/6 `051160` 행을 `expired/fill_qty=0/fill_price=NULL`로 원복·날짜 포함 주문키로 보존한 뒤,
+  8/10 `041830` BUY 35주 @69,200원, ATR 5638.281459 진입 행을 생성한다. 다음 broker sync에서
+  인바디 손절가 55,100원과 `skipped_sell_orders: 1 → 0`을 확인한다. 이어 주문 식별자 복합키와
+  sync 불일치 방어를 테스트 우선으로 구현해 **다음 08:55 주문 사이클 전에 배포**한다.
+
 1. ✅ **8/6 주문 2건 장 종료 정합 확인 완료.** 051160/148780 모두 미체결·만료,
    DB `fill_qty=0`, 8/7 00:00 broker sync `expired_orders=2`, 보유 0·현금 1억원으로 일치했다.
    단, EOD 취소 잡의 KIS `40580000 장종료` 오류 처리는 별도 후속으로 남긴다.
@@ -555,8 +626,8 @@ KIS 모의계좌는 **`50200591-01`** (8/5 재생성 — 구 50185813-01 만료,
    초기·현재 자산 1억원을 확인했다. 원 주문 감사 행은 보존.
 6. ✅ **후보 퍼널 Phase 2 AI 스코어링 구현·배포 완료.** `ad3c79b`, `39fefb3`, `54c29e9`.
    기본 5개 고유 ticker, `off|rerank|replace`, Rule fallback/source, Sonnet 4.6 구조화 출력,
-   일일 예산·캐시·평가 CLI·Ops Config 모드 저장까지 반영했다. 현재 운영 모드는 `off`.
-   **다음 명시적 운영 단계:** `/ops-config`에서 `rerank` 선택 → candidate generation 실행 →
+   일일 예산·캐시·평가 CLI·Ops Config 모드 저장까지 반영했다. 8/10 운영 모드를 `rerank`로 전환했다.
+   **다음 명시적 운영 단계:** candidate generation 실행 →
    AI provenance·호출 예산·순위 변화 확인. 실제 Bedrock 평가 1회는 성공했지만 AI 기반 후보
    선정 실행은 아직 하지 않았다.
 7. 블로그 21편 발행 — 원고 `docs/blog_series_backtest/`, 붙여넣기 검사 통과 상태.
