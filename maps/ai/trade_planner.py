@@ -80,22 +80,16 @@ class AITradePlan(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     recommendation: Literal["BUY", "WATCH", "SELL"]
-    entries: tuple[float, float, float] | None = None
-    target: float | None = None
-    stop: float | None = None
+    entries: tuple[float, float, float]
+    target: float
+    stop: float
     rationale: str
 
     @model_validator(mode="after")
     def validate_price_contract(self) -> "AITradePlan":
-        prices = (*self.entries, self.target, self.stop) if self.entries else ()
-        if self.recommendation != "BUY":
-            if self.entries is not None or self.target is not None or self.stop is not None:
-                raise ValueError("non-BUY recommendations cannot contain prices")
-            return self
-        if self.entries is None or self.target is None or self.stop is None:
-            raise ValueError("BUY requires three entries, target, and stop")
+        prices = (*self.entries, self.target, self.stop)
         if any(price is None or not math.isfinite(price) or price <= 0 for price in prices):
-            raise ValueError("BUY prices must be finite and positive")
+            raise ValueError("trade plan prices must be finite and positive")
         entry1, entry2, entry3 = self.entries
         if not self.target > entry1 > entry2 > entry3 > self.stop:
             raise ValueError("prices must satisfy target > entry1 > entry2 > entry3 > stop")
@@ -149,9 +143,10 @@ class AITradePlanner:
     def _system_prompt(self) -> str:
         return (
             "Use only the supplied Korean-equity facts. Return BUY, WATCH, or SELL. "
-            "For BUY, provide exactly three descending limit entry prices plus one "
-            "higher target and one lower stop. For WATCH or SELL, every price must be "
-            "null. Do not choose quantities or a budget and do not invent missing facts."
+            "For every recommendation, provide exactly three descending staged-buy "
+            "limit prices plus one higher target and one lower stop. Recommendation is "
+            "advisory; prices describe the analyzed entry plan. Do not choose quantities "
+            "or a budget and do not invent missing facts."
         )
 
     def _response_schema(self) -> dict[str, object]:
@@ -171,6 +166,9 @@ class AITradePlanner:
             if isinstance(value, dict):
                 for key in unsupported & value.keys():
                     del value[key]
+                prefix_items = value.pop("prefixItems", None)
+                if prefix_items:
+                    value["items"] = prefix_items[0]
                 for child in value.values():
                     strip_constraints(child)
             elif isinstance(value, list):

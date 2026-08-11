@@ -55,11 +55,15 @@ def test_trade_plan_accepts_only_ordered_buy_prices() -> None:
 
 
 @pytest.mark.parametrize("recommendation", ["WATCH", "SELL"])
-def test_non_buy_trade_plan_rejects_order_prices(recommendation: str) -> None:
+def test_non_buy_trade_plan_keeps_valid_staged_buy_prices(recommendation: str) -> None:
     from maps.ai.trade_planner import AITradePlan
 
-    with pytest.raises(AIScoringResponseError):
-        AITradePlan.from_payload(_buy_payload(recommendation=recommendation))
+    plan = AITradePlan.from_payload(_buy_payload(recommendation=recommendation))
+
+    assert plan.recommendation == recommendation
+    assert plan.entries == (70_000, 68_000, 66_000)
+    assert plan.target == 80_000
+    assert plan.stop == 63_000
 
 
 @pytest.mark.parametrize(
@@ -93,6 +97,10 @@ def test_trade_planner_request_uses_supported_json_schema() -> None:
     assert "minimum" not in encoded_schema
     assert "maximum" not in encoded_schema
     assert "minLength" not in encoded_schema
+    assert "prefixItems" not in encoded_schema
+    entries_schema = body["output_config"]["format"]["schema"]["properties"]["entries"]
+    assert entries_schema["type"] == "array"
+    assert entries_schema["items"]["type"] == "number"
     assert json.loads(body["messages"][0]["content"])["ticker"] == "005930"
 
 

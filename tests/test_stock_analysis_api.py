@@ -98,6 +98,47 @@ def test_trade_plan_normalizes_valid_buy_prices_to_krx_ticks(monkeypatch) -> Non
     }
 
 
+def test_trade_plan_keeps_normalized_watch_prices(monkeypatch) -> None:
+    import maps.api.stock_analysis as api
+    from maps.ai.trade_planner import AITradePlan
+
+    class WatchPlanner:
+        is_configured = True
+
+        def plan(self, facts):
+            return AITradePlan.from_payload(
+                {
+                    "recommendation": "WATCH",
+                    "entries": [70_101, 68_101, 66_101],
+                    "target": 78_049,
+                    "stop": 63_951,
+                    "rationale": "가격 대기",
+                }
+            )
+
+    monkeypatch.setattr(
+        api.AITradePlanner,
+        "from_settings",
+        classmethod(lambda cls: WatchPlanner()),
+    )
+
+    response = TestClient(app).post(
+        "/api/v1/stock-analysis/trade-plan",
+        json=_request_payload(),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "recommendation": "WATCH",
+        "entries": [70_200.0, 68_200.0, 66_200.0],
+        "target": 78_000.0,
+        "stop": 64_000.0,
+        "rationale": "가격 대기",
+        "source": "AI",
+        "message": None,
+    }
+
+
 def test_trade_plan_falls_back_when_provider_response_is_invalid(monkeypatch) -> None:
     import maps.api.stock_analysis as api
     from maps.common.exceptions import AIScoringResponseError

@@ -38,29 +38,20 @@ def _manual_trade_plan(
     )
 
 
-@router.post("/trade-plan", response_model=StockTradePlanResponse)
-async def create_trade_plan(req: StockTradePlanRequest) -> StockTradePlanResponse:
-    """Return normalized executable prices only for a valid structured BUY plan."""
+def generate_trade_plan(req: StockTradePlanRequest) -> StockTradePlanResponse:
+    """Return one normalized structured plan for analysis and UI consumers."""
     planner = AITradePlanner.from_settings()
     if not planner.is_configured:
         return _manual_trade_plan()
 
     facts = StockTradeFacts.model_validate(req.model_dump())
-    loop = asyncio.get_running_loop()
     try:
-        plan = await loop.run_in_executor(None, planner.plan, facts)
+        plan = planner.plan(facts)
     except AIScoringError:
         return _manual_trade_plan()
 
-    if plan.recommendation != "BUY":
-        return _manual_trade_plan(
-            recommendation=plan.recommendation,
-            rationale=plan.rationale,
-        )
-
-    assert plan.entries is not None and plan.target is not None and plan.stop is not None
     normalized_payload = {
-        "recommendation": "BUY",
+        "recommendation": plan.recommendation,
         "entries": [
             round_up_krx_price(price, market=facts.market) for price in plan.entries
         ],
@@ -73,13 +64,20 @@ async def create_trade_plan(req: StockTradePlanRequest) -> StockTradePlanRespons
     except AIScoringError:
         return _manual_trade_plan()
     return StockTradePlanResponse(
-        recommendation="BUY",
-        entries=list(normalized.entries or ()),
+        recommendation=normalized.recommendation,
+        entries=list(normalized.entries),
         target=normalized.target,
         stop=normalized.stop,
         rationale=normalized.rationale,
         source="AI",
     )
+
+
+@router.post("/trade-plan", response_model=StockTradePlanResponse)
+async def create_trade_plan(req: StockTradePlanRequest) -> StockTradePlanResponse:
+    """Return the same normalized plan used by the stock-analysis stream."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, generate_trade_plan, req)
 
 
 @router.post("/analyze")
