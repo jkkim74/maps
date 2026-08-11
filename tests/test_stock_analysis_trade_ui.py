@@ -18,8 +18,12 @@ def test_analysis_result_exposes_trade_setup_and_safe_api_flow() -> None:
 
     assert 'id="sa-trade-setup"' in panel
     assert 'id="sa-open-trade"' in panel
+    assert 'id="sa-analysis-trade-plan"' in panel
     assert "openTradeSetup" in script
-    assert "/api/v1/stock-analysis/trade-plan" in script
+    assert "_lastAnalysisTradePlan = d.trade_plan" in script
+    assert "_renderAnalysisTradePlan" in script
+    assert "_applyAnalysisTradePlan" in script
+    assert "/api/v1/stock-analysis/trade-plan" not in script
     assert "/api/v1/analysis-picks/trade-preview" in script
     assert "/api/v1/analysis-picks/arm-plan" in script
     assert "if (!preview.blocked)" in script
@@ -59,4 +63,6 @@ def test_trade_setup_has_responsive_styles() -> None:
 
     assert ".sa-trade-dialog" in css
     assert ".sa-trade-limits" in css
+    assert "background:var(--bg-base)" in css
+    assert "background:var(--bg);" not in css
     assert "@media" in css

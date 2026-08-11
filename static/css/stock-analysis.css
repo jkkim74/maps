@@ -83,10 +83,10 @@
 .sa-modal.open{display:block}
 .sa-modal-dialog{position:absolute;top:3vh;left:50%;transform:translateX(-50%);
   width:min(1040px,94vw);max-height:94vh;overflow-y:auto;
-  background:var(--bg);border:1px solid var(--border);border-radius:12px;
+  background:var(--bg-base);border:1px solid var(--border);border-radius:12px;
   padding:20px 24px 28px;box-shadow:0 24px 60px rgba(0,0,0,.5)}
 .sa-modal-header{display:flex;align-items:center;justify-content:space-between;
-  margin-bottom:16px;position:sticky;top:-20px;background:var(--bg);
+  margin-bottom:16px;position:sticky;top:-20px;background:var(--bg-base);
   padding:8px 0 12px;border-bottom:1px solid var(--border);z-index:1}
 .sa-modal-title{font-size:1rem;font-weight:600;color:var(--text-primary)}
 .sa-modal-close{background:none;border:none;color:var(--text-muted);font-size:1.5rem;
@@ -96,8 +96,13 @@
 /* ── 분석 결과 → 전략매매 설정 ── */
 .sa-trade-entry{display:flex;align-items:center;gap:10px;margin-top:14px}
 .sa-trade-entry span{font-size:.75rem;color:var(--text-muted)}
+.sa-analysis-trade-plan{display:none;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:14px}
+.sa-analysis-trade-plan>div{display:flex;flex-direction:column;gap:3px;padding:9px 10px;
+  border:1px solid var(--border);border-radius:7px;background:var(--bg-surface)}
+.sa-analysis-trade-plan span{font-size:.7rem;color:var(--text-muted)}
+.sa-analysis-trade-plan b{font-size:.85rem;color:var(--text-primary)}
 .sa-trade-dialog{width:min(920px,94vw);max-height:92vh;padding:0;border:1px solid var(--border);
-  border-radius:12px;background:var(--bg);color:var(--text-primary);box-shadow:0 24px 70px rgba(0,0,0,.6)}
+  border-radius:12px;background:var(--bg-base);color:var(--text-primary);box-shadow:0 24px 70px rgba(0,0,0,.6)}
 .sa-trade-dialog::backdrop{background:rgba(0,0,0,.68);backdrop-filter:blur(2px)}
 .sa-trade-shell{padding:22px;overflow-y:auto;max-height:92vh}
 .sa-trade-header{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;
@@ -130,6 +135,7 @@
 @media (max-width:760px){
   .sa-grid2,.sa-grid4{grid-template-columns:1fr}
   .sa-trade-fields{grid-template-columns:1fr 1fr}
+  .sa-analysis-trade-plan{grid-template-columns:1fr 1fr}
   .sa-trade-limits{grid-template-columns:1fr 1fr}
   .sa-trade-entry,.sa-trade-modes{align-items:flex-start;flex-direction:column}
 }

@@ -36,6 +36,7 @@ let _activeEs = null;
 let _analysisText = '';
 let _aiStarted = false;
 let _lastAnalysis = null;
+let _lastAnalysisTradePlan = null;
 let _tradePlanSource = 'MANUAL_REQUIRED';
 let _tradeRationale = '';
 let _lastTradePreview = null;
@@ -54,6 +55,7 @@ function startProgress(ticker) {
   _analysisText = '';
   _aiStarted = false;
   _lastAnalysis = null;
+  _lastAnalysisTradePlan = null;
   _lastTradePreview = null;
   const tradeButton = _byId('sa-open-trade');
   if (tradeButton) tradeButton.style.display = 'none';
@@ -161,6 +163,8 @@ function resetStockAnalysisPanel() {
   if (ai) ai.innerHTML = '';
   _analysisText = '';
   _aiStarted = false;
+  _lastAnalysis = null;
+  _lastAnalysisTradePlan = null;
 }
 
 /* ── 분석 실행 (SSE) ─────────────────────────────────────── */
@@ -211,6 +215,7 @@ function runStockAnalysis(ticker) {
       _byId('prog-pct').textContent = '100%';
       setTimeout(() => {
         _byId('sa-progress').style.display = 'none';
+        _lastAnalysisTradePlan = d.trade_plan || null;
         renderResult(d.data);
       }, 600);
     }
@@ -356,6 +361,7 @@ function renderResult(d) {
   }
 
   _byId('sa-result').style.display = 'block';
+  _renderAnalysisTradePlan(_lastAnalysisTradePlan);
   const tradeButton = _byId('sa-open-trade');
   if (tradeButton) tradeButton.style.display = 'inline-flex';
   _byId('sa-result').scrollIntoView({ behavior: 'smooth' });
@@ -383,6 +389,48 @@ function renderResult(d) {
 }
 
 /* ── 분석 결과 → 전략매매 설정 ───────────────────────────── */
+function _renderAnalysisTradePlan(plan) {
+  const target = _byId('sa-analysis-trade-plan');
+  if (!target) return;
+  if (!plan || plan.source !== 'AI' || !Array.isArray(plan.entries) || plan.entries.length !== 3) {
+    target.innerHTML = '';
+    target.style.display = 'none';
+    return;
+  }
+  const recommendation = { BUY: '매수', WATCH: '관찰', SELL: '매도 의견' }[plan.recommendation]
+    || plan.recommendation;
+  target.innerHTML = `
+    <div><span>분석 의견</span><b>${recommendation}</b></div>
+    <div><span>1차 매수가</span><b>${_won(plan.entries[0])}</b></div>
+    <div><span>2차 매수가</span><b>${_won(plan.entries[1])}</b></div>
+    <div><span>3차 매수가</span><b>${_won(plan.entries[2])}</b></div>
+    <div><span>목표가</span><b>${_won(plan.target)}</b></div>
+    <div><span>손절가</span><b>${_won(plan.stop)}</b></div>`;
+  target.style.display = 'grid';
+}
+
+function _applyAnalysisTradePlan() {
+  const plan = _lastAnalysisTradePlan;
+  if (!plan || plan.source !== 'AI' || !Array.isArray(plan.entries) || plan.entries.length !== 3) {
+    _clearTradePrices();
+    _tradePlanSource = 'MANUAL_REQUIRED';
+    _tradeRationale = '';
+    _byId('sa-trade-warning').textContent = plan?.message
+      || '분석 가격을 사용할 수 없어 가격을 직접 입력해야 합니다.';
+    return false;
+  }
+  plan.entries.forEach((price, index) => {
+    _byId(`sa-entry-${index + 1}`).value = price;
+  });
+  _byId('sa-plan-target').value = plan.target;
+  _byId('sa-plan-stop').value = plan.stop;
+  _tradePlanSource = 'AI';
+  _tradeRationale = plan.rationale || '';
+  _byId('sa-trade-warning').textContent =
+    '종목분석에 표시된 매수가·목표가·손절가를 그대로 불러왔습니다.';
+  return true;
+}
+
 function _tradeNumber(id) {
   const value = Number(_byId(id)?.value || 0);
   return Number.isFinite(value) ? value : 0;
@@ -433,7 +481,7 @@ function _clearTradePrices() {
     .forEach(id => { if (_byId(id)) _byId(id).value = ''; });
 }
 
-async function openTradeSetup() {
+function openTradeSetup() {
   if (!_lastAnalysis) return;
   const dialog = _byId('sa-trade-setup');
   if (!dialog) return;
@@ -448,30 +496,7 @@ async function openTradeSetup() {
   _byId('sa-trade-symbol').textContent = `${_lastAnalysis['종목명'] || ''} ${_lastAnalysis['종목코드'] || ''}`;
   _byId('sa-trade-warning').textContent = '구조화 AI 매매계획을 확인하고 있습니다.';
   dialog.showModal();
-
-  try {
-    const plan = await _tradeApi('/api/v1/stock-analysis/trade-plan', _tradeFacts());
-    _tradePlanSource = plan.source;
-    _tradeRationale = plan.rationale || '';
-    if (plan.source === 'AI' && plan.recommendation === 'BUY') {
-      (plan.entries || []).forEach((price, index) => {
-        const input = _byId(`sa-entry-${index + 1}`);
-        if (input) input.value = price;
-      });
-      _byId('sa-plan-target').value = plan.target || '';
-      _byId('sa-plan-stop').value = plan.stop || '';
-      _byId('sa-trade-warning').textContent = 'AI 제안값입니다. 매매 방식과 금액을 선택한 뒤 서버 검증을 진행하세요.';
-    } else {
-      _clearTradePrices();
-      _tradePlanSource = 'MANUAL_REQUIRED';
-      _byId('sa-trade-warning').textContent = plan.message || 'AI 관망·오류로 수동 가격 입력이 필요합니다.';
-    }
-  } catch (error) {
-    _clearTradePrices();
-    _tradePlanSource = 'MANUAL_REQUIRED';
-    _tradeRationale = '';
-    _byId('sa-trade-warning').textContent = `AI 계획을 사용할 수 없습니다. 수동 입력이 필요합니다. (${error.message})`;
-  }
+  _applyAnalysisTradePlan();
 }
 
 function closeTradeSetup() {
@@ -511,12 +536,20 @@ function _buildTradePayload() {
   if (!(target > prices[0] && prices.every((price, index) => index === 0 || prices[index - 1] > price) && prices.at(-1) > stop)) {
     throw new Error('목표가 > 진입가 순서 > 손절가를 확인하세요.');
   }
+  const analysisPlan = _lastAnalysisTradePlan;
+  const analysisEntries = mode === 'single'
+    ? [Number(analysisPlan?.entries?.[0])]
+    : (analysisPlan?.entries || []).map(Number);
+  const usesAnalysisPrices = analysisPlan?.source === 'AI'
+    && entries.every((item, index) => item.entry_price === analysisEntries[index])
+    && target === Number(analysisPlan.target)
+    && stop === Number(analysisPlan.stop);
   return {
     ticker: facts.ticker,
     name: facts.name,
     market: facts.market,
     ref_date: facts.ref_date,
-    source: _tradePlanSource === 'AI' ? 'ai_trade_plan' : 'manual',
+    source: usesAnalysisPrices ? 'ai_trade_plan' : 'manual',
     trade_mode: mode,
     total_budget: budget,
     entries,
