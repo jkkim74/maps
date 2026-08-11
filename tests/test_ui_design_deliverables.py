@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PROTOTYPE = ROOT / "docs" / "ui-design" / "maps-analysis-trade-prototype.html"
 CAPTURES = ROOT / "docs" / "ui-design" / "assets"
 PRESENTATION = ROOT / "docs" / "ui-design" / "MAPS_종목분석_전략매매_화면설계서.pptx"
+HANDOFF = ROOT / "HANDOFF.md"
 
 
 def test_prototype_contains_all_annotated_screens_without_live_network_calls() -> None:
@@ -64,6 +65,27 @@ def test_prototype_blocks_unsafe_amounts_and_preserves_strategy_mode() -> None:
     assert 'params.get("mode")' in html
     assert "9,856,000원" not in html
     assert "<td>62주</td>" not in html
+
+
+def test_implemented_trade_safety_contract_is_documented() -> None:
+    """The approved prototype and handoff must describe the implemented safety rules."""
+    html = PROTOTYPE.read_text(encoding="utf-8")
+    handoff = HANDOFF.read_text(encoding="utf-8")
+    required_contracts = (
+        "구조화 AI 값 검증 실패 시 자동 주문값을 비우고 수동입력으로 전환",
+        "최종 무장은 서버 게이트를 다시 조회해 재검증",
+        "한 주기에 분할 주문은 최대 한 회차",
+        "부분체결 주문 종료 후 미체결 잔량만 재주문",
+        "추가매수 중지는 보유분 목표·손절 청산 감시를 중지하지 않음",
+        "청산 주문 제출 후 보유수량 0을 확인할 때만 CLOSED",
+        "만료 계획의 미체결 매수 주문은 취소 후 최종 체결을 동기화",
+        "주문 감사 로그에서 미연결 회차 주문을 복구해 중복 제출 방지",
+        "활성 종목 중복은 DB 고유 인덱스로 차단",
+    )
+
+    for contract in required_contracts:
+        assert contract in html
+        assert contract in handoff
 
 
 def test_checked_in_captures_are_real_browser_screens() -> None:
