@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
@@ -25,9 +26,15 @@ from maps.common.exceptions import AIScoringError
 from maps.common.models import StockAnalysisHistory
 from maps.common.settings import get_settings
 from maps.market.trading_rules import round_to_krx_tick, round_up_krx_price
-from maps.stock_analysis.history import CurrentPriceUnavailable, refresh_analysis_price
+from maps.stock_analysis.history import (
+    CurrentPriceUnavailable,
+    refresh_analysis_price,
+    save_analysis_history,
+    save_analysis_history_with_new_session,
+)
 
 router = APIRouter(prefix="/api/v1/stock-analysis", tags=["Stock Analysis"])
+logger = logging.getLogger(__name__)
 
 
 class AnalyzeRequest(BaseModel):
@@ -192,7 +199,7 @@ def refresh_history_price(
 
 
 @router.post("/analyze")
-async def analyze_stock(req: AnalyzeRequest) -> dict[str, Any]:
+async def analyze_stock(req: AnalyzeRequest, db: Session = DbDep) -> dict[str, Any]:
     """종목명 또는 6자리 종목코드를 받아 종합 분석 결과를 반환한다 (단일 응답)."""
     from maps.stock_analysis.analyzer import analyze
 
@@ -209,7 +216,17 @@ async def analyze_stock(req: AnalyzeRequest) -> dict[str, Any]:
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"분석 중 오류: {e}")
 
-    return result
+    try:
+        trade_plan = generate_trade_plan(_trade_plan_request(result))
+    except (TypeError, ValueError):
+        trade_plan = _manual_trade_plan()
+    history = save_analysis_history(
+        db,
+        result=result,
+        narrative="",
+        trade_plan=trade_plan.model_dump(mode="json"),
+    )
+    return {**result, "history_id": history.id}
 
 
 @router.get("/stream")
@@ -247,6 +264,7 @@ async def analyze_stream(ticker: str) -> StreamingResponse:
             except (TypeError, ValueError):
                 trade_plan = _manual_trade_plan()
             trade_plan_payload = trade_plan.model_dump(mode="json")
+            narrative_parts: list[str] = []
 
             if settings.aws_access_key_id:
                 _progress("AI 종합분석 시작 (Claude via Bedrock)…", 98)
@@ -260,15 +278,30 @@ async def analyze_stream(ticker: str) -> StreamingResponse:
                         model_id=settings.aws_bedrock_model_id,
                         trade_plan=trade_plan_payload,
                     ):
+                        narrative_parts.append(chunk)
                         asyncio.run_coroutine_threadsafe(
                             queue.put({"analysis_chunk": chunk, "done": False}),
                             loop,
                         )
                 except Exception as llm_err:
+                    error_marker = f"\n\n[AI 분석 오류: {llm_err}]"
+                    narrative_parts.append(error_marker)
                     asyncio.run_coroutine_threadsafe(
-                        queue.put({"analysis_chunk": f"\n\n[AI 분석 오류: {llm_err}]", "done": False}),
+                        queue.put({"analysis_chunk": error_marker, "done": False}),
                         loop,
                     )
+
+            history_id: int | None = None
+            history_error: str | None = None
+            try:
+                history_id = save_analysis_history_with_new_session(
+                    result,
+                    "".join(narrative_parts),
+                    trade_plan_payload,
+                )
+            except Exception as exc:
+                history_error = str(exc)
+                logger.exception("Stock analysis history save failed [%s]", ticker)
 
             asyncio.run_coroutine_threadsafe(
                 queue.put({
@@ -277,6 +310,8 @@ async def analyze_stream(ticker: str) -> StreamingResponse:
                     "done": True,
                     "data": result,
                     "trade_plan": trade_plan_payload,
+                    "history_id": history_id,
+                    "history_error": history_error,
                 }),
                 loop,
             )

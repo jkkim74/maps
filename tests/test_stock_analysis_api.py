@@ -213,6 +213,7 @@ def test_analysis_stream_reuses_one_trade_plan_for_narrative_and_final_event(
         source="AI",
     )
     captured = {}
+    saved = []
     monkeypatch.setattr(analyzer, "analyze", lambda *args, **kwargs: _analysis_result())
     monkeypatch.setattr(
         api,
@@ -236,6 +237,13 @@ def test_analysis_stream_reuses_one_trade_plan_for_narrative_and_final_event(
 
     monkeypatch.setattr(api, "generate_trade_plan", fake_generate)
     monkeypatch.setattr(analyzer, "stream_llm_analysis", fake_narrative)
+    monkeypatch.setattr(
+        api,
+        "save_analysis_history_with_new_session",
+        lambda result, narrative, trade_plan: (
+            saved.append((result, narrative, trade_plan)) or 41
+        ),
+    )
 
     response = TestClient(app).get("/api/v1/stock-analysis/stream?ticker=005930")
     events = _sse_events(response)
@@ -245,6 +253,9 @@ def test_analysis_stream_reuses_one_trade_plan_for_narrative_and_final_event(
     assert captured["request"] == _request_payload()
     assert captured["narrative_plan"] == plan.model_dump(mode="json")
     assert final_event["trade_plan"] == plan.model_dump(mode="json")
+    assert saved == [(_analysis_result(), "분석", plan.model_dump(mode="json"))]
+    assert final_event["history_id"] == 41
+    assert final_event["history_error"] is None
 
 
 def test_analysis_stream_finishes_with_manual_plan_when_generation_fails(
@@ -276,6 +287,11 @@ def test_analysis_stream_finishes_with_manual_plan_when_generation_fails(
             message="AI 매매계획을 사용할 수 없어 수동 입력이 필요합니다.",
         ),
     )
+    monkeypatch.setattr(
+        api,
+        "save_analysis_history_with_new_session",
+        lambda result, narrative, trade_plan: 42,
+    )
 
     response = TestClient(app).get("/api/v1/stock-analysis/stream?ticker=005930")
     final_event = next(event for event in _sse_events(response) if event.get("done"))
@@ -285,3 +301,66 @@ def test_analysis_stream_finishes_with_manual_plan_when_generation_fails(
     assert final_event["trade_plan"]["entries"] is None
     assert final_event["trade_plan"]["target"] is None
     assert final_event["trade_plan"]["stop"] is None
+
+
+def test_analysis_stream_reports_history_failure_without_losing_result(monkeypatch) -> None:
+    """이력 저장 실패가 완료된 분석 자체를 숨기면 안 된다."""
+    import maps.api.stock_analysis as api
+    import maps.stock_analysis.analyzer as analyzer
+
+    monkeypatch.setattr(analyzer, "analyze", lambda *args, **kwargs: _analysis_result())
+    monkeypatch.setattr(
+        api,
+        "get_settings",
+        lambda: SimpleNamespace(
+            dart_api_key="",
+            aws_access_key_id="",
+            aws_secret_access_key="",
+            aws_region="us-east-1",
+            aws_bedrock_model_id="model",
+        ),
+    )
+    monkeypatch.setattr(
+        api,
+        "save_analysis_history_with_new_session",
+        lambda *args: (_ for _ in ()).throw(RuntimeError("db down")),
+    )
+
+    response = TestClient(app).get("/api/v1/stock-analysis/stream?ticker=005930")
+    final_event = next(event for event in _sse_events(response) if event.get("done"))
+
+    assert final_event["data"] == _analysis_result()
+    assert final_event["history_id"] is None
+    assert final_event["history_error"] == "db down"
+
+
+def test_non_streaming_analysis_persists_snapshot_once(monkeypatch) -> None:
+    """단일 응답 분석도 history_id를 응답에만 붙이고 원본에는 넣지 않는다."""
+    import maps.api.stock_analysis as api
+    import maps.stock_analysis.analyzer as analyzer
+    from maps.api.schemas import StockTradePlanResponse
+
+    plan = StockTradePlanResponse(
+        recommendation="WATCH",
+        rationale="대기",
+        source="MANUAL_REQUIRED",
+    )
+    saved = []
+    monkeypatch.setattr(analyzer, "analyze", lambda *args, **kwargs: _analysis_result())
+    monkeypatch.setattr(api, "generate_trade_plan", lambda request: plan)
+
+    def fake_save(db, *, result, narrative, trade_plan):
+        saved.append((result, narrative, trade_plan))
+        return SimpleNamespace(id=17)
+
+    monkeypatch.setattr(api, "save_analysis_history", fake_save)
+
+    response = TestClient(app).post(
+        "/api/v1/stock-analysis/analyze", json={"ticker": "005930"}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["history_id"] == 17
+    assert "history_id" not in saved[0][0]
+    assert saved[0][1] == ""
+    assert saved[0][2] == plan.model_dump(mode="json")
