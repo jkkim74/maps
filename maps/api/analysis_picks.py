@@ -22,9 +22,11 @@ from maps.api.schemas import (
     AnalysisPickLegItem,
     AnalysisPicksResponse,
     AnalysisPickUpdate,
+    StrategyTradePlanRequest,
+    StrategyTradePlanResponse,
 )
 from maps.common.exceptions import BrokerAdapterError
-from maps.common.models import AnalysisPick, HistoricalOHLCV, OrderLog
+from maps.common.models import AnalysisPick, AnalysisPickLeg, HistoricalOHLCV, OrderLog
 from maps.common.settings import get_settings
 from maps.execution.broker_adapter import get_broker
 from maps.ops.pick_freshness import (
@@ -33,10 +35,103 @@ from maps.ops.pick_freshness import (
     pick_cutoff_date,
     pick_stale_reason,
 )
+from maps.ops.strategy_trade_plan import ValidatedTradePlan, validate_trade_plan
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/analysis-picks", tags=["SCR-19 Analysis Picks"])
+
+
+def _validate_requested_plan(
+    body: StrategyTradePlanRequest,
+    db: Session,
+) -> ValidatedTradePlan:
+    """Refresh account and duplicate state, then run the shared pure validator."""
+    settings = get_settings()
+    broker = get_broker(settings.maps_broker_mode)
+    account = broker.get_account_balance()
+    position = broker.get_position(body.ticker)
+    existing_position_value = float(position.market_value) if position is not None else 0.0
+    has_active_pick = (
+        db.query(AnalysisPick.id)
+        .filter(
+            AnalysisPick.ticker == body.ticker,
+            AnalysisPick.state.in_(["ARMED", "BOUGHT"]),
+        )
+        .first()
+        is not None
+    )
+    return validate_trade_plan(
+        body,
+        account=account,
+        settings=settings,
+        existing_position_value=existing_position_value,
+        has_active_pick=has_active_pick,
+    )
+
+
+@router.post("/trade-preview", response_model=StrategyTradePlanResponse)
+def preview_trade_plan(
+    body: StrategyTradePlanRequest,
+    db: Session = DbDep,
+) -> StrategyTradePlanResponse:
+    """Calculate broker-backed limits without writing a pick or placing an order."""
+    plan = _validate_requested_plan(body, db)
+    return StrategyTradePlanResponse(**plan.model_dump())
+
+
+@router.post("/arm-plan", response_model=StrategyTradePlanResponse)
+def arm_trade_plan(
+    body: StrategyTradePlanRequest,
+    db: Session = DbDep,
+) -> StrategyTradePlanResponse:
+    """Revalidate current gates and atomically persist one ARMED trade plan."""
+    plan = _validate_requested_plan(body, db)
+    if plan.blocked:
+        raise HTTPException(
+            status_code=409,
+            detail={"blockers": [item.model_dump() for item in plan.blockers]},
+        )
+
+    legs = sorted(plan.legs, key=lambda item: item.sequence)
+    pick = AnalysisPick(
+        ref_date=body.ref_date,
+        ticker=body.ticker.strip(),
+        name=body.name.strip() or body.ticker.strip(),
+        market=body.market,
+        source=body.source,
+        buy_price=legs[0].entry_price,
+        target_price=body.target_price,
+        stop_price=body.stop_price,
+        qty=sum(leg.planned_qty for leg in legs),
+        trade_mode=body.trade_mode,
+        total_budget=body.total_budget,
+        rationale=body.rationale,
+        regime=body.regime,
+        strategy_context=body.strategy_context,
+        strategy_trade_enabled=True,
+        state="ARMED",
+        last_action_at=datetime.datetime.now(datetime.timezone.utc),
+    )
+    if body.trade_mode == "split":
+        pick.legs = [
+            AnalysisPickLeg(
+                sequence=leg.sequence,
+                entry_price=leg.entry_price,
+                weight_pct=leg.weight_pct,
+                planned_qty=leg.planned_qty,
+                status="PENDING",
+            )
+            for leg in legs
+        ]
+    db.add(pick)
+    db.commit()
+    db.refresh(pick)
+    return StrategyTradePlanResponse(
+        **plan.model_dump(),
+        pick_id=pick.id,
+        state=pick.state,
+    )
 
 
 def _rr_ratio(buy: float | None, target: float | None, stop: float | None) -> float | None:

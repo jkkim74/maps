@@ -7,6 +7,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel
 
+from maps.ops.strategy_trade_plan import StrategyTradePlanInput, ValidatedTradePlan
+
 
 class AlertItem(BaseModel):
     level: str          # WARN | INFO | PASS | ERROR
@@ -838,6 +840,15 @@ class StockTradePlanResponse(BaseModel):
     rationale: str = ""
     source: Literal["AI", "MANUAL_REQUIRED"]
     message: str | None = None
+
+
+class StrategyTradePlanRequest(StrategyTradePlanInput):
+    """Preview/final-arm request using the shared server-side contract."""
+
+
+class StrategyTradePlanResponse(ValidatedTradePlan):
+    pick_id: int | None = None
+    state: str | None = None
 
 
 # ── 일일 다이제스트 (블로그 생성용 결정적 데이터팩) ────────────────────────────

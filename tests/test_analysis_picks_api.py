@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import datetime
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -568,3 +570,144 @@ def test_update_pick_reports_stale(client) -> None:
     r = client.patch(f"/api/v1/analysis-picks/{pid}", json={"buy_price": 6140})
     assert r.status_code == 200
     assert r.json()["data_stale"] is True
+
+
+def _trade_plan_payload(**overrides):
+    payload = {
+        "ticker": "005930",
+        "name": "삼성전자",
+        "market": "KOSPI",
+        "ref_date": datetime.date.today().isoformat(),
+        "source": "analyze",
+        "trade_mode": "split",
+        "total_budget": 9_900_000,
+        "entries": [
+            {"sequence": 1, "entry_price": 70_000, "weight_pct": 30},
+            {"sequence": 2, "entry_price": 67_000, "weight_pct": 30},
+            {"sequence": 3, "entry_price": 64_000, "weight_pct": 40},
+        ],
+        "target_price": 80_000,
+        "stop_price": 60_000,
+        "regime": "strong",
+        "rationale": "분할 진입 계획",
+    }
+    payload.update(overrides)
+    return payload
+
+
+class _PlanBroker:
+    def __init__(self, cash=12_500_000):
+        self.cash = cash
+
+    def get_account_balance(self):
+        from maps.execution.broker_adapter import AccountBalance
+
+        return AccountBalance(
+            cash=self.cash,
+            positions_value=50_000_000,
+            total_assets=100_000_000,
+        )
+
+    def get_position(self, ticker):
+        return None
+
+    def get_current_prices(self, tickers):
+        return {}
+
+
+def _plan_settings(**overrides):
+    from maps.common.settings import MapsSettings
+
+    values = {
+        "maps_strategy_trade_enabled": True,
+        "maps_strategy_trade_account_risk_pct": 0.01,
+        "max_single_exposure": 0.10,
+        "maps_min_cash_ratio_strong": 0.15,
+    }
+    values.update(overrides)
+    return MapsSettings(_env_file=None, **values)
+
+
+def test_trade_preview_is_read_only_and_returns_safe_budget(client, monkeypatch) -> None:
+    import maps.api.analysis_picks as api
+
+    monkeypatch.setattr(api, "get_broker", lambda *args, **kwargs: _PlanBroker())
+    monkeypatch.setattr(api, "get_settings", lambda: _plan_settings())
+
+    response = client.post(
+        "/api/v1/analysis-picks/trade-preview",
+        json=_trade_plan_payload(),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["blocked"] is False
+    assert response.json()["safe_max_amount"] == 10_000_000
+    assert client.get("/api/v1/analysis-picks").json()["total"] == 0
+
+
+def test_arm_revalidates_gate_instead_of_trusting_preview(client, monkeypatch) -> None:
+    import maps.api.analysis_picks as api
+
+    monkeypatch.setattr(api, "get_broker", lambda *args, **kwargs: _PlanBroker())
+    monkeypatch.setattr(api, "get_settings", lambda: _plan_settings())
+    preview = client.post(
+        "/api/v1/analysis-picks/trade-preview",
+        json=_trade_plan_payload(),
+    ).json()
+    assert preview["blocked"] is False
+
+    monkeypatch.setattr(
+        api,
+        "get_settings",
+        lambda: _plan_settings(maps_strategy_trade_enabled=False),
+    )
+    armed = client.post(
+        "/api/v1/analysis-picks/arm-plan",
+        json=_trade_plan_payload(),
+    )
+
+    assert armed.status_code == 409
+    assert "GATE_OFF" in str(armed.json()["detail"])
+    assert client.get("/api/v1/analysis-picks").json()["total"] == 0
+
+
+def test_arm_plan_atomically_creates_armed_split_legs(client, monkeypatch) -> None:
+    import maps.api.analysis_picks as api
+
+    monkeypatch.setattr(api, "get_broker", lambda *args, **kwargs: _PlanBroker())
+    monkeypatch.setattr(api, "get_settings", lambda: _plan_settings())
+
+    response = client.post(
+        "/api/v1/analysis-picks/arm-plan",
+        json=_trade_plan_payload(),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["state"] == "ARMED"
+    assert body["blocked"] is False
+    assert [leg["weight_pct"] for leg in body["legs"]] == [30, 30, 40]
+    assert all(leg["planned_qty"] > 0 for leg in body["legs"])
+    saved = client.get("/api/v1/analysis-picks").json()["picks"][0]
+    assert saved["state"] == "ARMED"
+    assert saved["trade_mode"] == "split"
+    assert [leg["sequence"] for leg in saved["legs"]] == [1, 2, 3]
+
+
+def test_arm_plan_rejects_duplicate_active_ticker(client, monkeypatch) -> None:
+    import maps.api.analysis_picks as api
+
+    monkeypatch.setattr(api, "get_broker", lambda *args, **kwargs: _PlanBroker())
+    monkeypatch.setattr(api, "get_settings", lambda: _plan_settings())
+    assert client.post(
+        "/api/v1/analysis-picks/arm-plan",
+        json=_trade_plan_payload(),
+    ).status_code == 200
+
+    duplicate = client.post(
+        "/api/v1/analysis-picks/arm-plan",
+        json=_trade_plan_payload(),
+    )
+
+    assert duplicate.status_code == 409
+    assert "DUPLICATE_ACTIVE_TICKER" in str(duplicate.json()["detail"])
