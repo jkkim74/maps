@@ -5,7 +5,7 @@ from __future__ import annotations
 import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from maps.ops.strategy_trade_plan import StrategyTradePlanInput, ValidatedTradePlan
 
@@ -840,6 +840,51 @@ class StockTradePlanResponse(BaseModel):
     rationale: str = ""
     source: Literal["AI", "MANUAL_REQUIRED"]
     message: str | None = None
+
+
+class StockAnalysisHistoryListItem(BaseModel):
+    """종목분석 이력 목록의 경량 항목."""
+
+    id: int
+    created_at: datetime.datetime
+    ticker: str
+    name: str
+    market: str | None = None
+    ref_date: datetime.date
+    recommendation: str | None = None
+    analyzed_price: float | None = None
+    latest_price: float | None = None
+    latest_price_source: str | None = None
+    price_refreshed_at: datetime.datetime | None = None
+
+
+class StockAnalysisHistoryListResponse(BaseModel):
+    """최신순 종목분석 이력 목록."""
+
+    total: int
+    items: list[StockAnalysisHistoryListItem]
+
+
+class StockAnalysisHistoryDetail(StockAnalysisHistoryListItem):
+    """저장된 분석 원본과 마지막 현재가 오버레이."""
+
+    snapshot: dict[str, Any]
+    narrative: str
+    trade_plan: dict[str, Any]
+    latest_reference_close: float | None = None
+
+
+class StockAnalysisPriceOverlay(BaseModel):
+    """이력 원본과 분리해 갱신되는 현재가 정보."""
+
+    history_id: int
+    current_price: float
+    reference_close: float | None = None
+    change_amount: float | None = None
+    change_pct: float | None = None
+    source: str
+    refreshed_at: datetime.datetime
+    plan_distances: dict[str, dict[str, float]] = Field(default_factory=dict)
 
 
 class StrategyTradePlanRequest(StrategyTradePlanInput):

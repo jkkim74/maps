@@ -6,15 +6,26 @@ import asyncio
 import json
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
 
 from maps.ai.trade_planner import AITradePlan, AITradePlanner, StockTradeFacts
-from maps.api.schemas import StockTradePlanRequest, StockTradePlanResponse
+from maps.api.deps import DbDep
+from maps.api.schemas import (
+    StockAnalysisHistoryDetail,
+    StockAnalysisHistoryListItem,
+    StockAnalysisHistoryListResponse,
+    StockAnalysisPriceOverlay,
+    StockTradePlanRequest,
+    StockTradePlanResponse,
+)
 from maps.common.exceptions import AIScoringError
+from maps.common.models import StockAnalysisHistory
 from maps.common.settings import get_settings
 from maps.market.trading_rules import round_to_krx_tick, round_up_krx_price
+from maps.stock_analysis.history import CurrentPriceUnavailable, refresh_analysis_price
 
 router = APIRouter(prefix="/api/v1/stock-analysis", tags=["Stock Analysis"])
 
@@ -103,6 +114,81 @@ async def create_trade_plan(req: StockTradePlanRequest) -> StockTradePlanRespons
     """Return the same normalized plan used by the stock-analysis stream."""
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, generate_trade_plan, req)
+
+
+def _history_list_item(row: StockAnalysisHistory) -> StockAnalysisHistoryListItem:
+    """Map one history ORM row to the lightweight response contract."""
+    return StockAnalysisHistoryListItem(
+        id=row.id,
+        created_at=row.created_at,
+        ticker=row.ticker,
+        name=row.name,
+        market=row.market,
+        ref_date=row.ref_date,
+        recommendation=row.recommendation,
+        analyzed_price=row.analyzed_price,
+        latest_price=row.latest_price,
+        latest_price_source=row.latest_price_source,
+        price_refreshed_at=row.price_refreshed_at,
+    )
+
+
+@router.get("/history", response_model=StockAnalysisHistoryListResponse)
+def list_analysis_history(
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    db: Session = DbDep,
+) -> StockAnalysisHistoryListResponse:
+    """Return completed analyses newest first without heavy detail fields."""
+    query = db.query(StockAnalysisHistory)
+    total = query.count()
+    rows = (
+        query.order_by(
+            StockAnalysisHistory.created_at.desc(),
+            StockAnalysisHistory.id.desc(),
+        )
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+    return StockAnalysisHistoryListResponse(
+        total=total,
+        items=[_history_list_item(row) for row in rows],
+    )
+
+
+@router.get("/history/{history_id}", response_model=StockAnalysisHistoryDetail)
+def get_analysis_history(
+    history_id: int, db: Session = DbDep
+) -> StockAnalysisHistoryDetail:
+    """Return one stored analysis without refreshing or mutating it."""
+    row = db.get(StockAnalysisHistory, history_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="분석 이력을 찾을 수 없습니다.")
+    return StockAnalysisHistoryDetail(
+        **_history_list_item(row).model_dump(),
+        snapshot=row.snapshot,
+        narrative=row.narrative,
+        trade_plan=row.trade_plan,
+        latest_reference_close=row.latest_reference_close,
+    )
+
+
+@router.post(
+    "/history/{history_id}/refresh-price",
+    response_model=StockAnalysisPriceOverlay,
+)
+def refresh_history_price(
+    history_id: int, db: Session = DbDep
+) -> StockAnalysisPriceOverlay:
+    """Refresh only the mutable current-price overlay for a saved analysis."""
+    row = db.get(StockAnalysisHistory, history_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="분석 이력을 찾을 수 없습니다.")
+    try:
+        return refresh_analysis_price(db, row)
+    except CurrentPriceUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @router.post("/analyze")
