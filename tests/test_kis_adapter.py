@@ -208,6 +208,38 @@ def test_place_order_uses_paper_buy_tr_id_and_hashkey(settings: MapsSettings) ->
     assert result.status == OrderStatus.PENDING
 
 
+def test_place_order_missing_time_uses_kst_date(
+    settings: MapsSettings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ORD_TMD 누락 시 UTC 호스트 날짜가 아니라 KST 주문일을 사용해야 한다."""
+    real_datetime = kis_adapter.dt.datetime
+
+    class FrozenDateTime(real_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            if tz is None:
+                return cls(2026, 8, 9, 23, 55)
+            return cls(2026, 8, 10, 8, 55, tzinfo=tz)
+
+    monkeypatch.setattr(kis_adapter.dt, "datetime", FrozenDateTime)
+    http = FakeSession()
+    http.order_payload = {"rt_cd": "0", "output": {"ODNO": "12345"}}
+    broker = KISAdapter(settings, http=http)
+
+    result = broker.place_order(
+        Order(
+            strategy_id="s1",
+            ticker="005930",
+            side=OrderSide.BUY,
+            order_type=OrderType.MARKET,
+            quantity=10,
+        )
+    )
+
+    assert result.submitted_at == real_datetime(2026, 8, 10, 8, 55)
+
+
 def test_get_account_balance_and_position(settings: MapsSettings) -> None:
     http = FakeSession()
     broker = KISAdapter(settings, http=http)
@@ -503,6 +535,17 @@ def test_cancel_order_uses_cancel_tr_id(settings: MapsSettings) -> None:
     assert cancel_call["json"]["ORGN_ODNO"] == "12345"
     assert cancel_call["json"]["RVSE_CNCL_DVSN_CD"] == "02"
     assert cancel_call["json"]["QTY_ALL_ORD_YN"] == "Y"
+
+
+def test_cancel_order_extracts_raw_odno_from_internal_id(settings: MapsSettings) -> None:
+    """DB 내부 복합 ID가 아니라 KIS 원주문번호만 취소 API에 보내야 한다."""
+    http = FakeSession()
+    broker = KISAdapter(settings, http=http)
+
+    assert broker.cancel_order("kis:deadbeef:20260810:0000000755") is True
+
+    cancel_call = next(call for call in http.calls if call["url"].endswith("/order-rvsecncl"))
+    assert cancel_call["json"]["ORGN_ODNO"] == "0000000755"
 
 
 def test_kis_error_is_mapped(settings: MapsSettings) -> None:

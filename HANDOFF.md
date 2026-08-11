@@ -1,13 +1,12 @@
 # HANDOFF
 
-> 갱신일: 2026-08-10 18:03 KST · 작성자: 세션 에이전트 (**현재 PC, 키 `D:\ssh_maps\`**)
-> 운영 서버 기능 HEAD = **`54c29e9`** (이후 HANDOFF 문서 커밋),
+> 갱신일: 2026-08-11 09:17 KST · 작성자: 세션 에이전트 (**현재 PC, 키 `D:\ssh_maps\`**)
+> 운영 서버 기능 HEAD = **`b065c54`** (이후 HANDOFF 문서 커밋),
 > alembic **`0020_ai_scoring`**(head).
-> 후보 퍼널 Phase 2 AI Scoring 구현·마이그레이션·운영 배포와 Ops Config 모드 제어까지 완료,
-> 기능 배포 기준 전체 테스트 **707 passed**. 8/10 읽기 전용 확인에서 `maps=active`, 운영
-> tracked worktree/index clean. 현재 AI 모드는 **`rerank`**지만, 오늘 주문은 8/7 `off` 모드에서
-> 생성된 Rule 후보를 사용했다. **인바디(041830)는 KIS 주문번호 재사용 충돌로 DB 진입 행과
-> 자동 손절 감시가 누락된 상태라 최우선 복구가 필요하다.**
+> 후보 퍼널 Phase 2 AI Scoring 구현·운영 배포와 Ops Config 모드 제어 완료. KIS 주문번호
+> 재사용 충돌의 DB 복구·영구 수정·배포까지 완료했고 전체 테스트 **716 passed**.
+> `maps=active`, 내·외부 `/health` 200, 운영 tracked worktree/index clean. 현재 AI 모드는
+> **`rerank`**. 인바디(`041830`) 35주 진입 행과 자동 손절 55,100원 감시는 복구됐다.
 > 별도 브랜치 `feat/ui-design-ppt`에는 종목 분석→전략 설정→워치리스트 자동매수 흐름의
 > 독립형 HTML 프로토타입과 18장 PPT 화면설계서가 구현되어 있다.
 > 8/3 기록은 "8/3 작업 ①~⑤" 절, 8/2 는 "이전 날(8/2)" 절 — 결론은 여전히 유효하다.
@@ -60,6 +59,35 @@ Sharpe 왜곡 수정(8/2)과 자동 강등(8/2)이 8/3에 처음 실측됐다.
 - 이 브랜치는 화면설계 문서·프로토타입만 추가하며 실제 MAPS 주문 API, 운영 DB, 운영 서버에는
   어떤 변경도 적용하지 않았다.
 
+## 8/11 긴급 복구·영구 수정·운영 배포 완료 — KIS ODNO 재사용 충돌
+
+- 08:55 직전 서비스를 정지하고 7분 자동 재시작 timer를 설치해 **8/11 주문 사이클 1회를
+  안전하게 건너뛰었다.** 서비스는 08:56 자동 재시작됐고 broker sync는 계속 정상 동작한다.
+- PostgreSQL 전체 custom-format 백업을 관리자 권한으로 생성했다:
+  `/opt/maps/backups/maps-pre-order-identity-20260811-085104.dump`
+  (323,668,622 bytes, mode `600`). 앱 역할로 한 첫 백업은 구 테이블 권한 때문에 실패했고
+  복구 트랜잭션은 시작되지 않았다. 예외 출력에 연결 문자열이 포함돼 `maps_app` 비밀번호를
+  새 난수값으로 즉시 교체하고 `.env`를 mode `600`으로 원자 갱신한 뒤 새 연결을 확인했다.
+- 단일 트랜잭션으로 `order_log.id=53`의 8/6 `051160` 행을
+  `expired/fill_qty=0/fill_price=NULL`로 원복하고, `id=59`에 인바디 진입 행을 만들었다:
+  `kis:d59a650c:20260810:0000000755`, `ath_breakout_v1`, BUY 35주,
+  주문가 71,600원, 체결가 69,200원, ATR14 `5638.281459`, `filled`.
+- 영구 수정은 KIS 감사 ID를 `kis:<계좌 SHA-256 지문 8자>:<KST YYYYMMDD>:<ODNO>`로 저장한다.
+  계좌번호 원문은 저장하지 않고 `12345678`과 `12345678-01`을 같은 계좌로 정규화한다.
+  sync는 내부 ID와 ticker/side/broker가 일치할 때만 갱신하고, 구 raw ID는 같은 KST 주문일의
+  KIS 행에 한해 호환 조회한다. 취소 API 경계에서는 raw ODNO를 복원한다. `ORD_TMD`가 없어도
+  UTC 호스트 시간이 아니라 KST 날짜를 사용한다.
+- 설계·계획: `docs/superpowers/specs/2026-08-11-kis-order-identity-design.md`,
+  `docs/superpowers/plans/2026-08-11-kis-order-identity.md`.
+  구현: `144e993`, `ae8028f`, `d92234d`, 리뷰 보완 `b065c54`.
+- TDD RED→GREEN 후 집중 테스트 **52 passed**, 병합된 `master` 전체 테스트 **716 passed**.
+  독립 코드 리뷰의 Critical/Important 0건, 최종 `Ready to merge: Yes`.
+- 09:14 운영 배포 완료: 기능 HEAD `b065c54`, alembic `0020_ai_scoring (head)`, 서비스 active,
+  내·외부 health 200. 09:16:24 첫 장중 broker sync는 `market_open=true`,
+  `exit_monitor_active=true`, `sync_errors=0`, `skipped_sell_orders=0`.
+  KIS 실제 보유는 인바디 35주 @69,200원, DB 진입 행과 일치하며 정본 함수의 손절가는
+  **55,100원**이다(확인 시 현재가 68,500원으로 손절 미도달).
+
 ## 8/10 운영 점검 — rerank 전환·매수 2건·인바디 자동 손절 누락
 
 - 사용자가 `/ops-config`에서 AI Scoring 모드를 `rerank`로 변경했고, 운영 설정값도
@@ -73,18 +101,18 @@ Sharpe 왜곡 수정(8/2)과 자동 강등(8/2)이 8/3에 처음 실측됐다.
 | 인바디 `041830` | `0000000755` | 35주 @ 69,200원 | 55,100원 | 신고가 돌파 신호, 추세강도 100·신고가 95, 점수 59.12 |
 | BGF리테일 `282330` | `0000000751` | 25주 @ 150,700원 | 130,700원 | 신고가 돌파 신호, 추세강도 100·신고가 95, 점수 59.14 |
 
-- **미해결 운영 위험:** KIS가 8/6 `051160` 주문에 썼던 `0000000755`를 8/10 인바디 주문에
+- **당시 미해결 운영 위험(8/11 해결):** KIS가 8/6 `051160` 주문에 썼던 `0000000755`를 8/10 인바디 주문에
   재사용했다. `order_log.order_id`는 전 기간 unique라 인바디 행 INSERT가 `IntegrityError`로
   스킵됐고, 다음 broker sync는 `order_id`만으로 과거 `051160` 행을 찾아 인바디의
   `status=filled`, `fill_qty=35`, `fill_price=69200`을 덮어썼다. 종목·전략·주문수량·ATR은
   과거 값이 남은 혼합 행이다.
-- KIS 실제 보유에는 인바디 35주가 있지만 DB에는 `041830` 진입 행이 없다. 청산 감시는 보유
-  ticker와 DB BUY 행을 연결하지 못해 매분 `skipped_sell_orders=1`이며, **55,100원 자동 손절은
-  현재 적용되지 않는다.** `maps_plan_based_exits_enabled=false`; 위 손절가는 체결가와 주문 시점
+- 당시 KIS 실제 보유에는 인바디 35주가 있었지만 DB에는 `041830` 진입 행이 없었다. 청산 감시는
+  보유 ticker와 DB BUY 행을 연결하지 못해 매분 `skipped_sell_orders=1`이었고, **55,100원 자동 손절은
+  적용되지 않았다.** `maps_plan_based_exits_enabled=false`; 위 손절가는 체결가와 주문 시점
   ATR(14)=5638.281459를 사용한 실제 `%/ATR` 규칙 산출값이다.
 - 원인은 AI Scoring과 무관하다. 영구 수정은 raw KIS `ODNO` 단독이 아니라
   `broker+account+KST 주문일+ODNO`를 주문 식별자로 쓰고, sync에서 날짜·ticker·side까지 검증해
-  불일치 행 갱신을 거부하는 것이다. 수정·DB 복구·배포는 아직 수행하지 않았다.
+  불일치 행 갱신을 거부하는 것이다. **8/11 위 절의 방식으로 수정·DB 복구·배포를 완료했다.**
 
 ## 8/7 밤 후보 퍼널 Phase 2 AI Scoring 구현·배포 완료
 
@@ -591,7 +619,9 @@ KIS 모의계좌는 **`50200591-01`** (8/5 재생성 — 구 50185813-01 만료,
 
 - 화면설계 작업은 `feat/ui-design-ppt`에만 있으며 원본 작업공간의 사용자 `HANDOFF.md` 변경을
   보존해 이 문서에 합쳤다. 원본 작업공간의 다른 파일은 수정하지 않았다.
-- 운영 서버는 기능 HEAD `54c29e9`, tracked worktree/index clean이다. 과거 analyze 산출 untracked
+- HANDOFF 갱신 전 로컬 `master`, `origin/master`, 운영 서버 기능 HEAD는 `b065c54`로 일치한다.
+  현재 브랜치에는 화면설계 산출물과 `master` 병합 변경이 있다.
+- 운영 서버 tracked worktree/index는 clean이다. 과거 analyze 산출 untracked
   파일은 운영에 다수 존재하므로 임의 삭제·커밋하지 말 것.
 
 **부수 확인 (8/3)**: `order_log` `0000031820` = buy `expired` qty 1253 / fill_qty 21 —
@@ -610,11 +640,10 @@ KIS 모의계좌는 **`50200591-01`** (8/5 재생성 — 구 50185813-01 만료,
 
 ## Next Steps
 
-- 🔴 **최우선 — 인바디 자동 손절·감사 이력 복구.** 운영 DB를 백업하고 단일 트랜잭션으로
-  8/6 `051160` 행을 `expired/fill_qty=0/fill_price=NULL`로 원복·날짜 포함 주문키로 보존한 뒤,
-  8/10 `041830` BUY 35주 @69,200원, ATR 5638.281459 진입 행을 생성한다. 다음 broker sync에서
-  인바디 손절가 55,100원과 `skipped_sell_orders: 1 → 0`을 확인한다. 이어 주문 식별자 복합키와
-  sync 불일치 방어를 테스트 우선으로 구현해 **다음 08:55 주문 사이클 전에 배포**한다.
+- ✅ **인바디 자동 손절·감사 이력 복구 및 영구 수정 완료(8/11).** 전체 DB 백업, `051160` 원복,
+  `041830` BUY 35주 @69,200원/ATR 5638.281459 진입 행 생성, KIS 복합 감사 ID와 sync 불일치
+  방어를 TDD로 구현·배포했다. 장중 broker sync `sync_errors=0`, `skipped_sell_orders=0`,
+  손절가 55,100원 확인. 상세는 위 "8/11 긴급 복구" 절.
 
 1. ✅ **8/6 주문 2건 장 종료 정합 확인 완료.** 051160/148780 모두 미체결·만료,
    DB `fill_qty=0`, 8/7 00:00 broker sync `expired_orders=2`, 보유 0·현금 1억원으로 일치했다.
