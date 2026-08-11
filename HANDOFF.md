@@ -2,8 +2,8 @@
 
 ## 8/11 종목분석 가격 → 전략매매 팝업 인계 수정
 
-- 작업 브랜치: `fix/stock-analysis-trade-plan-ui` (worktree
-  `.worktrees/stock-analysis-trade-plan-ui`). 원격 push와 운영 배포는 아직 하지 않았다.
+- 작업 브랜치 `fix/stock-analysis-trade-plan-ui`를 `master`에 fast-forward 병합하고 원격 push와
+  운영 배포까지 완료했다. 기능 배포 커밋은 `3725bee`다.
 - 팝업이 투명해 보인 원인은 정의되지 않은 CSS 변수 `--bg`였다. 종목분석 모달과 전략매매
   팝업 배경을 실제 전역 변수 `--bg-base`로 바꿔 불투명하게 표시한다.
 - 기존 UI는 분석 원고를 만든 뒤 `매매 설정`을 누를 때 `/stock-analysis/trade-plan`을 다시
@@ -20,10 +20,14 @@
   `6f0f2c5`, UI·팝업 수정 `c1a52cd`.
 - 검증: 집중 테스트 **72 passed**(경고 1건), 전체 Python **790 passed**(경고 13건),
   `node --check static/js/stock-analysis.js` 및 `git diff --check` 통과.
+- 17:05 KST 운영 반영 확인: systemd `maps=active`, alembic
+  **`0021_analysis_pick_split_plan (head)`**, 내·외부 `/health` 200. 운영 파일에서 SSE 가격
+  전달 코드와 `--bg-base` 불투명 배경도 직접 확인했다. 재시작 직후 최초 health는 애플리케이션
+  기동 전 호출되어 일시적으로 실패했으나, 시작 로그와 포트 바인딩을 확인한 뒤 정상화됐다.
 
 > 갱신일: 2026-08-11 KST · 작성자: 세션 에이전트 (**현재 PC, 키 `D:\ssh_maps\`**)
-> 운영 서버 기능 HEAD = **`b065c54`**, alembic **`0020_ai_scoring`**(head).
-> 이번 세션의 종목분석→전략매매 구현은 로컬 `feat/ui-design-ppt`에만 있으며 **미배포**다.
+> 운영 서버 기능 커밋 = **`3725bee`**, alembic **`0021_analysis_pick_split_plan`**(head).
+> 종목분석→전략매매 구현과 8/11 가격 인계·팝업 수정은 운영 배포 완료 상태다.
 > 기능 커밋은 `8214235`~`b00c029`, 신규 migration head는 **`0021_analysis_pick_split_plan`**이다.
 > 후보 퍼널 Phase 2 AI Scoring 구현·운영 배포와 Ops Config 모드 제어 완료. KIS 주문번호
 > 재사용 충돌의 DB 복구·영구 수정·배포까지 완료했고 전체 테스트 **716 passed**.
