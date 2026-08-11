@@ -1,5 +1,72 @@
 # HANDOFF
 
+## 8/11 종목분석 이력·현재가 갱신·전략매매 UX — 설계·계획 완료
+
+- 작업 브랜치: `feat/stock-analysis-history`, 격리 worktree:
+  `.worktrees/stock-analysis-history`. 구현 코드는 아직 시작하지 않았고 원격 push·운영 배포도
+  하지 않았다. 운영 서버는 바로 아래 절의 `3e7a153` 상태와 동일하다.
+- 사용자 문제 확인:
+  - 종목분석 결과는 현재 SSE 응답으로 화면에만 표시되어 다른 메뉴를 다녀오면 사라진다.
+  - 같은 종목을 재분석해도 독립 이력이 쌓이는 저장소가 없다.
+  - 3분할 선택 시 숨김 입력칸이 하나의 4열 자동 그리드에 나타나면서 줄 배치가 밀린다.
+  - 총 매수금액을 먼저 추측해서 입력한 뒤 안전한도를 계산하는 흐름은 순서가 반대다.
+- 승인된 데이터 경계:
+  - 전체 분석마다 별도 `StockAnalysisHistory` 행을 추가하고 같은 ticker도 중복 보관한다.
+  - 분석 당시 snapshot, AI 원고, 구조화 trade plan은 생성 후 바꾸지 않는다.
+  - 상세를 열 때 현재가·기준 종가·등락·매매계획 가격까지의 거리와 갱신 시각만 다시 조회한다.
+  - 가격 조회 실패 시 저장된 상세는 계속 보여주고 마지막 확인값임을 표시한다.
+  - 재분석만 새 행을 만들며 가격 갱신은 기존 행의 `latest_*` 열만 변경한다.
+  - 상세의 `매매 설정`은 저장된 구조화 매수가·목표가·손절가를 그대로 복원한다.
+  - `AnalysisPick`은 최종 승인된 전략매매 실행 상태로 계속 분리한다.
+- 승인된 화면 흐름:
+  - 종목분석 검색창 아래에 최신순 이력 목록을 표시하고, 행의 `상세`를 누르면 저장된 분석을
+    즉시 복원한 뒤 현재가 오버레이를 비동기로 갱신한다.
+  - `재분석`은 기존 전체 SSE 분석을 실행해 새 이력 행을 추가한다.
+  - 전략매매 입력은 공통 행(시장/총액/목표/손절)과 진입가 행(1/2/3차)을 분리한다.
+  - 매매 방식 선택 직후 서버가 안전 최대금액을 먼저 계산해 총 매수금액에 자동 입력하고,
+    사용자는 더 낮은 금액으로 변경할 수 있다. preview와 최종 arm은 계속 서버에서 재검증한다.
+- 설계 문서: `docs/superpowers/specs/2026-08-11-stock-analysis-history-design.md`
+  (`941b23c`). 구현 계획:
+  `docs/superpowers/plans/2026-08-11-stock-analysis-history.md` (`0a4babf`).
+- 구현 계획은 7개 TDD 작업이다: ① 모델·`0022_stock_analysis_history` migration,
+  ② 저장/목록/상세/가격 API, ③ SSE 1회 저장, ④ 이력 화면 복원, ⑤ budget 없는 안전한도 API,
+  ⑥ 안전금액 자동입력·3분할 정렬, ⑦ 전체 검증·HANDOFF.
+- 격리 worktree의 구현 전 기준 검증: 전체 Python **790 passed**(경고 13건).
+- 다음 시작점: 구현 방식(작업별 subagent 또는 현재 세션 inline)을 정한 뒤 계획 Task 1의
+  실패 테스트부터 시작한다. 마이그레이션이 포함되므로 실제 배포 시 운영 DB 백업과
+  `alembic upgrade head`가 필수다.
+
+### 다음 세션 재개 지침
+
+1. 아래 worktree로 이동한다.
+
+   ```powershell
+   Set-Location D:\workspace2\maps\maps\maps\.worktrees\stock-analysis-history
+   git branch --show-current   # feat/stock-analysis-history
+   git status -sb              # HANDOFF 커밋 후 clean 예상
+   ```
+
+2. 설계 문서와 구현 계획을 순서대로 읽는다. 설계 탐색과 대안 선택은 이미 사용자 승인을
+   받았으므로 다시 시작하지 않는다.
+
+   ```text
+   docs/superpowers/specs/2026-08-11-stock-analysis-history-design.md
+   docs/superpowers/plans/2026-08-11-stock-analysis-history.md
+   ```
+
+3. 별도 subagent 요청이 없으면 현재 세션 inline 방식으로 계획 Task 1부터 실행한다. 첫 작업은
+   `tests/test_stock_analysis_history_model.py`와 `tests/test_migrations.py`에 실패 테스트를 쓴 뒤
+   실제로 RED를 확인하는 것이다. production model이나 migration을 먼저 작성하지 않는다.
+4. 이 worktree의 ignored `maps.db`는 기준 테스트용 로컬 DB다. 운영 DB가 아니며 커밋하지 않는다.
+5. 메인 작업공간 `D:\workspace2\maps\maps\maps`에는 사용자의 기존 변경이 남아 있다:
+   `docs/blog_series_backtest/11_눌림목_전략_부검기.txt` 삭제와 `docs/diary/` 미추적 파일.
+   이번 기능에서 수정·삭제·stage하지 않는다.
+6. 현재 원격/운영 `master`는 `3e7a153`, 서비스 active, alembic
+   `0021_analysis_pick_split_plan (head)`, 내·외부 health 200이다. 이 기능 브랜치의 설계·계획·
+   HANDOFF는 아직 원격과 운영에 없다.
+7. 구현 완료 전에는 기존 분석 이력 데이터가 없다는 사실을 전제로 한다. migration에 임의
+   backfill이나 `AnalysisPick` 복사를 추가하지 않는다.
+
 ## 8/11 종목분석 가격 → 전략매매 팝업 인계 수정
 
 - 작업 브랜치 `fix/stock-analysis-trade-plan-ui`를 `master`에 fast-forward 병합하고 원격 push와
