@@ -87,6 +87,19 @@ import { AuthError, clearToken, getToken } from './auth'
 import { API_BASE } from './config'
 
 // 분석 워치리스트(SCR-19) 픽 — 서버 AnalysisPickItem의 앱 사용 필드.
+export type AnalysisPickLeg = {
+  id: number
+  sequence: number
+  entry_price: number
+  weight_pct: number
+  planned_qty: number
+  filled_qty: number
+  remaining_qty: number
+  fill_price: number | null
+  order_id: string | null
+  status: string
+}
+
 export type AnalysisPick = {
   id: number
   ticker: string
@@ -99,6 +112,14 @@ export type AnalysisPick = {
   stop_price: number | null
   current_price: number | null
   rr_ratio: number | null
+  trade_mode?: 'single' | 'split'
+  total_budget?: number | null
+  entries_cancelled?: boolean
+  exit_pending_reason?: string | null
+  legs?: AnalysisPickLeg[]
+  filled_legs?: number
+  total_legs?: number
+  next_entry_price?: number | null
   // 기준일 만료 관련. 구버전 서버 응답에는 없으므로 전부 optional 이고,
   // undefined 는 "신선"으로 취급한다.
   ref_date?: string
@@ -266,6 +287,10 @@ export async function armPick(id: number): Promise<void> {
 
 export async function disarmPick(id: number): Promise<void> {
   await postAction(`/api/v1/analysis-picks/${id}/disarm`)
+}
+
+export async function stopPickEntries(id: number): Promise<void> {
+  await postAction(`/api/v1/analysis-picks/${id}/stop-entries`)
 }
 
 // FCM 네이티브 푸시 — 기기 등록 토큰 등록/해지.

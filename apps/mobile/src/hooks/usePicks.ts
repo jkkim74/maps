@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react'
-import { armPick, disarmPick, fetchPicks, type AnalysisPick } from '../api'
+import { armPick, disarmPick, fetchPicks, stopPickEntries, type AnalysisPick } from '../api'
 import { AuthError } from '../auth'
 
 /**
@@ -30,13 +30,15 @@ export function usePicks(requireLogin: () => void) {
   }, [requireLogin])
 
   const runAction = useCallback(
-    async (pick: AnalysisPick, action: 'arm' | 'disarm') => {
+    async (pick: AnalysisPick, action: 'arm' | 'disarm' | 'stopEntries') => {
       setBusyId(pick.id)
       setMessage('')
       try {
         if (action === 'arm') await armPick(pick.id)
-        else await disarmPick(pick.id)
-        setMessage(`${pick.name} ${action === 'arm' ? '무장됨' : '무장해제됨'}`)
+        else if (action === 'disarm') await disarmPick(pick.id)
+        else await stopPickEntries(pick.id)
+        const label = action === 'arm' ? '무장됨' : action === 'disarm' ? '무장해제됨' : '분할 매수 중단됨'
+        setMessage(`${pick.name} ${label}`)
         await load()
       } catch (reason) {
         if (reason instanceof AuthError) requireLogin()
@@ -57,6 +59,14 @@ export function usePicks(requireLogin: () => void) {
     [runAction],
   )
   const onDisarm = useCallback((pick: AnalysisPick) => void runAction(pick, 'disarm'), [runAction])
+  const onStopEntries = useCallback(
+    (pick: AnalysisPick) => {
+      if (window.confirm(`${pick.name}의 미체결 분할매수를 중단할까요? 보유분 청산 감시는 계속됩니다.`)) {
+        void runAction(pick, 'stopEntries')
+      }
+    },
+    [runAction],
+  )
 
-  return { picks, loading, error, busyId, message, load, onArm, onDisarm }
+  return { picks, loading, error, busyId, message, load, onArm, onDisarm, onStopEntries }
 }

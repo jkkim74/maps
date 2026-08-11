@@ -3,6 +3,7 @@ import { render, screen, fireEvent } from '@testing-library/react'
 import { App } from './App'
 import { OrderDetail } from './OrderDetail'
 import { HoldingDetail } from './HoldingDetail'
+import { WatchlistScreen } from './screens/WatchlistScreen'
 import type { AnalysisPick, Order } from './api'
 
 function summaryWithOrder() {
@@ -49,6 +50,23 @@ const samplePick: AnalysisPick = {
   current_price: 52000, rr_ratio: 2.2,
 }
 
+const splitPick = {
+  ...samplePick,
+  state: 'BOUGHT',
+  trade_mode: 'split' as const,
+  total_budget: 9900000,
+  entries_cancelled: false,
+  exit_pending_reason: null,
+  filled_legs: 1,
+  total_legs: 3,
+  next_entry_price: 47000,
+  legs: [
+    { id: 1, sequence: 1, entry_price: 50000, weight_pct: 30, planned_qty: 59, filled_qty: 59, remaining_qty: 0, fill_price: 49500, order_id: 'one', status: 'FILLED' },
+    { id: 2, sequence: 2, entry_price: 47000, weight_pct: 30, planned_qty: 63, filled_qty: 0, remaining_qty: 63, fill_price: null, order_id: null, status: 'PENDING' },
+    { id: 3, sequence: 3, entry_price: 44000, weight_pct: 40, planned_qty: 90, filled_qty: 0, remaining_qty: 90, fill_price: null, order_id: null, status: 'PENDING' },
+  ],
+}
+
 describe('drill-down 상세 화면', () => {
   beforeEach(() => localStorage.clear())
   afterEach(() => vi.unstubAllGlobals())
@@ -88,7 +106,7 @@ describe('drill-down 상세 화면', () => {
     render(
       <HoldingDetail
         pick={samplePick} busy={false} onBack={onBack}
-        onArm={vi.fn()} onDisarm={vi.fn()}
+        onArm={vi.fn()} onDisarm={vi.fn()} onStopEntries={vi.fn()}
       />,
     )
     expect(screen.getByText('카카오')).toBeInTheDocument()
@@ -96,5 +114,35 @@ describe('drill-down 상세 화면', () => {
     expect(screen.getByText('+6.1%')).toBeInTheDocument()
     fireEvent.click(screen.getByText('목록으로'))
     expect(onBack).toHaveBeenCalledOnce()
+  })
+
+  it('워치리스트는 3분할 진행과 다음 진입가를 표시한다', () => {
+    render(
+      <WatchlistScreen
+        picks={[splitPick]} loading={false} error="" busyId={null} message=""
+        onArm={vi.fn()} onDisarm={vi.fn()} onStopEntries={vi.fn()}
+        onReload={vi.fn()} onSelect={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('3분할 · 1/3 체결')).toBeInTheDocument()
+    expect(screen.getByText(/다음 진입.*47,000원/)).toBeInTheDocument()
+    expect(screen.getByText('분할 매수 중단')).toBeInTheDocument()
+  })
+
+  it('HoldingDetail은 모든 분할 회차와 중지 액션을 표시한다', () => {
+    const onStopEntries = vi.fn()
+    render(
+      <HoldingDetail
+        pick={splitPick} busy={false} onBack={vi.fn()}
+        onArm={vi.fn()} onDisarm={vi.fn()} onStopEntries={onStopEntries}
+      />,
+    )
+
+    expect(screen.getByText('3분할 · 1/3 체결')).toBeInTheDocument()
+    expect(screen.getByText('1차 · 59/59주')).toBeInTheDocument()
+    expect(screen.getByText('2차 · 0/63주')).toBeInTheDocument()
+    fireEvent.click(screen.getByText('분할 매수 중단'))
+    expect(onStopEntries).toHaveBeenCalledWith(splitPick)
   })
 })

@@ -5,7 +5,7 @@ import { STATE_LABEL, staleLabel, won } from '../format'
 
 /** 워치리스트 탭 — 분석 픽 목록 + 무장/무장해제 액션. */
 export function WatchlistScreen({
-  picks, loading, error, busyId, message, onArm, onDisarm, onReload, onSelect,
+  picks, loading, error, busyId, message, onArm, onDisarm, onStopEntries, onReload, onSelect,
 }: {
   picks: AnalysisPick[]
   loading: boolean
@@ -14,6 +14,7 @@ export function WatchlistScreen({
   message: string
   onArm: (pick: AnalysisPick) => void
   onDisarm: (pick: AnalysisPick) => void
+  onStopEntries: (pick: AnalysisPick) => void
   onReload: () => void
   onSelect: (pick: AnalysisPick) => void
 }) {
@@ -43,6 +44,16 @@ export function WatchlistScreen({
                 매수 {won(p.buy_price)} · 목표 {won(p.target_price)} · 손절 {won(p.stop_price)}
                 {p.rr_ratio != null ? ` · R:R ${p.rr_ratio}` : ''}
               </div>
+              {p.trade_mode === 'split' ? (
+                <div className="pick-split-progress">
+                  <strong>3분할 · {p.filled_legs ?? 0}/{p.total_legs ?? 3} 체결</strong>
+                  <span>
+                    {p.entries_cancelled
+                      ? '추가매수 중지 · 보유분 청산 감시'
+                      : `다음 진입 ${p.next_entry_price == null ? '—' : `${won(p.next_entry_price)}원`}`}
+                  </span>
+                </div>
+              ) : null}
               {p.fill_price != null ? (
                 <div className="pick-fill">
                   체결 {won(p.fill_price)}
@@ -63,6 +74,9 @@ export function WatchlistScreen({
               <div className="pick-actions">
                 <button type="button" disabled={busy || armed || bought || !!p.data_stale} onClick={() => onArm(p)}>무장</button>
                 <button type="button" className="ghost" disabled={busy || p.state === 'WATCH' || bought} onClick={() => onDisarm(p)}>무장해제</button>
+                {p.trade_mode === 'split' && (armed || bought) && !p.entries_cancelled ? (
+                  <button type="button" className="ghost" disabled={busy} onClick={() => onStopEntries(p)}>분할 매수 중단</button>
+                ) : null}
               </div>
             </article>
           )

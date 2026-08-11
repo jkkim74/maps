@@ -39,7 +39,7 @@ export function App() {
   const {
     picks, loading: picksLoading, error: picksError,
     busyId: actionBusyId, message: actionMsg,
-    load: loadPicks, onArm, onDisarm,
+    load: loadPicks, onArm, onDisarm, onStopEntries,
   } = usePicks(requireLogin)
   const {
     preview, loading: previewLoading, error: previewError, load: loadPreview,
@@ -143,12 +143,12 @@ export function App() {
                 pick={picks.find((p) => p.id === selectedPick.id) ?? selectedPick}
                 busy={actionBusyId === selectedPick.id}
                 onBack={() => setSelectedPick(null)}
-                onArm={onArm} onDisarm={onDisarm}
+                onArm={onArm} onDisarm={onDisarm} onStopEntries={onStopEntries}
               />
             : <WatchlistScreen
                 picks={picks} loading={picksLoading} error={picksError}
                 busyId={actionBusyId} message={actionMsg}
-                onArm={onArm} onDisarm={onDisarm} onReload={() => void loadPicks()}
+                onArm={onArm} onDisarm={onDisarm} onStopEntries={onStopEntries} onReload={() => void loadPicks()}
                 onSelect={setSelectedPick}
               />
         ) : null}

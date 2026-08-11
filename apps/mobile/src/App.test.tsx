@@ -98,6 +98,36 @@ describe('<App />', () => {
     render(<App />)
     expect(await screen.findByText('총 자산')).toBeInTheDocument()
   })
+
+  it('분할 매수 중단은 확인 후 stop-entries를 호출한다', async () => {
+    localStorage.setItem('maps.auth.token', 'tok')
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const split = {
+      id: 7, ticker: '005930', name: '삼성전자', state: 'BOUGHT', strategy_trade_enabled: true,
+      buy_price: 70000, fill_price: 70000, target_price: 80000, stop_price: 60000,
+      current_price: 69000, rr_ratio: 2, trade_mode: 'split', total_budget: 9900000,
+      entries_cancelled: false, exit_pending_reason: null, filled_legs: 1, total_legs: 3,
+      next_entry_price: 67000, legs: [],
+    }
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.includes('/analysis-picks/7/stop-entries')) return jsonResponse({})
+      if (url.includes('/analysis-picks')) return jsonResponse({ total: 1, picks: [split] })
+      if (url.includes('portfolio-history')) return jsonResponse({ days: 30, cumulative_pct: 0, points: [] })
+      return jsonResponse(fullSummary())
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<App />)
+
+    fireEvent.click(screen.getByText('워치'))
+    fireEvent.click(await screen.findByText('분할 매수 중단'))
+
+    expect(window.confirm).toHaveBeenCalled()
+    expect(await screen.findByText(/분할 매수 중단됨/)).toBeInTheDocument()
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining('/analysis-picks/7/stop-entries'),
+      expect.objectContaining({ method: 'POST' }),
+    )
+  })
 })
 
 describe('보유 현황', () => {

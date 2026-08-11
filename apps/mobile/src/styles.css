@@ -119,6 +119,17 @@ h2 { margin: 0 0 12px; color: #b9c4c9; font-size: 13px; font-weight: 700; text-t
 .badge.stale { color: #e08a6d; background: #2a1a15; border-color: #5c3427; }
 .pick-badges { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; justify-content: flex-end; }
 .pick-prices.muted { opacity: .55; }
+.pick-split-progress,.split-summary {
+  display: flex; flex-direction: column; gap: 4px; margin: 0 0 12px; padding: 10px 12px;
+  border: 1px solid #5c4d22; border-radius: 8px; background: #252115;
+}
+.pick-split-progress strong,.split-summary strong { color: #e3b85f; font-size: 13px; }
+.pick-split-progress span,.split-summary span { color: #aab7bc; font-size: 11px; }
+.split-legs { border: 1px solid #29343b; border-radius: 8px; overflow: hidden; background: #192126; }
+.split-legs div { display: flex; flex-direction: column; gap: 4px; padding: 12px 14px; border-bottom: 1px solid #29343b; }
+.split-legs div:last-child { border-bottom: 0; }
+.split-legs span { color: #dce5e9; font-size: 13px; font-weight: 700; }
+.split-legs b { color: #839098; font-size: 11px; font-weight: 500; }
 
 /* 보유 현황 — .pick 카드를 재사용하고 손익/메타 그리드만 덧붙인다 */
 .holdings { display: flex; flex-direction: column; gap: 10px; }

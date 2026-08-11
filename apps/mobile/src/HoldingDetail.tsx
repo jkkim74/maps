@@ -17,13 +17,14 @@ function pnlPct(pick: AnalysisPick): number | null {
 
 /** 선택한 워치리스트 픽의 상세 화면. */
 export function HoldingDetail({
-  pick, busy, onBack, onArm, onDisarm,
+  pick, busy, onBack, onArm, onDisarm, onStopEntries,
 }: {
   pick: AnalysisPick
   busy: boolean
   onBack: () => void
   onArm: (pick: AnalysisPick) => void
   onDisarm: (pick: AnalysisPick) => void
+  onStopEntries: (pick: AnalysisPick) => void
 }) {
   const armed = pick.state === 'ARMED'
   const bought = pick.state === 'BOUGHT'
@@ -46,6 +47,16 @@ export function HoldingDetail({
           기준일 {pick.ref_date ?? '—'} · {stale} — 재분석 후 가격을 갱신해야 무장할 수 있습니다.
         </div>
       ) : null}
+      {pick.trade_mode === 'split' ? (
+        <div className="split-summary">
+          <strong>3분할 · {pick.filled_legs ?? 0}/{pick.total_legs ?? 3} 체결</strong>
+          <span>
+            {pick.entries_cancelled
+              ? '추가매수 중지 · 목표/손절 청산 감시 유지'
+              : `다음 진입 ${won(pick.next_entry_price)} · 계획 ${won(pick.total_budget)}`}
+          </span>
+        </div>
+      ) : null}
       <div className="detail-list">
         <div><span>매수가</span><b>{won(pick.buy_price)}</b></div>
         <div><span>목표가</span><b>{won(pick.target_price)}</b></div>
@@ -60,9 +71,22 @@ export function HoldingDetail({
           </b>
         </div>
       </div>
+      {pick.trade_mode === 'split' && pick.legs?.length ? (
+        <div className="split-legs" aria-label="분할 회차">
+          {pick.legs.map((leg) => (
+            <div key={leg.id}>
+              <span>{leg.sequence}차 · {leg.filled_qty}/{leg.planned_qty}주</span>
+              <b>{won(leg.entry_price)} · 잔량 {leg.remaining_qty}주 · {leg.status}</b>
+            </div>
+          ))}
+        </div>
+      ) : null}
       <div className="pick-actions detail-actions">
         <button type="button" disabled={busy || armed || bought || !!pick.data_stale} onClick={() => onArm(pick)}>무장</button>
         <button type="button" className="ghost" disabled={busy || pick.state === 'WATCH' || bought} onClick={() => onDisarm(pick)}>무장해제</button>
+        {pick.trade_mode === 'split' && (armed || bought) && !pick.entries_cancelled ? (
+          <button type="button" className="ghost" disabled={busy} onClick={() => onStopEntries(pick)}>분할 매수 중단</button>
+        ) : null}
       </div>
     </section>
   )
