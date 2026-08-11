@@ -10,7 +10,11 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from maps.ai.trade_planner import AITradePlan, AITradePlanner, StockTradeFacts
+from maps.api.schemas import StockTradePlanRequest, StockTradePlanResponse
+from maps.common.exceptions import AIScoringError
 from maps.common.settings import get_settings
+from maps.market.trading_rules import round_to_krx_tick, round_up_krx_price
 
 router = APIRouter(prefix="/api/v1/stock-analysis", tags=["Stock Analysis"])
 
@@ -18,6 +22,64 @@ router = APIRouter(prefix="/api/v1/stock-analysis", tags=["Stock Analysis"])
 class AnalyzeRequest(BaseModel):
     """분석 요청 바디."""
     ticker: str
+
+
+_MANUAL_MESSAGE = "AI 매매계획을 사용할 수 없어 수동 입력이 필요합니다."
+
+
+def _manual_trade_plan(
+    *, recommendation: str = "WATCH", rationale: str = ""
+) -> StockTradePlanResponse:
+    return StockTradePlanResponse(
+        recommendation=recommendation,
+        rationale=rationale,
+        source="MANUAL_REQUIRED",
+        message=_MANUAL_MESSAGE,
+    )
+
+
+@router.post("/trade-plan", response_model=StockTradePlanResponse)
+async def create_trade_plan(req: StockTradePlanRequest) -> StockTradePlanResponse:
+    """Return normalized executable prices only for a valid structured BUY plan."""
+    planner = AITradePlanner.from_settings()
+    if not planner.is_configured:
+        return _manual_trade_plan()
+
+    facts = StockTradeFacts.model_validate(req.model_dump())
+    loop = asyncio.get_running_loop()
+    try:
+        plan = await loop.run_in_executor(None, planner.plan, facts)
+    except AIScoringError:
+        return _manual_trade_plan()
+
+    if plan.recommendation != "BUY":
+        return _manual_trade_plan(
+            recommendation=plan.recommendation,
+            rationale=plan.rationale,
+        )
+
+    assert plan.entries is not None and plan.target is not None and plan.stop is not None
+    normalized_payload = {
+        "recommendation": "BUY",
+        "entries": [
+            round_up_krx_price(price, market=facts.market) for price in plan.entries
+        ],
+        "target": round_to_krx_tick(plan.target, market=facts.market),
+        "stop": round_to_krx_tick(plan.stop, market=facts.market),
+        "rationale": plan.rationale,
+    }
+    try:
+        normalized = AITradePlan.from_payload(normalized_payload)
+    except AIScoringError:
+        return _manual_trade_plan()
+    return StockTradePlanResponse(
+        recommendation="BUY",
+        entries=list(normalized.entries or ()),
+        target=normalized.target,
+        stop=normalized.stop,
+        rationale=normalized.rationale,
+        source="AI",
+    )
 
 
 @router.post("/analyze")

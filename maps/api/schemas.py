@@ -809,6 +809,37 @@ class AnalysisPickUpdate(BaseModel):
     rationale: str | None = None
 
 
+class StockTradePlanRequest(BaseModel):
+    """Compact analysis facts used to request a structured trade plan."""
+
+    ticker: str
+    name: str
+    market: str = "KOSPI"
+    ref_date: str
+    current_price: float
+    high_52w: float | None = None
+    low_52w: float | None = None
+    ma20: float | None = None
+    ma60: float | None = None
+    ma120: float | None = None
+    rsi14: float | None = None
+    macd: float | None = None
+    macd_signal: float | None = None
+    per: float | None = None
+    pbr: float | None = None
+    bps: float | None = None
+
+
+class StockTradePlanResponse(BaseModel):
+    recommendation: Literal["BUY", "WATCH", "SELL"]
+    entries: list[float] | None = None
+    target: float | None = None
+    stop: float | None = None
+    rationale: str = ""
+    source: Literal["AI", "MANUAL_REQUIRED"]
+    message: str | None = None
+
+
 # ── 일일 다이제스트 (블로그 생성용 결정적 데이터팩) ────────────────────────────
 #
 # 이 모델들은 "하루치 매매 기록"의 유일한 수치 출처다. 블로그를 쓰는 에이전트는
