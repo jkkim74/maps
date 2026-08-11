@@ -12,7 +12,7 @@ from sqlalchemy.pool import StaticPool
 import maps.common.models  # noqa: F401
 from maps.common.db import Base
 from maps.common.models import AnalysisPick, AnalysisPickLeg, OrderLog
-from maps.execution.broker_adapter import Order, OrderSide, OrderType
+from maps.execution.broker_adapter import Order, OrderResult, OrderSide, OrderStatus, OrderType
 from maps.execution.mock_broker import MockBroker
 from maps.execution.order_manager import OrderManager
 from maps.market.trading_rules import trading_days_ago
@@ -209,6 +209,337 @@ def test_split_exit_dominates_next_eligible_entry(env):
     assert pick.entries_cancelled is True
     assert pick.exit_reason == "take_profit"
     assert pick.legs[1].order_id is None
+    assert broker.get_positions().get(pick.ticker, 0) == 0
+
+
+def test_split_pending_exit_stays_managed_until_position_is_zero(env, monkeypatch):
+    pipeline, broker, manager, db = env
+    pick = _split_pick(db)
+    _run(pipeline, broker, manager, db, [pick], {pick.ticker: 63_000})
+    original_place = broker.place_order
+
+    def pending_exit(order):
+        if order.side == OrderSide.SELL:
+            return OrderResult(
+                order_id="pending-exit-1",
+                strategy_id=order.strategy_id,
+                ticker=order.ticker,
+                side=order.side,
+                status=OrderStatus.PENDING,
+            )
+        return original_place(order)
+
+    monkeypatch.setattr(broker, "place_order", pending_exit)
+    submitted, closed = _run(
+        pipeline, broker, manager, db, [pick], {pick.ticker: 81_000}
+    )
+
+    assert (submitted, closed) == (0, 0)
+    assert pick.state == "BOUGHT"
+    assert pick.exit_pending_reason == "take_profit"
+    assert pick.exit_order_id == "pending-exit-1"
+
+    exit_log = db.query(OrderLog).filter(OrderLog.order_id == "pending-exit-1").one()
+    exit_log.status = "filled"
+    exit_log.fill_qty = exit_log.qty
+    broker._positions[pick.ticker].reduce(exit_log.qty)
+    db.commit()
+
+    _submitted, closed = _run(
+        pipeline, broker, manager, db, [pick], {pick.ticker: 81_000}
+    )
+    assert closed == 1
+    assert pick.state == "CLOSED"
+    assert pick.exit_pending_reason is None
+
+
+def test_stale_split_with_live_order_is_cancelled_before_deactivation(env):
+    pipeline, broker, manager, db = env
+    pick = _split_pick(db)
+    pick.ref_date = trading_days_ago(dt.date.today(), 30)
+    _seed_leg_order(db, pick.legs[0], status="pending", fill_qty=0)
+    broker._pending["leg-order-1"] = Order(
+        strategy_id=f"strategy_trade:{pick.id}:leg:1:try:1",
+        ticker=pick.ticker,
+        side=OrderSide.BUY,
+        order_type=OrderType.LIMIT,
+        quantity=pick.legs[0].planned_qty,
+        limit_price=pick.legs[0].entry_price,
+    )
+    db.commit()
+
+    active = pipeline._active_strategy_trade_picks(db)
+    assert pick in active
+    _run(pipeline, broker, manager, db, active, {pick.ticker: 69_000})
+
+    assert broker.get_open_orders() == []
+    assert pick.entries_cancelled is True
+    assert pick.state == "WATCH"
+    assert pick.strategy_trade_enabled is False
+
+
+def test_split_recovers_unattached_live_order_without_duplicate_submit(env):
+    pipeline, broker, manager, db = env
+    pick = _split_pick(db)
+    order_id = "unattached-live-1"
+    db.add(
+        OrderLog(
+            order_id=order_id,
+            strategy_id=f"strategy_trade:{pick.id}:leg:1:try:1",
+            ticker=pick.ticker,
+            side="buy",
+            qty=pick.legs[0].planned_qty,
+            order_price=pick.legs[0].entry_price,
+            fill_qty=0,
+            status="pending",
+        )
+    )
+    db.commit()
+
+    submitted, _closed = _run(
+        pipeline, broker, manager, db, [pick], {pick.ticker: 63_000}
+    )
+
+    assert submitted == 0
+    assert pick.legs[0].order_id == order_id
+    assert db.query(OrderLog).filter(OrderLog.ticker == pick.ticker, OrderLog.side == "buy").count() == 1
+
+
+def test_split_recovers_unattached_filled_order_without_rebuy(env):
+    pipeline, broker, manager, db = env
+    pick = _split_pick(db)
+    db.add(
+        OrderLog(
+            order_id="unattached-filled-1",
+            strategy_id=f"strategy_trade:{pick.id}:leg:1:try:1",
+            ticker=pick.ticker,
+            side="buy",
+            qty=pick.legs[0].planned_qty,
+            order_price=pick.legs[0].entry_price,
+            fill_price=pick.legs[0].entry_price,
+            fill_qty=pick.legs[0].planned_qty,
+            status="filled",
+        )
+    )
+    db.commit()
+
+    submitted, _closed = _run(
+        pipeline, broker, manager, db, [pick], {pick.ticker: 69_000}
+    )
+
+    assert submitted == 0
+    assert pick.legs[0].filled_qty == pick.legs[0].planned_qty
+    assert pick.legs[0].status == "FILLED"
+    assert db.query(OrderLog).filter(OrderLog.ticker == pick.ticker, OrderLog.side == "buy").count() == 1
+
+
+def test_split_recovery_does_not_double_count_live_retry_partial_fill(env):
+    pipeline, broker, manager, db = env
+    pick = _split_pick(db)
+    first = pick.legs[0]
+    first.filled_qty = 4
+    first.order_id = "retry-partial-2"
+    first.current_order_fill_qty = 0
+    first.status = "PENDING"
+    db.add_all([
+        OrderLog(
+            order_id="expired-partial-4",
+            strategy_id=f"strategy_trade:{pick.id}:leg:1:try:1",
+            ticker=pick.ticker,
+            side="buy",
+            qty=first.planned_qty,
+            order_price=first.entry_price,
+            fill_price=first.entry_price,
+            fill_qty=4,
+            status="expired",
+        ),
+        OrderLog(
+            order_id="retry-partial-2",
+            strategy_id=f"strategy_trade:{pick.id}:leg:1:try:2",
+            ticker=pick.ticker,
+            side="buy",
+            qty=first.planned_qty - 4,
+            order_price=first.entry_price,
+            fill_price=first.entry_price,
+            fill_qty=2,
+            status="partially_filled",
+        ),
+    ])
+    db.commit()
+
+    _run(pipeline, broker, manager, db, [pick], {pick.ticker: 69_000})
+
+    assert first.filled_qty == 6
+    assert first.current_order_fill_qty == 2
+    assert first.status == "PARTIAL"
+
+
+def test_split_recovery_never_decreases_accumulated_fill(env):
+    pipeline, broker, manager, db = env
+    pick = _split_pick(db)
+    first = pick.legs[0]
+    first.filled_qty = 6
+    first.order_id = "retry-partial-lower-report"
+    first.current_order_fill_qty = 2
+    first.status = "PARTIAL"
+    db.add_all([
+        OrderLog(
+            order_id="expired-partial-stable-4",
+            strategy_id=f"strategy_trade:{pick.id}:leg:1:try:1",
+            ticker=pick.ticker,
+            side="buy",
+            qty=first.planned_qty,
+            order_price=first.entry_price,
+            fill_price=first.entry_price,
+            fill_qty=4,
+            status="expired",
+        ),
+        OrderLog(
+            order_id="retry-partial-lower-report",
+            strategy_id=f"strategy_trade:{pick.id}:leg:1:try:2",
+            ticker=pick.ticker,
+            side="buy",
+            qty=first.planned_qty - 4,
+            order_price=first.entry_price,
+            fill_price=first.entry_price,
+            fill_qty=1,
+            status="partially_filled",
+        ),
+    ])
+    db.commit()
+
+    _run(pipeline, broker, manager, db, [pick], {pick.ticker: 69_000})
+
+    assert first.filled_qty == 6
+    assert first.current_order_fill_qty == 2
+    assert first.status == "PARTIAL"
+
+    attached = db.query(OrderLog).filter(
+        OrderLog.order_id == "retry-partial-lower-report"
+    ).one()
+    attached.fill_qty = 3
+    db.commit()
+
+    _run(pipeline, broker, manager, db, [pick], {pick.ticker: 69_000})
+
+    assert first.filled_qty == 7
+    assert first.current_order_fill_qty == 3
+    assert first.status == "PARTIAL"
+
+
+def _seed_unattached_filled_exit(db, pick, *, qty=9):
+    pick.state = "BOUGHT"
+    pick.entries_cancelled = True
+    pick.exit_pending_reason = "stop_loss"
+    db.add(OrderLog(
+        order_id="unattached-exit-filled-1",
+        strategy_id=f"strategy_trade:{pick.id}:exit:try:1",
+        ticker=pick.ticker,
+        side="sell",
+        qty=qty,
+        fill_price=59_000,
+        fill_qty=qty,
+        status="filled",
+        exit_reason="stop_loss",
+    ))
+    db.commit()
+
+
+def test_split_recovers_unattached_filled_exit_and_closes_at_zero(env):
+    pipeline, broker, manager, db = env
+    pick = _split_pick(db)
+    _seed_unattached_filled_exit(db, pick)
+
+    submitted, closed = _run(
+        pipeline, broker, manager, db, [pick], {pick.ticker: 59_000}
+    )
+
+    assert (submitted, closed) == (0, 1)
+    assert pick.state == "CLOSED"
+    assert pick.exit_order_id == "unattached-exit-filled-1"
+    assert db.query(OrderLog).filter(OrderLog.side == "sell").count() == 1
+
+
+def test_split_recovered_filled_exit_waits_for_lagging_position(env):
+    pipeline, broker, manager, db = env
+    pick = _split_pick(db)
+    broker.place_order(Order(
+        strategy_id="seed-held-position",
+        ticker=pick.ticker,
+        side=OrderSide.BUY,
+        order_type=OrderType.LIMIT,
+        quantity=9,
+        limit_price=70_000,
+    ))
+    _seed_unattached_filled_exit(db, pick)
+
+    submitted, closed = _run(
+        pipeline, broker, manager, db, [pick], {pick.ticker: 59_000}
+    )
+
+    assert (submitted, closed) == (0, 0)
+    assert pick.state == "BOUGHT"
+    assert pick.exit_order_id == "unattached-exit-filled-1"
+    assert db.query(OrderLog).filter(OrderLog.side == "sell").count() == 1
+
+    _submitted, closed = _run(
+        pipeline, broker, manager, db, [pick], {pick.ticker: 59_000}
+    )
+    assert closed == 0
+    assert pick.state == "BOUGHT"
+    assert db.query(OrderLog).filter(OrderLog.side == "sell").count() == 1
+
+    broker._positions[pick.ticker].reduce(9)
+    _submitted, closed = _run(
+        pipeline, broker, manager, db, [pick], {pick.ticker: 59_000}
+    )
+    assert closed == 1
+    assert pick.state == "CLOSED"
+
+
+def test_split_exit_uses_fill_that_arrives_during_entry_cancel(env, monkeypatch):
+    pipeline, broker, manager, db = env
+    pick = _split_pick(db)
+    _seed_leg_order(db, pick.legs[0], status="partially_filled", fill_qty=4)
+    original_place = broker.place_order
+    original_place(
+        Order(
+            strategy_id="seed-position",
+            ticker=pick.ticker,
+            side=OrderSide.BUY,
+            order_type=OrderType.LIMIT,
+            quantity=4,
+            limit_price=pick.legs[0].entry_price,
+        )
+    )
+    broker._pending["leg-order-1"] = Order(
+        strategy_id=f"strategy_trade:{pick.id}:leg:1:try:1",
+        ticker=pick.ticker,
+        side=OrderSide.BUY,
+        order_type=OrderType.LIMIT,
+        quantity=pick.legs[0].planned_qty - 4,
+        limit_price=pick.legs[0].entry_price,
+    )
+
+    def fill_then_cancel(order_id):
+        row = db.query(OrderLog).filter(OrderLog.order_id == order_id).one()
+        row.fill_qty = 6
+        row.fill_price = pick.legs[0].entry_price
+        row.status = "cancelled"
+        broker._positions[pick.ticker].add(2, pick.legs[0].entry_price)
+        broker._pending.pop(order_id, None)
+        db.commit()
+        return True
+
+    monkeypatch.setattr(broker, "cancel_order", fill_then_cancel)
+    _submitted, closed = _run(
+        pipeline, broker, manager, db, [pick], {pick.ticker: 59_000}
+    )
+
+    exit_log = db.query(OrderLog).filter(OrderLog.side == "sell").one()
+    assert closed == 1
+    assert pick.legs[0].filled_qty == 6
+    assert exit_log.qty == 6
     assert broker.get_positions().get(pick.ticker, 0) == 0
 
 

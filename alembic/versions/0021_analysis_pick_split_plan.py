@@ -32,6 +32,29 @@ def upgrade() -> None:
         if column.name not in existing:
             op.add_column("analysis_pick", column)
 
+    indexes = {index["name"] for index in inspector.get_indexes("analysis_pick")}
+    if "uq_analysis_pick_active_ticker" not in indexes:
+        duplicates = bind.execute(sa.text(
+            "SELECT ticker FROM analysis_pick "
+            "WHERE state IN ('ARMED', 'BOUGHT') "
+            "GROUP BY ticker HAVING COUNT(*) > 1 ORDER BY ticker"
+        )).scalars().all()
+        if duplicates:
+            tickers = ", ".join(str(ticker) for ticker in duplicates)
+            raise RuntimeError(
+                "Cannot create uq_analysis_pick_active_ticker; "
+                f"resolve duplicate active tickers first: {tickers}"
+            )
+        active_states = sa.text("state IN ('ARMED', 'BOUGHT')")
+        op.create_index(
+            "uq_analysis_pick_active_ticker",
+            "analysis_pick",
+            ["ticker"],
+            unique=True,
+            sqlite_where=active_states,
+            postgresql_where=active_states,
+        )
+
     if "analysis_pick_leg" not in inspector.get_table_names():
         op.create_table(
             "analysis_pick_leg",
@@ -61,6 +84,10 @@ def downgrade() -> None:
     inspector = sa.inspect(bind)
     if "analysis_pick_leg" in inspector.get_table_names():
         op.drop_table("analysis_pick_leg")
+
+    indexes = {index["name"] for index in inspector.get_indexes("analysis_pick")}
+    if "uq_analysis_pick_active_ticker" in indexes:
+        op.drop_index("uq_analysis_pick_active_ticker", table_name="analysis_pick")
 
     existing = {column["name"] for column in sa.inspect(bind).get_columns("analysis_pick")}
     with op.batch_alter_table("analysis_pick") as batch:

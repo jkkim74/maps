@@ -13,6 +13,7 @@ import logging
 import requests
 from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from maps.api.deps import DbDep
@@ -29,6 +30,7 @@ from maps.common.exceptions import BrokerAdapterError
 from maps.common.models import AnalysisPick, AnalysisPickLeg, HistoricalOHLCV, OrderLog
 from maps.common.settings import get_settings
 from maps.execution.broker_adapter import get_broker
+from maps.execution.order_manager import OrderManager
 from maps.ops.pick_freshness import (
     is_pick_stale,
     pick_age_trading_days,
@@ -36,6 +38,7 @@ from maps.ops.pick_freshness import (
     pick_stale_reason,
 )
 from maps.ops.strategy_trade_plan import ValidatedTradePlan, validate_trade_plan
+from maps.risk.manager import RiskManager
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +128,19 @@ def arm_trade_plan(
             for leg in legs
         ]
     db.add(pick)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "blockers": [{
+                    "code": "DUPLICATE_ACTIVE_TICKER",
+                    "message": "동일 종목의 활성 전략이 이미 있습니다.",
+                }],
+            },
+        ) from exc
     db.refresh(pick)
     return StrategyTradePlanResponse(
         **plan.model_dump(),
@@ -469,6 +484,17 @@ def arm_pick(pick_id: int, db: Session = DbDep) -> AnalysisPickItem:
         )
     if pick.state not in ("WATCH", "CANCELLED"):
         raise HTTPException(status_code=409, detail=f"무장 불가 상태: {pick.state}")
+    duplicate = (
+        db.query(AnalysisPick.id)
+        .filter(
+            AnalysisPick.id != pick.id,
+            AnalysisPick.ticker == pick.ticker,
+            AnalysisPick.state.in_(["ARMED", "BOUGHT"]),
+        )
+        .first()
+    )
+    if duplicate is not None:
+        raise HTTPException(status_code=409, detail="동일 종목의 활성 전략이 이미 있습니다.")
     b, t, s = pick.buy_price, pick.target_price, pick.stop_price
     if b is None or t is None or s is None:
         raise HTTPException(status_code=400, detail="매수가·목표가·손절가가 모두 있어야 무장할 수 있습니다.")
@@ -478,7 +504,14 @@ def arm_pick(pick_id: int, db: Session = DbDep) -> AnalysisPickItem:
     pick.state = "ARMED"
     pick.entry_order_id = None
     pick.last_action_at = datetime.datetime.now(datetime.timezone.utc)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="동일 종목의 활성 전략이 이미 있습니다.",
+        ) from exc
     db.refresh(pick)
     return _to_item(pick)
 
@@ -561,6 +594,11 @@ def stop_split_entries(pick_id: int, db: Session = DbDep) -> AnalysisPickItem:
         raise HTTPException(status_code=409, detail="이미 종료된 계획입니다.")
 
     broker = get_broker(get_settings().maps_broker_mode)
+    order_manager = OrderManager(
+        broker=broker,
+        risk=RiskManager(broker, db),
+        db=db,
+    )
     held_qty = 0
     position = broker.get_position(pick.ticker)
     if position is not None and position.quantity > 0:
@@ -577,7 +615,15 @@ def stop_split_entries(pick_id: int, db: Session = DbDep) -> AnalysisPickItem:
             reported = max(int(row.fill_qty or 0), 0)
             delta = max(reported - int(leg.current_order_fill_qty or 0), 0)
             if delta:
-                leg.filled_qty = min(leg.filled_qty + delta, leg.planned_qty)
+                old_qty = int(leg.filled_qty or 0)
+                new_qty = min(old_qty + delta, leg.planned_qty)
+                applied = new_qty - old_qty
+                if applied > 0:
+                    fill_price = float(row.fill_price or row.order_price or leg.entry_price)
+                    leg.fill_price = (
+                        ((leg.fill_price or 0.0) * old_qty + fill_price * applied) / new_qty
+                    )
+                    leg.filled_qty = new_qty
                 leg.current_order_fill_qty = reported
             if (row.status or "").lower() in live_statuses:
                 try:
@@ -589,12 +635,43 @@ def stop_split_entries(pick_id: int, db: Session = DbDep) -> AnalysisPickItem:
                         status_code=409,
                         detail="현재 분할 진입 주문의 취소를 확인하지 못했습니다.",
                     )
-                row.status = "cancelled"
-        held_qty = max(held_qty, leg.filled_qty)
-        if leg.filled_qty < leg.planned_qty:
+                try:
+                    order_manager.sync_broker_state()
+                except (NotImplementedError, BrokerAdapterError) as exc:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="취소 후 최종 체결을 동기화하지 못했습니다. 잠시 후 다시 시도하세요.",
+                    ) from exc
+                # 취소 응답과 동시에 들어온 마지막 체결을 다른 세션/브로커 sync가
+                # 기록했을 수 있으므로 캐시를 버리고 감사 행을 다시 읽는다.
+                db.expire(row)
+                row = db.query(OrderLog).filter(OrderLog.order_id == leg.order_id).one()
+                final_reported = max(int(row.fill_qty or 0), 0)
+                final_delta = max(final_reported - int(leg.current_order_fill_qty or 0), 0)
+                if final_delta:
+                    old_qty = int(leg.filled_qty or 0)
+                    new_qty = min(old_qty + final_delta, leg.planned_qty)
+                    applied = new_qty - old_qty
+                    if applied > 0:
+                        fill_price = float(row.fill_price or row.order_price or leg.entry_price)
+                        leg.fill_price = (
+                            ((leg.fill_price or 0.0) * old_qty + fill_price * applied) / new_qty
+                        )
+                        leg.filled_qty = new_qty
+                    leg.current_order_fill_qty = final_reported
+                if (row.status or "").lower() in live_statuses:
+                    row.status = "cancelled"
+        if leg.filled_qty >= leg.planned_qty:
+            leg.status = "FILLED"
+        else:
             leg.status = "CANCELLED"
         leg.order_id = None
         leg.current_order_fill_qty = 0
+
+    position = broker.get_position(pick.ticker)
+    if position is not None and position.quantity > 0:
+        held_qty = max(held_qty, position.quantity)
+    held_qty = max(held_qty, sum(int(leg.filled_qty or 0) for leg in pick.legs))
 
     pick.entries_cancelled = True
     pick.entry_order_id = None

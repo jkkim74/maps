@@ -6,7 +6,7 @@ import datetime
 import math
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from maps.common.settings import MapsSettings
 from maps.execution.broker_adapter import AccountBalance
@@ -37,6 +37,14 @@ class StrategyTradePlanInput(BaseModel):
     rationale: str | None = None
     regime: str | None = None
     strategy_context: str | None = None
+
+    @field_validator("ticker")
+    @classmethod
+    def normalize_ticker(cls, value: str) -> str:
+        ticker = value.strip()
+        if len(ticker) != 6 or not ticker.isdigit():
+            raise ValueError("ticker must be a six-digit KRX code")
+        return ticker
 
 
 class ValidatedTradePlanLeg(BaseModel):

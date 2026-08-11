@@ -15,10 +15,12 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Integer,
+    Index,
     JSON,
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -604,6 +606,15 @@ class AnalysisPick(Base):
     """
 
     __tablename__ = "analysis_pick"
+    __table_args__ = (
+        Index(
+            "uq_analysis_pick_active_ticker",
+            "ticker",
+            unique=True,
+            sqlite_where=text("state IN ('ARMED', 'BOUGHT')"),
+            postgresql_where=text("state IN ('ARMED', 'BOUGHT')"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     created_at: Mapped[datetime.datetime] = mapped_column(

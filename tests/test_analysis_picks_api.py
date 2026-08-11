@@ -7,6 +7,7 @@ import datetime
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -614,6 +615,19 @@ class _PlanBroker:
     def get_current_prices(self, tickers):
         return {}
 
+    def get_open_orders(self):
+        return []
+
+    def get_daily_order_results(self):
+        return []
+
+    def get_same_day_buys(self):
+        return {}
+
+    def get_positions(self):
+        position = self.get_position("005930")
+        return {"005930": position.quantity} if position is not None else {}
+
 
 def _plan_settings(**overrides):
     from maps.common.settings import MapsSettings
@@ -713,6 +727,54 @@ def test_arm_plan_rejects_duplicate_active_ticker(client, monkeypatch) -> None:
     assert "DUPLICATE_ACTIVE_TICKER" in str(duplicate.json()["detail"])
 
 
+def test_legacy_arm_rejects_second_active_ticker(client) -> None:
+    first = _new_pick(client, ticker="005930")
+    second = _new_pick(client, ticker="005930")
+
+    assert client.post(f"/api/v1/analysis-picks/{first}/arm").status_code == 200
+    duplicate = client.post(f"/api/v1/analysis-picks/{second}/arm")
+
+    assert duplicate.status_code == 409
+    assert "동일 종목" in str(duplicate.json()["detail"])
+
+
+def test_arm_plan_normalizes_ticker_before_duplicate_checks(client, monkeypatch) -> None:
+    import maps.api.analysis_picks as api
+
+    monkeypatch.setattr(api, "get_broker", lambda *args, **kwargs: _PlanBroker())
+    monkeypatch.setattr(api, "get_settings", lambda: _plan_settings())
+    assert client.post(
+        "/api/v1/analysis-picks/arm-plan", json=_trade_plan_payload()
+    ).status_code == 200
+
+    duplicate = client.post(
+        "/api/v1/analysis-picks/arm-plan",
+        json=_trade_plan_payload(ticker=" 005930 "),
+    )
+
+    assert duplicate.status_code == 409
+    assert "DUPLICATE_ACTIVE_TICKER" in str(duplicate.json()["detail"])
+
+
+def test_database_rejects_concurrent_active_ticker_plans(client) -> None:
+    from maps.common.models import AnalysisPick
+
+    with client.session_factory() as db:
+        db.add_all([
+            AnalysisPick(
+                ref_date=datetime.date.today(), ticker="005930", name="삼성전자",
+                source="analyze", state="ARMED", strategy_trade_enabled=True,
+            ),
+            AnalysisPick(
+                ref_date=datetime.date.today(), ticker="005930", name="삼성전자",
+                source="analyze", state="BOUGHT", strategy_trade_enabled=True,
+            ),
+        ])
+        with pytest.raises(IntegrityError):
+            db.commit()
+        db.rollback()
+
+
 def test_stop_entries_preserves_bought_exit_monitoring(client, monkeypatch) -> None:
     import maps.api.analysis_picks as api
     from maps.common.models import AnalysisPick
@@ -763,3 +825,66 @@ def test_stop_entries_without_fill_returns_to_watch(client, monkeypatch) -> None
     assert item["entries_cancelled"] is True
     assert item["strategy_trade_enabled"] is False
     assert all(leg["status"] == "CANCELLED" for leg in item["legs"])
+
+
+def test_stop_entries_applies_fill_arriving_during_cancel(client, monkeypatch) -> None:
+    import maps.api.analysis_picks as api
+    from maps.common.models import AnalysisPick, OrderLog
+    from maps.execution.broker_adapter import Position
+
+    class CancelFillBroker(_PlanBroker):
+        def __init__(self):
+            super().__init__()
+            self.quantity = 0
+
+        def get_position(self, ticker):
+            return Position(ticker=ticker, quantity=self.quantity, avg_price=70_000)
+
+        def cancel_order(self, order_id):
+            with client.session_factory() as db:
+                row = db.query(OrderLog).filter(OrderLog.order_id == order_id).one()
+                row.fill_qty = 6
+                row.fill_price = 70_000
+                row.status = "cancelled"
+                db.commit()
+            self.quantity = 6
+            return True
+
+    broker = CancelFillBroker()
+    monkeypatch.setattr(api, "get_broker", lambda *args, **kwargs: broker)
+    monkeypatch.setattr(api, "get_settings", lambda: _plan_settings())
+    armed = client.post(
+        "/api/v1/analysis-picks/arm-plan", json=_trade_plan_payload()
+    ).json()
+    broker.quantity = 4
+    with client.session_factory() as db:
+        pick = db.get(AnalysisPick, armed["pick_id"])
+        leg = pick.legs[0]
+        leg.filled_qty = 4
+        leg.current_order_fill_qty = 4
+        leg.order_id = "live-entry-1"
+        leg.status = "PARTIAL"
+        pick.state = "BOUGHT"
+        pick.entry_order_id = leg.order_id
+        db.add(OrderLog(
+            order_id=leg.order_id,
+            strategy_id=f"strategy_trade:{pick.id}:leg:1:try:1",
+            ticker=pick.ticker,
+            side="buy",
+            qty=leg.planned_qty,
+            order_price=leg.entry_price,
+            fill_price=leg.entry_price,
+            fill_qty=4,
+            status="partially_filled",
+        ))
+        db.commit()
+
+    response = client.post(
+        f"/api/v1/analysis-picks/{armed['pick_id']}/stop-entries"
+    )
+
+    assert response.status_code == 200
+    item = response.json()
+    assert item["state"] == "BOUGHT"
+    assert item["legs"][0]["filled_qty"] == 6
+    assert item["legs"][0]["remaining_qty"] == item["legs"][0]["planned_qty"] - 6
