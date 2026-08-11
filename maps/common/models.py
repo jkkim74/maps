@@ -697,6 +697,36 @@ class AnalysisPickLeg(Base):
 
 
 # ---------------------------------------------------------------------------
+# 종목분석 이력 — 분석 원본은 불변, 현재가 오버레이만 갱신
+# ---------------------------------------------------------------------------
+class StockAnalysisHistory(Base):
+    """사용자가 완료한 종목분석의 독립 스냅샷 이력."""
+
+    __tablename__ = "stock_analysis_history"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+        default=lambda: datetime.datetime.now(datetime.timezone.utc),
+        index=True,
+    )
+    ticker: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    market: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    ref_date: Mapped[datetime.date] = mapped_column(Date, nullable=False, index=True)
+    snapshot: Mapped[dict] = mapped_column(JSON, nullable=False)
+    narrative: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    trade_plan: Mapped[dict] = mapped_column(JSON, nullable=False)
+    recommendation: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    analyzed_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    latest_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    latest_reference_close: Mapped[float | None] = mapped_column(Float, nullable=True)
+    latest_price_source: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    price_refreshed_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+# ---------------------------------------------------------------------------
 # AI 분석 실행 감사 로그 (SCR-19) — 0종목 실행도 기록해 cron 실패와 구분
 # ---------------------------------------------------------------------------
 class AnalysisRun(Base):
