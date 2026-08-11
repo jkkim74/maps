@@ -92,3 +92,44 @@
 .sa-modal-close{background:none;border:none;color:var(--text-muted);font-size:1.5rem;
   line-height:1;cursor:pointer;padding:0 6px}
 .sa-modal-close:hover{color:var(--text-primary)}
+
+/* ── 분석 결과 → 전략매매 설정 ── */
+.sa-trade-entry{display:flex;align-items:center;gap:10px;margin-top:14px}
+.sa-trade-entry span{font-size:.75rem;color:var(--text-muted)}
+.sa-trade-dialog{width:min(920px,94vw);max-height:92vh;padding:0;border:1px solid var(--border);
+  border-radius:12px;background:var(--bg);color:var(--text-primary);box-shadow:0 24px 70px rgba(0,0,0,.6)}
+.sa-trade-dialog::backdrop{background:rgba(0,0,0,.68);backdrop-filter:blur(2px)}
+.sa-trade-shell{padding:22px;overflow-y:auto;max-height:92vh}
+.sa-trade-header{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;
+  border-bottom:1px solid var(--border);margin-bottom:16px;padding-bottom:12px}
+.sa-trade-header h2{font-size:1.05rem;margin:0 0 4px}
+.sa-trade-header p{font-size:.8rem;color:var(--text-muted);margin:0}
+.sa-trade-warning,.sa-trade-validation{padding:10px 12px;border-radius:7px;background:var(--bg-hover);
+  color:var(--text-muted);font-size:.8rem;margin-bottom:14px}
+.sa-trade-validation:empty{display:none}
+.sa-trade-modes{display:flex;gap:20px;border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin:0 0 14px}
+.sa-trade-modes legend{padding:0 6px;font-size:.78rem;color:var(--text-muted)}
+.sa-trade-modes label{font-size:.85rem;cursor:pointer}
+.sa-trade-fields{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+.sa-trade-fields label{display:flex;flex-direction:column;gap:5px;font-size:.75rem;color:var(--text-muted)}
+.sa-trade-fields small{color:var(--accent)}
+.sa-trade-fields input,.sa-trade-fields select{width:100%;box-sizing:border-box;padding:8px 9px;
+  border:1px solid var(--border);border-radius:6px;background:var(--bg-card);color:var(--text-primary)}
+.sa-split-only{display:none}
+.sa-trade-actions{display:flex;justify-content:flex-end;gap:8px;margin:18px 0 12px}
+.sa-trade-preview{overflow-x:auto}
+.sa-trade-preview table{width:100%;margin-top:12px}
+.sa-trade-limits{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.sa-trade-limits>div{display:flex;flex-direction:column;gap:3px;padding:10px;border:1px solid var(--border);border-radius:7px}
+.sa-trade-limits span{font-size:.7rem;color:var(--text-muted)}
+.sa-trade-limits b{font-size:.88rem}
+.sa-trade-limits .sa-safe-max{border-color:var(--accent);background:rgba(92,154,255,.08)}
+.sa-trade-blockers{color:#ef9a9a;font-size:.78rem;padding-left:20px}
+.sa-trade-ok{color:#81c784;font-size:.8rem}
+
+@media (max-width:760px){
+  .sa-grid2,.sa-grid4{grid-template-columns:1fr}
+  .sa-trade-fields{grid-template-columns:1fr 1fr}
+  .sa-trade-limits{grid-template-columns:1fr 1fr}
+  .sa-trade-entry,.sa-trade-modes{align-items:flex-start;flex-direction:column}
+}

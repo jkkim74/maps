@@ -128,7 +128,7 @@ async function loadPicks() {
         <td class="text-muted">${escHtml(p.market || '—')}</td>
         <td class="mono text-muted" style="font-size:.75rem">${escHtml(p.ref_date || '—')}</td>
         <td class="ap-num mono">${fmtPrice(p.current_price)}</td>
-        <td class="ap-num mono">${fmtPrice(p.buy_price)}</td>
+        <td>${planCell(p)}</td>
         <td class="ap-num mono">${fmtPrice(p.fill_price)}</td>
         <td class="ap-num mono">${fmtPrice(p.target_price)}</td>
         <td class="ap-num mono">${fmtPrice(p.stop_price)}</td>
@@ -138,7 +138,8 @@ async function loadPicks() {
         <td class="text-muted" style="font-size:.75rem">${escHtml(p.source)}</td>
         <td class="mono text-muted" style="font-size:.75rem">${toKST(p.created_at)}</td>
         <td><button class="topbar-btn" style="font-size:.72rem" onclick="deletePick(${p.id})">삭제</button></td>
-      </tr>`).join('');
+      </tr>
+      <tr id="ap-leg-detail-${p.id}" style="display:none"><td colspan="14">${legDetail(p)}</td></tr>`).join('');
     const staleNote = d.stale_count > 0
       ? `<div class="text-muted" style="font-size:.78rem;margin-bottom:.5rem">
            기준일 ${escHtml(d.expected_ref_date || '')} 이전 픽 <b>${d.stale_count}건</b>이 만료 상태입니다 — 무장할 수 없습니다. 재분석 후 가격을 갱신하세요.
@@ -148,7 +149,7 @@ async function loadPicks() {
       <table>
         <thead><tr>
           <th>종목</th><th>시장</th><th>기준일</th><th class="ap-num">현재가</th>
-          <th class="ap-num">매수가</th><th class="ap-num">체결가</th><th class="ap-num">목표가</th><th class="ap-num">손절가</th>
+          <th>진입계획</th><th class="ap-num">체결가</th><th class="ap-num">목표가</th><th class="ap-num">손절가</th>
           <th class="ap-num">손익비</th><th>상태</th>
           <th style="text-align:center">브래킷</th><th>소스</th><th>생성</th><th></th>
         </tr></thead>
@@ -195,6 +196,11 @@ async function submitPick() {
 }
 
 function bracketCell(p) {
+  if (p.trade_mode === 'split' && (p.state === 'ARMED' || p.state === 'BOUGHT')) {
+    if (p.entries_cancelled)
+      return `<span class="text-muted" style="font-size:.72rem">추가매수 중지 · 청산감시</span>`;
+    return `<button class="topbar-btn" style="font-size:.72rem" onclick="stopSplitEntries(${p.id})">분할 매수 중단</button>`;
+  }
   if (p.state === 'WATCH' || p.state === 'CANCELLED') {
     // 진짜 가드는 서버의 409다. 여기서 끄는 건 헛된 왕복을 줄이기 위한 것뿐이다.
     if (p.data_stale)
@@ -206,6 +212,42 @@ function bracketCell(p) {
   if (p.state === 'BOUGHT')
     return `<span class="text-muted" style="font-size:.72rem">보유중</span>`;
   return '—';
+}
+
+function planCell(p) {
+  if (p.trade_mode !== 'split') {
+    return `<span class="badge badge-info">단일</span><br><span class="mono">${fmtPrice(p.buy_price)}</span>`;
+  }
+  const next = p.next_entry_price != null ? fmtPrice(p.next_entry_price) : '없음';
+  return `<button class="topbar-btn" style="font-size:.7rem" onclick="toggleLegDetail(${p.id})">3분할 상세</button>
+    <div class="mono" style="font-size:.72rem;margin-top:4px">${p.filled_legs}/${p.total_legs}회 완료 · 다음 ${next}</div>
+    <div class="text-muted" style="font-size:.7rem">계획 ${p.total_budget != null ? fmtPrice(p.total_budget) : '—'}</div>`;
+}
+
+function legDetail(p) {
+  if (p.trade_mode !== 'split' || !p.legs?.length) return '';
+  const rows = p.legs.map(leg => `<tr>
+    <td>${leg.sequence}차</td><td>${fmtPrice(leg.entry_price)}</td><td>${leg.weight_pct}%</td>
+    <td>${leg.planned_qty}주</td><td>${leg.filled_qty}주</td><td>${leg.remaining_qty}주</td>
+    <td>${fmtPrice(leg.fill_price)}</td><td>${escHtml(leg.status)}</td></tr>`).join('');
+  return `<div style="padding:10px 18px;background:var(--bg-hover);border-radius:8px">
+    <div style="font-size:.78rem;margin-bottom:8px">공통 목표 ${fmtPrice(p.target_price)} · 손절 ${fmtPrice(p.stop_price)}
+      ${p.entries_cancelled ? ' · 추가매수 중지, 보유분 청산 감시 유지' : ''}</div>
+    <table><thead><tr><th>회차</th><th>진입가</th><th>비중</th><th>planned_qty</th>
+      <th>filled_qty</th><th>remaining_qty</th><th>체결가</th><th>상태</th></tr></thead><tbody>${rows}</tbody></table>
+  </div>`;
+}
+
+function toggleLegDetail(id) {
+  const row = document.getElementById(`ap-leg-detail-${id}`);
+  if (row) row.style.display = row.style.display === 'none' ? 'table-row' : 'none';
+}
+
+async function stopSplitEntries(id) {
+  if (!confirm('미체결 분할매수를 중단할까요? 보유분 목표·손절 감시는 계속됩니다.')) return;
+  const res = await fetch(`/api/v1/analysis-picks/${id}/stop-entries`, { method: 'POST' });
+  if (!res.ok) { alert('분할 매수 중단 실패: ' + (await res.text())); return; }
+  loadPicks();
 }
 
 async function armPick(id) {

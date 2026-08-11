@@ -35,6 +35,10 @@ let _startTime = null;
 let _activeEs = null;
 let _analysisText = '';
 let _aiStarted = false;
+let _lastAnalysis = null;
+let _tradePlanSource = 'MANUAL_REQUIRED';
+let _tradeRationale = '';
+let _lastTradePreview = null;
 
 function _byId(id) { return document.getElementById(id); }
 function _setBtn(disabled, text) {
@@ -49,6 +53,10 @@ function startProgress(ticker) {
   _startTime = Date.now();
   _analysisText = '';
   _aiStarted = false;
+  _lastAnalysis = null;
+  _lastTradePreview = null;
+  const tradeButton = _byId('sa-open-trade');
+  if (tradeButton) tradeButton.style.display = 'none';
   _byId('sa-progress').style.display = 'block';
   _byId('sa-error').style.display = 'none';
   _byId('sa-result').style.display = 'none';
@@ -246,6 +254,7 @@ function saFmt(n, suffix = '') {
 }
 
 function renderResult(d) {
+  _lastAnalysis = d;
   const ta  = d['기술적분석']  || {};
   const val = d['밸류에이션']  || {};
   const fin = d['재무제표_3개년'] || {};
@@ -347,6 +356,8 @@ function renderResult(d) {
   }
 
   _byId('sa-result').style.display = 'block';
+  const tradeButton = _byId('sa-open-trade');
+  if (tradeButton) tradeButton.style.display = 'inline-flex';
   _byId('sa-result').scrollIntoView({ behavior: 'smooth' });
 
   const chart = ta['차트_6개월'] || [];
@@ -368,6 +379,210 @@ function renderResult(d) {
     } catch (e) {
       console.error('차트 렌더링 오류:', e);
     }
+  }
+}
+
+/* ── 분석 결과 → 전략매매 설정 ───────────────────────────── */
+function _tradeNumber(id) {
+  const value = Number(_byId(id)?.value || 0);
+  return Number.isFinite(value) ? value : 0;
+}
+
+function _tradeFacts() {
+  const data = _lastAnalysis || {};
+  const technical = data['기술적분석'] || {};
+  const valuation = data['밸류에이션'] || {};
+  const averages = technical['이동평균선'] || {};
+  return {
+    ticker: data['종목코드'] || '',
+    name: data['종목명'] || data['종목코드'] || '',
+    market: _byId('sa-plan-market')?.value || 'KOSPI',
+    ref_date: technical['기준일'] || new Date().toISOString().slice(0, 10),
+    current_price: technical['현재가'],
+    high_52w: technical['52주_고가'] ?? null,
+    low_52w: technical['52주_저가'] ?? null,
+    ma20: averages.MA20 ?? null,
+    ma60: averages.MA60 ?? null,
+    ma120: averages.MA120 ?? null,
+    rsi14: technical.RSI14 ?? null,
+    macd: technical.MACD ?? null,
+    macd_signal: technical.MACD_signal ?? null,
+    per: valuation.PER ?? null,
+    pbr: valuation.PBR ?? null,
+    bps: valuation.BPS ?? null,
+  };
+}
+
+async function _tradeApi(url, payload) {
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  let body;
+  try { body = await response.json(); } catch { body = {}; }
+  if (!response.ok) {
+    const detail = typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail || body);
+    throw new Error(detail || `HTTP ${response.status}`);
+  }
+  return body;
+}
+
+function _clearTradePrices() {
+  ['sa-entry-1', 'sa-entry-2', 'sa-entry-3', 'sa-plan-target', 'sa-plan-stop']
+    .forEach(id => { if (_byId(id)) _byId(id).value = ''; });
+}
+
+async function openTradeSetup() {
+  if (!_lastAnalysis) return;
+  const dialog = _byId('sa-trade-setup');
+  if (!dialog) return;
+  _lastTradePreview = null;
+  _byId('sa-arm-trade').disabled = true;
+  _byId('sa-trade-preview').innerHTML = '';
+  _byId('sa-trade-validation').textContent = '';
+  document.querySelectorAll('input[name="sa-trade-mode"]').forEach(input => { input.checked = false; });
+  onTradeModeChange();
+  _clearTradePrices();
+  _byId('sa-plan-budget').value = '';
+  _byId('sa-trade-symbol').textContent = `${_lastAnalysis['종목명'] || ''} ${_lastAnalysis['종목코드'] || ''}`;
+  _byId('sa-trade-warning').textContent = '구조화 AI 매매계획을 확인하고 있습니다.';
+  dialog.showModal();
+
+  try {
+    const plan = await _tradeApi('/api/v1/stock-analysis/trade-plan', _tradeFacts());
+    _tradePlanSource = plan.source;
+    _tradeRationale = plan.rationale || '';
+    if (plan.source === 'AI' && plan.recommendation === 'BUY') {
+      (plan.entries || []).forEach((price, index) => {
+        const input = _byId(`sa-entry-${index + 1}`);
+        if (input) input.value = price;
+      });
+      _byId('sa-plan-target').value = plan.target || '';
+      _byId('sa-plan-stop').value = plan.stop || '';
+      _byId('sa-trade-warning').textContent = 'AI 제안값입니다. 매매 방식과 금액을 선택한 뒤 서버 검증을 진행하세요.';
+    } else {
+      _clearTradePrices();
+      _tradePlanSource = 'MANUAL_REQUIRED';
+      _byId('sa-trade-warning').textContent = plan.message || 'AI 관망·오류로 수동 가격 입력이 필요합니다.';
+    }
+  } catch (error) {
+    _clearTradePrices();
+    _tradePlanSource = 'MANUAL_REQUIRED';
+    _tradeRationale = '';
+    _byId('sa-trade-warning').textContent = `AI 계획을 사용할 수 없습니다. 수동 입력이 필요합니다. (${error.message})`;
+  }
+}
+
+function closeTradeSetup() {
+  const dialog = _byId('sa-trade-setup');
+  if (dialog?.open) dialog.close();
+}
+
+function onTradeModeChange() {
+  const mode = document.querySelector('input[name="sa-trade-mode"]:checked')?.value;
+  document.querySelectorAll('.sa-split-only').forEach(element => {
+    element.style.display = mode === 'split' ? 'flex' : 'none';
+  });
+  const weight = _byId('sa-weight-1');
+  if (weight) weight.textContent = mode === 'single' ? '100%' : mode === 'split' ? '30%' : '';
+  _lastTradePreview = null;
+  if (_byId('sa-arm-trade')) _byId('sa-arm-trade').disabled = true;
+}
+
+function _buildTradePayload() {
+  const mode = document.querySelector('input[name="sa-trade-mode"]:checked')?.value;
+  if (!mode) throw new Error('단일매매 또는 3분할매매를 선택하세요.');
+  const facts = _tradeFacts();
+  const entries = mode === 'single'
+    ? [{ sequence: 1, entry_price: _tradeNumber('sa-entry-1'), weight_pct: 100 }]
+    : [
+        { sequence: 1, entry_price: _tradeNumber('sa-entry-1'), weight_pct: 30 },
+        { sequence: 2, entry_price: _tradeNumber('sa-entry-2'), weight_pct: 30 },
+        { sequence: 3, entry_price: _tradeNumber('sa-entry-3'), weight_pct: 40 },
+      ];
+  const budget = _tradeNumber('sa-plan-budget');
+  const target = _tradeNumber('sa-plan-target');
+  const stop = _tradeNumber('sa-plan-stop');
+  const prices = entries.map(item => item.entry_price);
+  if (budget <= 0 || target <= 0 || stop <= 0 || prices.some(price => price <= 0)) {
+    throw new Error('총 매수금액과 모든 가격을 입력하세요.');
+  }
+  if (!(target > prices[0] && prices.every((price, index) => index === 0 || prices[index - 1] > price) && prices.at(-1) > stop)) {
+    throw new Error('목표가 > 진입가 순서 > 손절가를 확인하세요.');
+  }
+  return {
+    ticker: facts.ticker,
+    name: facts.name,
+    market: facts.market,
+    ref_date: facts.ref_date,
+    source: _tradePlanSource === 'AI' ? 'ai_trade_plan' : 'manual',
+    trade_mode: mode,
+    total_budget: budget,
+    entries,
+    target_price: target,
+    stop_price: stop,
+    rationale: _tradeRationale || null,
+    regime: 'mixed',
+    strategy_context: 'stock_analysis',
+  };
+}
+
+function _won(value) {
+  return `${Number(value || 0).toLocaleString('ko-KR')}원`;
+}
+
+function _renderTradePreview(preview) {
+  const limits = preview.limits || {};
+  const blockerHtml = (preview.blockers || []).map(item =>
+    `<li><b>${saFmt(item.code)}</b> ${saFmt(item.message)}</li>`
+  ).join('');
+  const legRows = (preview.legs || []).map(leg => `
+    <tr><td>${leg.sequence}차</td><td>${_won(leg.entry_price)}</td><td>${leg.weight_pct}%</td>
+      <td>${leg.planned_qty}주</td><td>${_won(leg.order_amount)}</td></tr>`).join('');
+  _byId('sa-trade-preview').innerHTML = `
+    <div class="sa-trade-limits">
+      <div><span>브로커 현금</span><b>${_won(limits.broker_cash)}</b></div>
+      <div><span>동일종목 잔여한도</span><b>${_won(limits.single_exposure)}</b></div>
+      <div><span>포트폴리오 여력</span><b>${_won(limits.portfolio_capacity)}</b></div>
+      <div><span>손절 위험예산</span><b>${_won(limits.stop_risk)}</b></div>
+      <div class="sa-safe-max"><span>안전 최대금액</span><b>${_won(preview.safe_max_amount)}</b></div>
+      <div><span>예상 잔여현금</span><b>${_won(preview.expected_remaining_cash)}</b></div>
+    </div>
+    <table><thead><tr><th>회차</th><th>진입가</th><th>비중</th><th>planned_qty</th><th>주문금액</th></tr></thead>
+      <tbody>${legRows}</tbody></table>
+    ${blockerHtml ? `<ul class="sa-trade-blockers">${blockerHtml}</ul>` : '<p class="sa-trade-ok">서버 안전검증을 통과했습니다.</p>'}`;
+}
+
+async function previewTradeSetup() {
+  _byId('sa-arm-trade').disabled = true;
+  _byId('sa-trade-validation').textContent = '';
+  try {
+    const payload = _buildTradePayload();
+    const preview = await _tradeApi('/api/v1/analysis-picks/trade-preview', payload);
+    _lastTradePreview = preview;
+    _renderTradePreview(preview);
+    if (!preview.blocked) {
+      _byId('sa-arm-trade').disabled = false;
+    }
+  } catch (error) {
+    _lastTradePreview = null;
+    _byId('sa-trade-validation').textContent = error.message;
+  }
+}
+
+async function armTradePlan() {
+  if (!_lastTradePreview || _lastTradePreview.blocked) return;
+  if (!window.confirm('현재 계좌와 안전한도를 다시 확인해 ARMED 상태로 저장할까요?')) return;
+  _byId('sa-arm-trade').disabled = true;
+  try {
+    const armed = await _tradeApi('/api/v1/analysis-picks/arm-plan', _buildTradePayload());
+    _byId('sa-trade-validation').innerHTML =
+      `ARMED 저장 완료 · 계획 #${armed.pick_id} · 주문은 스케줄러가 조건 충족 시 제출합니다. ` +
+      '<a href="/analysis-picks">워치리스트에서 확인</a>';
+  } catch (error) {
+    _lastTradePreview = null;
+    _byId('sa-trade-validation').textContent = `최종 무장 차단: ${error.message}`;
   }
 }
 
