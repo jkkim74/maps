@@ -13,13 +13,14 @@ from sqlalchemy import (
     Date,
     DateTime,
     Float,
+    ForeignKey,
     Integer,
     JSON,
     String,
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from maps.common.db import Base
 
@@ -623,6 +624,12 @@ class AnalysisPick(Base):
     regime: Mapped[str | None] = mapped_column(String(16), nullable=True)
     strategy_context: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
+    # 화면설계 기반 주문 계획. 기존 행은 single로 해석하고 회차 행을 만들지 않는다.
+    trade_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="single")
+    total_budget: Mapped[float | None] = mapped_column(Float, nullable=True)
+    entries_cancelled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    exit_pending_reason: Mapped[str | None] = mapped_column(String(16), nullable=True)
+
     # 전략매매(브래킷 실행)용
     strategy_trade_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     state: Mapped[str] = mapped_column(String(16), nullable=False, default="WATCH")  # WATCH|ARMED|BOUGHT|CLOSED|CANCELLED
@@ -636,6 +643,46 @@ class AnalysisPick(Base):
         default=lambda: datetime.datetime.now(datetime.timezone.utc),
         onupdate=lambda: datetime.datetime.now(datetime.timezone.utc),
     )
+
+    legs: Mapped[list["AnalysisPickLeg"]] = relationship(
+        back_populates="pick",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="AnalysisPickLeg.sequence",
+    )
+
+
+class AnalysisPickLeg(Base):
+    """3분할 전략의 회차별 계획과 현재 주문/체결 누계."""
+
+    __tablename__ = "analysis_pick_leg"
+    __table_args__ = (
+        UniqueConstraint("pick_id", "sequence", name="uq_analysis_pick_leg_sequence"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    pick_id: Mapped[int] = mapped_column(
+        ForeignKey("analysis_pick.id", ondelete="CASCADE"), nullable=False, index=True,
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    entry_price: Mapped[float] = mapped_column(Float, nullable=False)
+    weight_pct: Mapped[int] = mapped_column(Integer, nullable=False)
+    planned_qty: Mapped[int] = mapped_column(Integer, nullable=False)
+    filled_qty: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    fill_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    current_order_fill_qty: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    order_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="PENDING")
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc),
+    )
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, nullable=False,
+        default=lambda: datetime.datetime.now(datetime.timezone.utc),
+        onupdate=lambda: datetime.datetime.now(datetime.timezone.utc),
+    )
+
+    pick: Mapped[AnalysisPick] = relationship(back_populates="legs")
 
 
 # ---------------------------------------------------------------------------

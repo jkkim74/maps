@@ -721,6 +721,19 @@ class TradeReviewResponse(BaseModel):
 
 # ── SCR-19 Analysis Picks (분석 워치리스트) ──────────────────────────────────
 
+class AnalysisPickLegItem(BaseModel):
+    id: int
+    sequence: int
+    entry_price: float
+    weight_pct: int
+    planned_qty: int
+    filled_qty: int
+    remaining_qty: int
+    fill_price: float | None = None
+    order_id: str | None = None
+    status: str
+
+
 class AnalysisPickItem(BaseModel):
     id: int
     ref_date: str
@@ -734,6 +747,14 @@ class AnalysisPickItem(BaseModel):
     target_price: float | None = None
     stop_price: float | None = None
     qty: int | None = None
+    trade_mode: Literal["single", "split"] = "single"
+    total_budget: float | None = None
+    entries_cancelled: bool = False
+    exit_pending_reason: str | None = None
+    legs: list[AnalysisPickLegItem] = []
+    filled_legs: int = 0
+    total_legs: int = 1
+    next_entry_price: float | None = None
     rationale: str | None = None
     regime: str | None = None
     strategy_context: str | None = None

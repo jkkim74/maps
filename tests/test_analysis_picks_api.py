@@ -66,6 +66,57 @@ def test_list_empty(client) -> None:
     assert body["expected_ref_date"]   # 신선도 기준일은 목록이 비어도 내려간다
 
 
+def test_split_pick_response_exposes_ordered_leg_progress(client) -> None:
+    """회차 정렬·완료 수·다음 진입가가 실제 저장 상태에서 파생돼야 한다."""
+    from maps.common import models
+
+    assert hasattr(models, "AnalysisPickLeg"), "분할 회차 모델이 필요합니다."
+    pid = client.post(
+        "/api/v1/analysis-picks",
+        json={"picks": [_sample(qty=147)]},
+    ).json()["picks"][0]["id"]
+    with client.session_factory() as db:
+        pick = db.get(models.AnalysisPick, pid)
+        pick.trade_mode = "split"
+        pick.total_budget = 9_900_000
+        db.add_all([
+            models.AnalysisPickLeg(
+                pick_id=pid, sequence=3, entry_price=64_000,
+                weight_pct=40, planned_qty=61, filled_qty=0, status="PENDING",
+            ),
+            models.AnalysisPickLeg(
+                pick_id=pid, sequence=1, entry_price=70_000,
+                weight_pct=30, planned_qty=42, filled_qty=42, status="FILLED",
+            ),
+            models.AnalysisPickLeg(
+                pick_id=pid, sequence=2, entry_price=67_000,
+                weight_pct=30, planned_qty=44, filled_qty=18, status="PARTIAL",
+            ),
+        ])
+        db.commit()
+
+    item = client.get("/api/v1/analysis-picks").json()["picks"][0]
+    assert item["trade_mode"] == "split"
+    assert item["total_budget"] == 9_900_000
+    assert [leg["sequence"] for leg in item["legs"]] == [1, 2, 3]
+    assert item["filled_legs"] == 1
+    assert item["total_legs"] == 3
+    assert item["next_entry_price"] == 67_000
+
+
+def test_legacy_pick_without_legs_is_single(client) -> None:
+    """기존 픽은 데이터 이관 없이 단일 1회 계획으로 계속 응답해야 한다."""
+    client.post("/api/v1/analysis-picks", json={"picks": [_sample(qty=10)]})
+
+    item = client.get("/api/v1/analysis-picks").json()["picks"][0]
+
+    assert item["trade_mode"] == "single"
+    assert item["total_legs"] == 1
+    assert item["filled_legs"] == 0
+    assert item["next_entry_price"] == 70_000
+    assert item["legs"] == []
+
+
 def test_list_current_price_from_latest_close(client) -> None:
     import datetime as dt
 

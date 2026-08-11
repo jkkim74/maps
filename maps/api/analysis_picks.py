@@ -13,12 +13,13 @@ import logging
 import requests
 from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from maps.api.deps import DbDep
 from maps.api.schemas import (
     AnalysisPickBatchCreate,
     AnalysisPickItem,
+    AnalysisPickLegItem,
     AnalysisPicksResponse,
     AnalysisPickUpdate,
 )
@@ -181,6 +182,47 @@ def _to_item(
     if cutoff is None:
         cutoff = pick_cutoff_date(settings)
     stale = is_pick_stale(p, cutoff)
+    legs = sorted(p.legs, key=lambda leg: leg.sequence)
+    split = p.trade_mode == "split" and bool(legs)
+    leg_items = [
+        AnalysisPickLegItem(
+            id=leg.id,
+            sequence=leg.sequence,
+            entry_price=leg.entry_price,
+            weight_pct=leg.weight_pct,
+            planned_qty=leg.planned_qty,
+            filled_qty=leg.filled_qty,
+            remaining_qty=max(leg.planned_qty - leg.filled_qty, 0),
+            fill_price=leg.fill_price,
+            order_id=leg.order_id,
+            status=leg.status,
+        )
+        for leg in legs
+    ]
+    if split:
+        filled_legs = sum(leg.status == "FILLED" for leg in legs)
+        next_leg = next(
+            (leg for leg in legs if leg.status not in ("FILLED", "CANCELLED")),
+            None,
+        )
+        priced_fills = [leg for leg in legs if leg.fill_price and leg.filled_qty > 0]
+        filled_qty = sum(leg.filled_qty for leg in priced_fills)
+        split_fill_price = (
+            round(sum(leg.fill_price * leg.filled_qty for leg in priced_fills) / filled_qty)
+            if filled_qty else None
+        )
+        effective_fill_price = split_fill_price or fill_price
+        total_legs = len(legs)
+        next_entry_price = next_leg.entry_price if next_leg and not p.entries_cancelled else None
+        qty = sum(leg.planned_qty for leg in legs)
+        planned_entry = legs[0].entry_price
+    else:
+        filled_legs = 1 if p.state in ("BOUGHT", "CLOSED") else 0
+        effective_fill_price = fill_price
+        total_legs = 1
+        next_entry_price = p.buy_price if filled_legs == 0 and not p.entries_cancelled else None
+        qty = p.qty
+        planned_entry = p.buy_price
     return AnalysisPickItem(
         id=p.id,
         ref_date=p.ref_date.isoformat(),
@@ -190,10 +232,18 @@ def _to_item(
         current_price=current_price,
         source=p.source,
         buy_price=p.buy_price,
-        fill_price=fill_price,
+        fill_price=effective_fill_price,
         target_price=p.target_price,
         stop_price=p.stop_price,
-        qty=p.qty,
+        qty=qty,
+        trade_mode="split" if split else "single",
+        total_budget=p.total_budget,
+        entries_cancelled=p.entries_cancelled,
+        exit_pending_reason=p.exit_pending_reason,
+        legs=leg_items,
+        filled_legs=filled_legs,
+        total_legs=total_legs,
+        next_entry_price=next_entry_price,
         rationale=p.rationale,
         regime=p.regime,
         strategy_context=p.strategy_context,
@@ -204,7 +254,7 @@ def _to_item(
         exit_reason=p.exit_reason,
         last_action_at=p.last_action_at.isoformat() if p.last_action_at else None,
         # 손익비는 체결가 우선(실제 진입가) — 미체결이면 계획 매수가 기준.
-        rr_ratio=_rr_ratio(fill_price or p.buy_price, p.target_price, p.stop_price),
+        rr_ratio=_rr_ratio(effective_fill_price or planned_entry, p.target_price, p.stop_price),
         created_at=p.created_at.isoformat() if p.created_at else "",
         data_stale=stale,
         stale_reason=pick_stale_reason(p, cutoff),
@@ -219,7 +269,7 @@ def list_picks(
     db: Session = DbDep,
 ) -> AnalysisPicksResponse:
     """워치리스트 픽 목록을 최신순으로 반환한다(상태/소스 필터)."""
-    q = db.query(AnalysisPick)
+    q = db.query(AnalysisPick).options(selectinload(AnalysisPick.legs))
     if state:
         q = q.filter(AnalysisPick.state == state)
     else:
