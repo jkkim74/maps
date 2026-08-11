@@ -8,7 +8,7 @@ import json
 import xml.etree.ElementTree as ET
 import zipfile
 from collections.abc import Callable, Generator
-from typing import Any
+from typing import Any, Mapping
 
 import pandas as pd
 import requests
@@ -307,6 +307,7 @@ def stream_llm_analysis(
     aws_secret_access_key: str = "",
     aws_region: str = "us-east-1",
     model_id: str = "us.anthropic.claude-opus-4-8-20251101-v1:0",
+    trade_plan: Mapping[str, object] | None = None,
 ) -> Generator[str, None, None]:
     """AWS Bedrock Claude claude-opus-4-8으로 7단계 종합 분석 텍스트를 스트리밍한다.
 
@@ -326,6 +327,17 @@ def stream_llm_analysis(
     data_for_llm["기술적분석"] = ta_trimmed
 
     data_json = json.dumps(data_for_llm, ensure_ascii=False, indent=2)
+    plan_json = json.dumps(trade_plan or {}, ensure_ascii=False, indent=2)
+    if trade_plan and trade_plan.get("source") == "AI":
+        plan_instruction = (
+            "아래 검증된 매매계획은 이 분석의 가격 단일 원천입니다. "
+            "STEP 7에서 이 숫자를 그대로 사용하고 다른 가격을 만들지 마세요."
+        )
+    else:
+        plan_instruction = (
+            "검증된 매매계획을 만들지 못했습니다. STEP 7에서 임의 가격을 만들지 말고 "
+            "수동 입력이 필요하다고 설명하세요."
+        )
 
     prompt = f"""당신은 한국 주식 시장 전문 애널리스트입니다. 아래 JSON 데이터를 바탕으로 **{name}({code})** 종목에 대한 심층 종합 분석을 수행하세요.
 
@@ -333,6 +345,14 @@ def stream_llm_analysis(
 
 ```json
 {data_json}
+```
+
+## 검증된 매매계획
+
+{plan_instruction}
+
+```json
+{plan_json}
 ```
 
 다음 7단계 분석을 순서대로 작성하세요:

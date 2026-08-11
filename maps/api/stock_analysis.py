@@ -38,6 +38,31 @@ def _manual_trade_plan(
     )
 
 
+def _trade_plan_request(result: dict[str, Any]) -> StockTradePlanRequest:
+    """Map one collected analysis result into the structured planner contract."""
+    technical = result.get("기술적분석") or {}
+    valuation = result.get("밸류에이션") or {}
+    averages = technical.get("이동평균선") or {}
+    return StockTradePlanRequest(
+        ticker=result.get("종목코드") or "",
+        name=result.get("종목명") or result.get("종목코드") or "",
+        market=result.get("시장") or "KOSPI",
+        ref_date=technical.get("기준일") or "",
+        current_price=technical.get("현재가"),
+        high_52w=technical.get("52주_고가"),
+        low_52w=technical.get("52주_저가"),
+        ma20=averages.get("MA20"),
+        ma60=averages.get("MA60"),
+        ma120=averages.get("MA120"),
+        rsi14=technical.get("RSI14"),
+        macd=technical.get("MACD"),
+        macd_signal=technical.get("MACD_signal"),
+        per=valuation.get("PER"),
+        pbr=valuation.get("PBR"),
+        bps=valuation.get("BPS"),
+    )
+
+
 def generate_trade_plan(req: StockTradePlanRequest) -> StockTradePlanResponse:
     """Return one normalized structured plan for analysis and UI consumers."""
     planner = AITradePlanner.from_settings()
@@ -131,6 +156,11 @@ async def analyze_stream(ticker: str) -> StreamingResponse:
     def _run() -> None:
         try:
             result = analyze(ticker, settings.dart_api_key, progress_callback=_progress)
+            try:
+                trade_plan = generate_trade_plan(_trade_plan_request(result))
+            except (TypeError, ValueError):
+                trade_plan = _manual_trade_plan()
+            trade_plan_payload = trade_plan.model_dump(mode="json")
 
             if settings.aws_access_key_id:
                 _progress("AI 종합분석 시작 (Claude via Bedrock)…", 98)
@@ -142,6 +172,7 @@ async def analyze_stream(ticker: str) -> StreamingResponse:
                         aws_secret_access_key=settings.aws_secret_access_key,
                         aws_region=settings.aws_region,
                         model_id=settings.aws_bedrock_model_id,
+                        trade_plan=trade_plan_payload,
                     ):
                         asyncio.run_coroutine_threadsafe(
                             queue.put({"analysis_chunk": chunk, "done": False}),
@@ -154,7 +185,13 @@ async def analyze_stream(ticker: str) -> StreamingResponse:
                     )
 
             asyncio.run_coroutine_threadsafe(
-                queue.put({"step": "분석 완료", "pct": 100, "done": True, "data": result}),
+                queue.put({
+                    "step": "분석 완료",
+                    "pct": 100,
+                    "done": True,
+                    "data": result,
+                    "trade_plan": trade_plan_payload,
+                }),
                 loop,
             )
         except ValueError as e:
