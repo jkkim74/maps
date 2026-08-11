@@ -208,6 +208,38 @@ def test_place_order_uses_paper_buy_tr_id_and_hashkey(settings: MapsSettings) ->
     assert result.status == OrderStatus.PENDING
 
 
+def test_place_order_missing_time_uses_kst_date(
+    settings: MapsSettings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ORD_TMD 누락 시 UTC 호스트 날짜가 아니라 KST 주문일을 사용해야 한다."""
+    real_datetime = kis_adapter.dt.datetime
+
+    class FrozenDateTime(real_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            if tz is None:
+                return cls(2026, 8, 9, 23, 55)
+            return cls(2026, 8, 10, 8, 55, tzinfo=tz)
+
+    monkeypatch.setattr(kis_adapter.dt, "datetime", FrozenDateTime)
+    http = FakeSession()
+    http.order_payload = {"rt_cd": "0", "output": {"ODNO": "12345"}}
+    broker = KISAdapter(settings, http=http)
+
+    result = broker.place_order(
+        Order(
+            strategy_id="s1",
+            ticker="005930",
+            side=OrderSide.BUY,
+            order_type=OrderType.MARKET,
+            quantity=10,
+        )
+    )
+
+    assert result.submitted_at == real_datetime(2026, 8, 10, 8, 55)
+
+
 def test_get_account_balance_and_position(settings: MapsSettings) -> None:
     http = FakeSession()
     broker = KISAdapter(settings, http=http)

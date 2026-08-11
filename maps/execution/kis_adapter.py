@@ -50,6 +50,11 @@ _CANCEL_PATH = "/uapi/domestic-stock/v1/trading/order-rvsecncl"
 _BALANCE_PATH = "/uapi/domestic-stock/v1/trading/inquire-balance"
 _DAILY_CCLD_PATH = "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
 _PRICE_PATH = "/uapi/domestic-stock/v1/quotations/inquire-price"
+
+
+def _kst_now_naive() -> dt.datetime:
+    """Return current KST in the naïve form used by KIS order timestamps."""
+    return dt.datetime.now(_KST).replace(tzinfo=None)
 # 시세 조회 TR_ID는 모의/실거래 공통 (FHKST01010100).
 _PRICE_TR_ID = "FHKST01010100"
 
@@ -170,7 +175,7 @@ class KISAdapter(BrokerAdapter):
         order_id = str(output.get("ODNO") or output.get("odno") or "")
         submitted = self._parse_kis_datetime(
             output.get("ORD_TMD") or output.get("ord_tmd"),
-            fallback=dt.datetime.now(),
+            fallback=_kst_now_naive(),
         )
 
         return OrderResult(
@@ -247,7 +252,7 @@ class KISAdapter(BrokerAdapter):
             filled_qty = self._row_filled_qty(row)
             remaining = self._row_remaining_qty(row)
             status = self._row_status(row, order_qty=order_qty, filled_qty=filled_qty, remaining=remaining)
-            submitted_at = self._parse_kis_datetime(row.get("ord_tmd"), fallback=dt.datetime.now())
+            submitted_at = self._parse_kis_datetime(row.get("ord_tmd"), fallback=_kst_now_naive())
             results.append(
                 OrderResult(
                     order_id=self._row_order_id(row),
@@ -261,7 +266,7 @@ class KISAdapter(BrokerAdapter):
                         if filled_qty > 0 else 0.0
                     ),
                     commission=0.0,
-                    submitted_at=submitted_at or dt.datetime.now(),
+                    submitted_at=submitted_at or _kst_now_naive(),
                     filled_at=submitted_at if filled_qty > 0 else None,
                 )
             )

@@ -95,6 +95,26 @@ def test_non_kis_order_log_id_is_unchanged() -> None:
     ) == "mock-1"
 
 
+def test_kis_order_log_id_canonicalizes_default_product_code() -> None:
+    """동일 계좌의 `12345678`과 `12345678-01` 표기는 같은 ID를 만들어야 한다."""
+    submitted_at = dt.datetime(2026, 8, 10, 8, 55)
+
+    compact = order_log_id(
+        "0000000755",
+        broker="kis",
+        account_no="12345678",
+        submitted_at=submitted_at,
+    )
+    explicit = order_log_id(
+        "0000000755",
+        broker="kis",
+        account_no="12345678-01",
+        submitted_at=submitted_at,
+    )
+
+    assert compact == explicit
+
+
 def test_submit_namespaces_kis_order_id_in_result_and_audit_log(db, monkeypatch) -> None:
     """KIS 제출 결과와 감사 행은 같은 전역 유일 ID를 사용해야 한다."""
     submitted_at = dt.datetime(2026, 8, 10, 8, 55)

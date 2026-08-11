@@ -208,6 +208,62 @@ def test_sync_refuses_current_identity_with_ticker_mismatch(db, monkeypatch) -> 
     assert (damaged.status, damaged.fill_qty, damaged.fill_price) == ("filled", 0, None)
 
 
+def test_sync_reused_kis_order_id_does_not_update_other_broker(db, monkeypatch) -> None:
+    """같은 날·종목·방향이어도 다른 브로커의 raw ID 행은 KIS가 갱신하지 않는다."""
+    settings = MapsSettings(
+        maps_broker_mode="kis",
+        kis_account_no="11111111-01",
+    )
+    monkeypatch.setattr("maps.execution.order_manager.get_settings", lambda: settings)
+    submitted_at = dt.datetime(2026, 8, 10, 8, 55)
+    broker = MagicMock()
+    broker.get_account_balance.return_value = AccountBalance(
+        cash=1_000_000,
+        positions_value=500_000,
+    )
+    broker.get_open_orders.return_value = []
+    broker.get_daily_order_results.return_value = [
+        OrderResult(
+            order_id="0000000755",
+            strategy_id="",
+            ticker="041830",
+            side=OrderSide.BUY,
+            status=OrderStatus.FILLED,
+            filled_quantity=35,
+            avg_price=69_200,
+            submitted_at=submitted_at,
+        )
+    ]
+    other_broker = OrderLog(
+        order_id="0000000755",
+        strategy_id="other_strategy",
+        ticker="041830",
+        side=OrderSide.BUY.value,
+        qty=35,
+        order_price=71_600,
+        fill_qty=0,
+        status="expired",
+        broker="kiwoom",
+        mode="mock",
+        created_at=dt.datetime(2026, 8, 9, 23, 55),
+    )
+    db.add(other_broker)
+    db.commit()
+    manager = OrderManager(
+        broker=broker,
+        risk=RiskManager(broker=broker, db=db, config=RiskConfig()),
+        db=db,
+    )
+
+    manager.sync_broker_state()
+
+    db.refresh(other_broker)
+    kis_row = db.query(OrderLog).filter(OrderLog.broker == "kis").one()
+    assert (other_broker.status, other_broker.fill_qty) == ("expired", 0)
+    assert kis_row.order_id.endswith(":20260810:0000000755")
+    assert (kis_row.status, kis_row.fill_qty) == ("filled", 35)
+
+
 def test_sync_broker_state_tolerates_daily_fill_lookup_error(db) -> None:
     broker = MagicMock()
     broker.get_account_balance.return_value = AccountBalance(cash=1_000_000, positions_value=500_000)

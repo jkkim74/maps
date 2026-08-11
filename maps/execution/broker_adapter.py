@@ -37,7 +37,13 @@ def order_log_id(
     if submitted.tzinfo is None:
         submitted = submitted.replace(tzinfo=_KST)
     day = submitted.astimezone(_KST).date()
-    account_key = hashlib.sha256(account_no.encode("utf-8")).hexdigest()[:8]
+    account_identity = account_no.strip()
+    if "-" in account_identity:
+        prefix, product_code = account_identity.split("-", 1)
+        account_identity = f"{prefix.strip()}-{product_code.strip()}"
+    elif len(account_identity) == 8:
+        account_identity = f"{account_identity}-01"
+    account_key = hashlib.sha256(account_identity.encode("utf-8")).hexdigest()[:8]
     return f"kis:{account_key}:{day:%Y%m%d}:{raw_order_id}"
 
 

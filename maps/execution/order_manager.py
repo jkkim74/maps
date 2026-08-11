@@ -262,6 +262,7 @@ class OrderManager:
                 row = (
                     self._db.query(OrderLog)
                     .filter(OrderLog.order_id == result.order_id)
+                    .filter(OrderLog.broker == settings.maps_broker_mode)
                     .filter(OrderLog.ticker == result.ticker)
                     .filter(OrderLog.side == result.side.value)
                     .filter(OrderLog.created_at >= day_start)
