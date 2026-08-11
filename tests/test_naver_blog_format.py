@@ -31,7 +31,7 @@ def _load_checker():
 
 _checker = _load_checker()
 find_violations = _checker.find_violations
-PASTE, STYLE = _checker.PASTE, _checker.STYLE
+PASTE, STYLE, READABILITY = _checker.PASTE, _checker.STYLE, _checker.READABILITY
 
 
 @pytest.mark.parametrize(
@@ -107,3 +107,59 @@ def test_style_check_allows_structural_marks() -> None:
         ]
     )
     assert find_violations(sample) == []
+
+
+def test_readability_accepts_explained_term_and_ignores_detail_raw_values() -> None:
+    sample = "\n".join([
+        "2. 오늘 시장은 어땠나요?",
+        "상승과 하락 신호가 섞인 시장(MIXED)이었습니다.",
+        "6. 상세 기록",
+        "적용 국면 : MIXED",
+    ])
+    assert find_violations(sample, (READABILITY,)) == []
+
+
+def test_readability_rejects_unexplained_easy_body_term() -> None:
+    sample = "\n".join([
+        "2. 오늘 시장은 어땠나요?",
+        "오늘은 MIXED가 적용됐습니다.",
+        "6. 상세 기록",
+    ])
+    violations = find_violations(sample, (READABILITY,))
+    assert [name for _line, _cat, name, _body in violations] == [
+        "쉬운 설명 누락(MIXED)"
+    ]
+
+
+def test_readability_rejects_explanation_after_first_raw_term() -> None:
+    sample = "\n".join([
+        "2. 오늘 시장은 어땠나요?",
+        "오늘은 MIXED가 적용됐습니다.",
+        "상승과 하락 신호가 섞인 시장(MIXED)이라는 뜻입니다.",
+        "6. 상세 기록",
+    ])
+    violations = find_violations(sample, (READABILITY,))
+    assert [name for _line, _cat, name, _body in violations] == [
+        "쉬운 설명 누락(MIXED)"
+    ]
+
+
+def test_readability_checks_each_beginner_term_family() -> None:
+    sample = "\n".join([
+        "2. 오늘 시장은 어땠나요?",
+        "Breadth 42%, entry limit 0%, HIGH 변동성이었습니다.",
+        "4. 실제 매수·매도 기록",
+        "partially filled 뒤 stop loss가 실행됐습니다.",
+        "6. 상세 기록",
+    ])
+    names = {
+        name
+        for _line, _cat, name, _body in find_violations(sample, (READABILITY,))
+    }
+    assert names == {
+        "쉬운 설명 누락(Breadth)",
+        "쉬운 설명 누락(entry limit)",
+        "쉬운 설명 누락(HIGH 변동성)",
+        "쉬운 설명 누락(partially filled)",
+        "쉬운 설명 누락(stop loss)",
+    }
