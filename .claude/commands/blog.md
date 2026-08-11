@@ -22,6 +22,9 @@ description: 일일 다이제스트로 매매 기록 블로그 글 작성
 4. **`errors` 배열이 비어 있지 않으면** 해당 섹션을 "수집 실패"로 명시한다.
 5. 뉴스·외부 정보를 검색하지 않는다. 시장 맥락은 `market_context`(외부 리포트 발췌)만 쓴다.
 6. 종목 추천으로 읽히는 표현을 쓰지 않는다. 시스템이 무엇을 왜 했는지 기록할 뿐이다.
+7. price_source가 rule이면 규칙이 만든 가격이므로 AI 결론으로 표현하지 않는다.
+   `errors`에 AI 분석 실패가 명시된 경우에도 규칙 기반 데이터만 설명한다. 오류가 없으면
+   AI 실패 여부를 추측하지 않는다.
 
 ## 문체 — AI가 쓴 티가 나면 실패다
 
@@ -108,6 +111,9 @@ regime / raw_regime / weekly_trend / vol_regime / breadth_pct / entry_limit_rati
 실제 매매 한도 보정을 쉬운 문장으로 연결한다. floor_applied가 true면 한국 시장 흐름을
 반영해 최소 MIXED를 적용한 이유를 설명한다. measured: false는 수치를 해석하지 않고
 "현재 연결된 데이터가 없어 확인하지 못했습니다"라고 쓴다.
+korea_weak_guard_applied가 true면 해외 신호보다
+한국 시장의 실제 흐름이 약해 WEAK로 낮춘 이유와 그 결과 신규매수 한도가 줄거나
+중단됐는지를 설명한다.
 
 ────────────────────
 3. 시스템은 왜 이렇게 움직였나요?
@@ -132,10 +138,21 @@ skip_reason을 적고, data_stale이면 오래된 데이터라고 먼저 경고�
 ────────────────────
 6. 상세 기록
 ────────────────────
-시장 원시·적용 국면, 주간 추세, 변동성, 시장폭, 신규매수 한도, 강세 업종과 관측 전용 여부,
-전략 ID·활성 상태·단계·차단 이유, 후보 점수·근거·제외 사유, 주문가·체결가·수량·상태·청산
-사유를 보존한다. market_context가 있으면 외부 리포트 출처를 밝히고 여기에 기록한다.
-새로운 해석이나 숫자를 만들지 않는다.
+시장 원시·적용 국면, 주간 추세, 변동성, 시장폭, 신규매수 한도를 보존한다.
+
+sectors.selected의 sector / score / momentum_20d / momentum_60d / turnover_growth /
+reason / overheat_warning을 기록한다. applied_to_trading: false면 첫 줄에
+"관측 전용, 후보 선정에는 적용되지 않음"이라고 쓴다. placeholder_inputs는 실제 측정값이
+아니라 중립값(50)으로 채운 입력이라고 밝힌다. selector가 legacy면 복합 점수가 아니라
+기간 수익률 순위만 사용했다고 쓴다.
+
+전략 ID·활성 상태·단계·차단 이유와 후보의 final_score / score_reason / ts_bucket /
+excluded_reason을 보존한다. candidate_total과 candidate_excluded를 함께 쓰고 제외 비율을
+언급한다. 값이 있으면 ai_analysis_memo / ai_contrarian_thesis /
+ai_contrarian_anti_thesis / valuation_margin_reason과 price_source도 기록한다.
+
+주문가·체결가·수량·상태·청산 사유를 보존한다. market_context가 있으면 외부 리포트
+출처를 밝히고 여기에 기록한다. 새로운 해석이나 숫자를 만들지 않는다.
 
 ────────────────────
 7. 투자 유의사항

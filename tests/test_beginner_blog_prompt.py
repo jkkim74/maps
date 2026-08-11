@@ -55,3 +55,44 @@ def test_prompt_preserves_fact_and_failure_boundaries() -> None:
     )
     for phrase in required:
         assert phrase in PROMPT
+
+
+def test_prompt_explains_korea_weak_guard_correction() -> None:
+    assert "korea_weak_guard_applied" in PROMPT
+    assert "한국 시장의 실제 흐름이 약해 WEAK로 낮춘 이유" in PROMPT
+
+
+def test_detail_section_preserves_sector_and_candidate_audit_fields() -> None:
+    required = (
+        "sectors.selected",
+        "score",
+        "momentum_20d",
+        "momentum_60d",
+        "turnover_growth",
+        "overheat_warning",
+        "applied_to_trading: false",
+        "관측 전용, 후보 선정에는 적용되지 않음",
+        "placeholder_inputs",
+        "중립값(50)",
+        "selector",
+        "legacy",
+        "candidate_total",
+        "candidate_excluded",
+        "ai_analysis_memo",
+        "ai_contrarian_thesis",
+        "ai_contrarian_anti_thesis",
+        "valuation_margin_reason",
+        "excluded_reason",
+    )
+    for phrase in required:
+        assert phrase in PROMPT
+
+
+def test_prompt_uses_rule_data_when_ai_is_not_authoritative() -> None:
+    assert "price_source가 rule이면" in PROMPT
+    assert "AI 분석 실패가 명시된 경우에도 규칙 기반 데이터만 설명" in PROMPT
+    assert "AI 결론으로 표현하지 않는다" in PROMPT
+
+
+def test_style_guide_describes_readability_validation() -> None:
+    assert "핵심 전문용어의 쉬운 설명 누락까지 검사한다" in STYLE
