@@ -549,6 +549,67 @@ def disarm_pick(pick_id: int, db: Session = DbDep) -> AnalysisPickItem:
     return _to_item(pick)
 
 
+@router.post("/{pick_id}/stop-entries", response_model=AnalysisPickItem)
+def stop_split_entries(pick_id: int, db: Session = DbDep) -> AnalysisPickItem:
+    """Stop future split buys while preserving exits for any held quantity."""
+    pick = db.get(AnalysisPick, pick_id)
+    if pick is None:
+        raise HTTPException(status_code=404, detail="분석 종목을 찾을 수 없습니다.")
+    if pick.trade_mode != "split" or not pick.legs:
+        raise HTTPException(status_code=409, detail="분할매매 계획만 진입을 중지할 수 있습니다.")
+    if pick.state == "CLOSED":
+        raise HTTPException(status_code=409, detail="이미 종료된 계획입니다.")
+
+    broker = get_broker(get_settings().maps_broker_mode)
+    held_qty = 0
+    position = broker.get_position(pick.ticker)
+    if position is not None and position.quantity > 0:
+        held_qty = position.quantity
+
+    live_statuses = {"pending", "partially_filled"}
+    for leg in sorted(pick.legs, key=lambda item: item.sequence):
+        row = (
+            db.query(OrderLog).filter(OrderLog.order_id == leg.order_id).first()
+            if leg.order_id
+            else None
+        )
+        if row is not None:
+            reported = max(int(row.fill_qty or 0), 0)
+            delta = max(reported - int(leg.current_order_fill_qty or 0), 0)
+            if delta:
+                leg.filled_qty = min(leg.filled_qty + delta, leg.planned_qty)
+                leg.current_order_fill_qty = reported
+            if (row.status or "").lower() in live_statuses:
+                try:
+                    cancelled = bool(broker.cancel_order(leg.order_id))
+                except (NotImplementedError, BrokerAdapterError):
+                    cancelled = False
+                if not cancelled:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="현재 분할 진입 주문의 취소를 확인하지 못했습니다.",
+                    )
+                row.status = "cancelled"
+        held_qty = max(held_qty, leg.filled_qty)
+        if leg.filled_qty < leg.planned_qty:
+            leg.status = "CANCELLED"
+        leg.order_id = None
+        leg.current_order_fill_qty = 0
+
+    pick.entries_cancelled = True
+    pick.entry_order_id = None
+    pick.last_action_at = datetime.datetime.now(datetime.timezone.utc)
+    if held_qty > 0:
+        pick.state = "BOUGHT"
+        pick.strategy_trade_enabled = True
+    else:
+        pick.state = "WATCH"
+        pick.strategy_trade_enabled = False
+    db.commit()
+    db.refresh(pick)
+    return _to_item(pick)
+
+
 @router.delete("/{pick_id}")
 def delete_pick(pick_id: int, db: Session = DbDep) -> dict[str, object]:
     """픽을 삭제한다."""

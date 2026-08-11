@@ -11,7 +11,7 @@ from sqlalchemy.pool import StaticPool
 
 import maps.common.models  # noqa: F401
 from maps.common.db import Base
-from maps.common.models import AnalysisPick
+from maps.common.models import AnalysisPick, AnalysisPickLeg, OrderLog
 from maps.execution.broker_adapter import Order, OrderSide, OrderType
 from maps.execution.mock_broker import MockBroker
 from maps.execution.order_manager import OrderManager
@@ -55,6 +55,179 @@ def _pick(db, *, ticker="005930", buy=70000, target=80000, stop=66000, qty=10, s
 def _run(pipeline, broker, manager, db, picks, prices):
     broker.update_prices(prices)
     return pipeline._process_strategy_trades(db=db, broker=broker, manager=manager, picks=picks, prices=prices)
+
+
+def _split_pick(db, *, ticker="005930", state="ARMED"):
+    pick = AnalysisPick(
+        ref_date=_TODAY,
+        ticker=ticker,
+        name=ticker,
+        source="analyze",
+        buy_price=70_000,
+        target_price=80_000,
+        stop_price=60_000,
+        qty=30,
+        trade_mode="split",
+        total_budget=2_010_000,
+        strategy_trade_enabled=True,
+        state=state,
+    )
+    pick.legs = [
+        AnalysisPickLeg(sequence=1, entry_price=70_000, weight_pct=30, planned_qty=9, status="PENDING"),
+        AnalysisPickLeg(sequence=2, entry_price=67_000, weight_pct=30, planned_qty=9, status="PENDING"),
+        AnalysisPickLeg(sequence=3, entry_price=64_000, weight_pct=40, planned_qty=12, status="PENDING"),
+    ]
+    db.add(pick)
+    db.commit()
+    db.refresh(pick)
+    return pick
+
+
+def _seed_leg_order(db, leg, *, status, fill_qty, order_id="leg-order-1"):
+    leg.order_id = order_id
+    db.add(OrderLog(
+        order_id=order_id,
+        strategy_id=f"strategy_trade:{leg.pick_id}:leg:{leg.sequence}",
+        ticker=leg.pick.ticker,
+        side="buy",
+        qty=leg.planned_qty,
+        order_price=leg.entry_price,
+        fill_price=leg.entry_price if fill_qty else None,
+        fill_qty=fill_qty,
+        status=status,
+    ))
+    db.commit()
+
+
+def test_split_submits_only_first_eligible_leg_per_cycle(env):
+    pipeline, broker, manager, db = env
+    pick = _split_pick(db)
+
+    submitted, closed = _run(
+        pipeline, broker, manager, db, [pick], {pick.ticker: 63_000}
+    )
+
+    assert (submitted, closed) == (1, 0)
+    assert pick.legs[0].order_id
+    assert pick.legs[1].order_id is None
+    assert pick.legs[2].order_id is None
+
+
+def test_split_waits_for_full_fill_before_next_leg(env):
+    pipeline, broker, manager, db = env
+    pick = _split_pick(db)
+    _seed_leg_order(db, pick.legs[0], status="partially_filled", fill_qty=4)
+
+    submitted, _closed = _run(
+        pipeline, broker, manager, db, [pick], {pick.ticker: 63_000}
+    )
+
+    assert submitted == 0
+    assert pick.legs[0].filled_qty == 4
+    assert pick.legs[1].order_id is None
+
+
+def test_split_partial_fill_sync_is_idempotent(env):
+    pipeline, broker, manager, db = env
+    pick = _split_pick(db)
+    _seed_leg_order(db, pick.legs[0], status="partially_filled", fill_qty=4)
+
+    _run(pipeline, broker, manager, db, [pick], {pick.ticker: 63_000})
+    _run(pipeline, broker, manager, db, [pick], {pick.ticker: 63_000})
+
+    assert pick.legs[0].filled_qty == 4
+
+
+def test_dead_partial_order_retries_only_remaining_quantity(env):
+    pipeline, broker, manager, db = env
+    pick = _split_pick(db)
+    _seed_leg_order(db, pick.legs[0], status="expired", fill_qty=4)
+
+    submitted, _closed = _run(
+        pipeline, broker, manager, db, [pick], {pick.ticker: 63_000}
+    )
+
+    assert submitted == 1
+    newest = db.query(OrderLog).order_by(OrderLog.id.desc()).first()
+    assert newest.qty == pick.legs[0].planned_qty - 4
+    assert pick.legs[1].order_id is None
+
+
+def test_split_advances_to_second_leg_on_later_cycle(env):
+    pipeline, broker, manager, db = env
+    pick = _split_pick(db)
+
+    _run(pipeline, broker, manager, db, [pick], {pick.ticker: 63_000})
+    submitted, _closed = _run(
+        pipeline, broker, manager, db, [pick], {pick.ticker: 63_000}
+    )
+
+    assert submitted == 1
+    assert pick.legs[0].status == "FILLED"
+    assert pick.legs[1].order_id is not None
+    assert pick.legs[2].order_id is None
+
+
+def test_split_cash_shortfall_holds_without_shrinking_quantity(env):
+    pipeline, _broker, _manager, db = env
+    pick = _split_pick(db)
+    broker = MockBroker(initial_cash=100_000, price_feed={})
+    manager = OrderManager(broker=broker, risk=pipeline._make_risk_manager(broker, db), db=db)
+
+    submitted, _closed = _run(
+        pipeline, broker, manager, db, [pick], {pick.ticker: 63_000}
+    )
+
+    assert submitted == 0
+    assert pick.legs[0].order_id is None
+    assert db.query(OrderLog).count() == 0
+
+
+def test_split_dead_partial_accumulates_retry_fill_once(env):
+    pipeline, broker, manager, db = env
+    pick = _split_pick(db)
+    _seed_leg_order(db, pick.legs[0], status="expired", fill_qty=4)
+
+    _run(pipeline, broker, manager, db, [pick], {pick.ticker: 63_000})
+    _run(pipeline, broker, manager, db, [pick], {pick.ticker: 69_000})
+
+    assert pick.legs[0].filled_qty == pick.legs[0].planned_qty
+    assert pick.legs[0].status == "FILLED"
+
+
+def test_split_exit_dominates_next_eligible_entry(env):
+    pipeline, broker, manager, db = env
+    pick = _split_pick(db)
+
+    _run(pipeline, broker, manager, db, [pick], {pick.ticker: 63_000})
+    submitted, closed = _run(
+        pipeline, broker, manager, db, [pick], {pick.ticker: 81_000}
+    )
+
+    assert (submitted, closed) == (0, 1)
+    assert pick.state == "CLOSED"
+    assert pick.entries_cancelled is True
+    assert pick.exit_reason == "take_profit"
+    assert pick.legs[1].order_id is None
+    assert broker.get_positions().get(pick.ticker, 0) == 0
+
+
+def test_stale_split_bought_pick_still_exits_without_more_entries(env):
+    pipeline, broker, manager, db = env
+    pick = _split_pick(db)
+    _run(pipeline, broker, manager, db, [pick], {pick.ticker: 63_000})
+    _run(pipeline, broker, manager, db, [pick], {pick.ticker: 69_000})
+    assert pick.state == "BOUGHT"
+    pick.ref_date = trading_days_ago(dt.date.today(), 30)
+    db.commit()
+
+    submitted, closed = _run(
+        pipeline, broker, manager, db, [pick], {pick.ticker: 59_000}
+    )
+
+    assert (submitted, closed) == (0, 1)
+    assert pick.state == "CLOSED"
+    assert pick.exit_reason == "stop_loss"
 
 
 def test_entry_when_price_at_or_below_buy(env):

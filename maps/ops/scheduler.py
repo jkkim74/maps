@@ -19,7 +19,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy import delete, func
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from maps.common.constants import STRATEGY_GROUP_MAP
 from maps.common.account_history import account_history_start_utc_naive, utc_datetime_to_kst_date
@@ -27,6 +27,7 @@ from maps.common.db import SessionLocal
 from maps.common.sizing import risk_based_qty
 from maps.common.models import (
     AnalysisPick,
+    AnalysisPickLeg,
     BacktestRunLog,
     CandidateSnapshot,
     CollectionLog,
@@ -60,6 +61,7 @@ from maps.execution.broker_adapter import (
     BrokerAdapter,
     Order,
     OrderSide,
+    OrderStatus,
     OrderType,
     Position,
     get_broker,
@@ -2191,7 +2193,7 @@ class OperationalPipeline:
         없이 방치되어 원래 문제보다 나빠진다.
         """
         rows = (
-            db.query(AnalysisPick)
+            db.query(AnalysisPick).options(selectinload(AnalysisPick.legs))
             .filter(AnalysisPick.strategy_trade_enabled.is_(True))
             .filter(AnalysisPick.state.in_(["ARMED", "BOUGHT"]))
             .all()
@@ -2234,6 +2236,217 @@ class OperationalPipeline:
             available_cash=account.cash if account.cash else None,
         )
 
+    @staticmethod
+    def _split_order_log(db: Session, leg: AnalysisPickLeg) -> OrderLog | None:
+        if not leg.order_id:
+            return None
+        return db.query(OrderLog).filter(OrderLog.order_id == leg.order_id).first()
+
+    def _sync_split_legs(self, db: Session, pick: AnalysisPick) -> None:
+        """Apply each current order's incremental fill exactly once."""
+        changed = False
+        for leg in sorted(pick.legs, key=lambda item: item.sequence):
+            row = self._split_order_log(db, leg)
+            if row is None:
+                continue
+            status = (row.status or "").lower()
+            reported = int(row.fill_qty or 0)
+            if status == OrderStatus.FILLED.value and reported <= 0:
+                reported = int(row.qty or 0)
+            reported = max(reported, 0)
+            delta = max(reported - int(leg.current_order_fill_qty or 0), 0)
+            if delta:
+                old_qty = int(leg.filled_qty or 0)
+                fill_price = float(row.fill_price or row.order_price or leg.entry_price)
+                new_qty = min(old_qty + delta, leg.planned_qty)
+                applied = new_qty - old_qty
+                if applied > 0:
+                    leg.fill_price = (
+                        ((leg.fill_price or 0.0) * old_qty + fill_price * applied) / new_qty
+                    )
+                    leg.filled_qty = new_qty
+                    changed = True
+            if leg.current_order_fill_qty != reported:
+                leg.current_order_fill_qty = reported
+                changed = True
+
+            if leg.filled_qty >= leg.planned_qty:
+                if leg.status != "FILLED":
+                    leg.status = "FILLED"
+                    changed = True
+            elif status in (OrderStatus.PENDING.value, OrderStatus.PARTIALLY_FILLED.value):
+                next_status = "PARTIAL" if leg.filled_qty > 0 else "PENDING"
+                if leg.status != next_status:
+                    leg.status = next_status
+                    changed = True
+            elif status in (
+                OrderStatus.CANCELLED.value,
+                "expired",
+                OrderStatus.REJECTED.value,
+                OrderStatus.FILLED.value,
+            ):
+                leg.order_id = None
+                leg.current_order_fill_qty = 0
+                leg.status = "PENDING"
+                changed = True
+
+        if any(leg.filled_qty > 0 for leg in pick.legs) and pick.state == "ARMED":
+            pick.state = "BOUGHT"
+            changed = True
+        if changed:
+            db.commit()
+
+    def _cancel_split_live_order(
+        self,
+        *,
+        db: Session,
+        broker,
+        pick: AnalysisPick,
+    ) -> bool:
+        """Cancel the one attached live split order, returning confirmation."""
+        live_statuses = {OrderStatus.PENDING.value, OrderStatus.PARTIALLY_FILLED.value}
+        for leg in sorted(pick.legs, key=lambda item: item.sequence):
+            row = self._split_order_log(db, leg)
+            if row is None or (row.status or "").lower() not in live_statuses:
+                continue
+            try:
+                cancelled = bool(broker.cancel_order(leg.order_id))
+            except (NotImplementedError, BrokerAdapterError):
+                cancelled = False
+            if not cancelled:
+                return False
+            row.status = OrderStatus.CANCELLED.value
+            leg.order_id = None
+            leg.current_order_fill_qty = 0
+            leg.status = "CANCELLED"
+            db.commit()
+            return True
+        return True
+
+    def _process_split_strategy_trade(
+        self,
+        *,
+        db: Session,
+        broker,
+        manager: OrderManager,
+        pick: AnalysisPick,
+        pos: Position | None,
+        current: float,
+        now: dt.datetime,
+    ) -> tuple[int, int]:
+        """Process exits first, then submit at most one eligible split leg."""
+        held_qty = pos.quantity if pos is not None and pos.quantity > 0 else 0
+        take = held_qty > 0 and pick.target_price is not None and current >= pick.target_price
+        stop = held_qty > 0 and pick.stop_price is not None and current <= pick.stop_price
+        if take or stop:
+            pick.entries_cancelled = True
+            pick.exit_pending_reason = "take_profit" if take else "stop_loss"
+            for leg in pick.legs:
+                if leg.filled_qty < leg.planned_qty and leg.order_id is None:
+                    leg.status = "CANCELLED"
+            db.commit()
+
+        if pick.exit_pending_reason and held_qty > 0:
+            if not self._cancel_split_live_order(db=db, broker=broker, pick=pick):
+                return 0, 0
+            reason = pick.exit_pending_reason
+            order = Order(
+                strategy_id=f"strategy_trade:{pick.id}:exit",
+                ticker=pick.ticker,
+                side=OrderSide.SELL,
+                order_type=OrderType.MARKET,
+                quantity=held_qty,
+                current_price=current,
+                memo=f"strategy_trade {reason} cur={current:.0f}",
+            )
+            try:
+                result = manager.submit_exit(order, exit_reason=reason)
+            except (DuplicateOrderError, BrokerAdapterError) as exc:
+                logger.warning("Split strategy exit failed [%s] %s: %s", pick.ticker, reason, exc)
+                return 0, 0
+            pick.exit_order_id = result.order_id
+            pick.exit_reason = reason
+            pick.exit_pending_reason = None
+            pick.state = "CLOSED"
+            pick.last_action_at = now
+            db.commit()
+            return 0, 1
+
+        if pick.entries_cancelled:
+            return 0, 0
+        if is_pick_stale(pick, pick_cutoff_date(self._settings)):
+            pick.entries_cancelled = True
+            for leg in pick.legs:
+                if leg.filled_qty < leg.planned_qty and leg.order_id is None:
+                    leg.status = "CANCELLED"
+            db.commit()
+            return 0, 0
+
+        legs = sorted(pick.legs, key=lambda item: item.sequence)
+        next_leg = next((leg for leg in legs if leg.status != "FILLED"), None)
+        if next_leg is None or next_leg.status == "CANCELLED" or next_leg.order_id:
+            return 0, 0
+        if any(
+            leg.status != "FILLED"
+            for leg in legs
+            if leg.sequence < next_leg.sequence
+        ):
+            return 0, 0
+        if current > next_leg.entry_price:
+            return 0, 0
+        remaining = max(next_leg.planned_qty - next_leg.filled_qty, 0)
+        if remaining <= 0:
+            next_leg.status = "FILLED"
+            db.commit()
+            return 0, 0
+        try:
+            account = broker.get_account_balance()
+        except (NotImplementedError, BrokerAdapterError):
+            return 0, 0
+        required_cash = remaining * next_leg.entry_price
+        if account.cash < required_cash:
+            logger.warning(
+                "Split entry held for cash [%s leg=%d]: need=%.0f cash=%.0f",
+                pick.ticker,
+                next_leg.sequence,
+                required_cash,
+                account.cash,
+            )
+            return 0, 0
+
+        prefix = f"strategy_trade:{pick.id}:leg:{next_leg.sequence}:try:"
+        attempt = (
+            db.query(func.count(OrderLog.id))
+            .filter(OrderLog.strategy_id.like(f"{prefix}%"))
+            .scalar()
+            or 0
+        ) + 1
+        order = Order(
+            strategy_id=f"{prefix}{attempt}",
+            ticker=pick.ticker,
+            side=OrderSide.BUY,
+            order_type=OrderType.LIMIT,
+            quantity=remaining,
+            limit_price=next_leg.entry_price,
+            current_price=current,
+            memo=(
+                f"strategy_trade split leg={next_leg.sequence} "
+                f"remaining={remaining} cur={current:.0f}"
+            ),
+        )
+        try:
+            result = manager.submit(order)
+        except (KillSwitchError, DuplicateOrderError, ExposureCapError, BrokerAdapterError) as exc:
+            logger.warning("Split strategy entry failed [%s]: %s", pick.ticker, exc)
+            return 0, 0
+        next_leg.order_id = result.order_id
+        next_leg.status = "PENDING"
+        next_leg.current_order_fill_qty = 0
+        pick.entry_order_id = result.order_id
+        pick.last_action_at = now
+        db.commit()
+        return 1, 0
+
     def _process_strategy_trades(
         self,
         *,
@@ -2263,9 +2476,12 @@ class OperationalPipeline:
 
         for pick in picks:
             pos = positions.get(pick.ticker)
+            is_split = pick.trade_mode == "split" and bool(pick.legs)
+            if is_split:
+                self._sync_split_legs(db, pick)
 
             # ARMED → BOUGHT 정산: 진입 주문이 체결되어 포지션이 생겼다.
-            if pick.state == "ARMED" and pick.entry_order_id and pos is not None and pos.quantity > 0:
+            if not is_split and pick.state == "ARMED" and pick.entry_order_id and pos is not None and pos.quantity > 0:
                 pick.state = "BOUGHT"
                 pick.last_action_at = now
                 db.commit()   # 브로커 체결과 즉시 동기화 (이후 단계 실패로 인한 롤백 desync 방지)
@@ -2281,6 +2497,20 @@ class OperationalPipeline:
 
             # 매 사이클 추적 로그: 현재가가 목표/손절(또는 진입가)에 얼마나 가까운지 기록한다.
             # 주문이 나가지 않는 사이클에도 추적 경과를 남겨 운영 중 가시성을 확보한다.
+            if is_split:
+                split_submitted, split_closed = self._process_split_strategy_trade(
+                    db=db,
+                    broker=broker,
+                    manager=manager,
+                    pick=pick,
+                    pos=pos,
+                    current=current,
+                    now=now,
+                )
+                submitted += split_submitted
+                closed += split_closed
+                continue
+
             if pick.state == "ARMED" and pick.buy_price:
                 gap_pct = (current - pick.buy_price) / pick.buy_price * 100.0
                 logger.info(

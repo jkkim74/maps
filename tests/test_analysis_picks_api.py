@@ -711,3 +711,55 @@ def test_arm_plan_rejects_duplicate_active_ticker(client, monkeypatch) -> None:
 
     assert duplicate.status_code == 409
     assert "DUPLICATE_ACTIVE_TICKER" in str(duplicate.json()["detail"])
+
+
+def test_stop_entries_preserves_bought_exit_monitoring(client, monkeypatch) -> None:
+    import maps.api.analysis_picks as api
+    from maps.common.models import AnalysisPick
+
+    monkeypatch.setattr(api, "get_broker", lambda *args, **kwargs: _PlanBroker())
+    monkeypatch.setattr(api, "get_settings", lambda: _plan_settings())
+    armed = client.post(
+        "/api/v1/analysis-picks/arm-plan",
+        json=_trade_plan_payload(),
+    ).json()
+    with client.session_factory() as db:
+        pick = db.get(AnalysisPick, armed["pick_id"])
+        pick.state = "BOUGHT"
+        pick.legs[0].filled_qty = 5
+        pick.legs[0].status = "PARTIAL"
+        db.commit()
+
+    response = client.post(
+        f"/api/v1/analysis-picks/{armed['pick_id']}/stop-entries"
+    )
+
+    assert response.status_code == 200
+    item = response.json()
+    assert item["state"] == "BOUGHT"
+    assert item["entries_cancelled"] is True
+    assert item["strategy_trade_enabled"] is True
+    assert item["legs"][1]["status"] == "CANCELLED"
+    assert item["legs"][2]["status"] == "CANCELLED"
+
+
+def test_stop_entries_without_fill_returns_to_watch(client, monkeypatch) -> None:
+    import maps.api.analysis_picks as api
+
+    monkeypatch.setattr(api, "get_broker", lambda *args, **kwargs: _PlanBroker())
+    monkeypatch.setattr(api, "get_settings", lambda: _plan_settings())
+    armed = client.post(
+        "/api/v1/analysis-picks/arm-plan",
+        json=_trade_plan_payload(),
+    ).json()
+
+    response = client.post(
+        f"/api/v1/analysis-picks/{armed['pick_id']}/stop-entries"
+    )
+
+    assert response.status_code == 200
+    item = response.json()
+    assert item["state"] == "WATCH"
+    assert item["entries_cancelled"] is True
+    assert item["strategy_trade_enabled"] is False
+    assert all(leg["status"] == "CANCELLED" for leg in item["legs"])
