@@ -11,11 +11,12 @@ import datetime
 import logging
 
 import requests
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
+from maps.api.auth import current_identity, load_user
 from maps.api.deps import DbDep
 from maps.api.schemas import (
     AnalysisPickBatchCreate,
@@ -409,12 +410,21 @@ def _to_item(
 
 @router.get("", response_model=AnalysisPicksResponse)
 def list_picks(
+    request: Request,
     state: str | None = Query(default=None),
     source: str | None = Query(default=None),
     db: Session = DbDep,
 ) -> AnalysisPicksResponse:
-    """워치리스트 픽 목록을 최신순으로 반환한다(상태/소스 필터)."""
+    """워치리스트 픽 목록을 최신순으로 반환한다(상태/소스 필터).
+
+    일반 사용자에게는 자기 픽만 보인다. 소유자가 없는 행(`NULL`)은 운영자 픽이며
+    자동매매 대상은 지금도 그쪽 하나뿐이다.
+    """
+    identity = current_identity(request)
     q = db.query(AnalysisPick).options(selectinload(AnalysisPick.legs))
+    if not identity.is_admin:
+        owner = load_user(db, identity.username)
+        q = q.filter(AnalysisPick.owner_user_id == (owner.id if owner else None))
     if state:
         q = q.filter(AnalysisPick.state == state)
     else:

@@ -9,13 +9,13 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
-from maps.api.auth import auth_gate_middleware
+from maps.api.auth import auth_gate_middleware, current_identity, ensure_bootstrap_admin, is_allowed
 from maps.api.auth import router as auth_router
 from maps.common.db import Base, engine
 from maps.common.logging_config import configure_logging
@@ -49,6 +49,7 @@ from maps.api.telegram import router as telegram_router
 from maps.api.daily_digest import router as daily_digest_router
 from maps.api.blog import router as blog_router
 from maps.api.batch_monitor import router as batch_monitor_router
+from maps.api.users import router as users_router
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +81,8 @@ async def _lifespan(app: FastAPI):
         )
 
     Base.metadata.create_all(bind=engine)
+    # 계정이 하나도 없을 때만 .env 자격증명으로 관리자를 시드한다(최초 1회).
+    ensure_bootstrap_admin(settings)
     start_operational_scheduler_if_enabled()
     logger.info("MAPS 서버 시작 완료")
     try:
@@ -148,6 +151,7 @@ app.include_router(telegram_router)
 app.include_router(daily_digest_router)
 app.include_router(blog_router)
 app.include_router(batch_monitor_router)
+app.include_router(users_router)
 app.include_router(auth_router)
 
 
@@ -177,13 +181,24 @@ _SCREEN_MAP = {
     "live-monitor":     "Live Monitor",
     "data-quality":     "Data Quality",
     "ops-config":       "Ops Config",
+    "stock-report":     "Stock Report",
     "trade-review":     "거래 리뷰",
     "stock-analysis":   "주식 종목 분석",
     "analysis-picks":   "분석 워치리스트",
     "blog":             "매매 기록",
     "batch-monitor":    "배치 모니터",
     "maps-intro":       "MAPS 소개",
+    "settings":         "내 설정",
+    "admin-users":      "회원 관리",
 }
+
+# 화면 키 → 실제 경로. 대부분 `/키` 지만 관리자 전용 화면은 다르다.
+_SCREEN_PATHS = {"admin-users": "/admin/users"}
+
+
+def _screen_path(screen: str) -> str:
+    """화면 키의 URL 경로."""
+    return _SCREEN_PATHS.get(screen, f"/{screen}")
 
 
 # 서버 시작 시각 기반 캐시 버스터 — 재시작 시마다 브라우저 캐시 무효화
@@ -191,19 +206,67 @@ _STATIC_VER = str(int(time.time()))
 
 
 def _ctx(request: Request, screen: str, **extra) -> dict:
+    """모든 화면이 공유하는 템플릿 컨텍스트.
+
+    네비게이션은 역할로 거른다. 다만 이건 **편의일 뿐 통제가 아니다** — 실제 차단은
+    `auth_gate_middleware` 가 한다.
+    """
+    identity = current_identity(request)
+    nav_items = [
+        (key, label)
+        for key, label in _SCREEN_MAP.items()
+        if is_allowed(identity.role, _screen_path(key), "GET")
+    ]
     return {
         "request": request,
         "screen": screen,
         "title": _SCREEN_MAP.get(screen, screen),
-        "nav_items": list(_SCREEN_MAP.items()),
+        "nav_items": nav_items,
+        "nav_keys": {key for key, _label in nav_items},
+        "current_user": identity,
         "static_ver": _STATIC_VER,
         **extra,
     }
 
 
 @app.get("/", response_class=HTMLResponse)
-async def root(request: Request) -> HTMLResponse:
+async def root(request: Request):
+    """관리자는 대시보드, 일반 사용자는 개인 시작 화면으로 보낸다.
+
+    대시보드는 운영자 계좌 잔고를 그리므로 일반 사용자에게 렌더링하면 안 된다.
+    """
+    identity = current_identity(request)
+    if not identity.is_admin:
+        return RedirectResponse(url=_user_landing(request), status_code=303)
     return templates.TemplateResponse(request, "dashboard.html", _ctx(request, "dashboard"))
+
+
+def _user_landing(request: Request) -> str:
+    """일반 사용자의 시작 화면 경로 — 개인 설정이 없으면 종목분석."""
+    from maps.common import db as db_module
+    from maps.api.auth import load_user
+
+    identity = current_identity(request)
+    db = db_module.SessionLocal()
+    try:
+        user = load_user(db, identity.username)
+        screen = (user.preferences or {}).get("landing_screen") if user else None
+    finally:
+        db.close()
+    path = _screen_path(screen) if screen else "/stock-analysis"
+    return path if is_allowed(identity.role, path, "GET") else "/stock-analysis"
+
+
+@app.get("/settings", response_class=HTMLResponse)
+async def settings_page(request: Request) -> HTMLResponse:
+    """내 설정 — 모든 로그인 사용자."""
+    return templates.TemplateResponse(request, "settings.html", _ctx(request, "settings"))
+
+
+@app.get("/admin/users", response_class=HTMLResponse)
+async def admin_users_page(request: Request) -> HTMLResponse:
+    """회원 관리 — 관리자 전용(게이트가 차단한다)."""
+    return templates.TemplateResponse(request, "admin_users.html", _ctx(request, "admin-users"))
 
 
 @app.get("/dashboard", response_class=HTMLResponse)

@@ -2,12 +2,53 @@ from __future__ import annotations
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+from maps.common.db import Base
+from maps.common.models import AppUser
+from maps.common.passwords import hash_password
 
 _PASSWORD = "s3cret-pw"
+_USER_PASSWORD = "member-pw-123"
+
+
+def make_account_store(tmp_path, monkeypatch, name: str = "auth.db"):
+    """임시 SQLite 계정 저장소를 만들고 `SessionLocal` 을 그쪽으로 돌린다.
+
+    `maps.common.db.SessionLocal` 하나만 바꾸면 인증 게이트와 `get_db()` 가 함께 따라온다.
+    """
+    from maps.common import db as db_module
+
+    engine = create_engine(
+        f"sqlite:///{(tmp_path / name).as_posix()}", connect_args={"check_same_thread": False}
+    )
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    monkeypatch.setattr(db_module, "SessionLocal", factory)
+    return factory
+
+
+def add_user(factory, username: str, password: str, role: str = "user", status: str = "active"):
+    """테스트용 계정 한 명을 만든다."""
+    session = factory()
+    try:
+        user = AppUser(
+            username=username,
+            password_hash=hash_password(password),
+            role=role,
+            status=status,
+        )
+        session.add(user)
+        session.commit()
+        session.refresh(user)
+        return user.id
+    finally:
+        session.close()
 
 
 @pytest.fixture
-def auth_client(monkeypatch):
+def auth_client(tmp_path, monkeypatch):
     """MAPS_AUTH_ENABLED=true 상태의 TestClient. 종료 시 설정 캐시를 원복한다."""
     monkeypatch.setenv("MAPS_AUTH_ENABLED", "true")
     monkeypatch.setenv("MAPS_AUTH_USERNAME", "admin")
@@ -16,6 +57,9 @@ def auth_client(monkeypatch):
     from maps.common.settings import reload_settings
 
     reload_settings()
+    factory = make_account_store(tmp_path, monkeypatch)
+    add_user(factory, "admin", _PASSWORD, role="admin")
+    add_user(factory, "member", _USER_PASSWORD, role="user")
     from main import app
 
     client = TestClient(app)

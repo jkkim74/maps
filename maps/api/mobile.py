@@ -15,7 +15,8 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from maps.api.auth import (
-    check_credentials,
+    ROLE_ADMIN,
+    authenticate,
     make_mobile_token,
     verify_mobile_token,
 )
@@ -102,17 +103,25 @@ def _mobile_regime(db: Session) -> MobileRegime:
 
 
 @router.post("/login", response_model=MobileLoginResponse)
-def mobile_login(body: MobileLoginRequest) -> MobileLoginResponse:
-    """공유 비밀번호를 검증하고 Bearer 토큰을 발급한다(앱 전용).
+def mobile_login(
+    body: MobileLoginRequest, db: Session = Depends(get_db)
+) -> MobileLoginResponse:
+    """계정을 검증하고 Bearer 토큰을 발급한다(앱 전용).
 
-    인증 비활성 환경에서도 올바른 자격증명이면 토큰을 발급하며, 자격증명이
-    틀리거나 비밀번호 미설정이면 401. 앱은 401 응답으로 로그인 실패를 구분한다.
+    자격증명이 틀리거나 비활성 계정이면 401. 앱은 401 응답으로 로그인 실패를 구분한다.
+
+    모바일 API 는 운영자 계좌·포지션을 반환하므로 **1차에서는 관리자 전용**이다.
+    일반 사용자는 로그인해도 토큰을 받지 못한다(403).
     """
     settings = get_settings()
-    if not check_credentials(settings, body.username, body.password):
+    user = authenticate(db, body.username, body.password)
+    if user is None:
         raise HTTPException(status_code=401, detail="아이디 또는 비밀번호가 올바르지 않습니다.")
-    username = body.username or settings.maps_auth_username
-    return MobileLoginResponse(token=make_mobile_token(username, settings), username=username)
+    if user.role != ROLE_ADMIN:
+        raise HTTPException(status_code=403, detail="모바일 앱은 아직 관리자만 사용할 수 있습니다.")
+    return MobileLoginResponse(
+        token=make_mobile_token(user.username, settings), username=user.username
+    )
 
 
 @router.get("/summary", response_model=MobileSummaryResponse)

@@ -34,6 +34,7 @@ api/
 ├── telegram.py            # 텔레그램 봇 웹훅 (인라인 버튼 콜백)
 ├── trade_review.py        # SCR-17 거래 리뷰
 ├── trend_strength.py      # SCR-09 TrendStrength 모니터
+├── users.py               # 회원 계정 · 개인 설정 · 관리자 회원 관리
 └── wfa.py                 # SCR-11 Walk-Forward 리포트
 ```
 
@@ -65,18 +66,49 @@ DbDep = Depends(get_db)                    # 라우터 함수 파라미터로 �
 | `scheduler.py` | `/api/v1/ops/scheduler` |
 | 나머지 | `/api/v1/` + 파일명의 케밥케이스 (`stock_analysis.py` → `/api/v1/stock-analysis`) |
 
-## 인증
+## 인증과 권한 — 강제 지점은 `auth.py` 한 곳
 
-`auth.py` 가 단일 공용 비밀번호 로그인을 처리하고, 세션 쿠키 게이트는 루트 `main.py` 에 있다.
-`MAPS_AUTH_ENABLED=true` 인 운영에서만 켜지며, 테스트는 `tests/conftest.py` 의 autouse
-fixture 로 항상 꺼진다.
+`auth.py` 의 `auth_gate_middleware` 가 **모든 요청**의 인증과 역할을 판정한다.
+라우터에 권한 `Depends` 를 뿌리지 않는다. `MAPS_AUTH_ENABLED=true` 인 운영에서만 켜지며,
+테스트는 `tests/conftest.py` 의 autouse fixture 로 항상 꺼진다(꺼지면 관리자로 동작).
+
+| 이름 | 설명 |
+|---|---|
+| `authenticate(db, username, password)` | `app_user` 계정 검증. 비활성 계정은 실패 |
+| `load_user(db, username)` | 활성 계정 조회 — 매 요청 역할을 DB에서 다시 읽는다 |
+| `current_identity(request)` | `request.state.user` → `Identity(id, username, role)` |
+| `is_allowed(role, path, method)` | **허용 목록** 판정 |
+| `ensure_bootstrap_admin()` | 계정이 0개일 때만 `.env` 자격증명으로 관리자 시드 |
+
+> 🔴 **`_USER_ALLOWED` 에 없는 경로는 전부 관리자 전용이다(fail-closed).** 새 라우터를
+> 추가하면 기본적으로 닫혀 있고, 일반 사용자에게 열려면 명시적으로 등록해야 한다.
+> 목록은 GET 만 여는 식으로 쓰며, 이는 **상태를 바꾸는 동작이 모두 POST/PUT/DELETE**
+> 라는 가정에 기댄다 — 조회용 POST 엔드포인트를 만들면 그 가정이 깨진다.
+>
+> ⚠️ 역할·상태를 세션이나 토큰에 굽지 않는다. 매 요청 DB를 보므로 계정을 비활성화하면
+> **이미 로그인한 세션과 발급된 모바일 토큰도 즉시** 막힌다.
+
+## users.py — 계정과 개인 설정
+
+| 메서드 | 경로 | 권한 |
+|---|---|---|
+| `GET` | `/me` | 본인 — 계정 + 해석된 설정 + 오늘 사용량 |
+| `PUT` | `/me/preferences` | 본인 — `UserPreferences` 로 검증 후 저장 |
+| `POST` | `/me/password` | 본인 — 현재 비밀번호 확인 필요 |
+| `GET`/`POST` | `` | 관리자 — 목록·계정 생성 |
+| `PUT` | `/{id}` | 관리자 — 역할·상태·요금제·한도 |
+| `POST` | `/{id}/reset-password` | 관리자 — 임시 비밀번호 1회 반환 |
+
+> ⚠️ 응답에 `password_hash` 를 절대 싣지 않는다(`UserSummary` 로 차단).
+> 마지막 활성 관리자는 강등·비활성화할 수 없다 — 하면 아무도 운영 화면에 못 들어간다.
 
 ## 알아 둘 라우터
 
 | 파일 | 비고 |
 |---|---|
-| `stock_analysis.py` | 분석은 **SSE 스트리밍**. 완료 시 이력을 정확히 한 번 저장하고, 저장만 실패하면 `history_error` 를 함께 내려보낸다 |
-| `analysis_picks.py` | 안전한도 → preview → `arm-plan`. **최종 arm 에서 잔고·게이트·중복을 다시 검증한다** |
+| `stock_analysis.py` | 분석은 **SSE 스트리밍**. 완료 시 이력을 정확히 한 번 저장하고, 저장만 실패하면 `history_error` 를 함께 내려보낸다. 일반 사용자는 **자기 이력만** 보이고 일일 한도(429)가 적용된다 |
+| `analysis_picks.py` | 안전한도 → preview → `arm-plan`. **최종 arm 에서 잔고·게이트·중복을 다시 검증한다**. 목록은 소유자로 걸러진다(`owner_user_id IS NULL` = 운영자 픽) |
+| `mobile.py` | 운영자 계좌·포지션을 반환하므로 **관리자 전용**이다. 일반 사용자 로그인은 403 |
 | `telegram.py` | 웹훅 URL 은 텔레그램 서버에 저장된다. 도메인 변경 시 `scripts/setup_telegram_webhook.py` 재실행 필요 |
 | `risk.py` | Kill Switch 발동·해제·청산 승인 |
 | `scheduler.py` | 잡 수동 실행 — 운영에서 파이프라인을 돌리는 창구 |

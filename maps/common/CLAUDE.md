@@ -13,9 +13,35 @@ common/
 ├── exceptions.py      # MAPS 커스텀 예외 계층
 ├── logging_config.py  # 콘솔 + 로테이팅 파일 로그 설정
 ├── models.py          # 전체 DB 스키마 (ORM 모델)
+├── passwords.py       # scrypt 비밀번호 해시·검증 (stdlib만)
 ├── settings.py        # pydantic-settings 기반 환경변수 관리
-└── sizing.py          # risk_based_qty — 계좌 위험 기반 주문 수량
+├── sizing.py          # risk_based_qty — 계좌 위험 기반 주문 수량
+└── user_prefs.py      # 개인 설정 해석 + 일일 AI 분석 한도
 ```
+
+## passwords.py — 계정 비밀번호
+
+| 함수 | 설명 |
+|---|---|
+| `hash_password(plain)` | `scrypt$n$r$p$salt$hash` 문자열 생성. 빈 비밀번호는 `ValueError` |
+| `verify_password(plain, stored)` | 상수 시간 비교. **형식이 깨져도 예외 없이 `False`** (fail-closed) |
+| `needs_rehash(stored)` | 저장된 파라미터가 현재 기준보다 약하면 참 — 로그인 성공 시 갱신 |
+
+> `hashlib.scrypt` 는 표준 라이브러리다. `passlib`/`bcrypt` 를 새 의존성으로 넣지 않는다.
+> 파라미터가 저장값 안에 들어 있으므로 세기를 올려도 기존 해시가 계속 검증된다.
+
+## user_prefs.py — 개인 설정과 분석 한도
+
+| 함수 | 설명 |
+|---|---|
+| `resolve(user, settings)` | 저장된 설정을 검증해 반환. 없거나 깨졌으면 전역 기본값 |
+| `daily_analysis_limit(user)` | 계정별 하루 분석 허용 횟수. 관리자는 `-1`(무제한) |
+| `analysis_used_today(db, user)` | 오늘(KST) 사용량 |
+| `analysis_quota_exceeded(db, user)` | 한도 초과 여부 |
+
+> ⚠️ 한도 확인은 **Bedrock 을 호출하기 전에** 해야 한다. 비용은 호출 순간 발생한다.
+> 사용량은 `stock_analysis_history` 행 수로 세며 경계는 KST 자정이다
+> (`created_at` 은 UTC naive 라 그대로 비교하면 하루씩 어긋난다).
 
 ## sizing.py
 
@@ -96,6 +122,7 @@ MAPSError (base)
 | `promotion_history` | `PromotionHistory` | 승격 결정 감사 로그 |
 | `tradeability_weight_log` | `TradeabilityWeightLog` | 가중치 프리셋 변경 이력 |
 | `order_log` | `OrderLog` | Mock+Live 주문 감사 로그 |
+| `app_user` | `AppUser` | 로그인 계정 · 역할(admin/user) · 개인 설정 JSON · 요금제 |
 | `stock_report_runs` | `StockReportRun` | Stock Report 생성 이력 |
 | `kill_switch_log` | `KillSwitchLog` | Kill Switch 이벤트 감사 |
 | `strategy_param_log` | `StrategyParamLog` | 실거래 파라미터 변경 이력 |

@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+  <h2>회원 관리</h2>
+  <p class="muted">관리자가 계정을 만들고 역할·상태·분석 한도를 조정한다. 비밀번호는 볼 수 없고 재발급만 가능하다.</p>
+</section>
+
+<section class="card">
+  <h3>계정 추가</h3>
+  <label>아이디 <input id="new-username" type="text"></label>
+  <label>비밀번호 (8자 이상) <input id="new-password" type="password"></label>
+  <label>표시 이름 <input id="new-display" type="text"></label>
+  <label>역할
+    <select id="new-role">
+      <option value="user">일반 사용자</option>
+      <option value="admin">관리자</option>
+    </select>
+  </label>
+  <label>일일 분석 한도 <input id="new-limit" type="number" min="0" placeholder="비우면 기본값"></label>
+  <p>
+    <button class="topbar-btn" id="create-user">계정 만들기</button>
+    <span id="create-status" class="muted"></span>
+  </p>
+</section>
+
+<section class="card">
+  <h3>회원 목록</h3>
+  <table class="data-table">
+    <thead>
+      <tr>
+        <th>ID</th><th>아이디</th><th>이름</th><th>역할</th><th>상태</th>
+        <th>요금제</th><th>일일 한도</th><th>마지막 로그인</th><th>작업</th>
+      </tr>
+    </thead>
+    <tbody id="user-rows"><tr><td colspan="9">불러오는 중…</td></tr></tbody>
+  </table>
+</section>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="/static/js/admin-users.js?v={{ static_ver }}"></script>
+{% endblock %}

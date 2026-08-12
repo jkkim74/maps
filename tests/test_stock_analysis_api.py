@@ -240,7 +240,7 @@ def test_analysis_stream_reuses_one_trade_plan_for_narrative_and_final_event(
     monkeypatch.setattr(
         api,
         "save_analysis_history_with_new_session",
-        lambda result, narrative, trade_plan: (
+        lambda result, narrative, trade_plan, owner_user_id=None: (
             saved.append((result, narrative, trade_plan)) or 41
         ),
     )
@@ -290,7 +290,7 @@ def test_analysis_stream_finishes_with_manual_plan_when_generation_fails(
     monkeypatch.setattr(
         api,
         "save_analysis_history_with_new_session",
-        lambda result, narrative, trade_plan: 42,
+        lambda result, narrative, trade_plan, owner_user_id=None: 42,
     )
 
     response = TestClient(app).get("/api/v1/stock-analysis/stream?ticker=005930")
@@ -323,7 +323,7 @@ def test_analysis_stream_reports_history_failure_without_losing_result(monkeypat
     monkeypatch.setattr(
         api,
         "save_analysis_history_with_new_session",
-        lambda *args: (_ for _ in ()).throw(RuntimeError("db down")),
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("db down")),
     )
 
     response = TestClient(app).get("/api/v1/stock-analysis/stream?ticker=005930")
@@ -349,7 +349,7 @@ def test_non_streaming_analysis_persists_snapshot_once(monkeypatch) -> None:
     monkeypatch.setattr(analyzer, "analyze", lambda *args, **kwargs: _analysis_result())
     monkeypatch.setattr(api, "generate_trade_plan", lambda request: plan)
 
-    def fake_save(db, *, result, narrative, trade_plan):
+    def fake_save(db, *, result, narrative, trade_plan, owner_user_id=None):
         saved.append((result, narrative, trade_plan))
         return SimpleNamespace(id=17)
 

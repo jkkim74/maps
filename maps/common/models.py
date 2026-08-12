@@ -626,6 +626,8 @@ class AnalysisPick(Base):
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc)
     )
+    # 소유자. NULL = 운영자(시스템) 픽 — 자동매매 대상은 지금도 이쪽 하나뿐이다.
+    owner_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     ref_date: Mapped[datetime.date] = mapped_column(Date, nullable=False, index=True)
     ticker: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(128), nullable=False)
@@ -711,6 +713,8 @@ class StockAnalysisHistory(Base):
     __tablename__ = "stock_analysis_history"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # 소유자. NULL = 개인화 도입 이전의 운영자 데이터 (일반 사용자에게는 보이지 않는다).
+    owner_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime,
         nullable=False,
@@ -811,6 +815,44 @@ class AnalysisRun(Base):
     candidates_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+# ---------------------------------------------------------------------------
+# 회원 계정 — 개인화 1차. 자동매매는 계속 운영자 1계좌에서만 돌아간다.
+# ---------------------------------------------------------------------------
+class AppUser(Base):
+    """app_user — 로그인 계정, 역할, 개인 설정.
+
+    `role=admin` 은 기존 운영자 화면 전체를, `role=user` 는 분석·후보·워치리스트만
+    쓴다. 실제 차단은 `maps/api/auth.py` 의 게이트 미들웨어가 한 곳에서 한다.
+    `plan` 은 유료 사용자 계좌 연결 단계를 위한 자리이며 지금은 표시 전용이다.
+    """
+
+    __tablename__ = "app_user"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    username: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    display_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    role: Mapped[str] = mapped_column(String(16), nullable=False, default="user")  # admin | user
+    # active | pending(가입 신청 대기) | disabled
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
+    plan: Mapped[str] = mapped_column(String(16), nullable=False, default="free")  # free | paid
+    # 개인 설정 전체. 스키마는 api/schemas.py:UserPreferences 가 검증한다.
+    preferences: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # 하루 AI 종목분석 허용 횟수. NULL 이면 전역 기본값을 쓴다.
+    daily_analysis_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc)
+    )
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+        default=lambda: datetime.datetime.now(datetime.timezone.utc),
+        onupdate=lambda: datetime.datetime.now(datetime.timezone.utc),
+    )
+    last_login_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 # ---------------------------------------------------------------------------

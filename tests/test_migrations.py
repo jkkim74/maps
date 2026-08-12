@@ -26,7 +26,7 @@ def test_fresh_database_reaches_stock_analysis_history_schema(tmp_path, monkeypa
         revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
     engine.dispose()
 
-    assert revision == "0023_score_readiness_feeds"
+    assert revision == "0024_app_user"
     assert {"trade_mode", "total_budget", "entries_cancelled", "exit_pending_reason"} <= pick_columns
     assert "analysis_pick_leg" in inspector.get_table_names()
     history_columns = {
@@ -47,6 +47,13 @@ def test_fresh_database_reaches_stock_analysis_history_schema(tmp_path, monkeypa
     indexes = {index["name"]: index for index in inspector.get_indexes("analysis_pick")}
     assert indexes["uq_analysis_pick_active_ticker"]["unique"] == 1
     assert application_logger.disabled is False
+
+    # 개인화 1차: 계정 테이블과 소유자 컬럼. 기존 행은 NULL 로 남는다(backfill 없음).
+    assert "app_user" in inspector.get_table_names()
+    user_columns = {column["name"] for column in inspector.get_columns("app_user")}
+    assert {"username", "password_hash", "role", "status", "plan", "preferences"} <= user_columns
+    assert "owner_user_id" in pick_columns
+    assert "owner_user_id" in history_columns
 
 
 def test_split_plan_migration_reports_existing_active_ticker_duplicates(

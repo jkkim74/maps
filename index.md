@@ -14,6 +14,9 @@
 | 목표가·매수가 산출 | `maps/strategy/price_calculator.py`, AI 계획은 `maps/ai/trade_planner.py` |
 | 호가 단위·거래일 | `maps/market/trading_rules.py` |
 | **신규 매수·승격이 막힌 이유** | `maps/ops/score_readiness.py` (실측 커버리지 100% 게이트) |
+| **로그인·권한이 막힌 이유** | `maps/api/auth.py` → `is_allowed()` 의 `_USER_ALLOWED` (fail-closed) |
+| 회원 계정·역할·개인 설정 | `maps/api/users.py`, `maps/common/user_prefs.py`, 모델은 `AppUser` |
+| 비밀번호 해시 | `maps/common/passwords.py` (stdlib scrypt) |
 | 픽 만료·신선도 | `maps/ops/pick_freshness.py` (`BOUGHT` 픽은 제외) |
 | 장세(regime) 판정 | `maps/market/regime.py` + `regime_history.apply_hysteresis()` (최종값은 후자) |
 | 시장폭·업종 | `maps/market/breadth.py`, `maps/market/sector_selector.py` |
@@ -93,5 +96,7 @@
 - 결측 피드를 중립 50으로 채우지 않는다 — 게이트가 조용히 열린다
 - `created_at` 은 UTC naive 다. 날짜 판정은 `ref_date`(KST) 로 한다
 - 신규 전략은 `STRATEGY_GROUP_MAP` + `catalog.py` + `docs/strategy_guides/` 까지 등록
+- 새 라우터는 **기본이 관리자 전용**이다. 일반 사용자에게 열려면 `_USER_ALLOWED` 에 등록
+- 사용자 데이터를 다루는 조회는 `owner_user_id` 로 걸러야 한다 (`NULL` = 운영자 소유)
 - 마이그레이션이 있으면 배포에 `alembic upgrade head` 를 포함한다
 - **16:00~16:45 KST 배포 금지** — `/analyze` 파이프라인 실행 창

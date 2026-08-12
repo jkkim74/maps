@@ -24,9 +24,12 @@ def _enable_auth(monkeypatch, *, password="pw123", username="admin"):
 
 
 @pytest.fixture
-def client():
+def client(monkeypatch):
     from main import app
     from maps.api.deps import get_db
+    from maps.common import db as db_module
+    from maps.common.models import AppUser
+    from maps.common.passwords import hash_password
 
     engine = create_engine(
         "sqlite:///:memory:",
@@ -35,6 +38,17 @@ def client():
     )
     Base.metadata.create_all(engine)
     factory = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+    # 모바일 로그인은 계정 저장소를 본다. 인증 게이트도 같은 저장소를 보게 맞춘다.
+    seed = factory()
+    try:
+        seed.add(
+            AppUser(username="admin", password_hash=hash_password("pw123"), role="admin")
+        )
+        seed.commit()
+    finally:
+        seed.close()
+    monkeypatch.setattr(db_module, "SessionLocal", factory)
 
     def override_get_db():
         db = factory()

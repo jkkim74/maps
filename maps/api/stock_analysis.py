@@ -8,12 +8,13 @@ import json
 import logging
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from maps.ai.trade_planner import AITradePlan, AITradePlanner, StockTradeFacts
+from maps.api.auth import current_identity, load_user
 from maps.api.deps import DbDep
 from maps.api.schemas import (
     StockAnalysisHistoryDetail,
@@ -23,9 +24,11 @@ from maps.api.schemas import (
     StockTradePlanRequest,
     StockTradePlanResponse,
 )
+from maps.common import db as db_module
 from maps.common.exceptions import AIScoringError
 from maps.common.models import StockAnalysisHistory
 from maps.common.settings import get_settings
+from maps.common.user_prefs import analysis_quota_exceeded
 from maps.market.trading_rules import round_to_krx_tick, round_up_krx_price
 from maps.stock_analysis.history import (
     CurrentPriceUnavailable,
@@ -44,6 +47,40 @@ class AnalyzeRequest(BaseModel):
 
 
 _MANUAL_MESSAGE = "AI 매매계획을 사용할 수 없어 수동 입력이 필요합니다."
+
+
+def _owner_scope(request: Request, db: Session):
+    """(요청자 계정, 조회를 자기 것으로 제한해야 하는지)를 반환한다.
+
+    관리자와 인증 비활성 환경은 전체를 본다. 일반 사용자는 자기 소유만 본다.
+    """
+    identity = current_identity(request)
+    if identity.is_admin:
+        return None, False
+    return load_user(db, identity.username), True
+
+
+def _may_read(request: Request, db: Session, row: StockAnalysisHistory) -> bool:
+    """이 분석 이력을 요청자가 볼 수 있는지 판단한다."""
+    user, scoped = _owner_scope(request, db)
+    if not scoped:
+        return True
+    return user is not None and row.owner_user_id == user.id
+
+
+def _guard_analysis_quota(request: Request, db: Session) -> int | None:
+    """일일 분석 한도를 확인하고 소유자 id 를 돌려준다.
+
+    한도 초과면 **AI를 호출하기 전에** 429로 끊는다 — Bedrock 비용은 호출 순간 발생한다.
+    """
+    user, _scoped = _owner_scope(request, db)
+    if user is None:
+        return None
+    if analysis_quota_exceeded(db, user):
+        raise HTTPException(
+            status_code=429, detail="오늘 사용할 수 있는 종목분석 횟수를 모두 썼습니다."
+        )
+    return user.id
 
 
 def _manual_trade_plan(
@@ -149,12 +186,20 @@ def _history_list_item(row: StockAnalysisHistory) -> StockAnalysisHistoryListIte
 
 @router.get("/history", response_model=StockAnalysisHistoryListResponse)
 def list_analysis_history(
+    request: Request,
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     db: Session = DbDep,
 ) -> StockAnalysisHistoryListResponse:
-    """Return completed analyses newest first without heavy detail fields."""
+    """Return completed analyses newest first without heavy detail fields.
+
+    일반 사용자에게는 **자기 분석만** 보인다. 소유자가 없는 기존 행은 운영자 데이터다.
+    """
+    user, scoped = _owner_scope(request, db)
     query = db.query(StockAnalysisHistory)
+    if scoped:
+        owner_id = user.id if user is not None else None
+        query = query.filter(StockAnalysisHistory.owner_user_id == owner_id)
     total = query.count()
     rows = (
         query.order_by(
@@ -173,11 +218,11 @@ def list_analysis_history(
 
 @router.get("/history/{history_id}", response_model=StockAnalysisHistoryDetail)
 def get_analysis_history(
-    history_id: int, db: Session = DbDep
+    history_id: int, request: Request, db: Session = DbDep
 ) -> StockAnalysisHistoryDetail:
     """Return one stored analysis without refreshing or mutating it."""
     row = db.get(StockAnalysisHistory, history_id)
-    if row is None:
+    if row is None or not _may_read(request, db, row):
         raise HTTPException(status_code=404, detail="분석 이력을 찾을 수 없습니다.")
     return StockAnalysisHistoryDetail(
         **_history_list_item(row).model_dump(),
@@ -193,11 +238,11 @@ def get_analysis_history(
     response_model=StockAnalysisPriceOverlay,
 )
 def refresh_history_price(
-    history_id: int, db: Session = DbDep
+    history_id: int, request: Request, db: Session = DbDep
 ) -> StockAnalysisPriceOverlay:
     """Refresh only the mutable current-price overlay for a saved analysis."""
     row = db.get(StockAnalysisHistory, history_id)
-    if row is None:
+    if row is None or not _may_read(request, db, row):
         raise HTTPException(status_code=404, detail="분석 이력을 찾을 수 없습니다.")
     try:
         return refresh_analysis_price(db, row)
@@ -206,13 +251,16 @@ def refresh_history_price(
 
 
 @router.post("/analyze")
-async def analyze_stock(req: AnalyzeRequest, db: Session = DbDep) -> dict[str, Any]:
+async def analyze_stock(
+    req: AnalyzeRequest, request: Request, db: Session = DbDep
+) -> dict[str, Any]:
     """종목명 또는 6자리 종목코드를 받아 종합 분석 결과를 반환한다 (단일 응답)."""
     from maps.stock_analysis.analyzer import analyze
 
     ticker = req.ticker.strip()
     if not ticker:
         raise HTTPException(status_code=400, detail="ticker가 비어 있습니다.")
+    owner_user_id = _guard_analysis_quota(request, db)
 
     settings = get_settings()
     loop = asyncio.get_running_loop()
@@ -232,12 +280,13 @@ async def analyze_stock(req: AnalyzeRequest, db: Session = DbDep) -> dict[str, A
         result=result,
         narrative="",
         trade_plan=trade_plan.model_dump(mode="json"),
+        owner_user_id=owner_user_id,
     )
     return {**result, "history_id": history.id}
 
 
 @router.get("/stream")
-async def analyze_stream(ticker: str) -> StreamingResponse:
+async def analyze_stream(ticker: str, request: Request) -> StreamingResponse:
     """Server-Sent Events로 분석 진행률을 실시간 스트리밍한다.
 
     각 이벤트 형식:
@@ -252,6 +301,10 @@ async def analyze_stream(ticker: str) -> StreamingResponse:
     ticker = ticker.strip()
     if not ticker:
         raise HTTPException(status_code=400, detail="ticker가 비어 있습니다.")
+
+    # 스트림을 열기 전에 한도를 확인한다 — 열고 나면 429를 돌려줄 수 없다.
+    with db_module.SessionLocal() as quota_db:
+        owner_user_id = _guard_analysis_quota(request, quota_db)
 
     settings = get_settings()
     loop = asyncio.get_running_loop()
@@ -305,6 +358,7 @@ async def analyze_stream(ticker: str) -> StreamingResponse:
                     result,
                     "".join(narrative_parts),
                     trade_plan_payload,
+                    owner_user_id=owner_user_id,
                 )
             except Exception as exc:
                 history_error = str(exc)

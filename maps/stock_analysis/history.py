@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy.orm import Session
 
 from maps.api.schemas import StockAnalysisPriceOverlay
-from maps.common.db import SessionLocal
+from maps.common import db as db_module
 from maps.common.models import HistoricalOHLCV, StockAnalysisHistory
 from maps.execution.broker_adapter import get_broker
 
@@ -26,10 +26,16 @@ def save_analysis_history(
     result: Mapping[str, Any],
     narrative: str,
     trade_plan: Mapping[str, Any],
+    owner_user_id: int | None = None,
 ) -> StockAnalysisHistory:
-    """완료된 분석을 중복 제거 없이 독립 이력으로 저장한다."""
+    """완료된 분석을 중복 제거 없이 독립 이력으로 저장한다.
+
+    `owner_user_id` 가 None 이면 운영자(시스템) 소유로 남는다 — 일반 사용자에게는
+    보이지 않고 관리자에게만 보인다.
+    """
     technical = result.get("기술적분석") or {}
     row = StockAnalysisHistory(
+        owner_user_id=owner_user_id,
         ticker=str(result.get("종목코드") or "").strip(),
         name=str(result.get("종목명") or result.get("종목코드") or "").strip(),
         market=result.get("시장"),
@@ -50,14 +56,16 @@ def save_analysis_history_with_new_session(
     result: Mapping[str, Any],
     narrative: str,
     trade_plan: Mapping[str, Any],
+    owner_user_id: int | None = None,
 ) -> int:
     """작업 스레드에서 전용 세션으로 분석 이력 한 건을 저장한다."""
-    with SessionLocal() as db:
+    with db_module.SessionLocal() as db:
         return save_analysis_history(
             db,
             result=result,
             narrative=narrative,
             trade_plan=trade_plan,
+            owner_user_id=owner_user_id,
         ).id
 
 

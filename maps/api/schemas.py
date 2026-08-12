@@ -1106,3 +1106,75 @@ class BatchMonitorResponse(BaseModel):
     days: list[str]                    # 최신순
     jobs: list[BatchJobRow]
     generated_at: str
+
+
+# ── 개인화: 회원 계정 · 개인 설정 ─────────────────────────────────────────────
+class UserPreferences(BaseModel):
+    """개인 설정 — 전 필드 기본값이 있고, 없는 키는 저장하지 않는다.
+
+    여기 정의된 값은 **자기 화면에만** 적용된다. 주문 게이트·스케줄러 같은 운영값은
+    전역 `.env` 가 정본이며 사용자 설정으로 덮이지 않는다.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    landing_screen: str = "stock-analysis"
+    candidate_min_score: float | None = None      # 후보 화면 표시 필터 (주문 게이트 아님)
+    candidate_markets: list[str] = []             # 빈 목록 = 전체
+    notify_push: bool = False
+    notify_telegram: bool = False
+    telegram_chat_id: str | None = None           # 개인 대상 (전역 chat id 와 별개)
+
+
+class UserSummary(BaseModel):
+    """회원 목록·상세 응답. 비밀번호 해시는 절대 싣지 않는다."""
+
+    id: int
+    username: str
+    display_name: str | None = None
+    email: str | None = None
+    role: str
+    status: str
+    plan: str
+    daily_analysis_limit: int | None = None
+    created_at: str | None = None
+    last_login_at: str | None = None
+
+
+class MeResponse(BaseModel):
+    """내 계정 + 해석된 개인 설정."""
+
+    user: UserSummary
+    preferences: UserPreferences
+    analysis_used_today: int
+    analysis_limit: int
+
+
+class UserCreateRequest(BaseModel):
+    username: str
+    password: str
+    display_name: str | None = None
+    email: str | None = None
+    role: str = "user"
+    daily_analysis_limit: int | None = None
+
+
+class UserUpdateRequest(BaseModel):
+    display_name: str | None = None
+    email: str | None = None
+    role: str | None = None
+    status: str | None = None
+    plan: str | None = None
+    daily_analysis_limit: int | None = None
+
+
+class PasswordChangeRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
+class PasswordResetResponse(BaseModel):
+    """관리자 재발급 — 임시 비밀번호는 이 응답에서 한 번만 보여 준다."""
+
+    username: str
+    temporary_password: str

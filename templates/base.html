@@ -22,96 +22,155 @@
   <nav>
     <div class="nav-section">
       <div class="nav-section-label">소개</div>
+      {% if 'maps-intro' in nav_keys %}
       <a href="/maps-intro"      class="nav-item {% if screen == 'maps-intro' %}active{% endif %}">
         <span class="nav-scr">★</span>MAPS 소개
         <span class="nav-badge new">NEW</span>
       </a>
+      {% endif %}
     </div>
 
     <div class="nav-section">
       <div class="nav-section-label">메인 워크플로</div>
+      {% if 'dashboard' in nav_keys %}
       <a href="/dashboard"       class="nav-item {% if screen == 'dashboard' %}active{% endif %}">
         <span class="nav-scr">01</span>대시보드 홈
       </a>
+      {% endif %}
+      {% if 'strategies' in nav_keys %}
       <a href="/strategies"      class="nav-item {% if screen == 'strategies' %}active{% endif %}">
         <span class="nav-scr">02</span>전략 관리
       </a>
+      {% endif %}
+      {% if 'market' in nav_keys %}
       <a href="/market"          class="nav-item {% if screen == 'market' %}active{% endif %}">
         <span class="nav-scr">03</span>장세 · 팩터
       </a>
+      {% endif %}
+      {% if 'candidates' in nav_keys %}
       <a href="/candidates"      class="nav-item {% if screen == 'candidates' %}active{% endif %}">
         <span class="nav-scr">04</span>종목 후보
       </a>
+      {% endif %}
+      {% if 'orders' in nav_keys %}
       <a href="/orders"          class="nav-item {% if screen == 'orders' %}active{% endif %}">
         <span class="nav-scr">05</span>주문 · 체결
       </a>
+      {% endif %}
+      {% if 'risk' in nav_keys %}
       <a href="/risk"            class="nav-item {% if screen == 'risk' %}active{% endif %}">
         <span class="nav-scr">06</span>리스크 · 모니터
       </a>
+      {% endif %}
+      {% if 'backtest' in nav_keys %}
       <a href="/backtest"        class="nav-item {% if screen == 'backtest' %}active{% endif %}">
         <span class="nav-scr">07</span>백테스트 콘솔
       </a>
+      {% endif %}
     </div>
 
+    {% if 'robustness' in nav_keys %}
     <div class="nav-section">
       <div class="nav-section-label">검증 · 견고성</div>
+      {% if 'robustness' in nav_keys %}
       <a href="/robustness"      class="nav-item {% if screen == 'robustness' %}active{% endif %}">
         <span class="nav-scr">08</span>Trend Robustness
         <span class="nav-badge p0">P0</span>
       </a>
+      {% endif %}
+      {% if 'trend-strength' in nav_keys %}
       <a href="/trend-strength"  class="nav-item {% if screen == 'trend-strength' %}active{% endif %}">
         <span class="nav-scr">09</span>TrendStrength
         <span class="nav-badge new">NEW</span>
       </a>
+      {% endif %}
+      {% if 'research' in nav_keys %}
       <a href="/research"        class="nav-item {% if screen == 'research' %}active{% endif %}">
         <span class="nav-scr">10</span>Research
       </a>
+      {% endif %}
+      {% if 'wfa' in nav_keys %}
       <a href="/wfa"             class="nav-item {% if screen == 'wfa' %}active{% endif %}">
         <span class="nav-scr">11</span>WFA 리포트
       </a>
+      {% endif %}
+      {% if 'cost-sensitivity' in nav_keys %}
       <a href="/cost-sensitivity" class="nav-item {% if screen == 'cost-sensitivity' %}active{% endif %}">
         <span class="nav-scr">12</span>Cost Sensitivity
       </a>
+      {% endif %}
     </div>
+    {% endif %}
 
     <div class="nav-section">
       <div class="nav-section-label">모니터링</div>
+      {% if 'live-monitor' in nav_keys %}
       <a href="/live-monitor"    class="nav-item {% if screen == 'live-monitor' %}active{% endif %}">
         <span class="nav-scr">13</span>Live Monitor
         <span class="nav-badge p0">P0</span>
       </a>
+      {% endif %}
+      {% if 'data-quality' in nav_keys %}
       <a href="/data-quality"    class="nav-item {% if screen == 'data-quality' %}active{% endif %}">
         <span class="nav-scr">14</span>Data Quality
         <span class="nav-badge p0">P0</span>
       </a>
+      {% endif %}
+      {% if 'ops-config' in nav_keys %}
       <a href="/ops-config"      class="nav-item {% if screen == 'ops-config' %}active{% endif %}">
         <span class="nav-scr">15</span>Ops Config
         <span class="nav-badge new">NEW</span>
       </a>
+      {% endif %}
+      {% if 'stock-report' in nav_keys %}
       <a href="/stock-report"   class="nav-item {% if screen == 'stock-report' %}active{% endif %}">
         <span class="nav-scr">16</span>Stock Report
         <span class="nav-badge new">NEW</span>
       </a>
+      {% endif %}
+      {% if 'trade-review' in nav_keys %}
       <a href="/trade-review"   class="nav-item {% if screen == 'trade-review' %}active{% endif %}">
         <span class="nav-scr">17</span>거래 리뷰
         <span class="nav-badge new">NEW</span>
       </a>
+      {% endif %}
+      {% if 'stock-analysis' in nav_keys %}
       <a href="/stock-analysis" class="nav-item {% if screen == 'stock-analysis' %}active{% endif %}">
         <span class="nav-scr">18</span>주식 종목 분석
         <span class="nav-badge new">NEW</span>
       </a>
+      {% endif %}
+      {% if 'analysis-picks' in nav_keys %}
       <a href="/analysis-picks" class="nav-item {% if screen == 'analysis-picks' %}active{% endif %}">
         <span class="nav-scr">19</span>분석 워치리스트
         <span class="nav-badge new">NEW</span>
       </a>
+      {% endif %}
+      {% if 'blog' in nav_keys %}
       <a href="/blog"           class="nav-item {% if screen == 'blog' %}active{% endif %}">
         <span class="nav-scr">20</span>매매 기록
         <span class="nav-badge new">NEW</span>
       </a>
+      {% endif %}
+      {% if 'batch-monitor' in nav_keys %}
       <a href="/batch-monitor"  class="nav-item {% if screen == 'batch-monitor' %}active{% endif %}">
         <span class="nav-scr">21</span>배치 모니터
         <span class="nav-badge new">NEW</span>
       </a>
+      {% endif %}
+    </div>
+    <div class="nav-section">
+      <div class="nav-section-label">내 계정</div>
+      {% if 'settings' in nav_keys %}
+      <a href="/settings"       class="nav-item {% if screen == 'settings' %}active{% endif %}">
+        <span class="nav-scr">⚙</span>내 설정
+      </a>
+      {% endif %}
+      {% if 'admin-users' in nav_keys %}
+      <a href="/admin/users"    class="nav-item {% if screen == 'admin-users' %}active{% endif %}">
+        <span class="nav-scr">👤</span>회원 관리
+      </a>
+      {% endif %}
     </div>
   </nav>
 </aside>
@@ -124,6 +183,9 @@
     <div class="topbar-spacer"></div>
     {% block topbar_actions %}{% endblock %}
     <button class="topbar-btn" onclick="location.reload()">↺ 새로고침</button>
+    {% if current_user %}
+    <span class="topbar-meta">{{ current_user.username }}{% if current_user.is_admin %} · 관리자{% endif %}</span>
+    {% endif %}
     <a class="topbar-btn" href="/logout">로그아웃</a>
   </header>
 
