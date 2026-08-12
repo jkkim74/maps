@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime
 import json
 import logging
 from typing import Any
@@ -125,9 +126,15 @@ async def create_trade_plan(req: StockTradePlanRequest) -> StockTradePlanRespons
 
 def _history_list_item(row: StockAnalysisHistory) -> StockAnalysisHistoryListItem:
     """Map one history ORM row to the lightweight response contract."""
+    created_at = row.created_at
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=datetime.timezone.utc)
+    refreshed_at = row.price_refreshed_at
+    if refreshed_at is not None and refreshed_at.tzinfo is None:
+        refreshed_at = refreshed_at.replace(tzinfo=datetime.timezone.utc)
     return StockAnalysisHistoryListItem(
         id=row.id,
-        created_at=row.created_at,
+        created_at=created_at,
         ticker=row.ticker,
         name=row.name,
         market=row.market,
@@ -136,7 +143,7 @@ def _history_list_item(row: StockAnalysisHistory) -> StockAnalysisHistoryListIte
         analyzed_price=row.analyzed_price,
         latest_price=row.latest_price,
         latest_price_source=row.latest_price_source,
-        price_refreshed_at=row.price_refreshed_at,
+        price_refreshed_at=refreshed_at,
     )
 
 

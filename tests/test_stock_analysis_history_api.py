@@ -124,6 +124,7 @@ def test_save_appends_same_ticker_and_list_is_latest_first(client) -> None:
     body = response.json()
     assert [item["id"] for item in body["items"]] == [second, first]
     assert body["total"] == 2
+    assert body["items"][0]["created_at"].endswith("Z")
     assert "snapshot" not in body["items"][0]
     assert "narrative" not in body["items"][0]
     detail = client.get(f"/api/v1/stock-analysis/history/{first}").json()

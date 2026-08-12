@@ -108,3 +108,4 @@ def test_mode_selection_calculates_and_applies_safe_budget() -> None:
     assert "safe_max_amount" in script
     assert "minimum_orderable_amount" in script
     assert "안전한도 계산" not in panel
+    assert "_lastAnalysis['시장']" in script

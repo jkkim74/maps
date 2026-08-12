@@ -654,6 +654,11 @@ function openTradeSetup() {
   _clearTradePrices();
   _byId('sa-plan-budget').value = '';
   _byId('sa-plan-budget').removeAttribute('max');
+  const market = _lastAnalysis['시장'];
+  const marketInput = _byId('sa-plan-market');
+  if (market && [...marketInput.options].some(option => option.value === market)) {
+    marketInput.value = market;
+  }
   _byId('sa-trade-symbol').textContent = `${_lastAnalysis['종목명'] || ''} ${_lastAnalysis['종목코드'] || ''}`;
   _byId('sa-trade-warning').textContent = '구조화 AI 매매계획을 확인하고 있습니다.';
   dialog.showModal();
