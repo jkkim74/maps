@@ -1,14 +1,18 @@
 # market/
 
-시장 분석 패키지. 장세(Regime) 분류와 KRX 거래 규칙을 제공한다.
+시장 분석 패키지. 장세(Regime) 분류, 시장폭, 업종 선정, 실측 피드, KRX 거래 규칙을 제공한다.
 
 ## Directory structure
 
 ```
 market/
-├── __init__.py       # 빈 패키지 마커
-├── regime.py         # MarketRegimeAnalyzer — 장세 × 주간추세 매트릭스
-└── trading_rules.py  # KRX 거래일 판단 + 호가 단위 계산
+├── __init__.py         # 빈 패키지 마커
+├── breadth.py          # 시장폭 — MA 위 종목 비율
+├── feeds.py            # 실측 유동성·심리 피드 (수급 + 뉴스 심리)
+├── regime.py           # MarketRegimeAnalyzer — 장세 × 주간추세 매트릭스
+├── regime_history.py   # 히스테리시스 — buffer band·전일 유지·floor 2일 확인
+├── sector_selector.py  # 업종 강도·국면별 업종 선정
+└── trading_rules.py    # KRX 거래일 판단 + 호가 단위 계산
 ```
 
 ## regime.py — 장세 분석
@@ -94,6 +98,35 @@ pykrx(국내) + yfinance(해외) 통합 주봉 종가 제공.
 
 설정 기반 팩토리. override가 "auto"이면 `CombinedWeeklyProvider` 사용.
 
+## feeds.py — 실측 피드 (없으면 없는 대로 남긴다)
+
+| 이름 | 설명 |
+|---|---|
+| `DatabaseKostolanyDataProvider.enrich()` | **정확한 기준일**의 영속 피드로 종합 점수 입력을 채운다 |
+| `collect_market_news_sentiment()` | 하루치 뉴스 심리 스냅샷 upsert. 실패는 명시적 관측으로 남긴다 |
+
+뉴스는 Naver 검색 → Bedrock 구조화 심리 점수 순서다. Bedrock 이 돌려준 긍정·중립·부정
+건수 합이 기사 수와 다르면 **재정규화**해서 맞추고, 그래도 불가능하면 실패로 기록한다.
+
+> ⚠️ 미연결·실패 피드를 **중립 50 으로 채우지 않는다.** 빠진 채로 남겨야
+> `ops/score_readiness.py` 가 커버리지 미달을 보고 신규 매수를 막는다.
+> 채워 넣는 순간 게이트가 조용히 열린다.
+>
+> ⚠️ 뉴스 검색은 **Naver API Hub**(`naverapihub.apigw.ntruss.com`, `X-NCP-APIGW-*` 헤더)를
+> 쓴다. 설정 변수명은 `NAVER_CLIENT_ID`/`NAVER_CLIENT_SECRET` 이지만 값은 **NCP API Hub 키**다.
+> 구 `openapi.naver.com` 키는 동작하지 않는다.
+
+## breadth.py / regime_history.py / sector_selector.py
+
+| 모듈 | 함수·클래스 | 설명 |
+|---|---|---|
+| `breadth.py` | `compute_pct_above_ma()`, `classify_breadth()` | `ref_date` 기준 MA 위 종목 비율 → 시장폭 라벨 |
+| `regime_history.py` | `apply_hysteresis()`, `latest_applied_regime()` | raw 판정에 히스테리시스·Korea weak guard 적용 후 이력 upsert |
+| `sector_selector.py` | `SectorSelector.select_strong_sectors()`, `SectorRegimeSelector.select()` | 최근 N거래일 모멘텀 상위 업종 + 국면별 선호/제외 |
+
+`apply_hysteresis()` 가 **최종 장세의 정본**이다. `MarketRegimeAnalyzer.analyze()` 결과를
+그대로 쓰면 하루 단위로 라벨이 튀고 buffer band 가 무시된다.
+
 ## trading_rules.py — KRX 거래 규칙
 
 ### 함수
@@ -101,6 +134,8 @@ pykrx(국내) + yfinance(해외) 통합 주봉 종가 제공.
 | 함수 | 설명 |
 |---|---|
 | `is_krx_closed_date(target, extra_closed_dates=())` | 주말·고정 휴장일·`holidays.KR` 기준 비거래일 판단 |
+| `previous_trading_day(ref_date)` | `ref_date` 직전 거래일 |
+| `trading_days_ago(ref_date, n)` | KRX 거래일 기준 n일 전 (픽 신선도 계산에 쓰인다) |
 | `krx_tick_size(price, market="KOSPI", security_type="stock")` | KRX 호가 단위 반환 |
 | `round_up_krx_price(price, market, security_type)` | **매수 지정가**를 다음 호가로 올림 |
 | `round_down_krx_price(price, market, security_type)` | **손절가**를 아래 호가로 내림 |

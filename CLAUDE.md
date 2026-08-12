@@ -6,6 +6,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 MAPS (Market-Adaptive Profit Management System) is a validation-first Korean stock auto-trading platform. The core philosophy is **blocking bad strategies from reaching live accounts**, not running promising-looking strategies quickly.
 
+### 코드를 찾을 때 (읽기 순서)
+
+루트 **`index.md`** → 해당 패키지 **`CLAUDE.md`** → 소스. 저장소 전수 `grep`/`glob` 은
+색인에서 못 찾았을 때만 한다. 문서와 코드가 어긋나면 **코드가 정본**이고, 발견한 자리에서
+문서를 고친다 — `tests/test_docs_index.py` 가 패키지 문서의 트리 정합을 강제한다.
+
 ## Commands
 
 ### Run the API server
@@ -76,11 +82,15 @@ The application is a FastAPI server (`main.py`) with a Jinja2 web dashboard and 
 | `promotion/` | `gate.py` — decides strategy stage advancement and writes audit log |
 | `execution/` | `broker_adapter.py` (abstract), `mock_broker.py`, `kis_adapter.py`, `kiwoom_adapter.py`, `order_manager.py` |
 | `risk/` | `manager.py` — kill switch + exposure limits |
-| `market/` | `regime.py` (market regime: strong/mixed/weak + weekly trend), `trading_rules.py` (KRX rules) |
-| `ops/` | `scheduler.py` (APScheduler jobs), `notifications.py` (Slack), `order_state.py`, `order_preview.py` |
+| `market/` | `regime.py` (market regime: strong/mixed/weak + weekly trend), `regime_history.py` (hysteresis — final label), `breadth.py`, `sector_selector.py`, `feeds.py` (measured liquidity/news feeds), `trading_rules.py` (KRX rules) |
+| `ops/` | `scheduler.py` (APScheduler jobs), `notifications.py` (Slack/Telegram/FCM), `score_readiness.py` (fail-closed BUY gate), `pick_freshness.py`, `strategy_trade_plan.py`, `daily_digest.py`, `order_state.py`, `order_preview.py` |
+| `ai/` | Bedrock adapters — `scoring_service.py` (bounded candidate AI pass), `technical_scorer.py`, `trade_planner.py` (fail-closed prices), `valuation_margin.py` |
+| `stock_analysis/` | `analyzer.py` (pykrx + DART + SSE analysis), `history.py` (immutable analysis history, price overlay only) |
 | `stock_report/` | `runner.py` — integrates external stock-report tool (`MAPS_STOCK_REPORT_PATH`); stores HTML results in `stock_report_runs` table |
-| `api/` | One router per screen; `deps.py` provides `get_db()`; `schemas.py` holds Pydantic response models |
+| `api/` | One router per screen; `deps.py` provides `get_db()`; `schemas.py` holds Pydantic response models; `auth.py` has no prefix |
 | `dashboard/` | `strategy_compare.py` |
+
+각 패키지의 상세 계약은 `maps/<package>/CLAUDE.md`, 진입점은 루트 `index.md` 다.
 
 ### Daily scheduled pipeline (KST)
 
@@ -115,6 +125,7 @@ Per-stage gate conditions (all AND):
 | `ath_breakout_v1`, `ath_breakout_v2` | `ath_outlier` |
 | `multi_asset_trend_v1` | `multi_asset` |
 | `donchian_v1`, `donchian_v2` | `donchian_research` |
+| `contrarian_quality_accumulation_v1` | `contrarian_quality` |
 
 This mapping drives MC MDD limit lookups in `PromotionGate`. Adding a new strategy ID requires updating `STRATEGY_GROUP_MAP` in `common/constants.py`.
 
@@ -176,6 +187,7 @@ SQLite by default (`maps.db`). Switch to PostgreSQL via `MAPS_DB_URL`. All table
 | ath_outlier | 35% |
 | multi_asset | 22% |
 | donchian_research | 30% |
+| contrarian_quality | 25% |
 | portfolio_total | 28% |
 
 ## Tradeability weights (balanced preset)

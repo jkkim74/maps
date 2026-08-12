@@ -12,9 +12,17 @@ common/
 ├── db.py              # SQLAlchemy 엔진 · 세션 팩토리
 ├── exceptions.py      # MAPS 커스텀 예외 계층
 ├── logging_config.py  # 콘솔 + 로테이팅 파일 로그 설정
-├── models.py          # 전체 DB 스키마 (ORM 모델 16개)
-└── settings.py        # pydantic-settings 기반 환경변수 관리
+├── models.py          # 전체 DB 스키마 (ORM 모델)
+├── settings.py        # pydantic-settings 기반 환경변수 관리
+└── sizing.py          # risk_based_qty — 계좌 위험 기반 주문 수량
 ```
+
+## sizing.py
+
+`risk_based_qty(...)` 하나뿐이다. 계좌 위험과 손절폭으로 주문 수량을 계산한다.
+
+> ⚠️ 손절가는 반드시 `strategy/live_rules.effective_stop_price()` 결과를 넣는다.
+> 고정%만 넣으면 ATR 손절이 넓은 종목의 포지션이 2배로 잡힌다(2026-07-29 실제 사고).
 
 ## constants.py — 주요 상수
 

@@ -6,28 +6,35 @@ FastAPI REST 라우터 패키지. 화면별로 파일을 분리한다.
 
 ```
 api/
-├── __init__.py          # 빈 패키지 마커
-├── deps.py              # 공통 의존성 (get_db, DbDep)
-├── schemas.py           # Pydantic 응답 모델 정의
-└── [라우터 파일 18개]
-    ├── backtest.py      # 백테스트 실행 및 결과 조회
-    ├── candidates.py    # 후보 종목 스냅샷 조회
-    ├── cost_sensitivity.py  # 거래 비용 민감도 분석
-    ├── dashboard.py     # 전략 비교 대시보드
-    ├── data_quality.py  # 유니버스 품질 로그 조회
-    ├── live_monitor.py  # 라이브 모니터링 (계좌·포지션·주문 상태)
-    ├── market.py        # 시황 분석 결과
-    ├── mobile.py        # 모바일 앱 전용 엔드포인트
-    ├── ops_config.py    # 운영 설정 조회·변경
-    ├── orders.py        # 주문 감사 로그 조회
-    ├── research.py      # 전략 연구 화면 (백테스트 파라미터 탐색)
-    ├── risk.py          # Kill Switch 관리
-    ├── robustness.py    # Plateau / WFA / MC 검증 결과 조회
-    ├── scheduler.py     # 스케줄러 상태 조회 및 수동 잡 트리거
-    ├── stock_report.py  # Stock Report 조회 및 수동 생성
-    ├── strategies.py    # 전략 목록 및 승격 단계 관리
-    ├── trend_strength.py # 추세 강도 점수 조회
-    └── wfa.py           # Walk-Forward Analysis 결과 조회
+├── __init__.py            # 빈 패키지 마커
+├── deps.py                # 공통 의존성 (get_db, DbDep)
+├── schemas.py             # Pydantic 응답 모델 정의
+├── auth.py                # 로그인/로그아웃 — 세션 쿠키 (prefix 없음)
+├── analysis_picks.py      # SCR-19 분석 워치리스트 · 전략매매 무장
+├── backtest.py            # SCR-07 백테스트 콘솔
+├── batch_monitor.py       # SCR-21 배치 모니터
+├── blog.py                # 생성된 일일 블로그 원고 조회
+├── candidates.py          # SCR-04 후보 종목 풀
+├── cost_sensitivity.py    # SCR-12 거래 비용 민감도
+├── daily_digest.py        # 일일 다이제스트 (블로그 입력·검증 창구)
+├── dashboard.py           # SCR-01 대시보드
+├── data_quality.py        # SCR-14 유니버스 품질 로그
+├── live_monitor.py        # SCR-13 계좌·포지션·주문 상태
+├── market.py              # SCR-03 장세/팩터 분석
+├── mobile.py              # 모바일 앱 축약 응답
+├── ops_config.py          # 운영 설정 조회·변경
+├── orders.py              # SCR-05 주문/체결
+├── research.py            # SCR-10 전략 연구
+├── risk.py                # SCR-06 Kill Switch
+├── robustness.py          # SCR-08 Trend Robustness
+├── scheduler.py           # 스케줄러 상태·수동 잡 실행
+├── stock_analysis.py      # 종목 종합 분석 (SSE) · 분석 이력
+├── stock_report.py        # Stock Report 실행·조회
+├── strategies.py          # SCR-02 전략 관리·승격
+├── telegram.py            # 텔레그램 봇 웹훅 (인라인 버튼 콜백)
+├── trade_review.py        # SCR-17 거래 리뷰
+├── trend_strength.py      # SCR-09 TrendStrength 모니터
+└── wfa.py                 # SCR-11 Walk-Forward 리포트
 ```
 
 ## deps.py — 공통 의존성
@@ -43,25 +50,39 @@ DbDep = Depends(get_db)                    # 라우터 함수 파라미터로 �
 
 ## 라우터 등록
 
-`main.py`에서 각 라우터를 `app.include_router()`로 등록. 접두사(`/api/...`) 및 태그는 라우터 파일 내에서 정의.
+저장소 루트의 `main.py`(이 패키지 밖이다)에서 각 라우터를 `app.include_router()` 로 등록한다.
+접두사와 태그는 각 라우터 파일의 `APIRouter(prefix=...)` 에 있다.
 
-## 주요 라우터 역할
+## prefix 지도
 
-| 파일 | 주요 엔드포인트 |
+대부분 `/api/v1/<화면>` 이고 예외만 따로 기억하면 된다.
+
+| 파일 | prefix |
 |---|---|
-| `scheduler.py` | `POST /scheduler/run/{job_name}` — 잡 수동 실행; `GET /scheduler/status` |
-| `risk.py` | `POST /risk/kill-switch/trigger`, `/release`, `/approve-liquidation` |
-| `strategies.py` | `GET /strategies` 전략 목록; 승격 단계 변경 |
-| `orders.py` | `GET /orders` 주문 로그 조회 |
-| `live_monitor.py` | `GET /live/account`, `/positions`, `/open-orders` |
-| `candidates.py` | `GET /candidates/{date}` 후보 스냅샷 |
-| `market.py` | `GET /market/regime` 시황 분석 결과 |
-| `stock_report.py` | `GET /stock-report/runs`, `POST /stock-report/generate` |
-| `backtest.py` | `POST /backtest/run` 백테스트 실행 |
-| `wfa.py` | `GET /wfa/results/{strategy_id}` |
-| `robustness.py` | Plateau / MC 결과 조회 |
-| `mobile.py` | 모바일 앱 전용 축약 응답 |
-| `ops_config.py` | 운영 설정(슬리피지, 갭한도 등) 조회·변경 |
+| `auth.py` | **없음** — `/login`, `/logout` 이 루트에 붙는다 |
+| `telegram.py` | `/api/telegram` (`/api/v1` 아님) |
+| `ops_config.py` | `/api/v1/ops/config` |
+| `scheduler.py` | `/api/v1/ops/scheduler` |
+| 나머지 | `/api/v1/` + 파일명의 케밥케이스 (`stock_analysis.py` → `/api/v1/stock-analysis`) |
+
+## 인증
+
+`auth.py` 가 단일 공용 비밀번호 로그인을 처리하고, 세션 쿠키 게이트는 루트 `main.py` 에 있다.
+`MAPS_AUTH_ENABLED=true` 인 운영에서만 켜지며, 테스트는 `tests/conftest.py` 의 autouse
+fixture 로 항상 꺼진다.
+
+## 알아 둘 라우터
+
+| 파일 | 비고 |
+|---|---|
+| `stock_analysis.py` | 분석은 **SSE 스트리밍**. 완료 시 이력을 정확히 한 번 저장하고, 저장만 실패하면 `history_error` 를 함께 내려보낸다 |
+| `analysis_picks.py` | 안전한도 → preview → `arm-plan`. **최종 arm 에서 잔고·게이트·중복을 다시 검증한다** |
+| `telegram.py` | 웹훅 URL 은 텔레그램 서버에 저장된다. 도메인 변경 시 `scripts/setup_telegram_webhook.py` 재실행 필요 |
+| `risk.py` | Kill Switch 발동·해제·청산 승인 |
+| `scheduler.py` | 잡 수동 실행 — 운영에서 파이프라인을 돌리는 창구 |
+
+> ⚠️ DB 의 UTC naive 시각을 그대로 내보내면 브라우저 KST 표시가 9시간 어긋난다.
+> 응답 직렬화 시 명시적 UTC 로 보정한다.
 
 ## 코딩 규칙
 

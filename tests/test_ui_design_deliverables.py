@@ -13,6 +13,7 @@ PROTOTYPE = ROOT / "docs" / "ui-design" / "maps-analysis-trade-prototype.html"
 CAPTURES = ROOT / "docs" / "ui-design" / "assets"
 PRESENTATION = ROOT / "docs" / "ui-design" / "MAPS_종목분석_전략매매_화면설계서.pptx"
 HANDOFF = ROOT / "HANDOFF.md"
+HANDOFF_ARCHIVE = ROOT / "docs" / "handoff_archive"
 
 
 def test_prototype_contains_all_annotated_screens_without_live_network_calls() -> None:
@@ -70,7 +71,10 @@ def test_prototype_blocks_unsafe_amounts_and_preserves_strategy_mode() -> None:
 def test_implemented_trade_safety_contract_is_documented() -> None:
     """The approved prototype and handoff must describe the implemented safety rules."""
     html = PROTOTYPE.read_text(encoding="utf-8")
-    handoff = HANDOFF.read_text(encoding="utf-8")
+    # 인계 기록은 HANDOFF.md 최신 절 + 아카이브로 나뉜다. 계약은 둘 중 어디에 있어도 된다.
+    handoff = HANDOFF.read_text(encoding="utf-8") + "".join(
+        path.read_text(encoding="utf-8") for path in sorted(HANDOFF_ARCHIVE.glob("*.md"))
+    )
     required_contracts = (
         "구조화 AI 값 검증 실패 시 자동 주문값을 비우고 수동입력으로 전환",
         "최종 무장은 서버 게이트를 다시 조회해 재검증",
