@@ -22,13 +22,18 @@ class ScoreResult:
     component_scores: dict[str, float]
     reason: str
     excluded_reason: str | None = None
+    component_sources: dict[str, str] | None = None
+    missing_components: list[str] | None = None
+    coverage_ratio: float = 1.0
+    score_status: str = "complete"
+    score_ready: bool = True
 
 
 @dataclass(frozen=True)
 class StrategyScoreInput:
     strategy_type: StrategyType | str | None
-    liquidity_score: float
-    trend_strength: float
+    liquidity_score: float | None
+    trend_strength: float | None
     ts_bucket: str | None = None
     valuation_margin_score: float | None = None
     ai_technical_score: float | None = None
@@ -53,8 +58,21 @@ def _strategy_type_value(strategy_type: StrategyType | str | None) -> str:
     return StrategyType.MOMENTUM.value
 
 
-def _weighted_sum(components: dict[str, float], weights: dict[str, float]) -> float:
-    return round(sum(_normalize(components.get(name)) * weight for name, weight in weights.items()), 2)
+def _measured_score(
+    components: dict[str, float | None], weights: dict[str, float]
+) -> tuple[float, dict[str, float], list[str], float]:
+    """Return a renormalized observation score plus explicit coverage metadata."""
+    measured = {
+        name: _normalize(value)
+        for name, value in components.items()
+        if value is not None
+    }
+    missing = [name for name in weights if name not in measured]
+    coverage = round(sum(weights[name] for name in measured), 4)
+    if not measured or coverage <= 0:
+        return 50.0, measured, missing, 0.0
+    score = sum(measured[name] * weights[name] for name in measured) / coverage
+    return round(score, 2), measured, missing, coverage
 
 
 class LegacyFinalScoreCalculator:
@@ -63,23 +81,20 @@ class LegacyFinalScoreCalculator:
     def calculate(
         self,
         *,
-        factor_score: float,
-        trend_strength: float,
+        factor_score: float | None,
+        trend_strength: float | None,
         ai_technical_score: float | None = None,
         ai_weight: float = 0.0,
         strategy_type: StrategyType | str | None = None,
         ts_bucket: str | None = None,
     ) -> ScoreResult:
-        factor = _normalize(factor_score, default=0.0)
-        trend = _normalize(trend_strength)
-        base_score = 0.6 * factor + 0.4 * trend
-        components = {
-            "liquidity_score": factor,
-            "trend_strength": trend,
-        }
+        base_score, components, missing, coverage = _measured_score(
+            {"liquidity_score": factor_score, "trend_strength": trend_strength},
+            {"liquidity_score": 0.60, "trend_strength": 0.40},
+        )
         bucket = f"({ts_bucket})" if ts_bucket else ""
         reason = (
-            f"유동성 {factor:.1f}×0.6 + 추세 {trend:.1f}×0.4{bucket} = {round(base_score, 2):.2f}"
+            f"legacy measured coverage={coverage:.2f}{bucket} = {round(base_score, 2):.2f}"
         )
         if ai_technical_score is not None:
             ai_score = _normalize(ai_technical_score)
@@ -99,11 +114,23 @@ class LegacyFinalScoreCalculator:
             strategy_type=_strategy_type_value(strategy_type),
             component_scores=components,
             reason=reason,
+            component_sources={
+                name: source
+                for name, source in {
+                    "liquidity_score": "universe.turnover_liquidity",
+                    "trend_strength": "indicator.trend_strength",
+                }.items()
+                if name in components
+            },
+            missing_components=missing,
+            coverage_ratio=coverage,
+            score_status="complete" if not missing else "partial",
+            score_ready=coverage == 1.0,
         )
 
 
 class StrategyAwareScoreCalculator:
-    """Apply strategy-specific score formulas with neutral placeholders."""
+    """Apply strategy-specific formulas without inventing missing inputs."""
 
     _BREAKOUT_WEIGHTS = {
         "liquidity_score": 0.30,
@@ -137,42 +164,54 @@ class StrategyAwareScoreCalculator:
         extra = score_input.extra_scores or {}
 
         if strategy_type == StrategyType.BREAKOUT.value:
-            components = self._breakout_components(score_input, extra)
+            raw_components = self._breakout_components(score_input, extra)
             weights = self._BREAKOUT_WEIGHTS
-            score = _weighted_sum(components, weights)
             excluded_reason = None
             label = "breakout"
         elif strategy_type == StrategyType.PULLBACK.value:
-            components = self._pullback_components(score_input, extra)
+            raw_components = self._pullback_components(score_input, extra)
             weights = self._PULLBACK_WEIGHTS
-            score = _weighted_sum(components, weights)
             excluded_reason = None
             label = "pullback"
         elif strategy_type == StrategyType.CONTRARIAN_QUALITY.value:
-            components = self._contrarian_components(score_input, extra)
+            raw_components = self._contrarian_components(score_input, extra)
             weights = self._CONTRARIAN_WEIGHTS
-            raw_score = _weighted_sum(components, weights)
+            raw_score, components, missing, coverage = _measured_score(raw_components, weights)
             excluded_reason = None
-            if components["valuation_margin_score"] < 60.0:
+            if components.get("valuation_margin_score", 0.0) < 60.0:
                 excluded_reason = "valuation_margin_below_contrarian_threshold"
                 score = min(raw_score, 39.0)
             else:
                 score = raw_score
             label = "contrarian_quality"
         elif strategy_type == StrategyType.MULTI_ASSET_TREND.value:
-            components = self._multi_asset_components(score_input, extra)
+            raw_components = self._multi_asset_components(score_input, extra)
             weights = self._MULTI_ASSET_WEIGHTS
-            score = _weighted_sum(components, weights)
             excluded_reason = None
             label = "multi_asset_trend"
         else:
-            components = self._momentum_components(score_input, extra)
+            raw_components = self._momentum_components(score_input, extra)
             weights = {"liquidity_score": 0.50, "trend_strength": 0.50}
-            score = _weighted_sum(components, weights)
             excluded_reason = None
             label = "momentum"
 
-        reason = self._build_reason(label, components, weights, score, extra)
+        if strategy_type != StrategyType.CONTRARIAN_QUALITY.value:
+            score, components, missing, coverage = _measured_score(raw_components, weights)
+        default_sources = {
+            "liquidity_score": "universe.turnover_liquidity",
+            "trend_strength": "indicator.trend_strength",
+            "valuation_margin_score": "fundamentals.valuation_margin",
+        }
+        sources = {
+            name: str(
+                (extra.get("_sources") or {}).get(
+                    name, default_sources.get(name, "derived")
+                )
+            )
+            for name in components
+        }
+        status = "complete" if not missing else ("partial" if components else "unavailable")
+        reason = self._build_reason(label, components, weights, score, missing, coverage)
 
         ai_score = _normalize(score_input.ai_technical_score) if score_input.ai_technical_score is not None else None
         if ai_score is not None and score_input.ai_weight > 0:
@@ -188,11 +227,12 @@ class StrategyAwareScoreCalculator:
             component_scores=components,
             reason=reason,
             excluded_reason=excluded_reason,
+            component_sources=sources,
+            missing_components=missing,
+            coverage_ratio=coverage,
+            score_status=status,
+            score_ready=coverage == 1.0,
         )
-
-    # StrategyScoreInput 에서 직접 실측으로 들어오는 컴포넌트. 이 밖의 키가
-    # extra_scores 에도 없으면 중립 추정치(placeholder)로 채워진 것이다.
-    _DIRECT_INPUTS = frozenset({"liquidity_score", "trend_strength", "valuation_margin_score"})
 
     @classmethod
     def _build_reason(
@@ -201,7 +241,8 @@ class StrategyAwareScoreCalculator:
         components: dict[str, float],
         weights: dict[str, float],
         score: float,
-        extra: dict[str, Any],
+        missing: list[str],
+        coverage: float,
     ) -> str:
         """종목별 실측치로 근거 문자열을 만든다.
 
@@ -209,59 +250,56 @@ class StrategyAwareScoreCalculator:
         동일한 규약 — 다이제스트가 이 접미사를 파싱해 "미측정" 목록을 노출한다.
         """
         parts = ", ".join(
-            f"{name}={components[name]:.1f}×{weights[name]:.2f}" for name in weights
+            f"{name}={components[name]:.1f}×{weights[name]:.2f}"
+            for name in weights
+            if name in components
         )
         reason = f"{label}: {parts} = {score:.2f}"
-        placeholders = [
-            name for name in weights if name not in cls._DIRECT_INPUTS and name not in extra
-        ]
-        if placeholders:
-            reason = f"{reason}; neutral placeholders={','.join(placeholders)}"
+        if missing:
+            reason = (
+                f"{reason}; partial coverage={coverage:.2f}; "
+                f"missing={','.join(missing)}"
+            )
         return reason
 
-    def _breakout_components(self, score_input: StrategyScoreInput, extra: dict[str, Any]) -> dict[str, float]:
-        trend = _normalize(score_input.trend_strength)
+    def _breakout_components(self, score_input: StrategyScoreInput, extra: dict[str, Any]) -> dict[str, float | None]:
         return {
-            "liquidity_score": _normalize(score_input.liquidity_score, default=0.0),
-            "trend_strength": trend,
-            "new_high_score": _normalize(extra.get("new_high_score"), self._new_high_score(score_input.ts_bucket, trend)),
-            "institutional_foreign_flow": _normalize(extra.get("institutional_foreign_flow")),
+            "liquidity_score": score_input.liquidity_score,
+            "trend_strength": score_input.trend_strength,
+            "new_high_score": extra.get("new_high_score"),
+            "institutional_foreign_flow": extra.get("institutional_foreign_flow"),
         }
 
-    def _pullback_components(self, score_input: StrategyScoreInput, extra: dict[str, Any]) -> dict[str, float]:
-        trend = _normalize(score_input.trend_strength)
-        liquidity = _normalize(score_input.liquidity_score, default=0.0)
+    def _pullback_components(self, score_input: StrategyScoreInput, extra: dict[str, Any]) -> dict[str, float | None]:
         return {
-            "support_quality": _normalize(extra.get("support_quality"), trend),
-            "volume_cooling": _normalize(extra.get("volume_cooling"), 100.0 - max(0.0, liquidity - 50.0)),
-            "trend_preservation": _normalize(extra.get("trend_preservation"), trend),
-            "supply_demand_score": _normalize(extra.get("supply_demand_score")),
-            "valuation_margin_score": _normalize(score_input.valuation_margin_score),
+            "support_quality": extra.get("support_quality"),
+            "volume_cooling": extra.get("volume_cooling"),
+            "trend_preservation": extra.get("trend_preservation"),
+            "supply_demand_score": extra.get("supply_demand_score"),
+            "valuation_margin_score": score_input.valuation_margin_score,
         }
 
-    def _contrarian_components(self, score_input: StrategyScoreInput, extra: dict[str, Any]) -> dict[str, float]:
-        trend = _normalize(score_input.trend_strength)
+    def _contrarian_components(self, score_input: StrategyScoreInput, extra: dict[str, Any]) -> dict[str, float | None]:
         return {
-            "valuation_margin_score": _normalize(score_input.valuation_margin_score),
-            "earnings_revision_score": _normalize(extra.get("earnings_revision_score")),
-            "crowd_neglect_score": _normalize(extra.get("crowd_neglect_score"), 100.0 - trend),
-            "accumulation_flow_score": _normalize(extra.get("accumulation_flow_score")),
-            "technical_bottom_score": _normalize(extra.get("technical_bottom_score"), 100.0 - trend),
+            "valuation_margin_score": score_input.valuation_margin_score,
+            "earnings_revision_score": extra.get("earnings_revision_score"),
+            "crowd_neglect_score": extra.get("crowd_neglect_score"),
+            "accumulation_flow_score": extra.get("accumulation_flow_score"),
+            "technical_bottom_score": extra.get("technical_bottom_score"),
         }
 
-    def _multi_asset_components(self, score_input: StrategyScoreInput, extra: dict[str, Any]) -> dict[str, float]:
-        trend = _normalize(score_input.trend_strength)
+    def _multi_asset_components(self, score_input: StrategyScoreInput, extra: dict[str, Any]) -> dict[str, float | None]:
         return {
-            "asset_trend_score": _normalize(extra.get("asset_trend_score"), trend),
-            "volatility_adjusted_momentum": _normalize(extra.get("volatility_adjusted_momentum"), trend),
-            "macro_liquidity_score": _normalize(extra.get("macro_liquidity_score")),
-            "risk_score": _normalize(extra.get("risk_score")),
+            "asset_trend_score": extra.get("asset_trend_score"),
+            "volatility_adjusted_momentum": extra.get("volatility_adjusted_momentum"),
+            "macro_liquidity_score": extra.get("macro_liquidity_score"),
+            "risk_score": extra.get("risk_score"),
         }
 
-    def _momentum_components(self, score_input: StrategyScoreInput, extra: dict[str, Any]) -> dict[str, float]:
+    def _momentum_components(self, score_input: StrategyScoreInput, extra: dict[str, Any]) -> dict[str, float | None]:
         return {
-            "liquidity_score": _normalize(score_input.liquidity_score, default=0.0),
-            "trend_strength": _normalize(score_input.trend_strength),
+            "liquidity_score": score_input.liquidity_score,
+            "trend_strength": score_input.trend_strength,
         }
 
     @staticmethod

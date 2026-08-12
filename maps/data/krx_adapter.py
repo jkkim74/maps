@@ -89,6 +89,18 @@ class FundamentalData:
 
 
 @dataclass
+class InvestorFlowData:
+    """One ticker's exact-date investor net-purchase values in KRW."""
+
+    date: datetime.date
+    ticker: str
+    market: str
+    foreign_net_value: float | None = None
+    institutional_net_value: float | None = None
+    individual_net_value: float | None = None
+
+
+@dataclass
 class SecurityMeta:
     """종목 메타 정보."""
 
@@ -138,6 +150,10 @@ class KRXAdapterBase(ABC):
     @abstractmethod
     def get_fundamental(self, ref_date: datetime.date) -> list[FundamentalData]:
         """ref_date 기준 전체 종목 펀더멘털(PER/PBR/EPS/BPS/DIV/DPS)을 반환한다."""
+
+    def get_investor_flows(self, ref_date: datetime.date) -> list[InvestorFlowData]:
+        """Return exact-date KRX net purchases by foreign/institution/individual."""
+        return []
 
 
 class KRXAdapter(KRXAdapterBase):
@@ -364,6 +380,46 @@ class KRXAdapter(KRXAdapterBase):
         logger.info("KRX 펀더멘털 수집 완료 [%s]: %d종목", date_str, len(result))
         return result
 
+    def get_investor_flows(self, ref_date: datetime.date) -> list[InvestorFlowData]:
+        """Fetch three investor groups using pykrx's current net-purchase API."""
+        from pykrx import stock as _krx
+
+        date_str = ref_date.strftime("%Y%m%d")
+        output: list[InvestorFlowData] = []
+        for market in ("KOSPI", "KOSDAQ"):
+            values: dict[str, dict[str, float]] = {}
+            for investor, target in (
+                ("외국인", "foreign_net_value"),
+                ("기관합계", "institutional_net_value"),
+                ("개인", "individual_net_value"),
+            ):
+                frame = _krx.get_market_net_purchases_of_equities_by_ticker(
+                    date_str, date_str, market=market, investor=investor
+                )
+                if frame is None or frame.empty:
+                    raise DataCollectionError(
+                        f"KRX investor flow empty [{market} {investor} {date_str}]"
+                    )
+                value_col = next(
+                    (
+                        col for col in frame.columns
+                        if "순매수" in str(col) and "거래대금" in str(col)
+                    ),
+                    None,
+                )
+                if value_col is None:
+                    raise DataCollectionError(
+                        f"KRX investor flow value column missing: {list(frame.columns)}"
+                    )
+                for ticker, row in frame.iterrows():
+                    values.setdefault(str(ticker), {})[target] = float(row[value_col])
+            output.extend(
+                InvestorFlowData(date=ref_date, ticker=ticker, market=market, **item)
+                for ticker, item in values.items()
+            )
+        logger.info("KRX 투자자 수급 수집 완료 [%s]: %d종목", date_str, len(output))
+        return output
+
 
 class MockKRXAdapter(KRXAdapterBase):
     """테스트용 더미 KRX 어댑터.
@@ -384,6 +440,7 @@ class MockKRXAdapter(KRXAdapterBase):
         self._meta_override: dict[str, SecurityMeta] = {}
         self._sector_override: dict[str, str] = {}
         self._fundamental_override: dict[str, FundamentalData] = {}
+        self._flow_override: dict[str, InvestorFlowData] = {}
 
     def set_halts(self, date: datetime.date, tickers: list[str]) -> None:
         self._halt_override[date] = tickers
@@ -459,3 +516,21 @@ class MockKRXAdapter(KRXAdapterBase):
                     bps=fd.bps, div=fd.div, dps=fd.dps,
                 ))
         return result
+
+    def set_investor_flows(self, flows: dict[str, InvestorFlowData]) -> None:
+        """Inject ticker-keyed investor flows."""
+        self._flow_override = flows
+
+    def get_investor_flows(self, ref_date: datetime.date) -> list[InvestorFlowData]:
+        """Return injected exact-date flows only."""
+        return [
+            InvestorFlowData(
+                date=ref_date,
+                ticker=ticker,
+                market=row.market,
+                foreign_net_value=row.foreign_net_value,
+                institutional_net_value=row.institutional_net_value,
+                individual_net_value=row.individual_net_value,
+            )
+            for ticker, row in self._flow_override.items()
+        ]

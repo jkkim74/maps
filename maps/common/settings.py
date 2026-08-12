@@ -149,6 +149,15 @@ class MapsSettings(BaseSettings):
     # 후보 점수/스냅샷에만 영향하며, 실주문은 maps_live_trading_enabled로 별도 게이트된다.
     maps_valuation_margin_enabled: bool = True
     maps_strategy_aware_scoring_enabled: bool = False
+    # Fail closed for every automatic BUY when market/candidate scores are not
+    # fully measured for the exact candidate date. Tests may explicitly disable.
+    maps_score_readiness_required: bool = True
+
+    # Naver Search API supplies daily Korean market headlines. Bedrock turns
+    # titles/snippets into one structured market-sentiment observation.
+    naver_client_id: str = ""
+    naver_client_secret: str = ""
+    maps_market_news_query_limit: int = Field(default=100, ge=1, le=100)
 
     # 후보 저장 정책: 신호 있는 종목은 전수 저장하고, 신호가 없는 종목은 관측용으로
     # final_score 상위 N개만 남긴다. 0이면 신호 있는 종목만 저장한다.
@@ -407,6 +416,9 @@ def get_config_status(settings: MapsSettings | None = None) -> list[ConfigSectio
                 _field(s, "maps_ai_request_timeout_seconds", "MAPS_AI_REQUEST_TIMEOUT_SECONDS", "AI scoring request timeout seconds"),
                 _field(s, "maps_valuation_margin_enabled", "MAPS_VALUATION_MARGIN_ENABLED", "Enable valuation margin scoring on candidate snapshots"),
                 _field(s, "maps_strategy_aware_scoring_enabled", "MAPS_STRATEGY_AWARE_SCORING_ENABLED", "Enable strategy-specific final_score formulas"),
+                _field(s, "maps_score_readiness_required", "MAPS_SCORE_READINESS_REQUIRED", "Block automatic buys and promotion when measured score coverage is below 100%"),
+                _field(s, "naver_client_id", "NAVER_CLIENT_ID", "Naver Search API client id for market news", secret=True),
+                _field(s, "naver_client_secret", "NAVER_CLIENT_SECRET", "Naver Search API client secret for market news", secret=True),
                 _field(s, "maps_sector_filter_enabled", "MAPS_SECTOR_FILTER_ENABLED", "Enable sector filter before candidate generation"),
                 _field(s, "maps_sector_kostolany_mode_enabled", "MAPS_SECTOR_KOSTOLANY_MODE_ENABLED", "Enable Kostolany-style sector cycle selector"),
             ],

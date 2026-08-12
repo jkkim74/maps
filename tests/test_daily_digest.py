@@ -156,7 +156,8 @@ def test_unmeasured_factors_are_flagged(db, settings) -> None:
     assert factors["psychology"].measured is False
     assert factors["liquidity"].measured is False
     assert factors["psychology"].note                      # 왜 미측정인지 사유가 있어야 한다
-    assert factors["price_trend"].measured is True
+    # Legacy rows without factor audit metadata must remain fail-closed.
+    assert factors["price_trend"].measured is False
 
 
 def test_sectors_are_observed_even_when_filter_is_off(db, settings) -> None:

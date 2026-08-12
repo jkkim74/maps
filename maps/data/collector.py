@@ -13,6 +13,7 @@ from maps.common.exceptions import DataCollectionError
 from maps.common.models import (
     CollectionLog,
     HistoricalOHLCV,
+    InvestorFlowSnapshot,
     SecurityFundamental,
     SecurityMetadata,
 )
@@ -85,6 +86,11 @@ class DataCollector:
             except Exception as exc:
                 logger.warning("펀더멘털 수집 실패 (스킵): %s", exc)
                 fundamentals = []
+            try:
+                investor_flows = self._krx.get_investor_flows(ref_date)
+            except Exception as exc:
+                logger.warning("투자자 수급 수집 실패 (신규매수 fail-closed): %s", exc)
+                investor_flows = []
 
             self._upsert_meta(
                 meta,
@@ -93,6 +99,10 @@ class DataCollector:
             )
             saved_rows = self._upsert_ohlcv(ohlcv)
             self._upsert_fundamentals(fundamentals)
+            self._upsert_investor_flows(investor_flows)
+            from maps.market.feeds import collect_market_news_sentiment
+
+            collect_market_news_sentiment(self._db, ref_date)
             self._write_log(ref_date, "success", saved_rows)
             return result
 
@@ -140,6 +150,38 @@ class DataCollector:
                 self._write_log(day, "failed", 0, str(exc), source="krx.history")
                 logger.warning("OHLCV 백필 실패: %s — %s", day, exc)
 
+        return {
+            "start": start.isoformat(),
+            "end": end.isoformat(),
+            "business_days": len(requested_days),
+            "success_days": success_days,
+            "failed_days": failed_days,
+            "rows": total_rows,
+            "failures": failures[:10],
+        }
+
+    def collect_investor_flow_history(
+        self, start: datetime.date, end: datetime.date
+    ) -> dict:
+        """Backfill exact-date investor flows without touching price history."""
+        if start > end:
+            raise DataCollectionError(f"investor flow start after end: {start} > {end}")
+        requested_days = _business_days(start, end)
+        success_days = 0
+        failed_days = 0
+        total_rows = 0
+        failures: list[dict[str, str]] = []
+        for day in requested_days:
+            try:
+                rows = self._krx.get_investor_flows(day)
+                if not rows:
+                    raise DataCollectionError("empty investor flow")
+                total_rows += self._upsert_investor_flows(rows)
+                success_days += 1
+            except Exception as exc:  # noqa: BLE001 - continue the bounded backfill
+                failed_days += 1
+                failures.append({"date": day.isoformat(), "error": str(exc)})
+                logger.warning("Investor flow backfill failed [%s]: %s", day, exc)
         return {
             "start": start.isoformat(),
             "end": end.isoformat(),
@@ -266,6 +308,24 @@ class DataCollector:
                 )
         self._db.commit()
         return saved_rows
+
+    def _upsert_investor_flows(self, rows) -> int:
+        """Upsert exact-date KRX investor flows for scoring and audit."""
+        for item in rows:
+            row = (
+                self._db.query(InvestorFlowSnapshot)
+                .filter_by(date=item.date, ticker=item.ticker)
+                .first()
+            )
+            if row is None:
+                row = InvestorFlowSnapshot(date=item.date, ticker=item.ticker, market=item.market)
+                self._db.add(row)
+            row.market = item.market
+            row.foreign_net_value = item.foreign_net_value
+            row.institutional_net_value = item.institutional_net_value
+            row.individual_net_value = item.individual_net_value
+        self._db.commit()
+        return len(rows)
 
     def _upsert_fundamentals(self, rows, source: str = "pykrx") -> int:
         """일별 펀더멘털을 security_fundamental 테이블에 upsert한다.

@@ -35,6 +35,9 @@ def _auth_disabled_by_default(monkeypatch):
     전용 인증 테스트(test_auth.py)는 자체 픽스처에서 명시적으로 활성화한다.
     """
     monkeypatch.setenv("MAPS_AUTH_ENABLED", "false")
+    # Existing tests exercise their original concern unless score-readiness is
+    # enabled explicitly by the test. Production keeps the setting enabled.
+    monkeypatch.setenv("MAPS_SCORE_READINESS_REQUIRED", "false")
     # 운영자 .env가 KIS를 설정해도 테스트는 실제 브로커/시세 API를 치지 않는다.
     # (KIS를 명시 검증하는 테스트는 MapsSettings(maps_broker_mode="kis")를 직접 만든다.)
     monkeypatch.setenv("MAPS_BROKER_MODE", "mock")

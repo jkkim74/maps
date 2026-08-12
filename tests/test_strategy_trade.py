@@ -12,6 +12,7 @@ from sqlalchemy.pool import StaticPool
 import maps.common.models  # noqa: F401
 from maps.common.db import Base
 from maps.common.models import AnalysisPick, AnalysisPickLeg, OrderLog
+from maps.common.settings import MapsSettings
 from maps.execution.broker_adapter import Order, OrderResult, OrderSide, OrderStatus, OrderType
 from maps.execution.mock_broker import MockBroker
 from maps.execution.order_manager import OrderManager
@@ -55,6 +56,33 @@ def _pick(db, *, ticker="005930", buy=70000, target=80000, stop=66000, qty=10, s
 def _run(pipeline, broker, manager, db, picks, prices):
     broker.update_prices(prices)
     return pipeline._process_strategy_trades(db=db, broker=broker, manager=manager, picks=picks, prices=prices)
+
+
+def test_incomplete_market_score_blocks_new_strategy_buy(env):
+    pipeline, broker, manager, db = env
+    pipeline._settings = MapsSettings(maps_score_readiness_required=True)
+    pick = _pick(db)
+
+    submitted, closed = _run(
+        pipeline, broker, manager, db, [pick], {pick.ticker: 69_000}
+    )
+
+    assert (submitted, closed) == (0, 0)
+    assert db.query(OrderLog).count() == 0
+
+
+def test_incomplete_market_score_does_not_block_exit(env):
+    pipeline, broker, manager, db = env
+    pick = _pick(db)
+    _run(pipeline, broker, manager, db, [pick], {pick.ticker: 69_000})
+    pipeline._settings = MapsSettings(maps_score_readiness_required=True)
+
+    submitted, closed = _run(
+        pipeline, broker, manager, db, [pick], {pick.ticker: 81_000}
+    )
+
+    assert (submitted, closed) == (0, 1)
+    assert pick.state == "CLOSED"
 
 
 def _split_pick(db, *, ticker="005930", state="ARMED"):

@@ -129,6 +129,13 @@ class MarketResponse(BaseModel):
     foreign_fx_score: float | None = None
     psychology_score: float | None = None
     final_market_score: float | None = None
+    policy_regime: str | None = None
+    score_coverage_ratio: float = 0.0
+    score_status: str = "unavailable"
+    score_ready: bool = False
+    measured_factors: list[str] = []
+    missing_factors: list[str] = []
+    factor_sources: dict[str, str] = {}
     contrarian_entry_limit_ratio: float | None = None
     reason: str | None = None
 
@@ -155,6 +162,12 @@ class CandidateItem(BaseModel):
     score_type: str | None = None
     strategy_type: str | None = None
     component_scores: dict[str, float] | None = None
+    component_sources: dict[str, str] | None = None
+    missing_components: list[str] = []
+    score_coverage_ratio: float = 0.0
+    score_status: str = "unavailable"
+    score_ready: bool = False
+    market_score_ready: bool = False
     score_reason: str | None = None
     excluded_reason: str | None = None
     weekly_pass: bool
@@ -921,6 +934,7 @@ class DigestFactor(BaseModel):
     score: float | None = None
     measured: bool = True
     note: str | None = None
+    source: str | None = None
 
 
 class DigestMarket(BaseModel):
@@ -941,6 +955,12 @@ class DigestMarket(BaseModel):
     # Korea weak guard(mixed→weak 하향) 적용 여부 — floor_applied의 대칭
     korea_weak_guard_applied: bool = False
     final_market_score: float | None = None
+    policy_regime: str | None = None
+    score_coverage_ratio: float = 0.0
+    score_status: str = "unavailable"
+    score_ready: bool = False
+    measured_factors: list[str] = []
+    missing_factors: list[str] = []
     factors: list[DigestFactor] = []
     reason: str | None = None
     source: str = "market_regime_log"
@@ -996,6 +1016,12 @@ class DigestCandidate(BaseModel):
     trend_strength: float | None = None
     ts_bucket: str | None = None
     score_reason: str | None = None
+    component_sources: dict[str, str] | None = None
+    missing_components: list[str] = []
+    score_coverage_ratio: float = 0.0
+    score_status: str = "unavailable"
+    score_ready: bool = False
+    market_score_ready: bool = False
     excluded_reason: str | None = None
     holding_type: str | None = None
     estimated_qty: int | None = None

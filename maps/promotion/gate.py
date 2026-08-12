@@ -101,6 +101,10 @@ class PromotionGate:
                 STRATEGY_GROUP_MAP 에서 찾지 못한 경우.
         """
         reasons: list[str] = []
+        if metrics.get("market_data_ready") is False:
+            reasons.append("시장 점수 100% 실측 미충족")
+        if metrics.get("candidate_data_ready") is False:
+            reasons.append("진입 후보 점수 100% 실측 미충족")
 
         # MOCK_CANDIDATE 이상: strategy_group 필수 → UnknownStrategyError
         resolved_group = strategy_group

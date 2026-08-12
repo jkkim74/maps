@@ -32,6 +32,7 @@ from maps.common.models import (
     CandidateSnapshot,
     CollectionLog,
     HistoricalOHLCV,
+    InvestorFlowSnapshot,
     JobRunLog,
     MonteCarloSequenceResults,
     ParameterPlateauResults,
@@ -84,6 +85,7 @@ from maps.ops.candidate_selection import (
 )
 from maps.ops.order_state import claimed_candidate_tickers
 from maps.ops.pick_freshness import is_pick_stale, pick_cutoff_date
+from maps.ops.score_readiness import candidate_score_ready, current_market_score_ready
 from maps.promotion.gate import PromotionGate, PromotionStage
 from maps.risk.manager import RiskConfig, RiskManager
 from maps.strategy.ath_breakout_v1 import ATHBreakoutV1Strategy
@@ -97,6 +99,7 @@ from maps.strategy.contrarian_quality_v1 import ContrarianQualityAccumulationV1S
 from maps.strategy.pullback_v2 import PullbackV2Strategy
 from maps.strategy.pullback_v3 import PullbackV3Strategy
 from maps.strategy.scoring import LegacyFinalScoreCalculator, StrategyAwareScoreCalculator, StrategyScoreInput
+from maps.strategy.score_features import strategy_extra_scores
 from maps.indicator.trend_strength import TrendStrengthCalculator
 from maps.ai.scoring_service import AIScoringRunSummary, AIStockScoringService
 from maps.ai.valuation_margin import ValuationMarginScorer
@@ -210,6 +213,8 @@ class TickerContext:
     close: float
     atr14: float | None
     valuation: object | None = None
+    supply_demand_score: float | None = None
+    trend_strength_measured: bool = False
 
 
 @dataclass(frozen=True)
@@ -324,7 +329,7 @@ class OperationalPipeline:
             # 전략별로 별도 필터링 없이 공유할 수 있다.
             # 각 전략의 진입 신호는 order_cycle 에서 generate_signals() 로 별도 계산된다.
             # 시황 분석 → weekly_pass 결정
-            regime = self._analyze_regime()
+            regime = self._analyze_regime(ref_date)
             weekly_pass = (regime.weekly_trend == WeeklyTrendLabel.PASS)
             logger.info(
                 "시황 분석: regime=%s trend=%s entry_limit=%.2f → weekly_pass=%s",
@@ -363,6 +368,10 @@ class OperationalPipeline:
                 breadth_pct=breadth_pct,
             )
             regime_label = regime.regime.value  # "strong" | "mixed" | "weak"
+            market_score_ready = bool(regime.composite and regime.composite.score_ready)
+            market_liquidity_score = (
+                regime.composite.liquidity_score if regime.composite else None
+            )
 
             # 업종 필터 (MAPS_SECTOR_FILTER_ENABLED=true 일 때만 적용)
             sector_filter_enabled = self._settings.maps_sector_filter_enabled
@@ -462,6 +471,8 @@ class OperationalPipeline:
                     excluded_reason_by_ticker=sector_excluded_reason_by_ticker,
                     contexts=ticker_contexts,
                     stats=funnel_stats,
+                    market_score_ready=market_score_ready,
+                    market_liquidity_score=market_liquidity_score,
                 )
                 if entry_block_reason is None:
                     active_strategies.append(strategy_id)
@@ -1190,6 +1201,8 @@ class OperationalPipeline:
                 latest_wfa.get(strategy_id),
             )
             metrics["mock_months"] = mock_months.get(strategy_id, 0.0)
+            if self._settings.maps_score_readiness_required:
+                metrics.update(self._promotion_score_readiness(db, strategy_id, ref_date))
             decision = gate.evaluate(
                 strategy_id,
                 metrics,
@@ -1221,6 +1234,38 @@ class OperationalPipeline:
             "failed": failed,
             "demoted": demoted_strategies,
             "strategies": evaluated_strategies,
+        }
+
+    @staticmethod
+    def _promotion_score_readiness(
+        db: Session, strategy_id: str, ref_date: dt.date
+    ) -> dict[str, bool]:
+        """Require one or more fully measured exact-date entry signals."""
+        latest_date = (
+            db.query(func.max(CandidateSnapshot.ref_date))
+            .filter(
+                CandidateSnapshot.strategy_id == strategy_id,
+                CandidateSnapshot.ref_date <= ref_date,
+            )
+            .scalar()
+        )
+        if latest_date is None:
+            return {"market_data_ready": False, "candidate_data_ready": False}
+        rows = (
+            db.query(CandidateSnapshot)
+            .filter(
+                CandidateSnapshot.strategy_id == strategy_id,
+                CandidateSnapshot.ref_date == latest_date,
+                CandidateSnapshot.entry_signal.is_(True),
+            )
+            .all()
+        )
+        return {
+            "market_data_ready": bool(rows) and all(row.market_score_ready for row in rows),
+            "candidate_data_ready": bool(rows) and all(
+                row.score_ready and float(row.score_coverage_ratio or 0.0) >= 1.0
+                for row in rows
+            ),
         }
 
     @staticmethod
@@ -1407,12 +1452,30 @@ class OperationalPipeline:
         )
         # 400 거래일을 확보하려면 달력으로는 그 1.5배 이상이 필요하다(주말·공휴일).
         start = ref_date - dt.timedelta(days=_SIGNAL_LOOKBACK_BARS * 2)
+        flow_rows = (
+            db.query(InvestorFlowSnapshot)
+            .filter(
+                InvestorFlowSnapshot.date <= ref_date,
+                InvestorFlowSnapshot.date >= ref_date - dt.timedelta(days=10),
+            )
+            .all()
+        )
+        flows: dict[str, tuple[float, float]] = {}
+        for row in flow_rows:
+            if row.foreign_net_value is None or row.institutional_net_value is None:
+                continue
+            net, count = flows.get(row.ticker, (0.0, 0.0))
+            flows[row.ticker] = (
+                net + float(row.foreign_net_value) + float(row.institutional_net_value),
+                count + 1.0,
+            )
 
         contexts: dict[str, TickerContext] = {}
         for stock in universe:
             frame = pd.DataFrame()
             trend_strength = 50.0
             ts_bucket = "S3"
+            trend_strength_measured = False
             try:
                 frame = repo.to_dataframe(stock.ticker, start=start, end=ref_date)
                 if len(frame) > _SIGNAL_LOOKBACK_BARS:
@@ -1421,6 +1484,7 @@ class OperationalPipeline:
                 if ts_score is not None:
                     trend_strength = ts_score.score
                     ts_bucket = ts_score.bucket
+                    trend_strength_measured = True
             except Exception:  # noqa: BLE001
                 pass  # OHLCV 없으면 중립값 유지 (기존 동작)
 
@@ -1435,11 +1499,26 @@ class OperationalPipeline:
 
             valuation = None
             if valuation_scorer is not None and fundamental_provider is not None:
-                valuation = valuation_scorer.score(
-                    fundamental_provider.get(
-                        stock.ticker, current_price=close if close > 0 else None
-                    )
+                valuation_input = fundamental_provider.get(
+                    stock.ticker, current_price=close if close > 0 else None
                 )
+                valuation_fields = (
+                    "market_cap", "per", "forward_per", "pbr", "roe", "ev_ebitda",
+                    "fcf", "debt_ratio", "operating_profit_growth",
+                    "consensus_revision", "historical_valuation_band",
+                )
+                if any(getattr(valuation_input, name, None) is not None for name in valuation_fields):
+                    valuation = valuation_scorer.score(valuation_input)
+
+            supply_demand_score = None
+            net_and_count = flows.get(stock.ticker)
+            if net_and_count is not None and net_and_count[1] >= 3 and not frame.empty:
+                turnover = float((frame["close"].tail(5) * frame["volume"].tail(5)).sum())
+                if turnover > 0:
+                    supply_demand_score = round(
+                        max(0.0, min(50.0 + net_and_count[0] / turnover * 500.0, 100.0)),
+                        2,
+                    )
 
             contexts[stock.ticker] = TickerContext(
                 frame=frame,
@@ -1448,6 +1527,8 @@ class OperationalPipeline:
                 close=close,
                 atr14=atr14,
                 valuation=valuation,
+                supply_demand_score=supply_demand_score,
+                trend_strength_measured=trend_strength_measured,
             )
         return contexts
 
@@ -1462,6 +1543,8 @@ class OperationalPipeline:
         excluded_reason_by_ticker: dict[str, str] | None = None,
         contexts: dict[str, TickerContext] | None = None,
         stats: dict[str, int] | None = None,
+        market_score_ready: bool = False,
+        market_liquidity_score: float | None = None,
     ) -> int:
         db.execute(
             delete(CandidateSnapshot).where(
@@ -1539,6 +1622,12 @@ class OperationalPipeline:
                         score_type="SECTOR_FILTER",
                         strategy_type=getattr(strategy_type, "value", str(strategy_type)),
                         component_scores={},
+                        component_sources={},
+                        missing_components=[],
+                        score_coverage_ratio=0.0,
+                        score_status="unavailable",
+                        score_ready=False,
+                        market_score_ready=market_score_ready,
                         score_reason="excluded before stock scoring by sector filter",
                         excluded_reason=sector_excluded_reason,
                         weekly_pass=False,
@@ -1559,23 +1648,38 @@ class OperationalPipeline:
             valuation_result = ctx.valuation if ctx else None
 
             if strategy_score_calculator is not None:
+                extra_scores = strategy_extra_scores(
+                    ctx.frame if ctx is not None else pd.DataFrame(),
+                    strategy_type,
+                    supply_demand_score=(ctx.supply_demand_score if ctx else None),
+                    macro_liquidity_score=market_liquidity_score,
+                )
                 score_result = strategy_score_calculator.calculate(
                     StrategyScoreInput(
                         strategy_type=strategy_type,
                         liquidity_score=factor_score,
-                        trend_strength=trend_strength,
+                        trend_strength=(
+                            trend_strength
+                            if ctx is not None and ctx.trend_strength_measured
+                            else None
+                        ),
                         ts_bucket=ts_bucket,
                         valuation_margin_score=(
                             valuation_result.valuation_score if valuation_result else None
                         ),
                         ai_technical_score=None,
                         ai_weight=0.0,
+                        extra_scores=extra_scores,
                     )
                 )
             else:
                 score_result = legacy_score_calculator.calculate(
                     factor_score=factor_score,
-                    trend_strength=trend_strength,
+                    trend_strength=(
+                        trend_strength
+                        if ctx is not None and ctx.trend_strength_measured
+                        else None
+                    ),
                     ai_technical_score=None,
                     ai_weight=0.0,
                     strategy_type=strategy_type,
@@ -1668,6 +1772,12 @@ class OperationalPipeline:
                     score_type=score_result.score_type,
                     strategy_type=score_result.strategy_type,
                     component_scores=score_result.component_scores,
+                    component_sources=score_result.component_sources,
+                    missing_components=score_result.missing_components,
+                    score_coverage_ratio=score_result.coverage_ratio,
+                    score_status=score_result.score_status,
+                    score_ready=score_result.score_ready,
+                    market_score_ready=market_score_ready,
                     score_reason=score_result.reason,
                     excluded_reason=score_result.excluded_reason,
                     weekly_pass=weekly_pass,
@@ -1799,6 +1909,17 @@ class OperationalPipeline:
 
         order_regime_label = regime.regime.value
         for candidate in candidates:
+            if self._settings.maps_score_readiness_required:
+                ready, readiness_reason = candidate_score_ready(db, candidate)
+                if not ready:
+                    logger.warning(
+                        "Order skipped [%s %s]: %s",
+                        candidate.strategy_id,
+                        candidate.ticker,
+                        readiness_reason,
+                    )
+                    skipped += 1
+                    continue
             # 스냅샷은 장세와 무관하게 항상 생성되므로(관측·주문 분리),
             # 생성 시점 게이트였던 preferred_regimes를 주문 시점 장세로 재검사한다.
             strategy_cls = _RUNNABLE_STRATEGIES.get(candidate.strategy_id)
@@ -2574,6 +2695,11 @@ class OperationalPipeline:
             return 0, 0
         if current > next_leg.entry_price:
             return 0, 0
+        if self._settings.maps_score_readiness_required:
+            ready, reason = current_market_score_ready(db, self._settings, dt.date.today())
+            if not ready:
+                logger.warning("Split strategy entry blocked [%s]: %s", pick.ticker, reason)
+                return 0, 0
         remaining = max(next_leg.planned_qty - next_leg.filled_qty, 0)
         if remaining <= 0:
             next_leg.status = "FILLED"
@@ -2643,6 +2769,12 @@ class OperationalPipeline:
         """
         if not picks:
             return 0, 0
+        market_entry_ready = True
+        market_entry_reason = None
+        if self._settings.maps_score_readiness_required:
+            market_entry_ready, market_entry_reason = current_market_score_ready(
+                db, self._settings, dt.date.today()
+            )
         positions = self._broker_position_details(broker)
         now = dt.datetime.now(dt.timezone.utc)
         submitted = 0
@@ -2737,6 +2869,13 @@ class OperationalPipeline:
                         db.commit()
                 # 현재가 ≤ 매수가 & 미제출 → 지정가 진입
                 if pick.entry_order_id is None and pick.buy_price and current <= pick.buy_price:
+                    if not market_entry_ready:
+                        logger.warning(
+                            "전략매매 진입 차단 [%s]: %s",
+                            pick.ticker,
+                            market_entry_reason,
+                        )
+                        continue
                     # 만료 픽 2차 가드. _active_strategy_trade_picks 와 중복이지만, 이 함수는
                     # picks 를 인자로 받으므로 그 필터를 우회한 호출부가 있으면 여기가 마지막
                     # 방어선이다 — 돈이 나가는 줄 바로 앞이라 중복을 감수한다.
@@ -2847,6 +2986,10 @@ class OperationalPipeline:
         for row in rows:
             if latest_promotions.get(row.strategy_id) not in eligible_stages:
                 continue
+            if self._settings.maps_score_readiness_required:
+                ready, _ = candidate_score_ready(db, row)
+                if not ready:
+                    continue
             strategy_type = self._strategy_type_for_id(row.strategy_id)
             if (
                 strategy_type == StrategyType.CONTRARIAN_QUALITY
@@ -3002,10 +3145,10 @@ class OperationalPipeline:
             return min(int(candidate.estimated_qty), qty)
         return qty
 
-    def _analyze_regime(self) -> RegimeResult:
+    def _analyze_regime(self, ref_date: dt.date | None = None) -> RegimeResult:
         """현재 시황을 분석한다. 실패 시 WEAK+FAIL로 진입을 차단한다."""
         try:
-            return create_regime_analyzer(self._settings).analyze()
+            return create_regime_analyzer(self._settings, ref_date=ref_date).analyze()
         except Exception as exc:  # noqa: BLE001
             logger.warning("시황 분석 실패 — 진입 차단(WEAK+FAIL) 적용: %s", exc)
             from maps.market.regime import RegimeLabel  # noqa: PLC0415

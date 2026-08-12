@@ -26,7 +26,7 @@ def test_fresh_database_reaches_stock_analysis_history_schema(tmp_path, monkeypa
         revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
     engine.dispose()
 
-    assert revision == "0022_stock_analysis_history"
+    assert revision == "0023_score_readiness_feeds"
     assert {"trade_mode", "total_budget", "entries_cancelled", "exit_pending_reason"} <= pick_columns
     assert "analysis_pick_leg" in inspector.get_table_names()
     history_columns = {

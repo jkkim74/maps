@@ -112,8 +112,8 @@ class StrategyEntryPolicy:
 class MarketRegimeInput:
     """Inputs for the Kostolany-style composite market scorer.
 
-    All fields are optional because the external macro/flow data providers are
-    not wired yet. Missing inputs are treated as neutral by the scorers.
+    All observation fields are optional. Missing inputs remain missing and are
+    excluded from the display score while readiness stays fail-closed.
     """
 
     legacy_regime: str
@@ -135,6 +135,9 @@ class MarketRegimeInput:
     theme_concentration: float | None = None
     new_high_ratio: float | None = None
     sharp_drop_ratio: float | None = None
+    measured_liquidity_score: float | None = None
+    measured_psychology_score: float | None = None
+    factor_sources: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -145,11 +148,18 @@ class MarketRegimeResult:
     composite_regime: str
     price_trend_score: float
     volatility_score: float
-    liquidity_score: float
+    liquidity_score: float | None
     foreign_fx_score: float
-    psychology_score: float
+    psychology_score: float | None
     final_market_score: float
     reason: str
+    coverage_ratio: float = 0.0
+    score_status: str = "unavailable"
+    score_ready: bool = False
+    measured_factors: tuple[str, ...] = ()
+    missing_factors: tuple[str, ...] = ()
+    factor_sources: dict[str, str] = field(default_factory=dict)
+    policy_regime: str | None = None
 
 
 class PlaceholderKostolanyDataProvider:
@@ -244,21 +254,30 @@ class MarketRegimeCompositeScorer:
             measured["price_trend"] = _clamp_score(data.price_trend_score)
         if data.volatility_score is not None:
             measured["volatility"] = _clamp_score(data.volatility_score)
-        liquidity_measured = self._liquidity.score(data)
+        liquidity_measured = (
+            _clamp_score(data.measured_liquidity_score)
+            if data.measured_liquidity_score is not None
+            else self._liquidity.score(data)
+        )
         if liquidity_measured is not None:
             measured["liquidity"] = liquidity_measured
         if data.foreign_fx_score is not None:
             measured["foreign_fx"] = _clamp_score(data.foreign_fx_score)
-        psychology_measured = self._psychology.score(data)
+        psychology_measured = (
+            _clamp_score(data.measured_psychology_score)
+            if data.measured_psychology_score is not None
+            else self._psychology.score(data)
+        )
         if psychology_measured is not None:
             measured["psychology"] = psychology_measured
 
-        # 표시 필드는 미측정이어도 중립 50을 유지한다 (기존 소비자 호환).
+        # Missing top-level factors stay None. A displayed neutral 50 is
+        # indistinguishable from an actual observation and is unsafe for orders.
         price_score = measured.get("price_trend", 50.0)
         vol_score = measured.get("volatility", 50.0)
-        liquidity_score = measured.get("liquidity", self._liquidity.neutral_score)
+        liquidity_score = measured.get("liquidity")
         foreign_fx_score = measured.get("foreign_fx", 50.0)
-        psychology_score = measured.get("psychology", self._psychology.neutral_score)
+        psychology_score = measured.get("psychology")
 
         if measured:
             weight_sum = sum(self._WEIGHTS[name] for name in measured)
@@ -271,6 +290,7 @@ class MarketRegimeCompositeScorer:
 
         composite = self._classify(data.legacy_regime, final_score, liquidity_score)
         unmeasured = [name for name in self._WEIGHTS if name not in measured]
+        coverage = round(sum(self._WEIGHTS[name] for name in measured), 4)
         measured_parts = ", ".join(
             f"{name}={measured[name]:.1f}" for name in self._WEIGHTS if name in measured
         )
@@ -281,7 +301,12 @@ class MarketRegimeCompositeScorer:
             reason += f"; 미측정 제외: {','.join(unmeasured)}"
         if composite == "contrarian":
             reason += "; weak price trend with improving liquidity"
-        elif data.legacy_regime == "strong" and composite == "mixed":
+        elif (
+            data.legacy_regime == "strong"
+            and composite == "mixed"
+            and liquidity_score is not None
+            and liquidity_score < 35.0
+        ):
             reason += "; strong trend downgraded by weak liquidity"
 
         return MarketRegimeResult(
@@ -289,16 +314,23 @@ class MarketRegimeCompositeScorer:
             composite_regime=composite,
             price_trend_score=round(price_score, 2),
             volatility_score=round(vol_score, 2),
-            liquidity_score=round(liquidity_score, 2),
+            liquidity_score=round(liquidity_score, 2) if liquidity_score is not None else None,
             foreign_fx_score=round(foreign_fx_score, 2),
-            psychology_score=round(psychology_score, 2),
+            psychology_score=round(psychology_score, 2) if psychology_score is not None else None,
             final_market_score=final_score,
             reason=reason,
+            coverage_ratio=coverage,
+            score_status=("complete" if not unmeasured else "partial" if measured else "unavailable"),
+            score_ready=coverage == 1.0,
+            measured_factors=tuple(name for name in self._WEIGHTS if name in measured),
+            missing_factors=tuple(unmeasured),
+            factor_sources=dict(data.factor_sources),
+            policy_regime=data.legacy_regime,
         )
 
     @staticmethod
-    def _classify(legacy_regime: str, final_score: float, liquidity_score: float) -> str:
-        if legacy_regime == RegimeLabel.WEAK.value and liquidity_score >= 65.0 and final_score >= 45.0:
+    def _classify(legacy_regime: str, final_score: float, liquidity_score: float | None) -> str:
+        if legacy_regime == RegimeLabel.WEAK.value and liquidity_score is not None and liquidity_score >= 65.0 and final_score >= 45.0:
             return "contrarian"
         if final_score >= 67.0:
             composite = RegimeLabel.STRONG.value
@@ -306,7 +338,7 @@ class MarketRegimeCompositeScorer:
             composite = RegimeLabel.MIXED.value
         else:
             composite = RegimeLabel.WEAK.value
-        if legacy_regime == RegimeLabel.STRONG.value and liquidity_score < 35.0:
+        if legacy_regime == RegimeLabel.STRONG.value and liquidity_score is not None and liquidity_score < 35.0:
             return RegimeLabel.MIXED.value
         return composite
 
@@ -647,6 +679,7 @@ class MarketRegimeAnalyzer:
         self._kostolany_enabled = kostolany_enabled
         self._composite_scorer = composite_scorer or MarketRegimeCompositeScorer()
         self._kostolany_provider = kostolany_provider or PlaceholderKostolanyDataProvider()
+        self._volatility_measured = False
 
     def analyze(self) -> RegimeResult:
         """현재 장세를 분석한다.
@@ -781,6 +814,7 @@ class MarketRegimeAnalyzer:
         12% ≤ vol ≤ 20%       → NORMAL
         vol > 20%              → HIGH
         """
+        self._volatility_measured = False
         if self._provider is None:
             return VolRegimeLabel.NORMAL
         try:
@@ -790,6 +824,7 @@ class MarketRegimeAnalyzer:
             arr = np.array(closes, dtype=float)
             returns = np.diff(arr) / arr[:-1]
             annualized_vol = float(returns.std() * np.sqrt(52))
+            self._volatility_measured = True
             if annualized_vol < self._VOL_LOW_THRESHOLD:
                 return VolRegimeLabel.LOW
             if annualized_vol > self._VOL_HIGH_THRESHOLD:
@@ -834,16 +869,42 @@ class MarketRegimeAnalyzer:
     def _with_composite(self, result: RegimeResult) -> RegimeResult:
         if not self._kostolany_enabled:
             return result
+        price_measured = any(asset.value is not None for asset in result.assets)
+        fx_measured = any(
+            asset.name == "USD/KRW" and asset.value is not None
+            for asset in result.assets
+        )
+        factor_sources: dict[str, str] = {}
+        if price_measured:
+            factor_sources["price_trend"] = "market.weekly_price"
+        if self._volatility_measured:
+            factor_sources["volatility"] = "market.kospi_realized_volatility"
+        if fx_measured:
+            factor_sources["foreign_fx"] = "market.usdkrw_weekly_trend"
         base_input = MarketRegimeInput(
             legacy_regime=result.regime.value,
             vol_regime=result.vol_regime.value,
             weekly_trend=result.weekly_trend.value,
-            price_trend_score=self._price_trend_score(result),
-            volatility_score=self._volatility_score(result.vol_regime),
-            foreign_fx_score=self._foreign_fx_score(result.assets),
+            price_trend_score=self._price_trend_score(result) if price_measured else None,
+            volatility_score=(
+                self._volatility_score(result.vol_regime)
+                if self._volatility_measured else None
+            ),
+            foreign_fx_score=self._foreign_fx_score(result.assets) if fx_measured else None,
+            factor_sources=factor_sources,
         )
         enriched = self._kostolany_provider.enrich(base_input)
         result.composite = self._composite_scorer.score(enriched)
+        if result.composite.score_ready:
+            rank = {
+                RegimeLabel.WEAK.value: 0,
+                RegimeLabel.MIXED.value: 1,
+                RegimeLabel.STRONG.value: 2,
+            }
+            composite_regime = result.composite.composite_regime
+            if composite_regime in rank and rank[composite_regime] < rank[result.regime.value]:
+                result.regime = RegimeLabel(composite_regime)
+            object.__setattr__(result.composite, "policy_regime", result.regime.value)
         return result
 
     @staticmethod
@@ -873,7 +934,9 @@ class MarketRegimeAnalyzer:
         return 40.0 if usdkrw.direction == "up" else 60.0
 
 
-def create_regime_analyzer(settings) -> MarketRegimeAnalyzer:
+def create_regime_analyzer(
+    settings, *, ref_date: datetime.date | None = None
+) -> MarketRegimeAnalyzer:
     """설정 기반 MarketRegimeAnalyzer 를 생성한다.
 
     - maps_market_regime_override / maps_weekly_trend_override 가 'auto' 가 아니면
@@ -884,15 +947,23 @@ def create_regime_analyzer(settings) -> MarketRegimeAnalyzer:
     override_trend = getattr(settings, "maps_weekly_trend_override", "auto") or "auto"
 
     has_override = override_regime != "auto" or override_trend != "auto"
+    kostolany_enabled = bool(getattr(settings, "maps_kostolany_regime_enabled", False))
+    kostolany_provider = None
+    if kostolany_enabled:
+        from maps.market.feeds import DatabaseKostolanyDataProvider
+
+        kostolany_provider = DatabaseKostolanyDataProvider(ref_date=ref_date)
     if has_override:
         return MarketRegimeAnalyzer(
             provider=None,
             override_regime=override_regime if override_regime != "auto" else None,
             override_trend=override_trend if override_trend != "auto" else None,
-            kostolany_enabled=bool(getattr(settings, "maps_kostolany_regime_enabled", False)),
+            kostolany_enabled=kostolany_enabled,
+            kostolany_provider=kostolany_provider,
         )
 
     return MarketRegimeAnalyzer(
         provider=CombinedWeeklyProvider(),
-        kostolany_enabled=bool(getattr(settings, "maps_kostolany_regime_enabled", False)),
+        kostolany_enabled=kostolany_enabled,
+        kostolany_provider=kostolany_provider,
     )

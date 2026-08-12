@@ -102,6 +102,60 @@ def _build_market(db: Session, settings: MapsSettings, ref_date: dt.date) -> Dig
         .first()
     )
 
+    # A digest must explain the data that was available when the decision was made.
+    # Never replace a persisted partial score with a later recomputation.
+    if row is not None:
+        factor_scores = row.factor_scores or {}
+        factor_sources = row.factor_sources or {}
+        measured = set(row.measured_factors or [])
+        missing = list(row.missing_factors or [])
+        factors = [
+            DigestFactor(
+                name=name,
+                score=factor_scores.get(name),
+                measured=name in measured,
+                note=None if name in measured else "decision-time input was missing",
+                source=factor_sources.get(name),
+            )
+            for name in (
+                "price_trend",
+                "volatility",
+                "liquidity",
+                "foreign_fx",
+                "psychology",
+            )
+        ]
+        return DigestMarket(
+            regime=row.applied_regime,
+            raw_regime=row.raw_regime,
+            weekly_trend=row.weekly_trend,
+            vol_regime=row.vol_regime,
+            market_mode=row.market_mode,
+            policy_regime=row.policy_regime or row.applied_regime,
+            entry_limit_ratio=row.entry_limit_ratio,
+            breadth_pct=row.breadth_pct,
+            up_count=row.up_count,
+            total_assets=row.total_assets,
+            kospi_above_ma5w=row.kospi_above_ma5w,
+            kospi_above_ma10w=row.kospi_above_ma10w,
+            kospi_ts=row.kospi_ts,
+            floor_applied=bool(row.floor_applied),
+            korea_weak_guard_applied=bool(row.korea_weak_guard_applied),
+            final_market_score=row.final_market_score,
+            score_coverage_ratio=row.score_coverage_ratio,
+            score_status=row.score_status,
+            score_ready=row.score_ready,
+            measured_factors=list(row.measured_factors or []),
+            missing_factors=missing,
+            factors=factors,
+            reason=row.score_reason or (
+                "all market factors measured"
+                if row.score_ready
+                else f"partial market score; missing={','.join(missing)}"
+            ),
+            source="market_regime_log",
+        )
+
     analyzer = create_regime_analyzer(settings)
     result = analyzer.analyze()
     composite = result.composite
@@ -151,6 +205,12 @@ def _build_market(db: Session, settings: MapsSettings, ref_date: dt.date) -> Dig
             bool(row.korea_weak_guard_applied) if row else result.korea_weak_applied
         ),
         final_market_score=composite.final_market_score if composite else None,
+        policy_regime=composite.policy_regime if composite else result.regime.value,
+        score_coverage_ratio=composite.coverage_ratio if composite else 0.0,
+        score_status=composite.score_status if composite else "unavailable",
+        score_ready=composite.score_ready if composite else False,
+        measured_factors=list(composite.measured_factors) if composite else [],
+        missing_factors=list(composite.missing_factors) if composite else [],
         factors=factors,
         reason=composite.reason if composite else None,
         source="market_regime_log" if row else "recomputed",
@@ -347,6 +407,12 @@ def _candidate_from_row(r: CandidateSnapshot, pick: AnalysisPick | None) -> Dige
         trend_strength=r.trend_strength,
         ts_bucket=r.ts_bucket,
         score_reason=r.score_reason,
+        component_sources=r.component_sources,
+        missing_components=r.missing_components or [],
+        score_coverage_ratio=r.score_coverage_ratio,
+        score_status=r.score_status,
+        score_ready=r.score_ready,
+        market_score_ready=r.market_score_ready,
         excluded_reason=r.excluded_reason,
         holding_type=r.holding_type,
         estimated_qty=r.estimated_qty,

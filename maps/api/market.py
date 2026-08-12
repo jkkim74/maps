@@ -45,6 +45,13 @@ def get_market() -> MarketResponse:
         foreign_fx_score=composite.foreign_fx_score if composite else None,
         psychology_score=composite.psychology_score if composite else None,
         final_market_score=composite.final_market_score if composite else None,
+        policy_regime=composite.policy_regime if composite else result.regime.value,
+        score_coverage_ratio=composite.coverage_ratio if composite else 0.0,
+        score_status=composite.score_status if composite else "unavailable",
+        score_ready=composite.score_ready if composite else False,
+        measured_factors=list(composite.measured_factors) if composite else [],
+        missing_factors=list(composite.missing_factors) if composite else [],
+        factor_sources=dict(composite.factor_sources) if composite else {},
         contrarian_entry_limit_ratio=settings.maps_contrarian_max_entry_ratio,
         reason=composite.reason if composite else "legacy market regime mode",
     )

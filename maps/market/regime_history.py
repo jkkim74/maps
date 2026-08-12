@@ -147,7 +147,15 @@ def apply_hysteresis(
             result.regime = RegimeLabel.WEAK
             result.korea_weak_applied = True
 
-    _upsert_log(db, result, raw_regime, ref_date, source=source, breadth_pct=breadth_pct)
+    _upsert_log(
+        db,
+        result,
+        raw_regime,
+        ref_date,
+        source=source,
+        breadth_pct=breadth_pct,
+        settings=settings,
+    )
     return result
 
 
@@ -159,6 +167,7 @@ def _upsert_log(
     *,
     source: str,
     breadth_pct: float | None = None,
+    settings: MapsSettings,
 ) -> None:
     """판정 결과를 market_regime_log에 upsert한다."""
     row = (
@@ -181,5 +190,39 @@ def _upsert_log(
         row.breadth_pct = breadth_pct
     row.kospi_above_ma5w = result.kospi_above_ma5w
     row.kospi_above_ma10w = result.kospi_above_ma10w
+    composite = result.composite
+    if composite is not None:
+        row.final_market_score = composite.final_market_score
+        row.composite_regime = composite.composite_regime
+        row.policy_regime = composite.policy_regime or result.regime.value
+        row.kospi_ts = result.kospi_ts
+        row.entry_limit_ratio = result.entry_limit_ratio
+        row.market_mode = result.market_mode(
+            contrarian_enabled=settings.maps_contrarian_accumulation_enabled
+        ).value
+        row.score_reason = composite.reason
+        row.score_coverage_ratio = composite.coverage_ratio
+        row.score_status = composite.score_status
+        row.score_ready = composite.score_ready
+        row.factor_scores = {
+            "price_trend": composite.price_trend_score,
+            "volatility": composite.volatility_score,
+            "liquidity": composite.liquidity_score,
+            "foreign_fx": composite.foreign_fx_score,
+            "psychology": composite.psychology_score,
+        }
+        row.factor_sources = composite.factor_sources
+        row.measured_factors = list(composite.measured_factors)
+        row.missing_factors = list(composite.missing_factors)
+    else:
+        row.kospi_ts = result.kospi_ts
+        row.entry_limit_ratio = result.entry_limit_ratio
+        row.market_mode = result.market_mode(
+            contrarian_enabled=settings.maps_contrarian_accumulation_enabled
+        ).value
+        row.score_reason = "composite market scoring disabled"
+        row.score_ready = False
+        row.score_status = "unavailable"
+        row.score_coverage_ratio = 0.0
     row.source = source
     db.commit()

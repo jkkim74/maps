@@ -18,6 +18,7 @@ from maps.ops.candidate_selection import (
     candidate_recommendation_eligible_expression,
 )
 from maps.ops.order_state import claimed_candidate_tickers
+from maps.ops.score_readiness import candidate_score_ready
 from maps.ops.scheduler import OperationalPipeline, _RUNNABLE_STRATEGIES, _is_krx_market_day
 
 logger = logging.getLogger(__name__)
@@ -283,8 +284,12 @@ def build_order_preview(db: Session, settings: MapsSettings) -> OrderPreviewResp
         # 장세 게이트 미러링: 주문 경로와 동일하게 preferred_regimes + entry_policy를
         # 재검사하고, 차단 후보는 사유와 함께 표시한다 (관측·주문 분리).
         regime_block_reason: str | None = None
+        if settings.maps_score_readiness_required:
+            ready, readiness_reason = candidate_score_ready(db, candidate)
+            if not ready:
+                regime_block_reason = readiness_reason
         strategy_cls = _RUNNABLE_STRATEGIES.get(candidate.strategy_id)
-        if regime_result is not None and strategy_cls is not None:
+        if regime_block_reason is None and regime_result is not None and strategy_cls is not None:
             if market_regime not in strategy_cls.preferred_regimes:
                 regime_block_reason = f"preferred_regime_mismatch:{market_regime}"
             else:

@@ -108,6 +108,12 @@ class CandidateSnapshot(Base):
     score_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
     strategy_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
     component_scores: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    component_sources: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    missing_components: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    score_coverage_ratio: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    score_status: Mapped[str] = mapped_column(String(16), nullable=False, default="unavailable")
+    score_ready: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    market_score_ready: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     score_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
     excluded_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
     weekly_pass: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
@@ -726,6 +732,58 @@ class StockAnalysisHistory(Base):
     price_refreshed_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)
 
 
+class InvestorFlowSnapshot(Base):
+    """Daily per-ticker KRX investor net-purchase values used by scores."""
+
+    __tablename__ = "investor_flow_snapshot"
+    __table_args__ = (
+        UniqueConstraint("date", "ticker", name="uq_investor_flow_date_ticker"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    date: Mapped[datetime.date] = mapped_column(Date, nullable=False, index=True)
+    ticker: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    market: Mapped[str] = mapped_column(String(16), nullable=False)
+    foreign_net_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    institutional_net_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    individual_net_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    source: Mapped[str] = mapped_column(String(32), nullable=False, default="pykrx")
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc)
+    )
+
+
+class MarketNewsSentiment(Base):
+    """Daily Naver-news/Bedrock market sentiment audit snapshot."""
+
+    __tablename__ = "market_news_sentiment"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ref_date: Mapped[datetime.date] = mapped_column(Date, nullable=False, unique=True, index=True)
+    score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    label: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    article_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    positive_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    neutral_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    negative_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="unavailable")
+    headlines: Mapped[list[dict] | None] = mapped_column(JSON, nullable=True)
+    model_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    input_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    output_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error_message: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc)
+    )
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+        default=lambda: datetime.datetime.now(datetime.timezone.utc),
+        onupdate=lambda: datetime.datetime.now(datetime.timezone.utc),
+    )
+
+
 # ---------------------------------------------------------------------------
 # AI 분석 실행 감사 로그 (SCR-19) — 0종목 실행도 기록해 cron 실패와 구분
 # ---------------------------------------------------------------------------
@@ -812,6 +870,20 @@ class MarketRegimeLog(Base):
     breadth_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     kospi_above_ma5w: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     kospi_above_ma10w: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    final_market_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    composite_regime: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    policy_regime: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    kospi_ts: Mapped[float | None] = mapped_column(Float, nullable=True)
+    entry_limit_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    market_mode: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    score_reason: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    score_coverage_ratio: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    score_status: Mapped[str] = mapped_column(String(16), nullable=False, default="unavailable")
+    score_ready: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    factor_scores: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    factor_sources: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    measured_factors: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    missing_factors: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     source: Mapped[str] = mapped_column(String(32), nullable=False, default="scheduler")
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc)
