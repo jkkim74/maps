@@ -1,0 +1,2098 @@
+<title>MAPS 등급·권한 화면설계서</title>
+
+<style>
+  /* ── 토큰 ──────────────────────────────────────────────────────────────
+     문서 크롬은 밝은/어두운 두 벌. 목업 안쪽은 제품(MAPS)의 실제 다크 팔레트를
+     고정으로 쓴다 — 제품이 다크 전용이므로 목업은 테마를 따라가지 않는다. */
+  :root {
+    --paper:      #faf8f4;
+    --surface:    #ffffff;
+    --sunk:       #f2eee6;
+    --line:       #e2dbcd;
+    --line-soft:  #ece6da;
+    --ink:        #1c1a16;
+    --ink-2:      #4d483f;
+    --ink-3:      #7d766a;
+    --gold:       #a8762a;
+    --gold-soft:  #f3e8d2;
+    --ok:         #2f7d4f;
+    --warn:       #9a6b12;
+    --bad:        #a33a34;
+    --info:       #2b5fa8;
+
+    /* 제품 목업 고정 팔레트 = static/css/main.css */
+    --m-base:     #0f1117;
+    --m-surface:  #181c25;
+    --m-card:     #1e2333;
+    --m-hover:    #252b3b;
+    --m-border:   #2a3145;
+    --m-text:     #e8eaf0;
+    --m-text2:    #8892a4;
+    --m-text3:    #525c72;
+    --m-pass:     #4ade80;
+    --m-fail:     #f87171;
+    --m-warn:     #fbbf24;
+    --m-info:     #60a5fa;
+    --m-accent:   #d4a85c;
+    --m-research: #c084fc;
+
+    --sans: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Malgun Gothic",
+            "Noto Sans KR", "Segoe UI", Roboto, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, "Cascadia Mono", Consolas, "D2Coding", monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:     #16151a;
+      --surface:   #1d1c22;
+      --sunk:      #131217;
+      --line:      #33313b;
+      --line-soft: #26252c;
+      --ink:       #ece9e3;
+      --ink-2:     #b6b0a6;
+      --ink-3:     #857f74;
+      --gold:      #d9ad63;
+      --gold-soft: #2e2718;
+      --ok:        #67c48c;
+      --warn:      #d9ad63;
+      --bad:       #e08a84;
+      --info:      #7fa9e6;
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper:     #16151a;
+    --surface:   #1d1c22;
+    --sunk:      #131217;
+    --line:      #33313b;
+    --line-soft: #26252c;
+    --ink:       #ece9e3;
+    --ink-2:     #b6b0a6;
+    --ink-3:     #857f74;
+    --gold:      #d9ad63;
+    --gold-soft: #2e2718;
+    --ok:        #67c48c;
+    --warn:      #d9ad63;
+    --bad:       #e08a84;
+    --info:      #7fa9e6;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 15px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    display: grid;
+    grid-template-columns: 232px minmax(0, 1fr);
+    gap: 48px;
+    max-width: 1240px;
+    margin: 0 auto;
+    padding: 0 28px 120px;
+  }
+  @media (max-width: 1000px) {
+    .wrap { grid-template-columns: minmax(0, 1fr); gap: 0; padding: 0 18px 80px; }
+    .toc { position: static; border-right: 0; padding-top: 0; }
+  }
+
+  /* ── 표지 ── */
+  header.cover {
+    grid-column: 1 / -1;
+    padding: 64px 0 40px;
+    border-bottom: 2px solid var(--ink);
+  }
+  .eyebrow {
+    font-size: 12px; letter-spacing: .16em; text-transform: uppercase;
+    color: var(--gold); font-weight: 600; margin: 0 0 14px;
+  }
+  h1 {
+    font-size: clamp(30px, 4.4vw, 46px); line-height: 1.14; margin: 0 0 18px;
+    letter-spacing: -.02em; font-weight: 700; text-wrap: balance;
+  }
+  .lede { font-size: 17px; color: var(--ink-2); max-width: 62ch; margin: 0 0 26px; }
+  .meta {
+    display: flex; flex-wrap: wrap; gap: 8px 26px;
+    font-size: 13px; color: var(--ink-3);
+    border-top: 1px solid var(--line); padding-top: 16px;
+  }
+  .meta b { color: var(--ink-2); font-weight: 600; }
+
+  /* ── 목차 ── */
+  .toc {
+    position: sticky; top: 0; align-self: start; height: 100vh; overflow-y: auto;
+    padding: 40px 20px 40px 0; border-right: 1px solid var(--line-soft);
+    font-size: 13px; line-height: 1.5;
+  }
+  .toc h2 {
+    font-size: 11px; letter-spacing: .14em; text-transform: uppercase;
+    color: var(--ink-3); margin: 0 0 12px; font-weight: 600;
+  }
+  .toc a {
+    display: block; padding: 5px 0; color: var(--ink-2);
+    text-decoration: none; border-left: 2px solid transparent; padding-left: 10px;
+    margin-left: -2px;
+  }
+  .toc a:hover, .toc a:focus-visible { color: var(--gold); border-left-color: var(--gold); }
+  .toc .sub { padding-left: 22px; font-size: 12px; color: var(--ink-3); }
+
+  main { padding-top: 40px; min-width: 0; }
+
+  section { margin: 0 0 68px; scroll-margin-top: 20px; }
+  h2.sec {
+    font-size: 13px; letter-spacing: .14em; text-transform: uppercase;
+    color: var(--gold); font-weight: 700; margin: 0 0 6px;
+  }
+  h3 {
+    font-size: clamp(21px, 2.4vw, 27px); line-height: 1.25; margin: 0 0 14px;
+    letter-spacing: -.015em; font-weight: 700; text-wrap: balance;
+  }
+  h4 {
+    font-size: 17px; margin: 34px 0 10px; font-weight: 700; letter-spacing: -.01em;
+  }
+  h5 {
+    font-size: 12px; letter-spacing: .1em; text-transform: uppercase;
+    color: var(--ink-3); margin: 24px 0 8px; font-weight: 600;
+  }
+  p { margin: 0 0 14px; max-width: 68ch; }
+  ul, ol { margin: 0 0 14px; padding-left: 20px; max-width: 68ch; }
+  li { margin: 0 0 6px; }
+  code {
+    font-family: var(--mono); font-size: .875em;
+    background: var(--sunk); border: 1px solid var(--line-soft);
+    padding: .08em .34em; border-radius: 3px; white-space: nowrap;
+  }
+  strong { font-weight: 700; }
+  a { color: var(--gold); }
+
+  /* ── 표 ── */
+  .tw { overflow-x: auto; margin: 0 0 18px; border: 1px solid var(--line); border-radius: 6px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; background: var(--surface); }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+  th {
+    background: var(--sunk); font-weight: 600; font-size: 12px;
+    letter-spacing: .04em; text-transform: uppercase; color: var(--ink-3);
+    position: sticky; top: 0;
+  }
+  tbody tr:last-child td { border-bottom: 0; }
+  td.num { font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+  td code, th code { white-space: nowrap; }
+
+  /* ── 배지 ── */
+  .b {
+    display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: .04em;
+    padding: 2px 8px; border-radius: 999px; border: 1px solid currentColor;
+    white-space: nowrap; line-height: 1.5;
+  }
+  .b-ok   { color: var(--ok); }
+  .b-warn { color: var(--warn); }
+  .b-bad  { color: var(--bad); }
+  .b-info { color: var(--info); }
+  .b-mute { color: var(--ink-3); }
+
+  /* ── 콜아웃 ── */
+  .note {
+    border-left: 3px solid var(--gold); background: var(--gold-soft);
+    padding: 14px 18px; margin: 0 0 18px; border-radius: 0 6px 6px 0;
+  }
+  .note.danger { border-left-color: var(--bad); background: color-mix(in srgb, var(--bad) 9%, var(--surface)); }
+  .note p:last-child, .note ul:last-child { margin-bottom: 0; }
+  .note .t { font-weight: 700; display: block; margin-bottom: 4px; }
+
+  /* ── 화면 카드 ── */
+  .screen {
+    border: 1px solid var(--line); border-radius: 10px; background: var(--surface);
+    margin: 0 0 30px; overflow: hidden;
+  }
+  .screen > header {
+    display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 14px;
+    padding: 14px 20px; background: var(--sunk); border-bottom: 1px solid var(--line);
+  }
+  .screen > header .id {
+    font-family: var(--mono); font-size: 12px; font-weight: 700; color: var(--gold);
+    letter-spacing: .04em;
+  }
+  .screen > header .nm { font-weight: 700; font-size: 16px; }
+  .screen > header .pt { font-family: var(--mono); font-size: 12px; color: var(--ink-3); }
+  .screen > header .sp { flex: 1; }
+  .screen > .body { padding: 20px; }
+  .screen > .body > :first-child { margin-top: 0; }
+
+  /* ── 목업 (제품 다크 팔레트 고정) ── */
+  .mock {
+    background: var(--m-base); color: var(--m-text);
+    border: 1px solid var(--m-border); border-radius: 8px;
+    font-size: 13px; line-height: 1.5; overflow: hidden; margin: 0 0 18px;
+  }
+  .mock * { box-sizing: border-box; }
+  .mock-cap {
+    font-size: 12px; color: var(--ink-3); margin: -12px 0 20px; padding-left: 2px;
+  }
+  .shell { display: grid; grid-template-columns: 210px minmax(0, 1fr); min-height: 340px; }
+  .shell.narrow { grid-template-columns: 1fr; }
+  .side { background: var(--m-surface); border-right: 1px solid var(--m-border); padding: 12px 0; }
+  .logo { padding: 4px 14px 14px; border-bottom: 1px solid var(--m-border); margin-bottom: 10px; }
+  .logo b { display: block; font-size: 15px; letter-spacing: .06em; color: var(--m-text); }
+  .logo span { font-size: 10px; color: var(--m-text3); }
+  .grp { margin: 0 0 12px; }
+  .grp-l {
+    font-size: 10px; letter-spacing: .1em; text-transform: uppercase;
+    color: var(--m-text3); padding: 4px 14px; font-weight: 600;
+  }
+  .it {
+    display: flex; align-items: center; gap: 8px; padding: 5px 14px;
+    color: var(--m-text2); font-size: 12.5px;
+  }
+  .it .n {
+    font-family: var(--mono); font-size: 10.5px; color: var(--m-text3);
+    min-width: 17px; text-align: right;
+  }
+  .it.on { background: var(--m-hover); color: var(--m-text); box-shadow: inset 2px 0 0 var(--m-accent); }
+  .it.new::after { content: "NEW"; font-size: 8.5px; color: var(--m-accent); letter-spacing: .06em; }
+  .it.pay .n { color: var(--m-accent); }
+  .it.gone { color: var(--m-text3); text-decoration: line-through; opacity: .55; }
+  .top {
+    display: flex; align-items: center; gap: 12px; padding: 0 16px; height: 44px;
+    border-bottom: 1px solid var(--m-border); background: var(--m-surface); font-size: 12.5px;
+  }
+  .top .ttl { font-weight: 600; }
+  .top .sp { flex: 1; }
+  .top .u { color: var(--m-text2); font-size: 11.5px; }
+  .top .btn, .mock .btn {
+    border: 1px solid var(--m-border); background: var(--m-card); color: var(--m-text2);
+    border-radius: 5px; padding: 3px 10px; font-size: 11.5px; display: inline-block;
+  }
+  .mock .btn.pri { background: var(--m-info); border-color: var(--m-info); color: #08111f; font-weight: 600; }
+  .mock .btn.dgr { border-color: var(--m-fail); color: var(--m-fail); }
+  .mock .btn.off { opacity: .4; }
+  .cnt { padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+  .mcard { background: var(--m-card); border: 1px solid var(--m-border); border-radius: 7px; }
+  .mcard > h6 {
+    margin: 0; padding: 10px 14px; border-bottom: 1px solid var(--m-border);
+    font-size: 12.5px; font-weight: 600; color: var(--m-text);
+    display: flex; align-items: center; gap: 8px;
+  }
+  .mcard > div { padding: 12px 14px; }
+  .mrow { display: flex; gap: 10px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
+  .mrow:last-child { margin-bottom: 0; }
+  .mlab { color: var(--m-text2); font-size: 12px; min-width: 132px; }
+  .fld {
+    background: var(--m-base); border: 1px solid var(--m-border); border-radius: 5px;
+    padding: 4px 9px; font-size: 12px; color: var(--m-text); min-width: 150px;
+  }
+  .fld.ph { color: var(--m-text3); }
+  .fld.w { min-width: 260px; }
+  .mb {
+    font-size: 10px; font-weight: 700; padding: 1px 7px; border-radius: 999px;
+    border: 1px solid currentColor; letter-spacing: .03em;
+  }
+  .mb.pass { color: var(--m-pass); } .mb.fail { color: var(--m-fail); }
+  .mb.warn { color: var(--m-warn); } .mb.info { color: var(--m-info); }
+  .mb.acc  { color: var(--m-accent); } .mb.mute { color: var(--m-text3); }
+  table.mt { width: 100%; border-collapse: collapse; font-size: 12px; background: transparent; }
+  table.mt th, table.mt td {
+    padding: 6px 8px; border-bottom: 1px solid var(--m-border); text-align: left;
+    color: var(--m-text); position: static; background: transparent; text-transform: none;
+    letter-spacing: 0; font-size: 12px;
+  }
+  table.mt th { color: var(--m-text3); font-weight: 600; font-size: 11px; }
+  .empty { color: var(--m-text3); text-align: center; padding: 22px; font-size: 12px; }
+  .modal {
+    background: var(--m-card); border: 1px solid var(--m-border); border-radius: 9px;
+    max-width: 520px; margin: 18px auto; box-shadow: 0 18px 44px rgba(0,0,0,.5);
+  }
+  .modal > h6 {
+    margin: 0; padding: 12px 16px; border-bottom: 1px solid var(--m-border);
+    font-size: 13px; font-weight: 600;
+  }
+  .modal > div { padding: 14px 16px; }
+  .modal .foot {
+    display: flex; justify-content: flex-end; gap: 8px; padding: 12px 16px;
+    border-top: 1px solid var(--m-border);
+  }
+  .hint { font-size: 11px; color: var(--m-text3); margin-top: 3px; }
+  .err { font-size: 11.5px; color: var(--m-fail); margin-top: 3px; }
+  .three { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 14px; margin: 0 0 8px; }
+  @media (max-width: 860px) { .three { grid-template-columns: 1fr; } }
+  .three > figure { margin: 0; }
+  .three figcaption {
+    font-size: 12px; color: var(--ink-3); margin-top: 8px; text-align: center;
+  }
+
+  /* ── 흐름도 ── */
+  figure.flow { margin: 0 0 22px; }
+  figure.flow figcaption { font-size: 12.5px; color: var(--ink-3); margin-top: 10px; max-width: 68ch; }
+  pre.mermaid {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 8px;
+    padding: 18px; overflow-x: auto; margin: 0; font-family: var(--mono); font-size: 12px;
+    line-height: 1.5; color: var(--ink-2);
+  }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 12.5px; color: var(--ink-2); margin: 0 0 18px; }
+  :focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+</style>
+
+<div class="wrap">
+
+<header class="cover">
+  <p class="eyebrow">MAPS · 개발 착수용 상세 설계</p>
+  <h1>등급·권한 화면설계서</h1>
+  <p class="lede">
+    무료 사용자 · 유료 사용자 · 관리자 세 등급이 각각 무엇을 보고 무엇을 바꿀 수 있는지를
+    규정한다. 개발자가 이 문서만 보고 화면을 만들 수 있도록 항목·검증·상태·API까지 적었다.
+  </p>
+  <div class="meta">
+    <span><b>대상 화면</b> 18개 (구현됨 11 · 서버 미구현 7)</span>
+    <span><b>흐름도</b> 5개</span>
+    <span><b>기준 코드</b> <code>0024_app_user</code></span>
+    <span><b>작성일</b> 2026-08-12</span>
+  </div>
+</header>
+
+<nav class="toc" aria-label="목차">
+  <h2>목차</h2>
+  <a href="#s0">0 · 읽는 법</a>
+  <a href="#s1">1 · 등급별 메뉴 구성</a>
+  <a class="sub" href="#s1">NAV-01 / 02 / 03</a>
+  <a href="#s2">2 · 등급 비교 매트릭스</a>
+  <a href="#s21">2-1 · 설정의 세 층</a>
+  <a href="#s3">3 · 설정 편집 화면</a>
+  <a class="sub" href="#s3">OPS-01 / 02 / 03</a>
+  <a href="#s4">4 · 인증 화면</a>
+  <a class="sub" href="#s4">AUTH-01 / 02 / 03</a>
+  <a href="#s5">5 · 내 설정</a>
+  <a class="sub" href="#s5">SET-01</a>
+  <a href="#s6">6 · 회원 관리</a>
+  <a class="sub" href="#s6">USR-01 / 02 / 03 / 04</a>
+  <a href="#s7">7 · 유료 사용자 화면</a>
+  <a class="sub" href="#s7">PAY-01 / 02 / 03 / 04</a>
+  <a href="#s8">8 · 흐름도 5개</a>
+  <a href="#s9">9 · 부록</a>
+</nav>
+
+<main>
+
+<!-- ══════════════════════════ 0 ══════════════════════════ -->
+<section id="s0">
+  <h2 class="sec">0</h2>
+  <h3>읽는 법</h3>
+
+  <p>
+    이 문서는 지금 화면이 어떻게 생겼는지를 기록한 것이 <em>아니라</em>, 앞으로 무엇을
+    만들지를 규정한다. 현재 <code>/settings</code> 와 <code>/admin/users</code> 는 입력칸만
+    나열된 임시 화면이며, 이 설계에 맞춰 다시 만든다.
+  </p>
+
+  <h5>화면마다 담긴 것</h5>
+  <div class="tw"><table>
+    <thead><tr><th>항목</th><th>내용</th></tr></thead>
+    <tbody>
+      <tr><td>목업</td><td>실제 MAPS 다크 팔레트를 적용한 화면 그림. 데스크톱 1280 기준</td></tr>
+      <tr><td>항목 정의서</td><td>항목 · 타입 · 필수 · 기본값 · 검증 규칙 · 오류 문구</td></tr>
+      <tr><td>상태별 표시</td><td>초기 · 로딩 · 빈 · 오류 · 성공 · 권한없음 · 등급부족</td></tr>
+      <tr><td>액션</td><td>버튼별 동작, 확인 절차, 성공 후 이동</td></tr>
+      <tr><td>API 매핑</td><td>요청 → 엔드포인트 → 응답 → 화면 반영</td></tr>
+      <tr><td>예외</td><td>401 · 403 · 409 · 422 · 429 · 500 각각의 처리</td></tr>
+    </tbody>
+  </table></div>
+
+  <h5>배지</h5>
+  <div class="legend">
+    <span><span class="b b-ok">구현됨</span> 서버가 이미 동작한다</span>
+    <span><span class="b b-warn">서버 미구현</span> 설계가 구현보다 먼저 나간 화면</span>
+    <span><span class="b b-info">조회만 구현됨</span> 읽기는 되고 쓰기가 없다</span>
+  </div>
+
+  <div class="note danger">
+    <span class="t">경계 하나만 기억하면 된다</span>
+    <p>
+      자동매매는 지금 <strong>운영자 계좌 하나</strong>에서만 돈다. 유료 사용자가 자기 계좌를
+      연결해 돌리는 기능(<code>PAY-01</code>~<code>PAY-04</code>)은 <strong>서버가 아직
+      없다.</strong> <code>app_user.plan</code> 은 값만 있고 동작 차이가 없으며
+      <code>user_broker_account</code> 테이블도 존재하지 않는다. 이 문서의 유료 화면은
+      구현 지시서이지 현황 보고가 아니다.
+    </p>
+  </div>
+
+  <h5>설계 대상 18화면</h5>
+  <div class="tw"><table>
+    <thead><tr><th>ID</th><th>화면</th><th>경로</th><th>대상</th><th>서버</th></tr></thead>
+    <tbody>
+      <tr><td><code>NAV-01</code></td><td>관리자 레이아웃</td><td>공통 셸</td><td>관리자</td><td><span class="b b-ok">구현됨</span></td></tr>
+      <tr><td><code>NAV-02</code></td><td>무료 사용자 레이아웃</td><td>공통 셸</td><td>무료</td><td><span class="b b-ok">구현됨</span></td></tr>
+      <tr><td><code>NAV-03</code></td><td>유료 사용자 레이아웃</td><td>공통 셸</td><td>유료</td><td><span class="b b-warn">서버 미구현</span></td></tr>
+      <tr><td><code>AUTH-01</code></td><td>로그인</td><td><code>/login</code></td><td>공개</td><td><span class="b b-ok">구현됨</span></td></tr>
+      <tr><td><code>AUTH-02</code></td><td>미인증·세션 만료</td><td>게이트</td><td>—</td><td><span class="b b-ok">구현됨</span></td></tr>
+      <tr><td><code>AUTH-03</code></td><td>권한 거부 403</td><td>게이트 렌더</td><td>로그인 사용자</td><td><span class="b b-ok">구현됨</span></td></tr>
+      <tr><td><code>SET-01</code></td><td>내 설정</td><td><code>/settings</code></td><td>전체</td><td><span class="b b-ok">구현됨</span></td></tr>
+      <tr><td><code>USR-01</code></td><td>회원 목록</td><td><code>/admin/users</code></td><td>관리자</td><td><span class="b b-ok">구현됨</span></td></tr>
+      <tr><td><code>USR-02</code></td><td>회원 추가</td><td>모달</td><td>관리자</td><td><span class="b b-ok">구현됨</span></td></tr>
+      <tr><td><code>USR-03</code></td><td>회원 상세·편집</td><td>모달</td><td>관리자</td><td><span class="b b-ok">구현됨</span></td></tr>
+      <tr><td><code>USR-04</code></td><td>임시 비밀번호 발급</td><td>모달</td><td>관리자</td><td><span class="b b-ok">구현됨</span></td></tr>
+      <tr><td><code>PAY-01</code></td><td>내 계좌 연결</td><td><code>/my/broker</code></td><td>유료·관리자</td><td><span class="b b-warn">서버 미구현</span></td></tr>
+      <tr><td><code>PAY-02</code></td><td>내 자동매매</td><td><code>/my/trading</code></td><td>유료</td><td><span class="b b-warn">서버 미구현</span></td></tr>
+      <tr><td><code>PAY-03</code></td><td>내 보유·체결</td><td><code>/my/orders</code></td><td>유료</td><td><span class="b b-warn">서버 미구현</span></td></tr>
+      <tr><td><code>PAY-04</code></td><td>내 성과·리스크</td><td><code>/my/risk</code></td><td>유료</td><td><span class="b b-warn">서버 미구현</span></td></tr>
+      <tr><td><code>OPS-01</code></td><td>운영 설정 조회</td><td><code>/ops-config</code></td><td>관리자</td><td><span class="b b-info">조회만 구현됨</span></td></tr>
+      <tr><td><code>OPS-02</code></td><td>설정 항목 편집·추가</td><td>모달</td><td>관리자</td><td><span class="b b-warn">서버 미구현</span></td></tr>
+      <tr><td><code>OPS-03</code></td><td>설정 변경 이력</td><td><code>/ops-config</code> 탭</td><td>관리자</td><td><span class="b b-warn">서버 미구현</span></td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- ══════════════════════════ 1 ══════════════════════════ -->
+<section id="s1">
+  <h2 class="sec">1</h2>
+  <h3>등급별 메뉴 구성</h3>
+
+  <p>
+    셸은 세 등급 모두 같다 — 사이드바 280px + 상단바 56px + 본문. <strong>메뉴 항목만
+    달라진다.</strong> 무료 <b>7개</b>, 유료 <b>11개</b>, 관리자 <b>24개</b>.
+  </p>
+
+  <div class="three">
+    <figure>
+      <div class="mock">
+        <div class="shell narrow">
+          <div class="side">
+            <div class="logo"><b>MAPS</b><span>Market-Adaptive Profit Mgmt</span></div>
+            <div class="grp"><div class="grp-l">소개</div>
+              <div class="it"><span class="n">★</span>MAPS 소개</div></div>
+            <div class="grp"><div class="grp-l">메인 워크플로</div>
+              <div class="it"><span class="n">03</span>장세 · 팩터</div>
+              <div class="it"><span class="n">04</span>종목 후보</div></div>
+            <div class="grp"><div class="grp-l">모니터링</div>
+              <div class="it on"><span class="n">18</span>주식 종목 분석</div>
+              <div class="it"><span class="n">19</span>분석 워치리스트</div>
+              <div class="it"><span class="n">20</span>매매 기록</div></div>
+            <div class="grp"><div class="grp-l">내 계정</div>
+              <div class="it"><span class="n">⚙</span>내 설정</div></div>
+          </div>
+        </div>
+      </div>
+      <figcaption><b>NAV-02</b> 무료 — 7개</figcaption>
+    </figure>
+
+    <figure>
+      <div class="mock">
+        <div class="shell narrow">
+          <div class="side">
+            <div class="logo"><b>MAPS</b><span>Market-Adaptive Profit Mgmt</span></div>
+            <div class="grp"><div class="grp-l">소개</div>
+              <div class="it"><span class="n">★</span>MAPS 소개</div></div>
+            <div class="grp"><div class="grp-l">메인 워크플로</div>
+              <div class="it"><span class="n">03</span>장세 · 팩터</div>
+              <div class="it"><span class="n">04</span>종목 후보</div></div>
+            <div class="grp"><div class="grp-l">모니터링</div>
+              <div class="it"><span class="n">18</span>주식 종목 분석</div>
+              <div class="it"><span class="n">19</span>분석 워치리스트</div>
+              <div class="it"><span class="n">20</span>매매 기록</div></div>
+            <div class="grp"><div class="grp-l">내 계좌</div>
+              <div class="it pay"><span class="n">◈</span>내 계좌 연결</div>
+              <div class="it pay on"><span class="n">◈</span>내 자동매매</div>
+              <div class="it pay"><span class="n">◈</span>내 보유 · 체결</div>
+              <div class="it pay"><span class="n">◈</span>내 성과 · 리스크</div></div>
+            <div class="grp"><div class="grp-l">내 계정</div>
+              <div class="it"><span class="n">⚙</span>내 설정</div></div>
+          </div>
+        </div>
+      </div>
+      <figcaption><b>NAV-03</b> 유료 — 11개 (<span class="b b-warn">서버 미구현</span>)</figcaption>
+    </figure>
+
+    <figure>
+      <div class="mock">
+        <div class="shell narrow">
+          <div class="side">
+            <div class="logo"><b>MAPS</b><span>Market-Adaptive Profit Mgmt</span></div>
+            <div class="grp"><div class="grp-l">소개</div>
+              <div class="it"><span class="n">★</span>MAPS 소개</div></div>
+            <div class="grp"><div class="grp-l">메인 워크플로</div>
+              <div class="it on"><span class="n">01</span>대시보드 홈</div>
+              <div class="it"><span class="n">02</span>전략 관리</div>
+              <div class="it"><span class="n">03</span>장세 · 팩터</div>
+              <div class="it"><span class="n">04</span>종목 후보</div>
+              <div class="it"><span class="n">05</span>주문 · 체결</div>
+              <div class="it"><span class="n">06</span>리스크 · 모니터</div>
+              <div class="it"><span class="n">07</span>백테스트 콘솔</div></div>
+            <div class="grp"><div class="grp-l">검증 · 견고성</div>
+              <div class="it"><span class="n">08</span>Trend Robustness</div>
+              <div class="it"><span class="n">09</span>TrendStrength</div>
+              <div class="it"><span class="n">10</span>Research</div>
+              <div class="it"><span class="n">11</span>WFA 리포트</div>
+              <div class="it"><span class="n">12</span>Cost Sensitivity</div></div>
+            <div class="grp"><div class="grp-l">모니터링</div>
+              <div class="it"><span class="n">13</span>Live Monitor</div>
+              <div class="it"><span class="n">14</span>Data Quality</div>
+              <div class="it"><span class="n">15</span>Ops Config</div>
+              <div class="it"><span class="n">16</span>Stock Report</div>
+              <div class="it"><span class="n">17</span>거래 리뷰</div>
+              <div class="it"><span class="n">18</span>주식 종목 분석</div>
+              <div class="it"><span class="n">19</span>분석 워치리스트</div>
+              <div class="it"><span class="n">20</span>매매 기록</div>
+              <div class="it"><span class="n">21</span>배치 모니터</div></div>
+            <div class="grp"><div class="grp-l">내 계좌</div>
+              <div class="it pay"><span class="n">◈</span>내 계좌 연결</div></div>
+            <div class="grp"><div class="grp-l">내 계정</div>
+              <div class="it"><span class="n">⚙</span>내 설정</div>
+              <div class="it"><span class="n">👤</span>회원 관리</div></div>
+          </div>
+        </div>
+      </div>
+      <figcaption><b>NAV-01</b> 관리자 — 24개</figcaption>
+    </figure>
+  </div>
+  <p class="mock-cap">
+    세 사이드바를 나란히 놓으면 등급이 올라갈 때 무엇이 붙는지가 보인다. 무료 → 유료는
+    <b>내 계좌</b> 섹션 4개가 붙고, 유료 → 관리자는 운영·검증 화면 17개가 붙는 대신
+    <b>내 계좌</b>가 <b>내 계좌 연결</b> 하나로 줄어든다(운영자는 서버 <code>.env</code> 계좌를 쓴다).
+  </p>
+
+  <h4>섹션별 노출표</h4>
+  <div class="tw"><table>
+    <thead><tr><th>섹션</th><th>무료</th><th>유료</th><th>관리자에게만 추가로</th></tr></thead>
+    <tbody>
+      <tr><td>소개</td><td>MAPS 소개</td><td>〃</td><td>—</td></tr>
+      <tr><td>메인 워크플로</td><td>장세·팩터, 종목 후보</td><td>〃</td>
+          <td>대시보드 홈, 전략 관리, 주문·체결, 리스크·모니터, 백테스트 콘솔</td></tr>
+      <tr><td>검증 · 견고성</td><td><span class="b b-mute">섹션 숨김</span></td><td><span class="b b-mute">섹션 숨김</span></td>
+          <td>Trend Robustness, TrendStrength, Research, WFA 리포트, Cost Sensitivity</td></tr>
+      <tr><td>모니터링</td><td>주식 종목 분석, 분석 워치리스트, 매매 기록</td><td>〃</td>
+          <td>Live Monitor, Data Quality, Ops Config, Stock Report, 거래 리뷰, 배치 모니터</td></tr>
+      <tr><td><b>내 계좌</b> (신설)</td><td><span class="b b-mute">없음</span></td>
+          <td>내 계좌 연결, 내 자동매매, 내 보유·체결, 내 성과·리스크</td><td>내 계좌 연결</td></tr>
+      <tr><td>내 계정</td><td>내 설정</td><td>내 설정</td><td>회원 관리</td></tr>
+    </tbody>
+  </table></div>
+
+  <h4>규칙</h4>
+  <ul>
+    <li><strong>섹션에 남는 항목이 0개면 섹션 라벨까지 숨긴다.</strong> 무료·유료에게
+      「검증 · 견고성」이 제목만 덩그러니 남으면 안 된다.</li>
+    <li><strong>메뉴 번호는 숨겨도 재부여하지 않는다.</strong> 무료 사용자에게는
+      <code>03 04 18 19 20</code> 처럼 띄엄띄엄 보인다. 운영자와 같은 화면을 가리키는
+      식별자이므로 일부러 유지한다 — 문의를 받을 때 같은 번호로 대화할 수 있다.</li>
+    <li><b>내 계좌</b> 섹션은 번호 대신 <code>◈</code> 기호를 쓴다. 운영 화면(번호)과
+      내 계좌 화면(기호)이 시각적으로 구분돼야 한다.</li>
+    <li>상단바: 화면명 · 새로고침 · <code>아이디 · 등급배지</code> · 로그아웃.
+      등급배지는 <span class="b b-mute">무료</span> <span class="b b-warn">유료</span>
+      <span class="b b-info">관리자</span>.</li>
+    <li>시작 화면: 관리자 <code>/dashboard</code>, 유료 <code>/my/trading</code>,
+      무료 <code>/stock-analysis</code>. 개인 설정 <code>landing_screen</code> 이 있으면 그쪽이 우선.</li>
+    <li>일반 사용자가 <code>/</code> 로 들어오면 대시보드를 <strong>렌더하지 않고</strong>
+      시작 화면으로 303 리다이렉트한다. 대시보드는 운영자 계좌 잔고를 그린다.</li>
+  </ul>
+
+  <div class="note">
+    <span class="t">숨김은 편의일 뿐, 통제가 아니다</span>
+    <p>
+      사이드바에서 빠진 화면도 주소를 직접 입력하면 요청은 서버에 도달한다. 실제 차단은
+      <code>auth_gate_middleware</code> 가 하며, 메뉴를 숨기는 이유는 "쓸 수 없는 것을 보여
+      주지 않기 위해서"다. 두 장치가 <strong>같은 판정 함수</strong>
+      <code>is_allowed()</code> 를 쓰도록 구현해야 어긋나지 않는다.
+    </p>
+  </div>
+
+  <div class="note">
+    <span class="t">무료 사용자가 유료 경로에 닿았을 때는 403이 아니다</span>
+    <p>
+      <code>/my/trading</code> 같은 유료 경로에 무료 사용자가 접근하면 <b>권한 거부</b>가
+      아니라 <b>업그레이드 안내</b>를 보여 준다. 권한이 없는 게 아니라 등급이 낮은 것이고,
+      이때는 "무엇을 하면 쓸 수 있는지"를 알려 주는 편이 맞다. 화면은 <code>AUTH-03</code>
+      과 다르게 만든다.
+    </p>
+  </div>
+</section>
+
+<!-- ══════════════════════════ 2 ══════════════════════════ -->
+<section id="s2">
+  <h2 class="sec">2</h2>
+  <h3>등급 비교 매트릭스</h3>
+
+  <p>불가인 칸은 <strong>이유를 구분</strong>한다 — 권한 문제인지, 등급 문제인지, 아직 안 만든 것인지.</p>
+
+  <div class="tw"><table>
+    <thead><tr><th>기능</th><th>무료</th><th>유료</th><th>관리자</th></tr></thead>
+    <tbody>
+      <tr><td>종목 분석 실행</td><td>가능 <span class="b b-mute">일 10회</span></td><td>가능 <span class="b b-mute">한도 상향</span></td><td>가능 <span class="b b-ok">무제한</span></td></tr>
+      <tr><td>분석 이력 열람</td><td>본인 것만</td><td>본인 것만</td><td>전체</td></tr>
+      <tr><td>종목 후보 · 장세</td><td>조회만</td><td>조회만</td><td>조회</td></tr>
+      <tr><td>워치리스트 조회</td><td>본인 것만</td><td>본인 것만</td><td>전체(운영자 픽 포함)</td></tr>
+      <tr><td>워치리스트 무장</td><td>불가 <span class="b b-mute">등급</span></td><td>가능 <span class="b b-warn">미구현</span></td><td>가능</td></tr>
+      <tr><td>주문 제출</td><td>불가 <span class="b b-mute">등급</span></td><td>내 계좌 <span class="b b-warn">미구현</span></td><td>운영 계좌</td></tr>
+      <tr><td>보유 · 체결 조회</td><td>불가 <span class="b b-mute">등급</span></td><td>내 계좌 <span class="b b-warn">미구현</span></td><td>운영 계좌</td></tr>
+      <tr><td>성과 · MDD</td><td>불가 <span class="b b-mute">등급</span></td><td>내 계좌 <span class="b b-warn">미구현</span></td><td>운영 계좌</td></tr>
+      <tr><td>리스크 한도 설정</td><td>불가</td><td>개인 한도 <span class="b b-warn">미구현</span></td><td>전역 한도</td></tr>
+      <tr><td>킬스위치</td><td>불가</td><td>개인 스위치 <span class="b b-warn">미구현</span></td><td>전역 스위치</td></tr>
+      <tr><td>개인 설정</td><td>6키</td><td>6키 + 매매 설정</td><td>6키</td></tr>
+      <tr><td>운영 설정(<code>.env</code> 59개)</td><td>불가 <span class="b b-mute">권한</span></td><td>불가 <span class="b b-mute">권한</span></td><td>조회 <span class="b b-info">편집 미구현</span></td></tr>
+      <tr><td>회원 관리</td><td>불가 <span class="b b-mute">권한</span></td><td>불가 <span class="b b-mute">권한</span></td><td>가능</td></tr>
+      <tr><td>전략 승격 · 검증</td><td>불가 <span class="b b-mute">권한</span></td><td>불가 <span class="b b-mute">권한</span></td><td>가능</td></tr>
+      <tr><td>모바일 앱</td><td>불가 <span class="b b-mute">등급</span></td><td>불가 <span class="b b-warn">미구현</span></td><td>가능</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- ══════════════════════════ 2-1 ══════════════════════════ -->
+<section id="s21">
+  <h2 class="sec">2-1</h2>
+  <h3>설정의 세 층</h3>
+
+  <p>
+    지금 화면에는 이 구분이 드러나 있지 않다. 등급이 생기면 "이 설정은 누구 것인가"가
+    바로 문제가 되므로 층을 먼저 정의한다.
+  </p>
+
+  <div class="tw"><table>
+    <thead><tr><th>층</th><th>저장 위치</th><th>고칠 수 있는 사람</th><th>적용 범위</th><th>항목 수</th></tr></thead>
+    <tbody>
+      <tr><td><b>운영 설정</b></td><td>서버 <code>.env</code></td><td>관리자만</td><td>프로세스 전체</td><td class="num">59 (비밀 15)</td></tr>
+      <tr><td><b>개인 설정</b></td><td><code>app_user.preferences</code> JSON</td><td>본인</td><td>자기 화면만</td><td class="num">6 (유료 +4)</td></tr>
+      <tr><td><b>개인 매매 설정</b></td><td><code>user_broker_account</code> 신설</td><td>본인(유료)</td><td>자기 계좌만</td><td class="num">미정</td></tr>
+    </tbody>
+  </table></div>
+
+  <h4>운영 설정 6섹션</h4>
+  <div class="tw"><table>
+    <thead><tr><th>섹션 키</th><th>제목</th><th>항목</th><th>대표 항목</th></tr></thead>
+    <tbody>
+      <tr><td><code>runtime</code></td><td>Runtime</td><td class="num">21</td><td>브로커 모드, 실거래 스위치, 스케줄러, KRX 로그인 회로차단기</td></tr>
+      <tr><td><code>kis</code></td><td>KIS Korea Investment</td><td class="num">6</td><td>앱키·시크릿·계좌번호, 실거래/모의 엔드포인트</td></tr>
+      <tr><td><code>kiwoom</code></td><td>Kiwoom</td><td class="num">2</td><td>계좌번호, 비밀번호</td></tr>
+      <tr><td><code>data</code></td><td>External Data</td><td class="num">19</td><td>DART · AWS Bedrock · Naver · AI 스코어링 · 점수 준비도</td></tr>
+      <tr><td><code>risk</code></td><td>Risk Limits</td><td class="num">3</td><td>일 손실 한도, 단일 종목 노출, 거래당 위험</td></tr>
+      <tr><td><code>notifications</code></td><td>Notifications</td><td class="num">8</td><td>Slack · Telegram · FCM</td></tr>
+    </tbody>
+  </table></div>
+
+  <h4>개인 설정 — 등급별 항목</h4>
+  <div class="tw"><table>
+    <thead><tr><th>등급</th><th>항목</th></tr></thead>
+    <tbody>
+      <tr><td>무료</td><td><code>landing_screen</code>, <code>candidate_min_score</code>, <code>candidate_markets</code>, <code>notify_push</code>, <code>notify_telegram</code>, <code>telegram_chat_id</code></td></tr>
+      <tr><td>유료</td><td>위 6키 + 개인 리스크 한도(단일 종목 · 총 노출 · 일 손실) + 개인 킬스위치 + 주문 알림</td></tr>
+      <tr><td>관리자</td><td>위 6키 + 운영 설정 59개(별도 화면)</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="note danger">
+    <span class="t">지금 뚫려 있는 구멍</span>
+    <ul>
+      <li><code>/ops-config</code> 는 <strong>조회 전용</strong>이다. 59개 항목을 마스킹해
+        보여줄 뿐, 값을 바꿀 수 있는 건 <code>POST /api/v1/ops/config/ai-scoring-mode</code>
+        <strong>하나뿐</strong>이다.</li>
+      <li>나머지 58개는 <strong>서버에 SSH 로 들어가 <code>.env</code> 를 직접 고쳐야</strong> 한다.</li>
+      <li>누가 언제 무엇을 바꿨는지 남는 기록이 <strong>없다</strong>.</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ══════════════════════════ 3 ══════════════════════════ -->
+<section id="s3">
+  <h2 class="sec">3</h2>
+  <h3>설정 편집 화면</h3>
+
+  <!-- OPS-01 -->
+  <div class="screen">
+    <header>
+      <span class="id">OPS-01</span>
+      <span class="nm">운영 설정 조회</span>
+      <span class="pt">/ops-config</span>
+      <span class="sp"></span>
+      <span class="b b-info">조회만 구현됨</span>
+    </header>
+    <div class="body">
+      <p>관리자가 서버 <code>.env</code> 59개 항목의 현재 상태를 확인하고, 항목별로 편집을 시작하는 화면.</p>
+
+      <div class="mock">
+        <div class="top"><span class="ttl">Ops Config</span><span class="sp"></span>
+          <span class="u">admin · 관리자</span><span class="btn">로그아웃</span></div>
+        <div class="cnt">
+          <div class="mcard">
+            <h6>준비 상태 <span class="mb fail">NOT READY</span></h6>
+            <div>
+              <div class="mrow"><span class="mlab">누락 필수 항목</span>
+                <span class="mb warn">KIS_APP_SECRET</span><span class="mb warn">DART_API_KEY</span></div>
+              <div class="mrow"><span class="mlab">경고</span>
+                <span style="color:var(--m-warn);font-size:12px">MAPS_LIVE_TRADING_ENABLED=true 인데 MAPS_BROKER_MODE=mock 입니다.</span></div>
+              <div class="mrow"><span class="mlab">트레이딩 모드</span>
+                <span class="mb info">모의투자 (paper)</span></div>
+            </div>
+          </div>
+          <div class="mcard">
+            <h6>runtime · Runtime <span class="mb mute">21개</span></h6>
+            <div>
+              <table class="mt">
+                <thead><tr><th>환경변수</th><th>현재값</th><th>필수</th><th>반영</th><th></th></tr></thead>
+                <tbody>
+                  <tr><td>MAPS_BROKER_MODE</td><td>mock</td><td>예</td><td><span class="mb warn">재시작 필요</span></td><td><span class="btn">편집</span></td></tr>
+                  <tr><td>MAPS_LIVE_TRADING_ENABLED</td><td>false</td><td>예</td><td><span class="mb pass">즉시 반영</span></td><td><span class="btn">편집</span></td></tr>
+                  <tr><td>MAPS_STRATEGY_TRADE_ENABLED</td><td>false</td><td>—</td><td><span class="mb pass">즉시 반영</span></td><td><span class="btn">편집</span></td></tr>
+                  <tr><td>MAPS_SCHEDULER_ENABLED</td><td>true</td><td>—</td><td><span class="mb warn">재시작 필요</span></td><td><span class="btn">편집</span></td></tr>
+                  <tr><td>MAPS_DB_URL</td><td>postgresql://****</td><td>예</td><td><span class="mb warn">재시작 필요</span></td><td><span class="btn">편집</span></td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div class="mcard">
+            <h6>kis · KIS Korea Investment <span class="mb mute">6개</span> <span class="mb fail">필수 1개 누락</span></h6>
+            <div>
+              <table class="mt">
+                <tbody>
+                  <tr><td>KIS_APP_KEY</td><td>PSxx****</td><td>예</td><td><span class="mb warn">재시작 필요</span></td><td><span class="btn">편집</span></td></tr>
+                  <tr><td>KIS_APP_SECRET</td><td style="color:var(--m-fail)">미설정</td><td>예</td><td><span class="mb warn">재시작 필요</span></td><td><span class="btn">추가</span></td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p class="mock-cap">섹션 6개를 아코디언으로. 미설정 항목은 값 칸이 <b>미설정</b>이고 버튼이 <b>추가</b>로 바뀐다.</p>
+
+      <h5>항목 정의서</h5>
+      <div class="tw"><table>
+        <thead><tr><th>요소</th><th>내용</th><th>비고</th></tr></thead>
+        <tbody>
+          <tr><td>준비 상태</td><td><code>ready</code> 참/거짓 배지</td><td>필수 누락 또는 경고가 있으면 거짓</td></tr>
+          <tr><td>누락 필수 항목</td><td><code>missing_required[]</code></td><td>클릭하면 해당 항목 편집 모달</td></tr>
+          <tr><td>경고</td><td><code>warnings[]</code></td><td>브로커 모드 불일치 등 조합 오류</td></tr>
+          <tr><td>섹션 헤더</td><td>키 · 제목 · 항목 수 · 필수 누락 수</td><td>6섹션 고정</td></tr>
+          <tr><td>항목 행</td><td>환경변수 · 현재값 · 필수 · 반영방식 · 설명 · 버튼</td><td>비밀 항목은 값이 마스킹</td></tr>
+        </tbody>
+      </table></div>
+
+      <h5>상태별 표시</h5>
+      <div class="tw"><table>
+        <thead><tr><th>상태</th><th>표시</th></tr></thead>
+        <tbody>
+          <tr><td>초기</td><td>모든 섹션 접힘. 필수 누락이 있는 섹션만 펼침</td></tr>
+          <tr><td>로딩</td><td>섹션 골격만 표시(스켈레톤), 버튼 비활성</td></tr>
+          <tr><td>오류</td><td>카드 자리에 오류 문구 + 다시 시도 버튼. 부분 실패 없음(단일 응답)</td></tr>
+          <tr><td>권한없음</td><td>도달 불가 — 게이트가 <code>AUTH-03</code> 으로 막는다</td></tr>
+        </tbody>
+      </table></div>
+
+      <h5>API</h5>
+      <div class="tw"><table>
+        <thead><tr><th>동작</th><th>엔드포인트</th><th>상태</th></tr></thead>
+        <tbody>
+          <tr><td>설정 조회</td><td><code>GET /api/v1/ops/config</code></td><td><span class="b b-ok">있음</span></td></tr>
+          <tr><td>브로커 연결 확인</td><td><code>GET /api/v1/ops/config/broker-health</code></td><td><span class="b b-ok">있음</span></td></tr>
+          <tr><td>AI 모드 변경</td><td><code>POST /api/v1/ops/config/ai-scoring-mode</code></td><td><span class="b b-ok">있음</span></td></tr>
+        </tbody>
+      </table></div>
+    </div>
+  </div>
+
+  <!-- OPS-02 -->
+  <div class="screen">
+    <header>
+      <span class="id">OPS-02</span>
+      <span class="nm">설정 항목 편집 · 추가</span>
+      <span class="pt">모달</span>
+      <span class="sp"></span>
+      <span class="b b-warn">서버 미구현</span>
+    </header>
+    <div class="body">
+      <p>이번 설계의 핵심. 지금은 SSH 로만 가능한 <code>.env</code> 변경을 화면에서 안전하게 한다.</p>
+
+      <div class="note danger">
+        <span class="t">임의 키를 만들 수 없다</span>
+        <p>
+          여기서 <b>추가</b>란 <code>get_config_status()</code> 에 <strong>정의돼 있으나 아직
+          비어 있는</strong> 항목에 값을 넣는 것을 말한다. 정의되지 않은 이름을 화면에서
+          만들 수 있게 하면 오타 하나로 다음 기동이 깨진다. 편집 대상은
+          <strong>59개 허용목록으로 고정</strong>하고, 목록에 없는 키는 서버가 400 으로 거절한다.
+        </p>
+      </div>
+
+      <div class="mock">
+        <div class="modal">
+          <h6>MAPS_LIVE_TRADING_ENABLED 변경</h6>
+          <div>
+            <div class="mrow"><span class="mlab">설명</span>
+              <span style="font-size:12px;color:var(--m-text2)">Explicit live-order safety switch</span></div>
+            <div class="mrow"><span class="mlab">현재값</span><span class="fld">false</span></div>
+            <div class="mrow"><span class="mlab">변경값</span>
+              <span class="fld">true</span><span class="mb pass">즉시 반영</span></div>
+            <div style="border:1px solid var(--m-fail);border-radius:6px;padding:10px 12px;margin-top:12px">
+              <div style="color:var(--m-fail);font-size:12px;font-weight:700;margin-bottom:6px">위험한 변경입니다</div>
+              <div style="font-size:12px;color:var(--m-text2);margin-bottom:8px">
+                실주문 제출이 <b style="color:var(--m-text)">차단됨 → 허용됨</b> 으로 바뀝니다.
+                다음 주문 사이클부터 실제 계좌에 주문이 나갑니다.
+              </div>
+              <div class="mrow"><span class="mlab">확인 문구 입력</span>
+                <span class="fld ph w">LIVE 를 입력하세요</span></div>
+            </div>
+            <div class="hint">변경 내역은 감사 로그에 기록됩니다.</div>
+          </div>
+          <div class="foot"><span class="btn">취소</span><span class="btn pri off">변경</span></div>
+        </div>
+      </div>
+      <p class="mock-cap">위험 항목은 확인 문구를 입력해야 <b>변경</b> 버튼이 활성화된다.</p>
+
+      <h5>타입별 입력 위젯</h5>
+      <div class="tw"><table>
+        <thead><tr><th>타입</th><th>위젯</th><th>검증</th><th>예</th></tr></thead>
+        <tbody>
+          <tr><td>불리언</td><td>토글</td><td><code>true</code>/<code>false</code> 만</td><td><code>MAPS_SCHEDULER_ENABLED</code></td></tr>
+          <tr><td>열거형</td><td>셀렉트</td><td>정의된 값만</td><td><code>MAPS_AI_SCORING_MODE</code> = <code>off|rerank|replace</code></td></tr>
+          <tr><td>숫자</td><td>숫자 입력 + 범위 안내</td><td>최소·최대, 정수/실수</td><td><code>MAPS_AI_DAILY_CALL_LIMIT</code> (0–100)</td></tr>
+          <tr><td>시각</td><td><code>HH:MM</code> 입력</td><td>24시간 형식</td><td><code>MAPS_STOCK_REPORT_TIME</code></td></tr>
+          <tr><td>날짜 목록</td><td>텍스트 + 형식 안내</td><td>콤마 구분 <code>YYYY-MM-DD</code></td><td><code>MAPS_KRX_CLOSED_DATES</code></td></tr>
+          <tr><td>문자열</td><td>텍스트</td><td>공백 트림, 길이 제한</td><td><code>AWS_REGION</code></td></tr>
+          <tr><td><b>비밀</b></td><td>비밀번호 입력(입력만)</td><td>저장 후 <b>재열람 불가</b></td><td><code>KIS_APP_SECRET</code> 외 14개</td></tr>
+        </tbody>
+      </table></div>
+
+      <h5>위험 항목 — 2단계 확인 대상 5개</h5>
+      <div class="tw"><table>
+        <thead><tr><th>환경변수</th><th>바뀌는 것</th><th>확인 문구</th></tr></thead>
+        <tbody>
+          <tr><td><code>MAPS_LIVE_TRADING_ENABLED</code></td><td>실주문 제출 차단 ↔ 허용</td><td><code>LIVE</code></td></tr>
+          <tr><td><code>KIS_REAL_TRADING</code></td><td>모의투자 ↔ 실계좌 엔드포인트</td><td><code>REAL</code></td></tr>
+          <tr><td><code>MAPS_BROKER_MODE</code></td><td>주문이 나가는 브로커 자체</td><td>대상 모드명</td></tr>
+          <tr><td><code>MAPS_STRATEGY_TRADE_ENABLED</code></td><td>워치리스트 자동 진입 마스터 스위치</td><td><code>TRADE</code></td></tr>
+          <tr><td><code>MAPS_SCORE_READINESS_REQUIRED</code></td><td>실측 점수 게이트 해제 — 불완전한 점수로 매수</td><td><code>GATE</code></td></tr>
+        </tbody>
+      </table></div>
+
+      <h5>항목 정의서</h5>
+      <div class="tw"><table>
+        <thead><tr><th>항목</th><th>타입</th><th>필수</th><th>기본값</th><th>검증</th><th>오류 문구</th></tr></thead>
+        <tbody>
+          <tr><td>변경값</td><td>타입별</td><td>예</td><td>현재값</td><td>타입·범위·열거값</td><td>“{항목}은(는) {규칙} 이어야 합니다.”</td></tr>
+          <tr><td>확인 문구</td><td>텍스트</td><td>위험 항목만</td><td>없음</td><td>지정 문자열과 정확히 일치</td><td>“확인 문구가 일치하지 않습니다.”</td></tr>
+          <tr><td>변경 사유</td><td>텍스트</td><td>아니오</td><td>없음</td><td>200자 이내</td><td>“사유는 200자 이내로 입력하세요.”</td></tr>
+        </tbody>
+      </table></div>
+
+      <h5>상태별 표시</h5>
+      <div class="tw"><table>
+        <thead><tr><th>상태</th><th>표시</th></tr></thead>
+        <tbody>
+          <tr><td>초기</td><td>현재값이 채워진 상태. 값을 바꾸기 전에는 <b>변경</b> 비활성</td></tr>
+          <tr><td>위험 항목</td><td>붉은 박스 + 확인 문구 입력. 일치 전까지 <b>변경</b> 비활성</td></tr>
+          <tr><td>저장 중</td><td>버튼 스피너, 입력 잠금</td></tr>
+          <tr><td>성공(즉시 반영)</td><td>모달 닫기 + 토스트 “저장했습니다. 바로 적용됩니다.”</td></tr>
+          <tr><td>성공(재시작 필요)</td><td>모달 닫기 + <b>상단 고정 배너</b> “재시작해야 적용되는 항목이 있습니다.”</td></tr>
+          <tr><td>오류</td><td>모달 유지, 입력 아래 인라인 오류. 입력값 보존</td></tr>
+        </tbody>
+      </table></div>
+
+      <h5>예외 시나리오</h5>
+      <div class="tw"><table>
+        <thead><tr><th>코드</th><th>상황</th><th>화면 처리</th></tr></thead>
+        <tbody>
+          <tr><td>400</td><td>허용목록에 없는 키 / 타입 위반</td><td>인라인 오류. 목록에 없는 키는 애초에 UI 에서 만들 수 없다</td></tr>
+          <tr><td>403</td><td>관리자 아님</td><td>모달 닫고 <code>AUTH-03</code></td></tr>
+          <tr><td>409</td><td>다른 관리자가 그사이 같은 항목을 변경</td><td>“현재값이 바뀌었습니다” + 최신값 다시 불러오기</td></tr>
+          <tr><td>500</td><td><code>.env</code> 쓰기 실패</td><td>“설정 파일을 저장하지 못했습니다. 값은 바뀌지 않았습니다.”</td></tr>
+        </tbody>
+      </table></div>
+
+      <h5>저장 규칙</h5>
+      <ul>
+        <li>기존 <code>_set_env_value()</code> 의 <strong>원자적 교체</strong>(임시 파일 → <code>os.replace</code>)를 그대로 쓴다. 다른 줄은 건드리지 않는다.</li>
+        <li><code>.env</code> 권한 <code>600</code> 을 유지한다.</li>
+        <li>비밀 항목의 평문은 <strong>화면·응답·로그 어디에도 남기지 않는다.</strong></li>
+      </ul>
+
+      <h5>필요한 서버 작업</h5>
+      <ul>
+        <li><code>PUT /api/v1/ops/config/{env_var}</code> — 59개 허용목록 검증, 타입 검증,
+          응답에 <code>applied_immediately</code>(즉시 반영 여부) 포함</li>
+        <li>항목 메타데이터에 <code>type</code>, <code>enum</code>, <code>min/max</code>,
+          <code>restart_required</code>, <code>dangerous</code> 추가 (현재
+          <code>ConfigFieldStatus</code> 에는 없다)</li>
+        <li>낙관적 동시성: 요청에 <code>expected_current</code> 를 실어 409 판정</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- OPS-03 -->
+  <div class="screen">
+    <header>
+      <span class="id">OPS-03</span>
+      <span class="nm">설정 변경 이력</span>
+      <span class="pt">/ops-config · 이력 탭</span>
+      <span class="sp"></span>
+      <span class="b b-warn">서버 미구현</span>
+    </header>
+    <div class="body">
+      <p>“이 값을 누가 언제 왜 바꿨나”에 답한다. 지금은 이 기록이 아예 없다.</p>
+
+      <div class="mock">
+        <div class="cnt">
+          <div class="mcard">
+            <h6>설정 변경 이력 <span class="mb mute">최근 30일</span></h6>
+            <div>
+              <div class="mrow">
+                <span class="fld ph">기간: 최근 30일</span>
+                <span class="fld ph">섹션: 전체</span>
+                <span class="fld ph">변경자: 전체</span>
+              </div>
+              <table class="mt">
+                <thead><tr><th>시각(KST)</th><th>변경자</th><th>항목</th><th>이전 → 새 값</th><th>반영</th></tr></thead>
+                <tbody>
+                  <tr><td>08-12 16:04</td><td>admin</td><td>MAPS_AI_SCORING_MODE</td><td>off → rerank</td><td><span class="mb pass">즉시</span></td></tr>
+                  <tr><td>08-12 15:06</td><td>admin</td><td>NAVER_CLIENT_SECRET</td><td><span style="color:var(--m-text3)">변경됨 (값 미기록)</span></td><td><span class="mb warn">재시작</span></td></tr>
+                  <tr><td>08-11 09:14</td><td>admin</td><td>MAPS_LIVE_TRADING_ENABLED</td><td>false → true</td><td><span class="mb pass">즉시</span></td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p class="mock-cap">비밀 항목은 <b>변경됨</b>만 남고 값은 기록하지 않는다.</p>
+
+      <h5>기록 항목</h5>
+      <div class="tw"><table>
+        <thead><tr><th>필드</th><th>내용</th><th>비밀 항목일 때</th></tr></thead>
+        <tbody>
+          <tr><td>시각</td><td>KST 표시(저장은 UTC)</td><td>동일</td></tr>
+          <tr><td>변경자</td><td><code>app_user.username</code></td><td>동일</td></tr>
+          <tr><td>항목</td><td>환경변수명 · 섹션</td><td>동일</td></tr>
+          <tr><td>이전 → 새 값</td><td>평문</td><td><b>기록하지 않음</b> — “변경됨”만</td></tr>
+          <tr><td>반영 방식</td><td>즉시 / 재시작 필요</td><td>동일</td></tr>
+          <tr><td>사유</td><td>선택 입력값</td><td>동일</td></tr>
+        </tbody>
+      </table></div>
+
+      <h5>상태별 표시 · 예외</h5>
+      <div class="tw"><table>
+        <thead><tr><th>상황</th><th>화면</th></tr></thead>
+        <tbody>
+          <tr><td>기록 없음</td><td>“아직 변경 이력이 없습니다.” — 첫 변경 이후부터 쌓인다는 안내</td></tr>
+          <tr><td>필터 결과 없음</td><td>“조건에 맞는 기록이 없습니다.” + 필터 초기화</td></tr>
+          <tr><td>403</td><td>관리자 전용 — 게이트가 차단</td></tr>
+        </tbody>
+      </table></div>
+
+      <h5>필요한 서버 작업</h5>
+      <ul>
+        <li><code>ops_config_log</code> 테이블 — <code>changed_at</code>, <code>changed_by</code>,
+          <code>section</code>, <code>env_var</code>, <code>old_value</code>,
+          <code>new_value</code>(비밀은 <code>NULL</code>), <code>restart_required</code>,
+          <code>reason</code></li>
+        <li><code>GET /api/v1/ops/config/history</code> — 기간·섹션·변경자 필터, 최신순</li>
+        <li><code>PUT</code> 성공 트랜잭션 안에서 기록 (설정만 바뀌고 기록이 빠지는 경우 방지)</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════ 4 ══════════════════════════ -->
+<section id="s4">
+  <h2 class="sec">4</h2>
+  <h3>인증 화면</h3>
+
+  <!-- AUTH-01 -->
+  <div class="screen">
+    <header>
+      <span class="id">AUTH-01</span><span class="nm">로그인</span>
+      <span class="pt">/login</span><span class="sp"></span><span class="b b-ok">구현됨</span>
+    </header>
+    <div class="body">
+      <p>MAPS 의 유일한 공개 화면. 세 등급 모두 여기로 들어온다.</p>
+
+      <div class="mock" style="padding:34px 0">
+        <div class="modal" style="max-width:380px;margin:0 auto">
+          <div style="padding:24px 26px">
+            <div style="font-size:19px;font-weight:700;letter-spacing:.06em;margin-bottom:2px">MAPS</div>
+            <div style="font-size:11px;color:var(--m-text3);margin-bottom:22px">Market-Adaptive Profit Management</div>
+            <div style="margin-bottom:12px">
+              <div style="font-size:11.5px;color:var(--m-text2);margin-bottom:4px">아이디</div>
+              <span class="fld w" style="display:block">admin</span>
+            </div>
+            <div style="margin-bottom:16px">
+              <div style="font-size:11.5px;color:var(--m-text2);margin-bottom:4px">비밀번호</div>
+              <span class="fld w ph" style="display:block">••••••••</span>
+              <div class="err">아이디 또는 비밀번호가 올바르지 않습니다.</div>
+            </div>
+            <span class="btn pri" style="display:block;text-align:center;padding:7px">로그인</span>
+          </div>
+        </div>
+      </div>
+
+      <h5>항목 정의서</h5>
+      <div class="tw"><table>
+        <thead><tr><th>항목</th><th>타입</th><th>필수</th><th>검증</th><th>오류 문구</th></tr></thead>
+        <tbody>
+          <tr><td>아이디</td><td>텍스트</td><td>예</td><td>공백 트림</td><td rowspan="2">아이디 또는 비밀번호가 올바르지 않습니다.</td></tr>
+          <tr><td>비밀번호</td><td>비밀번호</td><td>예</td><td>클라이언트 길이 검사 없음</td></tr>
+          <tr><td><code>next</code></td><td>히든</td><td>아니오</td><td><code>/</code> 로 시작하고 <code>//</code> 아님</td><td>(조용히 <code>/</code> 로 대체)</td></tr>
+        </tbody>
+      </table></div>
+
+      <div class="note danger">
+        <span class="t">실패 문구는 하나뿐이다</span>
+        <p>
+          “없는 아이디입니다” 와 “비밀번호가 틀렸습니다” 를 구분하면 계정 존재 여부가
+          새어 나간다. 비활성 계정(<code>disabled</code>)도 <strong>같은 문구</strong>로 막는다.
+          아이디를 입력칸에 남겨 두는 것까지는 허용한다.
+        </p>
+      </div>
+
+      <h5>성공 후 이동 — 우선순위</h5>
+      <ol>
+        <li><code>next</code> 파라미터 (내부 경로일 때만)</li>
+        <li>개인 설정 <code>landing_screen</code></li>
+        <li>등급 기본값 — 관리자 <code>/dashboard</code> · 유료 <code>/my/trading</code> · 무료 <code>/stock-analysis</code></li>
+      </ol>
+
+      <h5>상태별 표시</h5>
+      <div class="tw"><table>
+        <thead><tr><th>상태</th><th>표시</th></tr></thead>
+        <tbody>
+          <tr><td>초기</td><td>아이디에 포커스</td></tr>
+          <tr><td>이미 로그인</td><td>폼을 보이지 않고 <code>next</code> 로 303</td></tr>
+          <tr><td>전송 중</td><td>버튼 “로그인 중…”, 입력 잠금 — 이중 제출 방지</td></tr>
+          <tr><td>실패</td><td>401 + 비밀번호만 비우고 인라인 오류</td></tr>
+          <tr><td>인증 꺼짐</td><td><code>MAPS_AUTH_ENABLED=false</code> 이면 이 화면에 도달하지 않는다(로컬·테스트)</td></tr>
+        </tbody>
+      </table></div>
+
+      <h5>API</h5>
+      <div class="tw"><table>
+        <thead><tr><th>동작</th><th>엔드포인트</th><th>응답</th></tr></thead>
+        <tbody>
+          <tr><td>폼 표시</td><td><code>GET /login</code></td><td>200 HTML</td></tr>
+          <tr><td>로그인</td><td><code>POST /login</code></td><td>303(성공) · 401(실패)</td></tr>
+          <tr><td>로그아웃</td><td><code>GET /logout</code></td><td>303 → <code>/login</code></td></tr>
+          <tr><td>모바일 토큰</td><td><code>POST /api/v1/mobile/login</code></td><td>200 · 401 · <b>403(관리자 아님)</b></td></tr>
+        </tbody>
+      </table></div>
+    </div>
+  </div>
+
+  <!-- AUTH-02 -->
+  <div class="screen">
+    <header>
+      <span class="id">AUTH-02</span><span class="nm">미인증 · 세션 만료</span>
+      <span class="pt">게이트</span><span class="sp"></span><span class="b b-ok">구현됨</span>
+    </header>
+    <div class="body">
+      <p>세션이 없거나 만료됐을 때. <strong>화면 요청과 API 요청의 처리가 다르다.</strong></p>
+
+      <div class="tw"><table>
+        <thead><tr><th>요청</th><th>응답</th><th>사용자가 보는 것</th></tr></thead>
+        <tbody>
+          <tr><td>HTML 화면</td><td>303 → <code>/login?next={원래경로}</code></td><td>로그인 화면. 로그인하면 보던 화면으로 돌아온다</td></tr>
+          <tr><td><code>/api/*</code></td><td>401 <code>{"detail":"Not authenticated"}</code></td><td>화면에 토스트 “로그인이 만료되었습니다. 다시 로그인해 주세요.” + 3초 뒤 <code>/login</code></td></tr>
+        </tbody>
+      </table></div>
+
+      <div class="note">
+        <span class="t">작성 중이던 입력을 그냥 버리지 않는다</span>
+        <p>
+          장시간 열어 둔 화면에서 저장을 누르면 401 이 날 수 있다. 이때 <strong>즉시 이동하지
+          말고</strong> 토스트로 알린 뒤 3초 여유를 준다. <code>next</code> 에 현재 경로를
+          실어 로그인 후 같은 화면으로 돌아오게 한다. (입력값 복원까지는 이번 범위 밖 —
+          토스트 문구에 “입력한 내용은 저장되지 않았습니다”를 넣는다.)
+        </p>
+      </div>
+
+      <h5>공개 경로 — 게이트를 통과하지 않는 곳</h5>
+      <div class="tw"><table>
+        <thead><tr><th>경로</th><th>이유</th></tr></thead>
+        <tbody>
+          <tr><td><code>/login</code></td><td>로그인하러 오는 곳</td></tr>
+          <tr><td><code>/logout</code></td><td>세션 정리는 항상 가능해야 한다</td></tr>
+          <tr><td><code>/health</code></td><td>외부 헬스체크</td></tr>
+          <tr><td><code>/favicon.ico</code></td><td>브라우저 자동 요청</td></tr>
+          <tr><td><code>/api/telegram/webhook</code></td><td>텔레그램 서버가 호출 — 자체 시크릿으로 검증</td></tr>
+          <tr><td><code>/api/v1/mobile/login</code></td><td>토큰을 받으러 오는 곳</td></tr>
+          <tr><td><code>/static/</code> (접두사)</td><td>CSS·JS</td></tr>
+        </tbody>
+      </table></div>
+    </div>
+  </div>
+
+  <!-- AUTH-03 -->
+  <div class="screen">
+    <header>
+      <span class="id">AUTH-03</span><span class="nm">권한 거부 403</span>
+      <span class="pt">게이트 렌더</span><span class="sp"></span><span class="b b-ok">구현됨</span>
+    </header>
+    <div class="body">
+      <p>로그인은 했지만 그 화면을 쓸 권한이 없을 때.</p>
+
+      <div class="mock" style="padding:30px 0">
+        <div class="modal" style="max-width:440px;margin:0 auto">
+          <div style="padding:26px;text-align:center">
+            <div style="font-size:26px;margin-bottom:8px">🔒</div>
+            <div style="font-size:16px;font-weight:700;margin-bottom:8px">접근 권한이 없습니다</div>
+            <div style="font-size:12.5px;color:var(--m-text2);margin-bottom:18px">
+              이 화면은 관리자 전용입니다. 권한이 필요하면 운영자에게 요청하세요.
+            </div>
+            <span class="btn">내 시작 화면으로</span>
+          </div>
+        </div>
+      </div>
+
+      <h5>규칙</h5>
+      <ul>
+        <li><strong>어떤 기능이 있는지 노출하지 않는다.</strong> 화면 이름·설명·메뉴 구조를
+          보여 주지 않는다. “관리자 전용”이라는 사실까지만.</li>
+        <li>돌아갈 경로는 <strong>요청자 등급의 시작 화면</strong>. <code>/</code> 로 보내면
+          다시 리다이렉트가 한 번 더 돈다.</li>
+        <li>사이드바는 <strong>비운다</strong>. 이 화면은 게이트가 라우팅 밖에서 렌더하므로
+          메뉴 컨텍스트가 없다.</li>
+        <li>API 요청이면 화면 대신 403 JSON <code>{"detail":"권한이 없습니다."}</code>.</li>
+      </ul>
+
+      <div class="note">
+        <span class="t">등급 부족과 권한 없음은 다른 화면이다</span>
+        <p>
+          무료 사용자가 <code>/my/trading</code> 에 접근한 것은 <b>권한</b> 문제가 아니라
+          <b>등급</b> 문제다. 이때는 이 화면이 아니라 업그레이드 안내를 보여 준다 —
+          무엇을 하면 쓸 수 있는지 알려 주는 게 맞다. 서버 판정은
+          <code>role</code> 과 <code>plan</code> 을 구분해야 한다.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════ 5 ══════════════════════════ -->
+<section id="s5">
+  <h2 class="sec">5</h2>
+  <h3>내 설정</h3>
+
+  <div class="screen">
+    <header>
+      <span class="id">SET-01</span><span class="nm">내 설정</span>
+      <span class="pt">/settings</span><span class="sp"></span><span class="b b-ok">구현됨</span>
+    </header>
+    <div class="body">
+      <p>
+        로그인한 모든 사용자가 쓰는 화면. <strong>등급에 따라 보이는 섹션이 다르다.</strong>
+      </p>
+
+      <div class="mock">
+        <div class="top"><span class="ttl">내 설정</span><span class="sp"></span>
+          <span class="u">jkkim · 유료</span><span class="btn">로그아웃</span></div>
+        <div class="cnt">
+          <div class="mcard">
+            <h6>프로필 <span class="mb warn">유료</span></h6>
+            <div>
+              <div class="mrow"><span class="mlab">아이디</span><span style="font-size:12px">jkkim</span></div>
+              <div class="mrow"><span class="mlab">표시 이름</span><span class="fld">김재국</span></div>
+              <div class="mrow"><span class="mlab">오늘 종목분석</span>
+                <span style="font-size:12px">3 / 30</span><span class="mb pass">여유 있음</span></div>
+              <div class="mrow"><span class="mlab">요금제</span>
+                <span class="mb warn">유료</span><span class="btn">등급 문의</span></div>
+            </div>
+          </div>
+          <div class="mcard">
+            <h6>화면</h6>
+            <div>
+              <div class="mrow"><span class="mlab">시작 화면</span><span class="fld">내 자동매매</span></div>
+              <div class="mrow"><span class="mlab">후보 최소 점수</span><span class="fld">10.0</span>
+                <span class="hint" style="margin:0">표시 필터입니다. 주문 기준과 무관합니다.</span></div>
+              <div class="mrow"><span class="mlab">표시할 시장</span>
+                <span class="mb info">KOSPI</span><span class="mb mute">KOSDAQ</span></div>
+            </div>
+          </div>
+          <div class="mcard">
+            <h6>알림</h6>
+            <div>
+              <div class="mrow"><span class="mlab">앱 푸시</span><span class="mb pass">켜짐</span></div>
+              <div class="mrow"><span class="mlab">텔레그램</span><span class="mb mute">꺼짐</span></div>
+              <div class="mrow"><span class="mlab">내 텔레그램 chat id</span><span class="fld ph">비우면 받지 않음</span></div>
+            </div>
+          </div>
+          <div class="mcard">
+            <h6>매매 설정 <span class="mb warn">유료 전용</span></h6>
+            <div>
+              <div class="mrow"><span class="mlab">단일 종목 최대</span><span class="fld">10 %</span></div>
+              <div class="mrow"><span class="mlab">총 노출 한도</span><span class="fld">60 %</span></div>
+              <div class="mrow"><span class="mlab">일 손실 한도</span><span class="fld">3 %</span></div>
+              <div class="mrow"><span class="mlab">내 킬스위치</span>
+                <span class="mb pass">정상</span><span class="btn dgr">즉시 중지</span></div>
+            </div>
+          </div>
+          <div class="mcard">
+            <h6>보안</h6>
+            <div>
+              <div class="mrow"><span class="mlab">현재 비밀번호</span><span class="fld ph">••••••••</span></div>
+              <div class="mrow"><span class="mlab">새 비밀번호</span><span class="fld ph">8자 이상</span></div>
+              <div class="mrow"><span class="btn">비밀번호 변경</span></div>
+            </div>
+          </div>
+          <div style="display:flex;justify-content:flex-end;gap:8px">
+            <span class="btn">되돌리기</span><span class="btn pri">설정 저장</span>
+          </div>
+        </div>
+      </div>
+      <p class="mock-cap">유료 사용자 기준. 무료는 <b>매매 설정</b> 자리에 업그레이드 안내가 들어가고, 관리자는 하단에 <b>운영 설정 바로가기</b>가 붙는다.</p>
+
+      <h5>등급별 섹션 노출</h5>
+      <div class="tw"><table>
+        <thead><tr><th>섹션</th><th>무료</th><th>유료</th><th>관리자</th></tr></thead>
+        <tbody>
+          <tr><td>프로필</td><td>○</td><td>○</td><td>○</td></tr>
+          <tr><td>화면</td><td>○</td><td>○</td><td>○</td></tr>
+          <tr><td>알림</td><td>○</td><td>○</td><td>○</td></tr>
+          <tr><td>매매 설정</td><td><b>업그레이드 안내</b></td><td>○</td><td>×(운영 설정으로)</td></tr>
+          <tr><td>보안</td><td>○</td><td>○</td><td>○</td></tr>
+          <tr><td>운영 설정 바로가기</td><td>×</td><td>×</td><td>○</td></tr>
+        </tbody>
+      </table></div>
+      <p>
+        무료 사용자에게 <b>매매 설정</b> 자리를 빈칸으로 두지 않는다. “자기 계좌로 자동매매를
+        하려면 무엇이 필요한지”를 한 문단으로 보여 준다 — 없는 기능이 아니라 아직 열리지 않은 기능이다.
+      </p>
+
+      <h5>항목 정의서</h5>
+      <div class="tw"><table>
+        <thead><tr><th>항목</th><th>키</th><th>타입</th><th>필수</th><th>기본값</th><th>검증 · 오류 문구</th></tr></thead>
+        <tbody>
+          <tr><td>시작 화면</td><td><code>landing_screen</code></td><td>셀렉트</td><td>예</td><td><code>stock-analysis</code></td><td>내 등급에 열린 화면만 목록에 나온다</td></tr>
+          <tr><td>후보 최소 점수</td><td><code>candidate_min_score</code></td><td>숫자</td><td>아니오</td><td>전역 <code>MAPS_CANDIDATE_MIN_SCORE</code></td><td>0 이상 / “0 이상 숫자를 입력하세요.”</td></tr>
+          <tr><td>표시할 시장</td><td><code>candidate_markets</code></td><td>체크박스</td><td>아니오</td><td>전체(빈 목록)</td><td><code>KOSPI</code>·<code>KOSDAQ</code> 만</td></tr>
+          <tr><td>앱 푸시</td><td><code>notify_push</code></td><td>토글</td><td>아니오</td><td>꺼짐</td><td>—</td></tr>
+          <tr><td>텔레그램</td><td><code>notify_telegram</code></td><td>토글</td><td>아니오</td><td>꺼짐</td><td>chat id 없이 켜면 경고</td></tr>
+          <tr><td>내 텔레그램 chat id</td><td><code>telegram_chat_id</code></td><td>텍스트</td><td>아니오</td><td>없음</td><td>공백은 <code>null</code> 로 저장</td></tr>
+          <tr><td>현재 비밀번호</td><td>—</td><td>비밀번호</td><td>예</td><td>—</td><td>“현재 비밀번호가 올바르지 않습니다.”</td></tr>
+          <tr><td>새 비밀번호</td><td>—</td><td>비밀번호</td><td>예</td><td>—</td><td>8자 이상 / “새 비밀번호는 8자 이상이어야 합니다.”</td></tr>
+        </tbody>
+      </table></div>
+
+      <div class="note">
+        <span class="t">화면 상단 고정 문구</span>
+        <p>
+          “여기서 바꾼 값은 <strong>내 화면에만</strong> 적용됩니다. 주문·스케줄러 같은 운영
+          설정은 관리자만 바꿉니다.” — <code>candidate_min_score</code> 를 주문 기준으로
+          오해하면 큰 사고가 된다. 해당 입력 옆에도 같은 취지의 힌트를 붙인다.
+        </p>
+      </div>
+
+      <h5>상태별 표시</h5>
+      <div class="tw"><table>
+        <thead><tr><th>상태</th><th>표시</th></tr></thead>
+        <tbody>
+          <tr><td>로딩</td><td>섹션 골격 + 저장 버튼 비활성</td></tr>
+          <tr><td>변경 없음</td><td><b>설정 저장</b> 비활성</td></tr>
+          <tr><td>변경됨</td><td><b>되돌리기</b> 노출, 저장 활성</td></tr>
+          <tr><td>저장 중</td><td>버튼 스피너, 입력 잠금</td></tr>
+          <tr><td>성공</td><td>토스트 “저장했습니다.” 시작 화면을 바꿨으면 “다음 로그인부터 적용됩니다.”</td></tr>
+          <tr><td>저장 전 이탈</td><td><code>beforeunload</code> 경고 — 저장하지 않은 변경이 있을 때만</td></tr>
+          <tr><td>한도 소진</td><td>프로필의 사용량 배지를 <span class="b b-bad">소진</span> 으로, 종목분석 진입 버튼에 안내</td></tr>
+        </tbody>
+      </table></div>
+
+      <h5>API 매핑</h5>
+      <div class="tw"><table>
+        <thead><tr><th>동작</th><th>엔드포인트</th><th>요청 → 응답</th></tr></thead>
+        <tbody>
+          <tr><td>불러오기</td><td><code>GET /api/v1/users/me</code></td><td>— → <code>user</code>, <code>preferences</code>, <code>analysis_used_today</code>, <code>analysis_limit</code></td></tr>
+          <tr><td>설정 저장</td><td><code>PUT /api/v1/users/me/preferences</code></td><td>6키 전체 → 갱신된 <code>MeResponse</code></td></tr>
+          <tr><td>비밀번호 변경</td><td><code>POST /api/v1/users/me/password</code></td><td><code>current_password</code>, <code>new_password</code> → <code>UserSummary</code></td></tr>
+        </tbody>
+      </table></div>
+
+      <h5>예외 시나리오</h5>
+      <div class="tw"><table>
+        <thead><tr><th>코드</th><th>상황</th><th>화면 처리</th></tr></thead>
+        <tbody>
+          <tr><td>401</td><td>세션 만료</td><td><code>AUTH-02</code> 규칙 — 토스트 후 로그인으로</td></tr>
+          <tr><td>422</td><td>알 수 없는 설정 키</td><td>“저장할 수 없는 설정 항목이 있습니다.” — 구현 버그 신호이므로 콘솔에 키 출력</td></tr>
+          <tr><td>400</td><td>현재 비밀번호 불일치 / 새 비밀번호 8자 미만</td><td>보안 섹션 인라인 오류. 다른 섹션 값은 유지</td></tr>
+          <tr><td>429</td><td>—</td><td>이 화면에서는 발생하지 않는다(분석 실행 화면의 코드)</td></tr>
+        </tbody>
+      </table></div>
+
+      <h5>필요한 서버 작업 (유료 섹션)</h5>
+      <ul>
+        <li><code>UserPreferences</code> 에 개인 리스크 한도 3키 + 개인 킬스위치 1키 추가</li>
+        <li>등급별 허용 키 판정 — 무료가 유료 키를 저장하려 하면 422</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════ 6 ══════════════════════════ -->
+<section id="s6">
+  <h2 class="sec">6</h2>
+  <h3>회원 관리</h3>
+
+  <!-- USR-01 -->
+  <div class="screen">
+    <header>
+      <span class="id">USR-01</span><span class="nm">회원 목록</span>
+      <span class="pt">/admin/users</span><span class="sp"></span><span class="b b-ok">구현됨</span>
+    </header>
+    <div class="body">
+      <div class="mock">
+        <div class="top"><span class="ttl">회원 관리</span><span class="sp"></span>
+          <span class="u">admin · 관리자</span><span class="btn">로그아웃</span></div>
+        <div class="cnt">
+          <div class="mcard">
+            <h6>회원 <span class="mb mute">4명</span><span class="sp" style="flex:1"></span>
+              <span class="btn pri">계정 추가</span></h6>
+            <div>
+              <table class="mt">
+                <thead><tr><th>아이디</th><th>이름</th><th>역할</th><th>상태</th><th>요금제</th><th>일일 한도</th><th>마지막 로그인</th><th>작업</th></tr></thead>
+                <tbody>
+                  <tr><td>admin</td><td>운영자</td><td><span class="mb info">관리자</span></td>
+                      <td><span class="mb pass">활성</span></td><td>—</td><td>무제한</td><td>08-12 16:31</td>
+                      <td><span class="btn">편집</span></td></tr>
+                  <tr><td>jkkim</td><td>김재국</td><td><span class="mb mute">일반</span></td>
+                      <td><span class="mb pass">활성</span></td><td><span class="mb warn">유료</span></td><td>30</td><td>08-12 15:02</td>
+                      <td><span class="btn">편집</span></td></tr>
+                  <tr><td>tester</td><td>—</td><td><span class="mb mute">일반</span></td>
+                      <td><span class="mb pass">활성</span></td><td><span class="mb mute">무료</span></td><td>기본(10)</td><td>08-11 21:40</td>
+                      <td><span class="btn">편집</span></td></tr>
+                  <tr><td>old_user</td><td>—</td><td><span class="mb mute">일반</span></td>
+                      <td><span class="mb fail">비활성</span></td><td><span class="mb mute">무료</span></td><td>기본(10)</td><td>07-28 09:12</td>
+                      <td><span class="btn">편집</span></td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <h5>컬럼 정의</h5>
+      <div class="tw"><table>
+        <thead><tr><th>컬럼</th><th>내용</th><th>표시 규칙</th></tr></thead>
+        <tbody>
+          <tr><td>아이디</td><td><code>username</code></td><td>고정 — 변경 불가</td></tr>
+          <tr><td>이름</td><td><code>display_name</code></td><td>없으면 <code>—</code></td></tr>
+          <tr><td>역할</td><td><code>role</code></td><td><span class="b b-info">관리자</span> / <span class="b b-mute">일반</span></td></tr>
+          <tr><td>상태</td><td><code>status</code></td><td><span class="b b-ok">활성</span> · <span class="b b-warn">승인대기</span> · <span class="b b-bad">비활성</span></td></tr>
+          <tr><td>요금제</td><td><code>plan</code></td><td>관리자 행은 <code>—</code> (요금제 개념 없음)</td></tr>
+          <tr><td>일일 한도</td><td><code>daily_analysis_limit</code></td><td><code>null</code> 이면 <b>기본(10)</b>, 관리자는 <b>무제한</b></td></tr>
+          <tr><td>마지막 로그인</td><td><code>last_login_at</code></td><td>KST 표시. 없으면 <code>—</code></td></tr>
+        </tbody>
+      </table></div>
+
+      <h5>상태별 표시</h5>
+      <div class="tw"><table>
+        <thead><tr><th>상태</th><th>표시</th></tr></thead>
+        <tbody>
+          <tr><td>초기</td><td>가입 최신순(<code>id</code> 내림차순)</td></tr>
+          <tr><td>로딩</td><td>“불러오는 중…” 한 행</td></tr>
+          <tr><td>빈</td><td>도달하지 않는다 — 최소 1명(부트스트랩 관리자)은 항상 있다</td></tr>
+          <tr><td>오류</td><td>표 자리에 오류 문구 + 다시 시도</td></tr>
+        </tbody>
+      </table></div>
+
+      <h5>API</h5>
+      <p><code>GET /api/v1/users</code> → <code>UserSummary[]</code>. <strong><code>password_hash</code> 는 응답에 없다</strong> — 응답 모델로 차단한다.</p>
+    </div>
+  </div>
+
+  <!-- USR-02 -->
+  <div class="screen">
+    <header>
+      <span class="id">USR-02</span><span class="nm">회원 추가</span>
+      <span class="pt">모달</span><span class="sp"></span><span class="b b-ok">구현됨</span>
+    </header>
+    <div class="body">
+      <div class="mock">
+        <div class="modal">
+          <h6>계정 추가</h6>
+          <div>
+            <div class="mrow"><span class="mlab">아이디 *</span><span class="fld w">newbie</span></div>
+            <div class="mrow"><span class="mlab">비밀번호 *</span><span class="fld w ph">8자 이상</span></div>
+            <div class="mrow"><span class="mlab">표시 이름</span><span class="fld w ph">선택</span></div>
+            <div class="mrow"><span class="mlab">역할 *</span><span class="fld">일반 사용자</span></div>
+            <div class="mrow"><span class="mlab">요금제</span><span class="fld">무료</span></div>
+            <div class="mrow"><span class="mlab">일일 분석 한도</span><span class="fld ph">비우면 기본(10)</span></div>
+            <div class="err">이미 존재하는 아이디입니다.</div>
+          </div>
+          <div class="foot"><span class="btn">취소</span><span class="btn pri">계정 만들기</span></div>
+        </div>
+      </div>
+
+      <h5>항목 정의서</h5>
+      <div class="tw"><table>
+        <thead><tr><th>항목</th><th>타입</th><th>필수</th><th>기본값</th><th>검증</th><th>오류 문구</th></tr></thead>
+        <tbody>
+          <tr><td>아이디</td><td>텍스트</td><td>예</td><td>—</td><td>공백 트림, 중복 불가</td><td>“아이디를 입력하세요.” / “이미 존재하는 아이디입니다.”</td></tr>
+          <tr><td>비밀번호</td><td>비밀번호</td><td>예</td><td>—</td><td>8자 이상</td><td>“비밀번호는 8자 이상이어야 합니다.”</td></tr>
+          <tr><td>표시 이름</td><td>텍스트</td><td>아니오</td><td>없음</td><td>—</td><td>—</td></tr>
+          <tr><td>역할</td><td>셀렉트</td><td>예</td><td>일반 사용자</td><td><code>admin</code>·<code>user</code></td><td>“role 값이 올바르지 않습니다.”</td></tr>
+          <tr><td>요금제</td><td>셀렉트</td><td>아니오</td><td><code>free</code></td><td><code>free</code>·<code>paid</code></td><td>“plan 값이 올바르지 않습니다.”</td></tr>
+          <tr><td>일일 분석 한도</td><td>숫자</td><td>아니오</td><td><code>null</code>(기본 10)</td><td>0 이상 정수</td><td>“0 이상 정수를 입력하세요.”</td></tr>
+        </tbody>
+      </table></div>
+
+      <h5>액션 · 예외</h5>
+      <div class="tw"><table>
+        <thead><tr><th>결과</th><th>화면</th></tr></thead>
+        <tbody>
+          <tr><td>201 성공</td><td>모달 닫기, 목록 새로고침, 토스트 “계정을 만들었습니다.”</td></tr>
+          <tr><td>400</td><td>해당 입력 아래 인라인 오류. 모달 유지</td></tr>
+          <tr><td>409 중복</td><td>아이디 입력 아래 인라인 오류 + 포커스 이동</td></tr>
+          <tr><td>403</td><td>모달 닫고 <code>AUTH-03</code></td></tr>
+        </tbody>
+      </table></div>
+      <p><code>POST /api/v1/users</code> — 생성 즉시 <code>status=active</code>. 자가 가입 승인 대기(<code>pending</code>)는 2차.</p>
+    </div>
+  </div>
+
+  <!-- USR-03 -->
+  <div class="screen">
+    <header>
+      <span class="id">USR-03</span><span class="nm">회원 상세 · 편집</span>
+      <span class="pt">모달</span><span class="sp"></span><span class="b b-ok">구현됨</span>
+    </header>
+    <div class="body">
+      <div class="mock">
+        <div class="modal">
+          <h6>admin · 계정 편집</h6>
+          <div>
+            <div class="mrow"><span class="mlab">아이디</span><span style="font-size:12px">admin</span>
+              <span class="mb mute">변경 불가</span></div>
+            <div class="mrow"><span class="mlab">표시 이름</span><span class="fld">운영자</span></div>
+            <div class="mrow"><span class="mlab">역할</span><span class="fld">관리자</span></div>
+            <div class="mrow"><span class="mlab">상태</span><span class="fld">활성</span></div>
+            <div class="mrow"><span class="mlab">요금제</span><span class="fld">—</span></div>
+            <div class="mrow"><span class="mlab">일일 분석 한도</span><span class="fld ph">무제한(관리자)</span></div>
+            <div style="border:1px solid var(--m-border);border-radius:6px;padding:9px 12px;margin-top:10px;
+                        font-size:11.5px;color:var(--m-warn)">
+              마지막 활성 관리자입니다. 역할 강등과 비활성화를 할 수 없습니다.
+            </div>
+          </div>
+          <div class="foot">
+            <span class="btn dgr">비밀번호 재발급</span>
+            <span class="btn off">비활성화</span>
+            <span class="btn pri off">저장</span>
+          </div>
+        </div>
+      </div>
+      <p class="mock-cap">마지막 활성 관리자일 때. 위험 버튼은 <b>비활성 + 이유 표시</b>로 미리 막는다.</p>
+
+      <h5>편집 가능 항목</h5>
+      <div class="tw"><table>
+        <thead><tr><th>항목</th><th>편집</th><th>제약</th></tr></thead>
+        <tbody>
+          <tr><td>아이디</td><td>불가</td><td>계정 식별자 — 감사 로그와 연결된다</td></tr>
+          <tr><td>표시 이름 · 이메일</td><td>가능</td><td>—</td></tr>
+          <tr><td>역할</td><td>가능</td><td><b>마지막 활성 관리자는 강등 불가</b></td></tr>
+          <tr><td>상태</td><td>가능</td><td><b>마지막 활성 관리자는 비활성화 불가</b></td></tr>
+          <tr><td>요금제</td><td>가능</td><td><code>free</code> ↔ <code>paid</code>. 유료 해제 시 무장 중인 계획 처리 방침 필요(2차)</td></tr>
+          <tr><td>일일 분석 한도</td><td>가능</td><td>비우면 기본값. 관리자는 무시된다</td></tr>
+          <tr><td>비밀번호</td><td>열람 불가</td><td>재발급만 — <code>USR-04</code></td></tr>
+        </tbody>
+      </table></div>
+
+      <div class="note danger">
+        <span class="t">마지막 관리자 보호 — 이중 방어</span>
+        <p>
+          활성 관리자가 한 명뿐일 때 그를 강등하거나 비활성화하면 <strong>아무도 운영 화면에
+          들어갈 수 없다.</strong> 화면에서 버튼을 비활성화하고 이유를 표시해 <b>미리</b> 막되,
+          서버도 400 으로 거절한다. 화면만 막으면 API 직접 호출로 잠글 수 있다.
+        </p>
+      </div>
+
+      <h5>액션 · 예외</h5>
+      <div class="tw"><table>
+        <thead><tr><th>액션</th><th>확인 절차</th><th>결과</th></tr></thead>
+        <tbody>
+          <tr><td>저장</td><td>없음</td><td>200 → 목록 새로고침</td></tr>
+          <tr><td>비활성화</td><td>확인 다이얼로그 “{아이디} 계정을 비활성화합니다. 즉시 로그아웃됩니다.”</td><td>200 → 상태 배지 갱신</td></tr>
+          <tr><td>관리자로 승격</td><td>확인 다이얼로그 — 운영 전체 권한을 준다는 문구</td><td>200</td></tr>
+          <tr><td>400</td><td>—</td><td>“마지막 관리자 계정은 강등하거나 비활성화할 수 없습니다.”</td></tr>
+          <tr><td>404</td><td>—</td><td>“계정을 찾을 수 없습니다.” + 목록 새로고침</td></tr>
+        </tbody>
+      </table></div>
+      <p><code>PUT /api/v1/users/{user_id}</code> — 보낸 필드만 갱신(<code>null</code> 은 무시).</p>
+
+      <div class="note">
+        <span class="t">비활성화는 즉시 효력이 있다</span>
+        <p>
+          역할·상태를 세션이나 모바일 토큰에 굽지 않고 <strong>매 요청 DB에서 다시 읽는다.</strong>
+          비활성화하면 이미 로그인한 세션과 발급된 토큰이 그 즉시 막힌다 — 화면 문구에 이
+          사실을 적어 관리자가 “로그아웃될 때까지 기다려야 하나”를 묻지 않게 한다.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <!-- USR-04 -->
+  <div class="screen">
+    <header>
+      <span class="id">USR-04</span><span class="nm">임시 비밀번호 발급</span>
+      <span class="pt">모달</span><span class="sp"></span><span class="b b-ok">구현됨</span>
+    </header>
+    <div class="body">
+      <div class="mock">
+        <div class="modal" style="max-width:440px">
+          <h6>임시 비밀번호 발급 완료</h6>
+          <div>
+            <div style="font-size:12.5px;color:var(--m-text2);margin-bottom:10px">
+              <b style="color:var(--m-text)">jkkim</b> 의 비밀번호가 아래 값으로 바뀌었습니다.
+            </div>
+            <div style="display:flex;gap:8px;align-items:center">
+              <span class="fld w" style="font-family:var(--mono);font-size:14px;letter-spacing:.04em">Qv7-kR2mXa</span>
+              <span class="btn">복사</span>
+            </div>
+            <div style="border:1px solid var(--m-warn);border-radius:6px;padding:9px 12px;margin-top:12px;
+                        font-size:11.5px;color:var(--m-warn)">
+              이 값은 <b>지금만</b> 보입니다. 창을 닫으면 다시 확인할 수 없습니다.
+              안전한 경로로 전달하고, 사용자에게 로그인 후 변경하도록 안내하세요.
+            </div>
+          </div>
+          <div class="foot"><span class="btn pri">확인했습니다</span></div>
+        </div>
+      </div>
+
+      <h5>규칙</h5>
+      <ul>
+        <li><strong>한 번만 보인다.</strong> 닫기 버튼은 “확인했습니다” 하나뿐이고, 모달 밖
+          클릭이나 <kbd>Esc</kbd> 로는 닫히지 않는다 — 실수로 닫아 값을 잃는 것을 막는다.</li>
+        <li>값을 화면 어디에도 다시 표시하지 않고, <strong>브라우저 콘솔·서버 로그에 남기지 않는다.</strong></li>
+        <li>재발급 즉시 기존 비밀번호는 무효다. 확인 다이얼로그에 이 사실을 적는다.</li>
+        <li>복사 버튼은 클립보드 복사 후 “복사했습니다” 로 2초간 바뀐다.</li>
+      </ul>
+
+      <h5>API · 예외</h5>
+      <div class="tw"><table>
+        <thead><tr><th>동작</th><th>엔드포인트</th><th>응답</th></tr></thead>
+        <tbody>
+          <tr><td>재발급</td><td><code>POST /api/v1/users/{user_id}/reset-password</code></td><td><code>{username, temporary_password}</code></td></tr>
+          <tr><td>404</td><td>—</td><td>“계정을 찾을 수 없습니다.”</td></tr>
+          <tr><td>403</td><td>—</td><td>관리자 전용 — 게이트가 차단</td></tr>
+        </tbody>
+      </table></div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════ 7 ══════════════════════════ -->
+<section id="s7">
+  <h2 class="sec">7</h2>
+  <h3>유료 사용자 화면</h3>
+
+  <div class="note danger">
+    <span class="t">네 화면 모두 서버가 없다</span>
+    <p>
+      <code>app_user.plan</code> 은 값만 있고 동작 차이가 없다. <code>user_broker_account</code>
+      테이블도, 사용자별 스케줄러 실행 단위도, <code>plan</code> 기반 권한 판정도 아직 없다.
+      아래는 <strong>구현 지시서</strong>다. 각 화면 끝에 필요한 서버 작업을 적었다.
+    </p>
+  </div>
+
+  <p>
+    설계 원칙 하나: <strong>운영자 화면을 복사하지 않는다.</strong> 운영자 대시보드·주문·리스크
+    화면은 운영 계좌 하나를 전제로 만들어졌다. 유료 사용자 화면은 “내 계좌 범위”라는 다른
+    맥락이므로 별도로 구성하고, 숫자의 출처가 <b>내 계좌</b>임을 화면마다 명시한다.
+  </p>
+
+  <!-- PAY-01 -->
+  <div class="screen">
+    <header>
+      <span class="id">PAY-01</span><span class="nm">내 계좌 연결</span>
+      <span class="pt">/my/broker</span><span class="sp"></span><span class="b b-warn">서버 미구현</span>
+    </header>
+    <div class="body">
+      <p>유료 사용자가 자기 KIS 계좌를 연결한다. 이 화면이 다른 세 화면의 전제다.</p>
+
+      <div class="mock">
+        <div class="top"><span class="ttl">내 계좌 연결</span><span class="sp"></span>
+          <span class="u">jkkim · 유료</span><span class="btn">로그아웃</span></div>
+        <div class="cnt">
+          <div class="mcard">
+            <h6>연결 상태 <span class="mb pass">연결됨</span> <span class="mb info">모의투자</span></h6>
+            <div>
+              <div class="mrow"><span class="mlab">계좌번호</span><span style="font-size:12px">5020****-01</span></div>
+              <div class="mrow"><span class="mlab">앱키</span><span style="font-size:12px">PSxx****</span>
+                <span class="mb mute">재열람 불가</span></div>
+              <div class="mrow"><span class="mlab">마지막 확인</span><span style="font-size:12px">08-12 16:20 · 잔고 조회 성공</span></div>
+              <div class="mrow"><span class="btn">연결 확인</span><span class="btn dgr">연결 해제</span></div>
+            </div>
+          </div>
+          <div class="mcard">
+            <h6>계좌 등록</h6>
+            <div>
+              <div class="mrow"><span class="mlab">계좌 종류 *</span><span class="fld">모의투자</span></div>
+              <div class="mrow"><span class="mlab">앱키 *</span><span class="fld w ph">KIS Open API app key</span></div>
+              <div class="mrow"><span class="mlab">앱 시크릿 *</span><span class="fld w ph">저장 후 다시 볼 수 없습니다</span></div>
+              <div class="mrow"><span class="mlab">계좌번호 *</span><span class="fld w ph">12345678-01</span></div>
+              <div style="border:1px solid var(--m-fail);border-radius:6px;padding:10px 12px;margin-top:10px;
+                          font-size:11.5px;color:var(--m-fail)">
+                등록한 계좌로 <b>실제 주문이 나갑니다.</b> 손실 책임은 계좌 소유자에게 있으며,
+                MAPS 는 설정한 전략과 한도에 따라 주문을 제출할 뿐입니다.
+              </div>
+              <div class="mrow" style="margin-top:10px"><span class="btn pri">등록하고 연결 확인</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <h5>항목 정의서</h5>
+      <div class="tw"><table>
+        <thead><tr><th>항목</th><th>타입</th><th>필수</th><th>검증</th><th>저장</th></tr></thead>
+        <tbody>
+          <tr><td>계좌 종류</td><td>셀렉트</td><td>예</td><td>모의투자 · 실계좌</td><td>평문</td></tr>
+          <tr><td>앱키</td><td>텍스트</td><td>예</td><td>공백 불가</td><td><b>암호화</b>, 마스킹 표시</td></tr>
+          <tr><td>앱 시크릿</td><td>비밀번호</td><td>예</td><td>공백 불가</td><td><b>암호화</b>, <b>재열람 불가</b></td></tr>
+          <tr><td>계좌번호</td><td>텍스트</td><td>예</td><td><code>########-##</code> 정규화</td><td>암호화 + 마스킹 표시</td></tr>
+        </tbody>
+      </table></div>
+
+      <h5>상태별 표시</h5>
+      <div class="tw"><table>
+        <thead><tr><th>상태</th><th>표시</th></tr></thead>
+        <tbody>
+          <tr><td>미연결</td><td>등록 폼만. 상단에 “계좌를 연결하면 내 자동매매를 쓸 수 있습니다”</td></tr>
+          <tr><td>연결됨</td><td>상태 카드 + 마스킹된 값. 등록 폼은 접힘(재등록 시 펼침)</td></tr>
+          <tr><td>확인 중</td><td>버튼 스피너 — <b>잔고 조회만</b> 한다. 주문은 절대 제출하지 않는다</td></tr>
+          <tr><td>확인 실패</td><td><span class="b b-bad">연결 실패</span> + 원인(자격증명·계좌·네트워크) 구분 문구</td></tr>
+          <tr><td>실계좌</td><td>상단 고정 경고 배너. 배지 색을 모의투자와 확실히 다르게</td></tr>
+        </tbody>
+      </table></div>
+
+      <h5>연결 해제</h5>
+      <ul>
+        <li>확인 다이얼로그: 무장 중인 계획과 미체결 주문이 몇 건인지 <strong>숫자로</strong> 보여 준다.</li>
+        <li>해제 시 무장 계획은 <b>중지</b>되고 미체결 주문은 <b>취소 시도</b> 후 결과를 보고한다.
+          <strong>보유 종목은 그대로 남는다</strong> — 임의 청산하지 않는다.</li>
+        <li>해제 후 자격증명은 삭제한다. 다시 쓰려면 재등록.</li>
+      </ul>
+
+      <h5>필요한 서버 작업</h5>
+      <ul>
+        <li><code>user_broker_account</code> 테이블 — 사용자별 암호화된 앱키·시크릿·계좌 지문,
+          계좌 종류, 마지막 확인 시각·결과</li>
+        <li>자격증명 암호화 키 관리(<code>.env</code> 의 마스터 키 또는 KMS)</li>
+        <li><code>POST /api/v1/my/broker</code>(등록) · <code>POST /my/broker/verify</code>(잔고 조회만) ·
+          <code>DELETE /my/broker</code>(해제)</li>
+        <li>KIS 호출 한도를 운영 계좌와 공유하는 문제 검토</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- PAY-02 -->
+  <div class="screen">
+    <header>
+      <span class="id">PAY-02</span><span class="nm">내 자동매매</span>
+      <span class="pt">/my/trading</span><span class="sp"></span><span class="b b-warn">서버 미구현</span>
+    </header>
+    <div class="body">
+      <p>내 계좌 범위의 워치리스트. 무장·회차·중지를 여기서 한다. 유료 사용자의 시작 화면.</p>
+
+      <div class="mock">
+        <div class="top"><span class="ttl">내 자동매매</span><span class="sp"></span>
+          <span class="u">jkkim · 유료</span><span class="btn">로그아웃</span></div>
+        <div class="cnt">
+          <div class="mcard">
+            <h6>내 계좌 <span class="mb pass">연결됨</span> <span class="mb info">모의투자</span>
+              <span class="sp" style="flex:1"></span><span class="mb pass">킬스위치 정상</span></h6>
+            <div>
+              <div class="mrow"><span class="mlab">주문가능 현금</span><span style="font-size:12px">8,031만원</span>
+                <span class="mlab">총 노출</span><span style="font-size:12px">19.6% / 60%</span></div>
+            </div>
+          </div>
+          <div class="mcard">
+            <h6>무장·진행 중 <span class="mb mute">2건</span></h6>
+            <div>
+              <table class="mt">
+                <thead><tr><th>종목</th><th>상태</th><th>진행</th><th>매수가</th><th>목표</th><th>손절</th><th>작업</th></tr></thead>
+                <tbody>
+                  <tr><td>인바디 041830</td><td><span class="mb warn">ARMED</span></td><td>0/3 회차</td>
+                      <td>69,200</td><td>82,000</td><td>55,100</td>
+                      <td><span class="btn">상세</span> <span class="btn dgr">중지</span></td></tr>
+                  <tr><td>BGF리테일 282330</td><td><span class="mb pass">BOUGHT</span></td><td>2/3 회차</td>
+                      <td>150,700</td><td>176,000</td><td>130,700</td>
+                      <td><span class="btn">상세</span> <span class="btn dgr">추가매수 중지</span></td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div class="mcard">
+            <h6>내 워치리스트 <span class="mb mute">WATCH 4건</span></h6>
+            <div><div class="empty">종목분석에서 <b>매매 설정</b>을 눌러 계획을 만들면 여기에 쌓입니다.</div></div>
+          </div>
+        </div>
+      </div>
+
+      <h5>상태별 표시</h5>
+      <div class="tw"><table>
+        <thead><tr><th>상태</th><th>표시</th></tr></thead>
+        <tbody>
+          <tr><td>계좌 미연결</td><td>목록·버튼 전체 비활성 + <code>PAY-01</code> 유도 카드. <b>이게 기본 진입 상태다</b></td></tr>
+          <tr><td>킬스위치 작동</td><td>상단 붉은 배너. 신규 무장 버튼 비활성, 보유 감시는 계속된다는 문구</td></tr>
+          <tr><td>한도 초과</td><td>무장 버튼 비활성 + 차단 사유 배지(<code>ZERO_QUANTITY</code> 등)</td></tr>
+          <tr><td>빈 목록</td><td>“종목분석에서 매매 설정을 눌러 계획을 만드세요” + 이동 버튼</td></tr>
+        </tbody>
+      </table></div>
+
+      <h5>필요한 서버 작업</h5>
+      <ul>
+        <li><code>analysis_pick.owner_user_id</code> 를 <b>쓰기 경로</b>까지 확장 — 지금은 조회 필터만 적용된다</li>
+        <li>사용자별 스케줄러 실행 단위(운영 계좌 사이클과 분리)</li>
+        <li><code>plan=paid</code> 를 요구하는 권한 판정 — 현재 <code>is_allowed()</code> 는 <code>role</code> 만 본다</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- PAY-03 / PAY-04 -->
+  <div class="screen">
+    <header>
+      <span class="id">PAY-03</span><span class="nm">내 보유 · 체결</span>
+      <span class="pt">/my/orders</span><span class="sp"></span><span class="b b-warn">서버 미구현</span>
+    </header>
+    <div class="body">
+      <p>내 계좌의 보유 종목과 주문·체결 내역. 운영자 <code>주문 · 체결</code> 화면과 동일한 표 구조를 쓰되 <strong>데이터 범위만 내 계좌</strong>다.</p>
+      <div class="tw"><table>
+        <thead><tr><th>블록</th><th>내용</th><th>비고</th></tr></thead>
+        <tbody>
+          <tr><td>보유 종목</td><td>종목 · 수량 · 평단 · 현재가 · 평가손익 · 손절가</td><td>손절가는 <code>effective_stop_price()</code> 결과 그대로</td></tr>
+          <tr><td>미체결</td><td>주문번호 · 종목 · 수량 · 지정가 · 경과</td><td>취소 버튼은 <b>내 주문만</b></td></tr>
+          <tr><td>체결 내역</td><td>일자 · 종목 · 매수/매도 · 수량 · 체결가 · 사유</td><td>KST 일자 기준</td></tr>
+        </tbody>
+      </table></div>
+      <h5>필요한 서버 작업</h5>
+      <ul>
+        <li><code>order_log</code> 에 사용자 구분 컬럼 추가 (현재는 운영 계좌 전용 감사 로그)</li>
+        <li>사용자별 브로커 어댑터 인스턴스 — 계좌별 토큰 캐시 분리</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="screen">
+    <header>
+      <span class="id">PAY-04</span><span class="nm">내 성과 · 리스크</span>
+      <span class="pt">/my/risk</span><span class="sp"></span><span class="b b-warn">서버 미구현</span>
+    </header>
+    <div class="body">
+      <p>내 계좌의 수익률·MDD 와 <strong>개인 한도·개인 킬스위치</strong>.</p>
+      <div class="tw"><table>
+        <thead><tr><th>블록</th><th>내용</th></tr></thead>
+        <tbody>
+          <tr><td>성과 요약</td><td>기간 수익률 · 최대 낙폭(MDD) · 승률 · 거래 수</td></tr>
+          <tr><td>자산 추이</td><td>일별 총자산 곡선</td></tr>
+          <tr><td>개인 한도</td><td>단일 종목 최대 · 총 노출 한도 · 일 손실 한도 — <code>SET-01</code> 과 같은 값을 편집</td></tr>
+          <tr><td>개인 킬스위치</td><td>현재 상태 · 즉시 중지 · 해제(확인 필요) · 발동 이력</td></tr>
+        </tbody>
+      </table></div>
+
+      <div class="note danger">
+        <span class="t">운영자 킬스위치와 다른 스위치다</span>
+        <p>
+          <code>risk/manager.py</code> 의 킬스위치는 <strong>전역 1개</strong>이며 운영 계좌를
+          멈춘다. 유료 사용자의 개인 킬스위치는 <b>자기 계좌만</b> 멈춘다. 화면 문구와 서버
+          구현 모두에서 이 둘을 섞지 않는다 — 섞이면 한 사용자가 전체를 멈출 수 있다.
+        </p>
+      </div>
+
+      <h5>필요한 서버 작업</h5>
+      <ul>
+        <li>사용자별 킬스위치 상태·이력 (현재 <code>kill_switch_log</code> 는 전역)</li>
+        <li>사용자별 노출 한도 판정 — 주문 제출 경로에서 개인 한도를 먼저 본다</li>
+        <li>사용자별 <code>portfolio_snapshot</code> — 성과·MDD 계산의 입력</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════ 8 ══════════════════════════ -->
+<section id="s8">
+  <h2 class="sec">8</h2>
+  <h3>흐름도</h3>
+
+  <figure class="flow">
+    <pre class="mermaid">
+flowchart TD
+    R["요청 도착"] --> A{"MAPS_AUTH_ENABLED?"}
+    A -- "false (로컬·테스트)" --> ADM["관리자로 통과"]
+    A -- "true" --> P{"공개 경로인가?<br/>/login /logout /health<br/>/favicon.ico<br/>/api/telegram/webhook<br/>/api/v1/mobile/login<br/>/static/"}
+    P -- "예" --> PASS1["인증 없이 통과"]
+    P -- "아니오" --> S{"세션 쿠키 또는<br/>Bearer 토큰에서<br/>username 확보"}
+    S -- "없음" --> E401["401<br/>화면: /login?next= 로 303<br/>API: JSON"]
+    S -- "있음" --> DB["DB에서 계정 재조회<br/>status=active 인가?<br/>role 은 무엇인가?"]
+    DB -- "없음·비활성" --> E401
+    DB -- "활성" --> G{"is_allowed(role, path, method)"}
+    G -- "허용목록에 없음" --> E403["403<br/>화면: 권한 거부<br/>API: JSON"]
+    G -- "메서드 불일치" --> E403
+    G -- "허용" --> PASS2["라우터로 전달<br/>request.state.user 설정"]
+    </pre>
+    <figcaption>
+      <b>흐름도 1 · 인증과 권한 판정.</b> 판정은 <code>auth_gate_middleware</code> 한 곳에서만
+      일어난다. 세 가지가 핵심이다 — 허용목록에 <b>없으면</b> 관리자 전용이라 새 라우터는
+      기본이 닫힘이고, 역할을 토큰에 굽지 않고 <b>매 요청 DB에서 읽어</b> 비활성화가 즉시
+      반영되며, 상태를 바꾸는 동작이 모두 POST/PUT/DELETE 라서 GET만 열어도 조회 전용이 된다.
+    </figcaption>
+  </figure>
+
+  <figure class="flow">
+    <pre class="mermaid">
+flowchart LR
+    U["로그인한 계정"] --> R{"role"}
+    R -- "admin" --> M1["메뉴 24개<br/>운영·검증·모니터링 전체<br/>+ 회원 관리<br/>+ 내 계좌 연결"]
+    R -- "user" --> PL{"plan"}
+    PL -- "free" --> M2["메뉴 7개<br/>MAPS 소개 · 장세 · 후보<br/>· 종목분석 · 워치리스트<br/>· 매매기록 · 내 설정"]
+    PL -- "paid" --> M3["메뉴 11개<br/>무료 7개<br/>+ 내 계좌 4개"]
+    M1 --> L1["시작 화면 /dashboard"]
+    M2 --> L2["시작 화면 /stock-analysis"]
+    M3 --> L3["시작 화면 /my/trading"]
+    L1 --> LS["개인 설정 landing_screen 이<br/>있으면 그쪽이 우선"]
+    L2 --> LS
+    L3 --> LS
+    M2 -. "유료 경로 직접 접근" .-> UP["업그레이드 안내<br/>(403 아님)"]
+    </pre>
+    <figcaption>
+      <b>흐름도 2 · 등급 판정과 메뉴 구성.</b> 메뉴 집합은 <code>role</code> 과 <code>plan</code>
+      두 값에서만 나온다. 점선은 등급이 낮아 막히는 경로 — 권한 거부(403)와 달리
+      <b>무엇을 하면 쓸 수 있는지</b>를 안내한다.
+    </figcaption>
+  </figure>
+
+  <figure class="flow">
+    <pre class="mermaid">
+stateDiagram-v2
+    [*] --> 부트스트랩: 계정 0개 + .env 자격증명
+    부트스트랩 --> active: 관리자 1명 시드
+    [*] --> active: 관리자가 계정 생성
+    [*] --> pending: 자가 가입 신청 (2차)
+    pending --> active: 관리자 승인
+    active --> disabled: 비활성화
+    disabled --> active: 재활성화
+    active --> active: 비밀번호 변경(본인)
+    active --> active: 임시 비밀번호 재발급(관리자)
+    active --> active: 역할·요금제 변경(관리자)
+    disabled --> [*]: 삭제하지 않는다<br/>감사 이력 보존
+    note right of active
+      마지막 활성 관리자는
+      강등·비활성화 불가
+      (화면 비활성 + 서버 400)
+    end note
+    </pre>
+    <figcaption>
+      <b>흐름도 3 · 계정 생명주기.</b> 계정은 지우지 않고 <code>disabled</code> 로 남긴다 —
+      주문·분석 이력이 계정을 참조하기 때문이다. <code>pending</code> 은 2차 자가 가입을
+      위한 자리이며 현재 UI 로는 이 상태에 들어가지 않는다.
+    </figcaption>
+  </figure>
+
+  <figure class="flow">
+    <pre class="mermaid">
+flowchart TD
+    A["종목 분석<br/>일일 한도 검사"] -->|"한도 초과 → 429"| X1["실행 차단<br/>AI 호출 없음"]
+    A --> B["매매 설정"]
+    B --> C["안전 최대금액 계산<br/>현금·노출·한도 최솟값"]
+    C --> D["미리보기"]
+    D --> E{"차단 코드 있음?"}
+    E -- "GATE_OFF·DUPLICATE_ACTIVE_TICKER<br/>ZERO_QUANTITY 등" --> X2["무장 불가<br/>사유 표시"]
+    E -- "없음" --> F["무장 요청"]
+    F --> G["서버가 잔고·게이트·중복<br/>다시 검증"]
+    G --> H["ARMED"]
+    H --> I["스케줄러: 한 주기 한 회차 주문"]
+    I --> J["부분체결 누적"]
+    J --> K["BOUGHT"]
+    K --> L["목표·손절 감시"]
+    L --> M["CLOSED"]
+    H -. "픽 만료(신선도)" .-> X3["진입 차단<br/>BOUGHT 는 제외"]
+    K -. "추가매수 중지" .-> N["신규 진입만 멈춤<br/>보유 감시는 계속"]
+    </pre>
+    <figcaption>
+      <b>흐름도 4 · 자동매매 여정과 차단 지점.</b> 유료 사용자는 자기 계좌에서, 관리자는 운영
+      계좌에서 같은 모양의 흐름을 탄다(유료 경로는 <span class="b b-warn">서버 미구현</span>).
+      점선이 흐름을 멈추는 지점이며, <b>무장 요청 시점의 미리보기 결과를 믿지 않고</b>
+      서버가 최신 상태로 다시 검증하는 것이 핵심이다.
+    </figcaption>
+  </figure>
+
+  <figure class="flow">
+    <pre class="mermaid">
+flowchart TD
+    S["설정 변경 요청"] --> T{"어느 층인가?"}
+    T -- "개인 설정" --> P1{"본인인가?"}
+    P1 -- "예" --> P2["UserPreferences 검증<br/>모르는 키 → 422"]
+    P2 --> P3["app_user.preferences 저장"]
+    P3 --> P4["즉시 반영<br/>내 화면에만"]
+    T -- "개인 매매 설정" --> Q1{"plan=paid 인가?"}
+    Q1 -- "아니오" --> QX["업그레이드 안내"]
+    Q1 -- "예" --> P2
+    T -- "운영 설정" --> R1{"role=admin 인가?"}
+    R1 -- "아니오" --> RX["403"]
+    R1 -- "예" --> R2{"59개 허용목록에 있는 키인가?"}
+    R2 -- "아니오" --> R3["400<br/>임의 키 생성 불가"]
+    R2 -- "예" --> R4["타입·범위·열거값 검증"]
+    R4 --> R5{"위험 항목인가?"}
+    R5 -- "예" --> R6["2단계 확인<br/>확인 문구 일치 요구"]
+    R5 -- "아니오" --> R7
+    R6 --> R7[".env 원자적 교체<br/>권한 600 유지"]
+    R7 --> R8{"즉시 반영 가능?"}
+    R8 -- "예" --> R9["settings 객체 갱신"]
+    R8 -- "아니오" --> R10["재시작 안내 배너"]
+    R9 --> R11["감사 로그 기록<br/>비밀은 값 없이 '변경됨'"]
+    R10 --> R11
+    </pre>
+    <figcaption>
+      <b>흐름도 5 · 설정 변경.</b> 세 층이 같은 진입점을 쓰되 판정과 검증이 다르다. 운영 설정만
+      허용목록·위험 항목 확인·감사 로그를 거치며, 개인 설정은 본인 확인과 스키마 검증만으로
+      끝난다. 오른쪽 긴 경로가 지금 <span class="b b-warn">서버 미구현</span> 인 부분이다.
+    </figcaption>
+  </figure>
+</section>
+
+<!-- ══════════════════════════ 9 ══════════════════════════ -->
+<section id="s9">
+  <h2 class="sec">9</h2>
+  <h3>부록</h3>
+
+  <h4>A · 화면 24개 권한 매트릭스</h4>
+  <p><code>_SCREEN_MAP</code> 전 항목. 무료·유료에게 열린 7개 외에는 모두 관리자 전용이다.</p>
+  <div class="tw"><table>
+    <thead><tr><th>번호</th><th>화면 키</th><th>이름</th><th>경로</th><th>무료</th><th>유료</th><th>관리자</th></tr></thead>
+    <tbody>
+      <tr><td>01</td><td><code>dashboard</code></td><td>대시보드 홈</td><td><code>/dashboard</code></td><td>×</td><td>×</td><td>○</td></tr>
+      <tr><td>02</td><td><code>strategies</code></td><td>전략 관리</td><td><code>/strategies</code></td><td>×</td><td>×</td><td>○</td></tr>
+      <tr><td>03</td><td><code>market</code></td><td>장세/팩터</td><td><code>/market</code></td><td>○</td><td>○</td><td>○</td></tr>
+      <tr><td>04</td><td><code>candidates</code></td><td>종목 후보</td><td><code>/candidates</code></td><td>○</td><td>○</td><td>○</td></tr>
+      <tr><td>05</td><td><code>orders</code></td><td>주문/체결</td><td><code>/orders</code></td><td>×</td><td>×</td><td>○</td></tr>
+      <tr><td>06</td><td><code>risk</code></td><td>리스크/모니터</td><td><code>/risk</code></td><td>×</td><td>×</td><td>○</td></tr>
+      <tr><td>07</td><td><code>backtest</code></td><td>백테스트</td><td><code>/backtest</code></td><td>×</td><td>×</td><td>○</td></tr>
+      <tr><td>08</td><td><code>robustness</code></td><td>Trend Robustness</td><td><code>/robustness</code></td><td>×</td><td>×</td><td>○</td></tr>
+      <tr><td>09</td><td><code>trend-strength</code></td><td>TrendStrength Monitor</td><td><code>/trend-strength</code></td><td>×</td><td>×</td><td>○</td></tr>
+      <tr><td>10</td><td><code>research</code></td><td>Research Strategies</td><td><code>/research</code></td><td>×</td><td>×</td><td>○</td></tr>
+      <tr><td>11</td><td><code>wfa</code></td><td>Walk-Forward Report</td><td><code>/wfa</code></td><td>×</td><td>×</td><td>○</td></tr>
+      <tr><td>12</td><td><code>cost-sensitivity</code></td><td>Cost Sensitivity</td><td><code>/cost-sensitivity</code></td><td>×</td><td>×</td><td>○</td></tr>
+      <tr><td>13</td><td><code>live-monitor</code></td><td>Live Monitor</td><td><code>/live-monitor</code></td><td>×</td><td>×</td><td>○</td></tr>
+      <tr><td>14</td><td><code>data-quality</code></td><td>Data Quality</td><td><code>/data-quality</code></td><td>×</td><td>×</td><td>○</td></tr>
+      <tr><td>15</td><td><code>ops-config</code></td><td>Ops Config</td><td><code>/ops-config</code></td><td>×</td><td>×</td><td>○</td></tr>
+      <tr><td>16</td><td><code>stock-report</code></td><td>Stock Report</td><td><code>/stock-report</code></td><td>×</td><td>×</td><td>○</td></tr>
+      <tr><td>17</td><td><code>trade-review</code></td><td>거래 리뷰</td><td><code>/trade-review</code></td><td>×</td><td>×</td><td>○</td></tr>
+      <tr><td>18</td><td><code>stock-analysis</code></td><td>주식 종목 분석</td><td><code>/stock-analysis</code></td><td>○</td><td>○</td><td>○</td></tr>
+      <tr><td>19</td><td><code>analysis-picks</code></td><td>분석 워치리스트</td><td><code>/analysis-picks</code></td><td>○ 조회만</td><td>○ 조회만</td><td>○</td></tr>
+      <tr><td>20</td><td><code>blog</code></td><td>매매 기록</td><td><code>/blog</code></td><td>○</td><td>○</td><td>○</td></tr>
+      <tr><td>21</td><td><code>batch-monitor</code></td><td>배치 모니터</td><td><code>/batch-monitor</code></td><td>×</td><td>×</td><td>○</td></tr>
+      <tr><td>★</td><td><code>maps-intro</code></td><td>MAPS 소개</td><td><code>/maps-intro</code></td><td>○</td><td>○</td><td>○</td></tr>
+      <tr><td>⚙</td><td><code>settings</code></td><td>내 설정</td><td><code>/settings</code></td><td>○</td><td>○</td><td>○</td></tr>
+      <tr><td>👤</td><td><code>admin-users</code></td><td>회원 관리</td><td><code>/admin/users</code></td><td>×</td><td>×</td><td>○</td></tr>
+    </tbody>
+  </table></div>
+
+  <h4>B · 일반 사용자 허용목록 (<code>_USER_ALLOWED</code>)</h4>
+  <p>여기 <strong>없으면 관리자 전용</strong>이다. 판정은 접두사 일치 + 메서드 검사.</p>
+  <div class="tw"><table>
+    <thead><tr><th>경로</th><th>허용 메서드</th><th>비고</th></tr></thead>
+    <tbody>
+      <tr><td><code>/</code></td><td>GET</td><td>등급별 시작 화면으로 리다이렉트</td></tr>
+      <tr><td><code>/stock-analysis</code></td><td>GET</td><td>—</td></tr>
+      <tr><td><code>/candidates</code></td><td>GET</td><td>—</td></tr>
+      <tr><td><code>/market</code></td><td>GET</td><td>—</td></tr>
+      <tr><td><code>/analysis-picks</code></td><td>GET</td><td>—</td></tr>
+      <tr><td><code>/maps-intro</code></td><td>GET</td><td>—</td></tr>
+      <tr><td><code>/blog</code></td><td>GET</td><td>—</td></tr>
+      <tr><td><code>/settings</code></td><td>GET</td><td>—</td></tr>
+      <tr><td><code>/api/v1/stock-analysis</code></td><td>GET, POST</td><td>POST 는 분석 실행 — 일일 한도 적용</td></tr>
+      <tr><td><code>/api/v1/candidates</code></td><td>GET</td><td>—</td></tr>
+      <tr><td><code>/api/v1/market</code></td><td>GET</td><td>—</td></tr>
+      <tr><td><code>/api/v1/analysis-picks</code></td><td>GET</td><td><b>무장·중지는 POST → 자동 차단</b></td></tr>
+      <tr><td><code>/api/v1/blog</code></td><td>GET</td><td>—</td></tr>
+      <tr><td><code>/api/v1/users/me</code></td><td>GET, PUT, POST</td><td>본인 설정·비밀번호</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="note danger">
+    <span class="t">이 설계가 기대는 가정</span>
+    <p>
+      GET 만 열어도 조회 전용이 되는 이유는 <strong>상태를 바꾸는 동작이 전부
+      POST/PUT/DELETE</strong> 이기 때문이다. 조회용 POST 엔드포인트를 새로 만들면 이 가정이
+      깨진다 — 그런 엔드포인트가 필요하면 허용목록에 <b>넣지 말고</b> 별도 경로로 분리한다.
+    </p>
+  </div>
+
+  <h4>C · 회원 API</h4>
+  <div class="tw"><table>
+    <thead><tr><th>메서드</th><th>경로</th><th>권한</th><th>용도</th></tr></thead>
+    <tbody>
+      <tr><td>GET</td><td><code>/api/v1/users/me</code></td><td>본인</td><td>계정 + 해석된 설정 + 오늘 사용량</td></tr>
+      <tr><td>PUT</td><td><code>/api/v1/users/me/preferences</code></td><td>본인</td><td>개인 설정 저장</td></tr>
+      <tr><td>POST</td><td><code>/api/v1/users/me/password</code></td><td>본인</td><td>비밀번호 변경</td></tr>
+      <tr><td>GET</td><td><code>/api/v1/users</code></td><td>관리자</td><td>회원 목록</td></tr>
+      <tr><td>POST</td><td><code>/api/v1/users</code></td><td>관리자</td><td>계정 생성</td></tr>
+      <tr><td>PUT</td><td><code>/api/v1/users/{user_id}</code></td><td>관리자</td><td>역할·상태·요금제·한도 변경</td></tr>
+      <tr><td>POST</td><td><code>/api/v1/users/{user_id}/reset-password</code></td><td>관리자</td><td>임시 비밀번호 발급</td></tr>
+    </tbody>
+  </table></div>
+
+  <h4>D · 데이터 소유권</h4>
+  <div class="tw"><table>
+    <thead><tr><th>테이블</th><th>컬럼</th><th><code>NULL</code> 의 뜻</th><th>조회 규칙</th></tr></thead>
+    <tbody>
+      <tr><td><code>stock_analysis_history</code></td><td><code>owner_user_id</code></td><td>개인화 이전 운영자 데이터</td><td>일반 사용자는 자기 것만, 관리자는 전체</td></tr>
+      <tr><td><code>analysis_pick</code></td><td><code>owner_user_id</code></td><td>운영자(시스템) 픽 — 자동매매 대상</td><td>동일</td></tr>
+    </tbody>
+  </table></div>
+  <p>기존 행은 전부 <code>NULL</code> 이라 backfill 이 필요 없다. 일반 사용자에게는 보이지 않고 관리자에게는 그대로 보인다.</p>
+
+  <h4>E · 값 사전</h4>
+  <div class="tw"><table>
+    <thead><tr><th>구분</th><th>값</th><th>화면 표기</th></tr></thead>
+    <tbody>
+      <tr><td>역할 <code>role</code></td><td><code>admin</code> / <code>user</code></td><td>관리자 / 일반</td></tr>
+      <tr><td>상태 <code>status</code></td><td><code>active</code> / <code>pending</code> / <code>disabled</code></td><td>활성 / 승인대기 / 비활성</td></tr>
+      <tr><td>요금제 <code>plan</code></td><td><code>free</code> / <code>paid</code></td><td>무료 / 유료</td></tr>
+      <tr><td>픽 상태</td><td><code>WATCH</code> · <code>ARMED</code> · <code>BOUGHT</code> · <code>CLOSED</code> · <code>CANCELLED</code></td><td>관찰 / 무장 / 보유 / 종료 / 취소</td></tr>
+      <tr><td>회차 상태</td><td><code>PENDING</code> · <code>PARTIAL</code> · <code>FILLED</code> · <code>CANCELLED</code></td><td>대기 / 부분체결 / 체결 / 취소</td></tr>
+      <tr><td>차단 코드</td><td><code>GATE_OFF</code> · <code>DUPLICATE_ACTIVE_TICKER</code> · <code>INVALID_VALUE</code> · <code>INVALID_LEGS</code> · <code>INVALID_WEIGHTS</code> · <code>INVALID_PRICE_ORDER</code> · <code>INVALID_TICK</code> · <code>ZERO_QUANTITY</code></td><td>사유를 한국어 문장으로 풀어 표시</td></tr>
+    </tbody>
+  </table></div>
+
+  <h5>응답 코드와 화면 처리</h5>
+  <div class="tw"><table>
+    <thead><tr><th>코드</th><th>뜻</th><th>화면</th></tr></thead>
+    <tbody>
+      <tr><td>401</td><td>미인증 · 세션 만료</td><td>화면은 로그인으로 303, API 는 토스트 후 이동</td></tr>
+      <tr><td>403</td><td>권한 없음</td><td><code>AUTH-03</code> — 등급 부족과는 다른 화면</td></tr>
+      <tr><td>409</td><td>중복 (아이디 · 활성 종목)</td><td>인라인 오류 + 포커스</td></tr>
+      <tr><td>422</td><td>알 수 없는 설정 키</td><td>“저장할 수 없는 설정 항목이 있습니다.”</td></tr>
+      <tr><td>429</td><td>일일 분석 한도 초과</td><td>실행 차단 + 남은 시간·한도 안내</td></tr>
+    </tbody>
+  </table></div>
+
+  <h4>F · 비밀 항목 규칙</h4>
+  <p>
+    운영 설정 59개 중 <strong>15개가 비밀 항목</strong>이다 —
+    <code>MAPS_DB_URL</code>, <code>KIS_APP_KEY</code>, <code>KIS_APP_SECRET</code>,
+    <code>KIS_ACCOUNT_NO</code>, <code>KIWOOM_ACCOUNT_NO</code>, <code>KIWOOM_PASSWORD</code>,
+    <code>DART_API_KEY</code>, <code>AWS_ACCESS_KEY_ID</code>, <code>AWS_SECRET_ACCESS_KEY</code>,
+    <code>NAVER_CLIENT_ID</code>, <code>NAVER_CLIENT_SECRET</code>, <code>SLACK_WEBHOOK_URL</code>,
+    <code>TELEGRAM_BOT_TOKEN</code>, <code>TELEGRAM_WEBHOOK_SECRET</code>,
+    <code>MAPS_FCM_SERVICE_ACCOUNT_PATH</code>.
+  </p>
+  <ul>
+    <li>조회 시 <strong>마스킹</strong>해서 내려보낸다. 평문을 응답에 싣지 않는다.</li>
+    <li>저장 후 <strong>재열람 불가</strong> — 화면은 “다시 볼 수 없습니다”를 입력칸 옆에 표시한다.</li>
+    <li>감사 로그에는 값 없이 <b>변경됨</b>만 남긴다.</li>
+    <li>비밀번호·자격증명이 예외 메시지로 로그에 섞이지 않는지 확인한다(2026-08-11 실제 사고).</li>
+  </ul>
+
+  <h4>G · 이번 설계에 넣지 않은 것</h4>
+  <div class="tw"><table>
+    <thead><tr><th>항목</th><th>이유</th></tr></thead>
+    <tbody>
+      <tr><td>자가 가입 폼 · 이메일 인증 · 비밀번호 찾기</td><td>관리자 초대제로 시작한다. <code>pending</code> 상태만 미리 만들어 뒀다</td></tr>
+      <tr><td>개인 알림 실제 발송</td><td>설정 저장까지만 구현돼 있고 전송은 아직 전역 대상이다</td></tr>
+      <tr><td>결제 연동 · 구독 해지 · 환불</td><td>요금제 배지와 문의 자리만. 정책이 정해지면 별도 설계</td></tr>
+      <tr><td>일반 사용자 모바일 앱</td><td><code>/api/v1/mobile</code> 은 운영자 계좌를 반환한다. 1차는 관리자 전용</td></tr>
+      <tr><td>화면 24개 개별 상세 설계</td><td>권한 매트릭스까지만. 다음 단계</td></tr>
+    </tbody>
+  </table></div>
+
+  <h4>H · 구현 순서 제안</h4>
+  <ol>
+    <li><b>NAV-01/02</b> 역할별 메뉴 + 상단바 등급 배지 — 서버가 이미 있으므로 화면만</li>
+    <li><b>AUTH-01/02/03</b> 로그인·401·403 정리</li>
+    <li><b>SET-01</b> 내 설정 재구현(무료·관리자 섹션까지)</li>
+    <li><b>USR-01~04</b> 회원 관리 재구현</li>
+    <li><b>OPS-01/02/03</b> 설정 편집 — 서버 <code>PUT</code> + <code>ops_config_log</code> 신설</li>
+    <li><b>NAV-03 · PAY-01~04</b> 유료 등급 — <code>user_broker_account</code> 부터. 투자일임업 검토 선행</li>
+  </ol>
+</section>
+</main>
+</div>
