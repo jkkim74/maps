@@ -93,8 +93,12 @@ class LegacyFinalScoreCalculator:
             {"liquidity_score": 0.60, "trend_strength": 0.40},
         )
         bucket = f"({ts_bucket})" if ts_bucket else ""
+        measurements = ", ".join(
+            f"{name}={value:.1f}" for name, value in components.items()
+        )
         reason = (
-            f"legacy measured coverage={coverage:.2f}{bucket} = {round(base_score, 2):.2f}"
+            f"legacy: {measurements}; measured coverage={coverage:.2f}{bucket}"
+            f" = {round(base_score, 2):.2f}"
         )
         if ai_technical_score is not None:
             ai_score = _normalize(ai_technical_score)
@@ -246,8 +250,7 @@ class StrategyAwareScoreCalculator:
     ) -> str:
         """종목별 실측치로 근거 문자열을 만든다.
 
-        placeholder 마커 형식(``; neutral placeholders=a,b,c``)은 SectorScorer 와
-        동일한 규약 — 다이제스트가 이 접미사를 파싱해 "미측정" 목록을 노출한다.
+        미측정 컴포넌트는 중립값으로 채우지 않고 missing 목록으로 노출한다.
         """
         parts = ", ".join(
             f"{name}={components[name]:.1f}×{weights[name]:.2f}"

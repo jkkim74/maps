@@ -19,7 +19,7 @@ from maps.market.regime import (  # noqa: E402
 )
 
 
-def test_composite_scorer_returns_neutral_when_optional_data_missing() -> None:
+def test_composite_scorer_marks_optional_data_missing() -> None:
     result = MarketRegimeCompositeScorer().score(
         MarketRegimeInput(
             legacy_regime=RegimeLabel.MIXED.value,
@@ -30,9 +30,9 @@ def test_composite_scorer_returns_neutral_when_optional_data_missing() -> None:
 
     assert result.price_trend_score == 50.0
     assert result.volatility_score == 50.0
-    assert result.liquidity_score == 50.0
+    assert result.liquidity_score is None
     assert result.foreign_fx_score == 50.0
-    assert result.psychology_score == 50.0
+    assert result.psychology_score is None
     assert result.final_market_score == 50.0
     assert result.composite_regime == RegimeLabel.MIXED.value
 
@@ -55,9 +55,9 @@ def test_composite_renormalizes_over_measured_factors_only() -> None:
     assert result.composite_regime == RegimeLabel.WEAK.value
     assert "미측정 제외: liquidity,psychology" in result.reason
     assert "liquidity=" not in result.reason.split(";")[0]  # 실측 목록에 미측정이 없어야 함
-    # 표시 필드는 기존 호환을 위해 중립 50 유지
-    assert result.liquidity_score == 50.0
-    assert result.psychology_score == 50.0
+    # 표시 필드도 None을 유지해 실제 중립 50과 미측정을 구분한다.
+    assert result.liquidity_score is None
+    assert result.psychology_score is None
 
 
 def test_strong_legacy_regime_is_downgraded_when_liquidity_is_bad() -> None:

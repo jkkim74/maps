@@ -42,7 +42,9 @@ def test_breakout_prefers_high_liquidity_and_trend():
     )
 
     assert strong.final_score > weak.final_score
-    assert strong.component_scores["new_high_score"] == 95.0
+    assert "new_high_score" not in strong.component_scores
+    assert "new_high_score" in strong.missing_components
+    assert strong.score_ready is False
 
 
 def test_contrarian_quality_prefers_valuation_and_earnings_revision():
@@ -95,7 +97,7 @@ def test_legacy_reason_contains_per_ticker_measurements():
     assert f"{result.final_score:.2f}" in result.reason
 
 
-def test_strategy_aware_reason_lists_component_values_and_placeholders():
+def test_strategy_aware_reason_lists_component_values_and_missing_inputs():
     result = StrategyAwareScoreCalculator().calculate(
         StrategyScoreInput(
             strategy_type=StrategyType.PULLBACK,
@@ -106,12 +108,12 @@ def test_strategy_aware_reason_lists_component_values_and_placeholders():
     )
 
     assert "valuation_margin_score=55.0" in result.reason
-    # extra_scores 없이 중립 추정된 컴포넌트는 placeholder 마커에 나열돼야 한다
-    assert "neutral placeholders=" in result.reason
+    assert "partial coverage=0.15" in result.reason
+    assert "missing=" in result.reason
     assert "supply_demand_score" in result.reason
 
 
-def test_missing_strategy_components_use_neutral_scores():
+def test_missing_strategy_components_are_unavailable_not_neutral():
     result = StrategyAwareScoreCalculator().calculate(
         StrategyScoreInput(
             strategy_type=StrategyType.PULLBACK,
@@ -120,6 +122,8 @@ def test_missing_strategy_components_use_neutral_scores():
         )
     )
 
-    assert result.final_score == 60.0
-    assert result.component_scores["valuation_margin_score"] == 50.0
+    assert result.final_score == 50.0
+    assert result.component_scores == {}
     assert result.score_type == "STRATEGY_AWARE"
+    assert result.score_status == "unavailable"
+    assert result.score_ready is False

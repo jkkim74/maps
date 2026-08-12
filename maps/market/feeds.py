@@ -190,10 +190,10 @@ def _fetch_naver_headlines(settings: MapsSettings, ref_date: dt.date) -> list[di
             {"query": query, "display": settings.maps_market_news_query_limit, "sort": "date"}
         )
         request = urllib.request.Request(
-            f"https://openapi.naver.com/v1/search/news.json?{params}",
+            f"https://naverapihub.apigw.ntruss.com/search/v1/news?{params}",
             headers={
-                "X-Naver-Client-Id": settings.naver_client_id,
-                "X-Naver-Client-Secret": settings.naver_client_secret,
+                "X-NCP-APIGW-API-KEY-ID": settings.naver_client_id,
+                "X-NCP-APIGW-API-KEY": settings.naver_client_secret,
                 "User-Agent": "MAPS/1.0",
             },
         )
