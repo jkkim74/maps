@@ -5,7 +5,7 @@ import json
 import urllib.request
 
 from maps.common.settings import MapsSettings
-from maps.market.feeds import _fetch_naver_headlines
+from maps.market.feeds import _fetch_naver_headlines, _reconcile_news_counts
 
 
 class _Response:
@@ -60,3 +60,20 @@ def test_fetch_naver_headlines_uses_api_hub_endpoint_and_headers(monkeypatch) ->
         assert request.get_header("X-ncp-apigw-api-key-id") == "client-id"
         assert request.get_header("X-ncp-apigw-api-key") == "client-secret"
         assert request.get_header("X-naver-client-id") is None
+
+
+def test_reconcile_news_counts_preserves_proportions_and_exact_total() -> None:
+    """Small model arithmetic drift must not discard an otherwise valid score."""
+    result: dict[str, object] = {
+        "positive_count": 72,
+        "neutral_count": 15,
+        "negative_count": 12,
+    }
+
+    _reconcile_news_counts(result, 100)
+
+    assert result == {
+        "positive_count": 73,
+        "neutral_count": 15,
+        "negative_count": 12,
+    }

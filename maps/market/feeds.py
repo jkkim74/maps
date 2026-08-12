@@ -180,6 +180,29 @@ def _clean_text(value: str) -> str:
     return html.unescape(_TAG_RE.sub("", value or "")).strip()
 
 
+def _reconcile_news_counts(result: dict[str, object], article_count: int) -> None:
+    """Scale valid model counts to the exact article total without another AI call."""
+    keys = ("positive_count", "neutral_count", "negative_count")
+    raw = {key: int(result[key]) for key in keys}
+    total = sum(raw.values())
+    if article_count <= 0 or total <= 0 or any(value < 0 for value in raw.values()):
+        raise RuntimeError("bedrock_news_counts_invalid")
+    if total == article_count:
+        return
+    scaled = {key: raw[key] * article_count / total for key in keys}
+    normalized = {key: int(scaled[key]) for key in keys}
+    remaining = article_count - sum(normalized.values())
+    fractions = sorted(
+        keys,
+        key=lambda name: scaled[name] - normalized[name],
+        reverse=True,
+    )
+    for key in fractions[:remaining]:
+        normalized[key] += 1
+    result.update(normalized)
+    logger.warning("Reconciled Bedrock news counts %s to %s", raw, normalized)
+
+
 def _fetch_naver_headlines(settings: MapsSettings, ref_date: dt.date) -> list[dict[str, str]]:
     """Fetch and de-duplicate Naver news snippets published on the KST date."""
     if not settings.naver_client_id or not settings.naver_client_secret:
@@ -265,6 +288,7 @@ def _score_news(settings: MapsSettings, headlines: list[dict[str, str]]) -> dict
     result["input_tokens"] = int(usage.get("input_tokens", 0))
     result["output_tokens"] = int(usage.get("output_tokens", 0))
     result["model_id"] = scorer.model_id
+    _reconcile_news_counts(result, len(headlines))
     if sum(int(result[key]) for key in ("positive_count", "neutral_count", "negative_count")) != len(headlines):
         raise RuntimeError("bedrock_news_counts_invalid")
     result["score"] = _clamp(float(result["score"]))
