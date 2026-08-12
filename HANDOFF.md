@@ -1,5 +1,39 @@
 # HANDOFF
 
+## 8/12 종목분석 이력·현재가 갱신·전략매매 UX 구현 완료
+
+- 작업 브랜치 `feat/stock-analysis-history`에서 설계·계획의 7개 작업을 구현했다. 로컬 브랜치는
+  원격 `origin/feat/stock-analysis-history`보다 7커밋 앞서 있으며 **push·master 병합·운영 배포는
+  하지 않았다.** 운영 서버는 여전히 아래 8/11 절의 `3e7a153` / migration `0021` 상태다.
+- 신규 `StockAnalysisHistory`와 migration **`0022_stock_analysis_history`**를 추가했다. 같은 종목을
+  반복 분석해도 매번 새 행을 추가하며 `snapshot`, AI 원고, 구조화 `trade_plan`, 분석 당시 가격은
+  생성 후 바꾸지 않는다. 현재가 갱신은 `latest_*`와 `price_refreshed_at`만 변경한다.
+- SSE와 단일 응답 분석은 완료 시 이력을 정확히 한 번 저장한다. SSE 저장만 실패하면 분석 결과는
+  계속 표시하고 `history_error`를 전달한다. 목록은 최신순 경량 응답, 상세는 저장 원본 전체를
+  반환한다. 현재가는 브로커를 우선하고 실패 시 최신 OHLCV로 폴백하며 두 소스 모두 없으면 기존값을
+  보존한 채 503을 반환한다.
+- 독립 종목분석 화면에 이력 목록·상세·재분석을 연결했다. 상세는 저장된 분석과 매매가격을 먼저
+  복원한 뒤 현재가·등락·계획 가격 거리를 비동기 갱신한다. 분석 시각은 DB의 UTC naive 값을 API에서
+  명시적 UTC로 보정해 브라우저 KST 표시가 9시간 어긋나지 않게 했다.
+- 전략매매 입력을 공통 행(시장/총액/목표/손절)과 진입가 행(1/2/3차)으로 분리했다. 분석 종목의
+  KOSPI/KOSDAQ 시장도 팝업에 복원한다. `/trade-limits`가 예산 없이 현재 계좌의 안전 최대금액과
+  최소 주문가능 금액을 계산하며, 매매 방식·가격 선택 후 총액과 preview를 자동 채운다. 입력이
+  바뀌면 이전 preview와 무장 상태를 즉시 무효화하고 최종 `/arm-plan`은 최신 계좌·게이트·중복·한도를
+  다시 검증한다.
+- 구현 커밋: `1f3656d`(schema), `b27aeb2`(history API), `5c8dff8`(analysis persistence),
+  `143168c`(history UI), `e3e78b3`(budget-free limits), `50cde5e`(auto budget/layout),
+  `be946f8`(UTC/market review fix).
+- 검증:
+  - 집중 스위트 **81 passed**(경고 12건)
+  - 전체 Python **803 passed**(경고 22건)
+  - `node --check static/js/stock-analysis.js`, `git diff --check` 통과
+  - 인메모리 SQLite·Mock 브로커 앱 스모크: `/stock-analysis` 200, 동일 ticker 이력 2건 최신순,
+    저장 상세·trade plan 복원, 현재가 72,000원/기준종가 70,000원 갱신, `/trade-limits` 무쓰기 확인
+  - jsdom 상호작용 스모크: 저장 상세 복원 → 3분할 선택 → 안전금액 10,000,000원 자동입력 →
+    preview 자동 호출 → 최종 무장 버튼 활성화 확인
+- 배포 시 PostgreSQL 전체 백업 후 `alembic upgrade head`로 `0022_stock_analysis_history`를 적용하고,
+  운영 KIS/Bedrock 환경에서 분석 1회 저장·현재가 오버레이·재분석 2행 누적을 별도 확인해야 한다.
+
 ## 8/11 종목분석 이력·현재가 갱신·전략매매 UX — 설계·계획 완료
 
 - 작업 브랜치: `feat/stock-analysis-history`, 격리 worktree:
