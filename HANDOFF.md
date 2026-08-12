@@ -2,9 +2,8 @@
 
 ## 8/12 종목분석 이력·현재가 갱신·전략매매 UX 구현 완료
 
-- 작업 브랜치 `feat/stock-analysis-history`에서 설계·계획의 7개 작업을 구현했다. 로컬 브랜치는
-  원격 `origin/feat/stock-analysis-history`보다 7커밋 앞서 있으며 **push·master 병합·운영 배포는
-  하지 않았다.** 운영 서버는 여전히 아래 8/11 절의 `3e7a153` / migration `0021` 상태다.
+- 작업 브랜치 `feat/stock-analysis-history`에서 설계·계획의 7개 작업을 구현하고 원격 push,
+  `master` fast-forward 병합, 운영 배포까지 완료했다. 기능 배포 커밋은 `1b2903a`다.
 - 신규 `StockAnalysisHistory`와 migration **`0022_stock_analysis_history`**를 추가했다. 같은 종목을
   반복 분석해도 매번 새 행을 추가하며 `snapshot`, AI 원고, 구조화 `trade_plan`, 분석 당시 가격은
   생성 후 바꾸지 않는다. 현재가 갱신은 `latest_*`와 `price_refreshed_at`만 변경한다.
@@ -31,8 +30,14 @@
     저장 상세·trade plan 복원, 현재가 72,000원/기준종가 70,000원 갱신, `/trade-limits` 무쓰기 확인
   - jsdom 상호작용 스모크: 저장 상세 복원 → 3분할 선택 → 안전금액 10,000,000원 자동입력 →
     preview 자동 호출 → 최종 무장 버튼 활성화 확인
-- 배포 시 PostgreSQL 전체 백업 후 `alembic upgrade head`로 `0022_stock_analysis_history`를 적용하고,
-  운영 KIS/Bedrock 환경에서 분석 1회 저장·현재가 오버레이·재분석 2행 누적을 별도 확인해야 한다.
+- 09:48 KST 운영 반영 완료: 배포 전 PostgreSQL custom-format 전체 백업
+  `/opt/maps/backups/maps-pre-stock-analysis-history-20260812-094730.dump`
+  (323,947,622 bytes, mode 600)을 만들고 `pg_restore -l` 검증을 통과했다. 운영 alembic은
+  **`0022_stock_analysis_history (head)`**, systemd `maps=active`, 내·외부 `/health` 200,
+  서버 tracked worktree clean이다. 신규 테이블 접근과 초기 이력 0건도 확인했다.
+- 실제 KIS/Bedrock 전체 분석 호출은 불필요한 운영 데이터·AI 비용을 만들지 않도록 배포 과정에서
+  실행하지 않았다. 다음 사용자의 정상 종목분석 1회 후 이력 1건 저장, 현재가 갱신, 재분석 2행
+  누적을 화면에서 확인하면 된다.
 
 ## 8/11 종목분석 이력·현재가 갱신·전략매매 UX — 설계·계획 완료
 
