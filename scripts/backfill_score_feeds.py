@@ -6,6 +6,10 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from maps.common.db import SessionLocal
 from maps.data.collector import DataCollector
