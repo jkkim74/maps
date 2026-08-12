@@ -1,5 +1,34 @@
 # HANDOFF
 
+## 8/12 시장·후보 점수 100% 실측 게이트 구현·운영 배포 완료
+
+- 문제 원인은 시장 종합점수의 미연결 유동성·투자심리를 중립값처럼 다루고 후보 전략 점수도
+  일부 입력을 추정값으로 채워, 표시 점수와 주문 가능 점수를 구분할 준비도 메타데이터가 없던
+  것이었다. 이제 측정값만 재정규화해 표시하되 `coverage/status/ready`, 측정·결측 항목과 출처를
+  시장 로그·후보 스냅샷·API·일일 다이제스트에 함께 저장한다.
+- 모든 자동 신규 BUY(후보 주문, 단일/분할 전략매매)와 전략 승격은 시장·후보 점수가 정확한
+  기준일에 100% 실측돼야 통과한다. SELL·손절·익절·기존 포지션 청산에는 이 게이트를 적용하지
+  않는다. 불완전 점수는 보이지만 주문에는 쓰이지 않는다.
+- pykrx 외국인·기관·개인 순매수, KRX OHLCV 시장 내부지표, Naver 공식 뉴스 검색, Bedrock 구조화
+  심리점수를 연결했다. 눌림목·돌파·멀티에셋 후보는 실제 OHLCV·수급·펀더멘털 컴포넌트를 쓰며,
+  없는 값은 중립 50으로 만들지 않는다. migration은 `0023_score_readiness_feeds`다.
+- 커밋은 `c892cf8`(기능)과 `db2ad4b`(독립 실행 가능한 수급 backfill)이며 master push 완료.
+  전체 Python **810 passed**(경고 22건), 신규 집중 테스트 5 passed, 빈 SQLite 전체 migration
+  0001→0023과 운영 PostgreSQL 0022→0023을 확인했다.
+- 운영 배포 전 custom-format 백업
+  `/opt/maps/backups/pre_score_readiness_20260812_140608.dump`(323,961,144 bytes, mode 600)을
+  생성했다. 앱 계정 권한이 없는 기존 임시 테이블 `order_log_backup_20260724`만 백업 대상에서
+  제외했다. 배포 중 첫 안전중단 뒤 `create_all`이 미리 만든 신규 피드 테이블 두 개는 모두 0행임을
+  확인하고 제거한 뒤 Alembic으로 재생성했다. 운영은 HEAD `db2ad4b`, Alembic `0023 (head)`,
+  systemd `maps=active`, `/health` ok, 배포 후 ERROR/Traceback 0건이다.
+- 최근 수급 backfill은 8/3~8/11 7영업일 **18,461건** 저장했다. 8/12는 장 마감 전이라 수급이
+  비어 정상적으로 실패 기록만 남겼다. Bedrock 자격증명은 준비돼 있지만 Naver Search API
+  `NAVER_CLIENT_ID`/`NAVER_CLIENT_SECRET`은 아직 없다. 뉴스 심리는 `failed`, 최신 시장 점수는
+  `unavailable`, `ready=false`이므로 현재 신규 BUY·승격은 의도대로 차단 상태다.
+- 다음 작업은 Naver 자격증명을 `/opt/maps/.env`에 안전하게 설정한 뒤 당일 데이터 수집을 실행하고,
+  `market_news_sentiment.status=success`, 시장·후보 coverage 1.0, `score_ready=true`를 확인하는 것이다.
+  이 확인 전 눌림목 전략을 mock 후보로 올리거나 신규 주문 게이트를 끄면 안 된다.
+
 ## 8/12 종목분석 이력·현재가 갱신·전략매매 UX 구현 완료
 
 - 작업 브랜치 `feat/stock-analysis-history`에서 설계·계획의 7개 작업을 구현하고 원격 push,
