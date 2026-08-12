@@ -23,13 +23,15 @@ from maps.api.schemas import (
     AnalysisPickLegItem,
     AnalysisPicksResponse,
     AnalysisPickUpdate,
+    StrategyTradeLimitRequest,
+    StrategyTradeLimitResponse,
     StrategyTradePlanRequest,
     StrategyTradePlanResponse,
 )
 from maps.common.exceptions import BrokerAdapterError
 from maps.common.models import AnalysisPick, AnalysisPickLeg, HistoricalOHLCV, OrderLog
-from maps.common.settings import get_settings
-from maps.execution.broker_adapter import get_broker
+from maps.common.settings import MapsSettings, get_settings
+from maps.execution.broker_adapter import AccountBalance, get_broker
 from maps.execution.order_manager import OrderManager
 from maps.ops.pick_freshness import (
     is_pick_stale,
@@ -37,7 +39,11 @@ from maps.ops.pick_freshness import (
     pick_cutoff_date,
     pick_stale_reason,
 )
-from maps.ops.strategy_trade_plan import ValidatedTradePlan, validate_trade_plan
+from maps.ops.strategy_trade_plan import (
+    ValidatedTradePlan,
+    calculate_trade_limits,
+    validate_trade_plan,
+)
 from maps.risk.manager import RiskManager
 
 logger = logging.getLogger(__name__)
@@ -45,24 +51,34 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/analysis-picks", tags=["SCR-19 Analysis Picks"])
 
 
+def _trade_account_context(
+    ticker: str, db: Session
+) -> tuple[MapsSettings, AccountBalance, float, bool]:
+    """Load the current broker account and duplicate state once per request."""
+    settings = get_settings()
+    broker = get_broker(settings.maps_broker_mode)
+    account = broker.get_account_balance()
+    position = broker.get_position(ticker)
+    existing_position_value = float(position.market_value) if position is not None else 0.0
+    has_active_pick = (
+        db.query(AnalysisPick.id)
+        .filter(
+            AnalysisPick.ticker == ticker.strip(),
+            AnalysisPick.state.in_(["ARMED", "BOUGHT"]),
+        )
+        .first()
+        is not None
+    )
+    return settings, account, existing_position_value, has_active_pick
+
+
 def _validate_requested_plan(
     body: StrategyTradePlanRequest,
     db: Session,
 ) -> ValidatedTradePlan:
     """Refresh account and duplicate state, then run the shared pure validator."""
-    settings = get_settings()
-    broker = get_broker(settings.maps_broker_mode)
-    account = broker.get_account_balance()
-    position = broker.get_position(body.ticker)
-    existing_position_value = float(position.market_value) if position is not None else 0.0
-    has_active_pick = (
-        db.query(AnalysisPick.id)
-        .filter(
-            AnalysisPick.ticker == body.ticker,
-            AnalysisPick.state.in_(["ARMED", "BOUGHT"]),
-        )
-        .first()
-        is not None
+    settings, account, existing_position_value, has_active_pick = _trade_account_context(
+        body.ticker, db
     )
     return validate_trade_plan(
         body,
@@ -71,6 +87,25 @@ def _validate_requested_plan(
         existing_position_value=existing_position_value,
         has_active_pick=has_active_pick,
     )
+
+
+@router.post("/trade-limits", response_model=StrategyTradeLimitResponse)
+def trade_limits(
+    body: StrategyTradeLimitRequest,
+    db: Session = DbDep,
+) -> StrategyTradeLimitResponse:
+    """Calculate current safe limits without a budget or database write."""
+    settings, account, existing_position_value, has_active_pick = _trade_account_context(
+        body.ticker, db
+    )
+    limits = calculate_trade_limits(
+        body,
+        account=account,
+        settings=settings,
+        existing_position_value=existing_position_value,
+        has_active_pick=has_active_pick,
+    )
+    return StrategyTradeLimitResponse(**limits.model_dump())
 
 
 @router.post("/trade-preview", response_model=StrategyTradePlanResponse)

@@ -7,7 +7,12 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from maps.ops.strategy_trade_plan import StrategyTradePlanInput, ValidatedTradePlan
+from maps.ops.strategy_trade_plan import (
+    CalculatedTradeLimits,
+    StrategyTradeLimitInput,
+    StrategyTradePlanInput,
+    ValidatedTradePlan,
+)
 
 
 class AlertItem(BaseModel):
@@ -889,6 +894,14 @@ class StockAnalysisPriceOverlay(BaseModel):
 
 class StrategyTradePlanRequest(StrategyTradePlanInput):
     """Preview/final-arm request using the shared server-side contract."""
+
+
+class StrategyTradeLimitRequest(StrategyTradeLimitInput):
+    """Budget-free request for current strategy-trade limits."""
+
+
+class StrategyTradeLimitResponse(CalculatedTradeLimits):
+    """Current account limits without quantities or persistence."""
 
 
 class StrategyTradePlanResponse(ValidatedTradePlan):

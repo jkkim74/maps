@@ -63,6 +63,34 @@ def test_safe_budget_is_minimum_of_all_limits() -> None:
     assert plan.blocked is False
 
 
+def test_limits_do_not_require_total_budget() -> None:
+    """매수금액을 정하기 전에 현재 계좌의 안전 최대치를 계산한다."""
+    from maps.ops.strategy_trade_plan import (
+        StrategyTradeLimitInput,
+        calculate_trade_limits,
+    )
+
+    request = StrategyTradeLimitInput(**{
+        key: value
+        for key, value in _split_request().model_dump().items()
+        if key != "total_budget"
+    })
+    result = calculate_trade_limits(
+        request,
+        account=AccountBalance(
+            cash=12_500_000,
+            positions_value=50_000_000,
+            total_assets=100_000_000,
+        ),
+        settings=_settings(),
+        existing_position_value=0,
+    )
+
+    assert result.safe_max_amount == 10_000_000
+    assert result.minimum_orderable_amount == 233_334
+    assert result.blocked is False
+
+
 def test_safe_budget_reports_all_relevant_blocker_codes() -> None:
     from maps.ops.strategy_trade_plan import validate_trade_plan
 

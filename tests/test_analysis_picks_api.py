@@ -659,6 +659,23 @@ def test_trade_preview_is_read_only_and_returns_safe_budget(client, monkeypatch)
     assert client.get("/api/v1/analysis-picks").json()["total"] == 0
 
 
+def test_trade_limits_calculates_budget_without_writing(client, monkeypatch) -> None:
+    """예산 없는 한도 조회가 안전 최대치만 계산하고 픽을 만들지 않는다."""
+    import maps.api.analysis_picks as api
+
+    monkeypatch.setattr(api, "get_broker", lambda *args, **kwargs: _PlanBroker())
+    monkeypatch.setattr(api, "get_settings", lambda: _plan_settings())
+    payload = _trade_plan_payload()
+    payload.pop("total_budget")
+
+    response = client.post("/api/v1/analysis-picks/trade-limits", json=payload)
+
+    assert response.status_code == 200
+    assert response.json()["safe_max_amount"] == 10_000_000
+    assert response.json()["minimum_orderable_amount"] == 233_334
+    assert client.get("/api/v1/analysis-picks").json()["total"] == 0
+
+
 def test_arm_revalidates_gate_instead_of_trusting_preview(client, monkeypatch) -> None:
     import maps.api.analysis_picks as api
 

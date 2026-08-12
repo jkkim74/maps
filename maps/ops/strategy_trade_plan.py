@@ -21,7 +21,9 @@ class TradePlanLegInput(BaseModel):
     weight_pct: int
 
 
-class StrategyTradePlanInput(BaseModel):
+class StrategyTradeLimitInput(BaseModel):
+    """가격과 매매 방식만으로 안전 한도를 계산하는 입력."""
+
     model_config = ConfigDict(frozen=True)
 
     ticker: str
@@ -30,7 +32,6 @@ class StrategyTradePlanInput(BaseModel):
     ref_date: datetime.date
     source: str = "analyze"
     trade_mode: Literal["single", "split"]
-    total_budget: float
     entries: tuple[TradePlanLegInput, ...]
     target_price: float
     stop_price: float
@@ -45,6 +46,12 @@ class StrategyTradePlanInput(BaseModel):
         if len(ticker) != 6 or not ticker.isdigit():
             raise ValueError("ticker must be a six-digit KRX code")
         return ticker
+
+
+class StrategyTradePlanInput(StrategyTradeLimitInput):
+    """안전 한도에 실제 총 매수금액을 더한 preview/arm 입력."""
+
+    total_budget: float
 
 
 class ValidatedTradePlanLeg(BaseModel):
@@ -64,6 +71,18 @@ class TradePlanBlocker(BaseModel):
     message: str
 
 
+class CalculatedTradeLimits(BaseModel):
+    """예산 입력 전에 계산되는 계좌 기반 안전 한도."""
+
+    model_config = ConfigDict(frozen=True)
+
+    blocked: bool
+    blockers: tuple[TradePlanBlocker, ...]
+    limits: dict[str, float]
+    safe_max_amount: float
+    minimum_orderable_amount: float
+
+
 class ValidatedTradePlan(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -76,7 +95,7 @@ class ValidatedTradePlan(BaseModel):
     legs: tuple[ValidatedTradePlanLeg, ...]
 
 
-def _minimum_cash_ratio(request: StrategyTradePlanInput, settings: MapsSettings) -> float:
+def _minimum_cash_ratio(request: StrategyTradeLimitInput, settings: MapsSettings) -> float:
     regime = (request.regime or "mixed").lower()
     if regime == "strong":
         return settings.maps_min_cash_ratio_strong
@@ -85,15 +104,15 @@ def _minimum_cash_ratio(request: StrategyTradePlanInput, settings: MapsSettings)
     return settings.maps_min_cash_ratio_mixed
 
 
-def validate_trade_plan(
-    request: StrategyTradePlanInput,
+def calculate_trade_limits(
+    request: StrategyTradeLimitInput,
     *,
     account: AccountBalance,
     settings: MapsSettings,
     existing_position_value: float,
     has_active_pick: bool = False,
-) -> ValidatedTradePlan:
-    """Calculate quantities and return every blocker without side effects."""
+) -> CalculatedTradeLimits:
+    """Calculate safe limits and blockers without requiring a total budget."""
     blockers: list[TradePlanBlocker] = []
 
     def block(code: str, message: str) -> None:
@@ -120,8 +139,14 @@ def validate_trade_plan(
         request.target_price,
         request.stop_price,
     ]
+    account_values = (
+        float(account.cash),
+        float(account.positions_value),
+        float(account.total_value),
+        float(existing_position_value),
+    )
     if (
-        request.total_budget <= 0
+        any(not math.isfinite(value) for value in account_values)
         or account.cash < 0
         or account.positions_value < 0
         or account.total_value <= 0
@@ -146,15 +171,25 @@ def validate_trade_plan(
     if not ordered:
         block("INVALID_PRICE_ORDER", "목표가 > 진입가 순서 > 손절가여야 합니다.")
 
-    total_value = max(float(account.total_value), 0.0)
-    broker_cash = max(float(account.cash), 0.0)
+    total_value = max(float(account.total_value), 0.0) if math.isfinite(account.total_value) else 0.0
+    broker_cash = max(float(account.cash), 0.0) if math.isfinite(account.cash) else 0.0
+    positions_value = (
+        max(float(account.positions_value), 0.0)
+        if math.isfinite(account.positions_value)
+        else 0.0
+    )
+    existing_value = (
+        max(float(existing_position_value), 0.0)
+        if math.isfinite(existing_position_value)
+        else 0.0
+    )
     single_exposure = max(
-        total_value * settings.max_single_exposure - existing_position_value,
+        total_value * settings.max_single_exposure - existing_value,
         0.0,
     )
     portfolio_capacity = max(
         total_value * (1.0 - _minimum_cash_ratio(request, settings))
-        - float(account.positions_value),
+        - positions_value,
         0.0,
     )
     risk_fraction = 0.0
@@ -177,11 +212,55 @@ def validate_trade_plan(
     }
     safe_max_amount = min(limits.values())
 
+    orderable = [
+        math.ceil(leg.entry_price * 100.0 / leg.weight_pct)
+        for leg in legs
+        if leg.entry_price > 0
+        and math.isfinite(leg.entry_price)
+        and leg.weight_pct > 0
+    ]
+    minimum_orderable_amount = float(max(orderable, default=0))
+    return CalculatedTradeLimits(
+        blocked=bool(blockers),
+        blockers=tuple(blockers),
+        limits=limits,
+        safe_max_amount=safe_max_amount,
+        minimum_orderable_amount=minimum_orderable_amount,
+    )
+
+
+def validate_trade_plan(
+    request: StrategyTradePlanInput,
+    *,
+    account: AccountBalance,
+    settings: MapsSettings,
+    existing_position_value: float,
+    has_active_pick: bool = False,
+) -> ValidatedTradePlan:
+    """Add budget and quantities to the shared safe-limit calculation."""
+    calculated = calculate_trade_limits(
+        request,
+        account=account,
+        settings=settings,
+        existing_position_value=existing_position_value,
+        has_active_pick=has_active_pick,
+    )
+    blockers = list(calculated.blockers)
+
+    def block(code: str, message: str) -> None:
+        if not any(item.code == code for item in blockers):
+            blockers.append(TradePlanBlocker(code=code, message=message))
+
+    valid_budget = math.isfinite(request.total_budget) and request.total_budget > 0
+    if not valid_budget:
+        block("INVALID_VALUE", "금액과 가격은 유한한 양수여야 합니다.")
+
+    legs = tuple(sorted(request.entries, key=lambda item: item.sequence))
     validated_legs: list[ValidatedTradePlanLeg] = []
     for leg in legs:
         planned_qty = (
             math.floor(request.total_budget * leg.weight_pct / 100.0 / leg.entry_price)
-            if request.total_budget > 0 and leg.entry_price > 0
+            if valid_budget and leg.entry_price > 0 and math.isfinite(leg.entry_price)
             else 0
         )
         if planned_qty <= 0:
@@ -196,19 +275,21 @@ def validate_trade_plan(
             )
         )
 
-    if request.total_budget > safe_max_amount:
+    if valid_budget and request.total_budget > calculated.safe_max_amount:
         block(
             "BUDGET_EXCEEDS_SAFE_MAX",
-            f"총 매수금액이 안전 최대금액 {safe_max_amount:,.0f}원을 초과합니다.",
+            f"총 매수금액이 안전 최대금액 {calculated.safe_max_amount:,.0f}원을 초과합니다.",
         )
 
     planned_order_amount = sum(leg.order_amount for leg in validated_legs)
     return ValidatedTradePlan(
         blocked=bool(blockers),
         blockers=tuple(blockers),
-        limits=limits,
-        safe_max_amount=safe_max_amount,
-        expected_remaining_cash=max(broker_cash - planned_order_amount, 0.0),
+        limits=calculated.limits,
+        safe_max_amount=calculated.safe_max_amount,
+        expected_remaining_cash=max(
+            calculated.limits["broker_cash"] - planned_order_amount, 0.0
+        ),
         planned_order_amount=planned_order_amount,
         legs=tuple(validated_legs),
     )
