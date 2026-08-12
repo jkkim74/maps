@@ -104,13 +104,21 @@
       <label><input type="radio" name="sa-trade-mode" value="split" onchange="onTradeModeChange()"> 3분할매매 (30/30/40)</label>
     </fieldset>
 
-    <div class="sa-trade-fields">
+    <div class="sa-trade-common-fields">
       <label>시장
         <select id="sa-plan-market"><option>KOSPI</option><option>KOSDAQ</option></select>
       </label>
       <label>총 매수금액
-        <input id="sa-plan-budget" type="number" min="1" step="1" placeholder="예: 9900000">
+        <input id="sa-plan-budget" type="number" min="1" step="1">
       </label>
+      <label>목표가
+        <input id="sa-plan-target" type="number" min="1" step="1">
+      </label>
+      <label>손절가
+        <input id="sa-plan-stop" type="number" min="1" step="1">
+      </label>
+    </div>
+    <div class="sa-trade-entry-fields">
       <label>1차 진입가 <small id="sa-weight-1"></small>
         <input id="sa-entry-1" type="number" min="1" step="1">
       </label>
@@ -120,16 +128,9 @@
       <label class="sa-split-only">3차 진입가 <small>40%</small>
         <input id="sa-entry-3" type="number" min="1" step="1">
       </label>
-      <label>목표가
-        <input id="sa-plan-target" type="number" min="1" step="1">
-      </label>
-      <label>손절가
-        <input id="sa-plan-stop" type="number" min="1" step="1">
-      </label>
     </div>
 
     <div class="sa-trade-actions">
-      <button type="button" class="topbar-btn" onclick="previewTradeSetup()">안전한도 계산</button>
       <button id="sa-arm-trade" type="button" class="topbar-btn" disabled onclick="armTradePlan()">매매 실행·즉시 무장</button>
     </div>
     <div id="sa-trade-validation" class="sa-trade-validation"></div>

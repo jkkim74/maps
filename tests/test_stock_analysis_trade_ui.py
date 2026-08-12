@@ -84,3 +84,27 @@ def test_stock_analysis_page_exposes_persistent_history() -> None:
     assert "refresh-price" in script
     assert "reanalyzeHistory" in script
     assert 'id="r-price-updated"' in PANEL.read_text(encoding="utf-8")
+
+
+def test_split_entries_have_a_dedicated_stable_row() -> None:
+    """숨김 분할 필드가 공통 입력의 그리드 배치를 밀지 않는다."""
+    panel = PANEL.read_text(encoding="utf-8")
+    css = STYLE.read_text(encoding="utf-8")
+
+    assert 'class="sa-trade-common-fields"' in panel
+    assert 'class="sa-trade-entry-fields"' in panel
+    assert ".sa-trade-entry-fields" in css
+    assert "repeat(3,minmax(0,1fr))" in css
+
+
+def test_mode_selection_calculates_and_applies_safe_budget() -> None:
+    """매매 방식 선택 후 서버 한도를 먼저 구해 예산과 preview를 자동 설정한다."""
+    panel = PANEL.read_text(encoding="utf-8")
+    script = SCRIPT.read_text(encoding="utf-8")
+
+    assert "/api/v1/analysis-picks/trade-limits" in script
+    assert "_refreshTradeLimits" in script
+    assert ".max =" in script
+    assert "safe_max_amount" in script
+    assert "minimum_orderable_amount" in script
+    assert "안전한도 계산" not in panel

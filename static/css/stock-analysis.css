@@ -130,10 +130,13 @@
 .sa-trade-modes{display:flex;gap:20px;border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin:0 0 14px}
 .sa-trade-modes legend{padding:0 6px;font-size:.78rem;color:var(--text-muted)}
 .sa-trade-modes label{font-size:.85rem;cursor:pointer}
-.sa-trade-fields{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
-.sa-trade-fields label{display:flex;flex-direction:column;gap:5px;font-size:.75rem;color:var(--text-muted)}
-.sa-trade-fields small{color:var(--accent)}
-.sa-trade-fields input,.sa-trade-fields select{width:100%;box-sizing:border-box;padding:8px 9px;
+.sa-trade-common-fields{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+.sa-trade-entry-fields{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:12px}
+.sa-trade-common-fields label,.sa-trade-entry-fields label{display:flex;flex-direction:column;gap:5px;
+  font-size:.75rem;color:var(--text-muted)}
+.sa-trade-common-fields small,.sa-trade-entry-fields small{color:var(--accent)}
+.sa-trade-common-fields input,.sa-trade-common-fields select,
+.sa-trade-entry-fields input{width:100%;box-sizing:border-box;padding:8px 9px;
   border:1px solid var(--border);border-radius:6px;background:var(--bg-card);color:var(--text-primary)}
 .sa-split-only{display:none}
 .sa-trade-actions{display:flex;justify-content:flex-end;gap:8px;margin:18px 0 12px}
@@ -149,7 +152,8 @@
 
 @media (max-width:760px){
   .sa-grid2,.sa-grid4{grid-template-columns:1fr}
-  .sa-trade-fields{grid-template-columns:1fr 1fr}
+  .sa-trade-common-fields{grid-template-columns:1fr 1fr}
+  .sa-trade-entry-fields{grid-template-columns:1fr}
   .sa-analysis-trade-plan{grid-template-columns:1fr 1fr}
   .sa-trade-limits{grid-template-columns:1fr 1fr}
   .sa-trade-entry,.sa-trade-modes{align-items:flex-start;flex-direction:column}
