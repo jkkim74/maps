@@ -9,6 +9,17 @@
   background:var(--bg-card);color:var(--text-primary);font-size:1rem}
 .sa-search-bar input:focus{outline:none;border-color:var(--accent)}
 
+/* ── 분석 이력 ── */
+.sa-history{margin-bottom:24px}
+.sa-history-status{font-size:.78rem;color:var(--text-muted);margin:8px 0}
+.sa-history-scroll{overflow-x:auto}
+.sa-history table{width:100%;min-width:860px;border-collapse:collapse;font-size:.78rem}
+.sa-history th,.sa-history td{padding:8px 10px;border-bottom:1px solid var(--border);text-align:left;white-space:nowrap}
+.sa-history th{color:var(--text-muted);font-weight:600}
+.sa-history .mono{text-align:right;font-variant-numeric:tabular-nums}
+.sa-history-actions{display:flex;gap:6px}
+.sa-history-actions .topbar-btn{padding:4px 8px;font-size:.72rem}
+
 /* ── 진행률 패널 ── */
 .sa-progress-panel{background:var(--bg-card);border:1px solid var(--border);border-radius:10px;
   padding:20px 24px;margin-bottom:24px;display:none}
@@ -34,6 +45,10 @@
 .sa-result{display:none}
 .sa-hero{display:flex;align-items:baseline;gap:12px;margin-bottom:4px}
 .sa-price{font-size:2rem;font-weight:700;color:var(--text-primary)}
+.sa-price-updated{font-size:.75rem;color:var(--text-muted);margin-top:4px}
+.sa-price-distances{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.sa-price-distances span{padding:3px 7px;border:1px solid var(--border);border-radius:999px;
+  color:var(--text-muted);font-size:.7rem;font-variant-numeric:tabular-nums}
 .sa-change-pos{color:#4caf50;font-size:1.1rem;font-weight:600}
 .sa-change-neg{color:#f44336;font-size:1.1rem;font-weight:600}
 .sa-change-neu{color:var(--text-muted);font-size:1.1rem}
@@ -138,4 +153,5 @@
   .sa-analysis-trade-plan{grid-template-columns:1fr 1fr}
   .sa-trade-limits{grid-template-columns:1fr 1fr}
   .sa-trade-entry,.sa-trade-modes{align-items:flex-start;flex-direction:column}
+  .sa-history-scroll{max-width:100%}
 }

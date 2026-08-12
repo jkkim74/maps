@@ -14,6 +14,22 @@
   <button class="topbar-btn" id="sa-btn" onclick="runAnalysis()">▶ 분석</button>
 </div>
 
+<div id="sa-history-section" class="card sa-history">
+  <div class="card-body">
+    <div class="section-title">분석 이력</div>
+    <div id="sa-history-status" class="sa-history-status"></div>
+    <div class="sa-history-scroll">
+      <table>
+        <thead><tr>
+          <th>분석 시각</th><th>종목</th><th>의견</th><th>분석 당시</th>
+          <th>현재가</th><th>가격 확인</th><th>동작</th>
+        </tr></thead>
+        <tbody id="sa-history-body"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
 {% include "_stock_analysis_panel.html" %}
 
 {% endblock %}

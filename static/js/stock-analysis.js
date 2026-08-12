@@ -167,6 +167,126 @@ function resetStockAnalysisPanel() {
   _lastAnalysisTradePlan = null;
 }
 
+/* ── 저장된 분석 이력 ───────────────────────────────────── */
+function _formatHistoryTime(value) {
+  if (!value) return '—';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString('ko-KR');
+}
+
+function _historyCell(row, value, className = '') {
+  const cell = row.insertCell();
+  cell.textContent = value;
+  if (className) cell.className = className;
+  return cell;
+}
+
+async function loadAnalysisHistory() {
+  const body = _byId('sa-history-body');
+  const status = _byId('sa-history-status');
+  if (!body || !status) return;
+  status.textContent = '분석 이력을 불러오는 중입니다.';
+  try {
+    const result = await _tradeApi('/api/v1/stock-analysis/history?limit=50&offset=0', undefined, 'GET');
+    body.innerHTML = '';
+    result.items.forEach(item => {
+      const row = body.insertRow();
+      _historyCell(row, _formatHistoryTime(item.created_at));
+      _historyCell(row, `${item.name} (${item.ticker})`);
+      _historyCell(row, item.recommendation || '—');
+      _historyCell(row, item.analyzed_price ? _won(item.analyzed_price) : '—', 'mono');
+      _historyCell(row, item.latest_price ? _won(item.latest_price) : '—', 'mono');
+      _historyCell(row, _formatHistoryTime(item.price_refreshed_at));
+      const actions = row.insertCell();
+      actions.className = 'sa-history-actions';
+      const detail = document.createElement('button');
+      detail.type = 'button';
+      detail.className = 'topbar-btn';
+      detail.textContent = '상세';
+      detail.addEventListener('click', () => openAnalysisHistory(item.id));
+      const reanalyze = document.createElement('button');
+      reanalyze.type = 'button';
+      reanalyze.className = 'topbar-btn';
+      reanalyze.textContent = '재분석';
+      reanalyze.addEventListener('click', () => reanalyzeHistory(item.ticker));
+      actions.append(detail, reanalyze);
+    });
+    status.textContent = result.total ? `최근 ${result.items.length}건` : '저장된 분석 이력이 없습니다.';
+  } catch (error) {
+    status.textContent = `분석 이력을 불러오지 못했습니다: ${error.message}`;
+  }
+}
+
+function reanalyzeHistory(ticker) {
+  const input = _byId('sa-input');
+  if (input) input.value = ticker;
+  document.querySelector('.sa-search-bar')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  runStockAnalysis(ticker);
+}
+
+function _applyHistoryPrice(overlay) {
+  const price = _byId('r-price');
+  if (price) price.textContent = _won(overlay.current_price);
+  const change = _byId('r-change');
+  if (change) {
+    const pct = overlay.change_pct;
+    change.className = pct > 0 ? 'sa-change-pos' : pct < 0 ? 'sa-change-neg' : 'sa-change-neu';
+    change.textContent = pct === null || pct === undefined
+      ? '' : `${pct >= 0 ? '+' : ''}${Number(pct).toFixed(2)}%`;
+  }
+  const updated = _byId('r-price-updated');
+  if (updated) {
+    updated.textContent = `현재가 확인: ${overlay.source} · ${_formatHistoryTime(overlay.refreshed_at)}`;
+  }
+  const distances = _byId('r-price-distances');
+  if (!distances) return;
+  const labels = { entry_1: '1차', entry_2: '2차', entry_3: '3차', target: '목표', stop: '손절' };
+  distances.innerHTML = '';
+  Object.entries(overlay.plan_distances || {}).forEach(([key, distance]) => {
+    const item = document.createElement('span');
+    const pct = Number(distance.pct);
+    item.textContent = `${labels[key] || key} ${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`;
+    distances.appendChild(item);
+  });
+}
+
+async function openAnalysisHistory(id) {
+  const error = _byId('sa-error');
+  if (error) error.style.display = 'none';
+  try {
+    const detail = await _tradeApi(`/api/v1/stock-analysis/history/${id}`, undefined, 'GET');
+    _lastAnalysisTradePlan = detail.trade_plan;
+    _analysisText = detail.narrative || '';
+    renderResult(detail.snapshot);
+    const date = _byId('r-date');
+    if (date) {
+      date.textContent = `분석 기준: ${_formatHistoryTime(detail.created_at)} · 기술 기준일: ${detail.ref_date}`;
+    }
+    finalizeAnalysis();
+    if (_analysisText) _byId('sa-ai-card').style.display = 'block';
+    const updated = _byId('r-price-updated');
+    if (updated) {
+      updated.textContent = detail.price_refreshed_at
+        ? `마지막 현재가 확인: ${detail.latest_price_source || '—'} · ${_formatHistoryTime(detail.price_refreshed_at)}`
+        : '현재가 확인 전';
+    }
+    try {
+      const overlay = await _tradeApi(
+        `/api/v1/stock-analysis/history/${id}/refresh-price`, {}, 'POST'
+      );
+      _applyHistoryPrice(overlay);
+      loadAnalysisHistory();
+    } catch {
+      if (updated) updated.textContent = '현재가 갱신 실패 · 마지막 확인값';
+    }
+  } catch (historyError) {
+    if (error) {
+      error.textContent = `분석 이력을 열지 못했습니다: ${historyError.message}`;
+      error.style.display = 'block';
+    }
+  }
+}
+
 /* ── 분석 실행 (SSE) ─────────────────────────────────────── */
 function runStockAnalysis(ticker) {
   ticker = (ticker || '').trim();
@@ -217,6 +337,11 @@ function runStockAnalysis(ticker) {
         _byId('sa-progress').style.display = 'none';
         _lastAnalysisTradePlan = d.trade_plan || null;
         renderResult(d.data);
+        if (_byId('sa-history-body')) loadAnalysisHistory();
+        if (d.history_error) {
+          _byId('sa-error').textContent = `분석은 완료됐지만 이력 저장에 실패했습니다: ${d.history_error}`;
+          _byId('sa-error').style.display = 'block';
+        }
       }, 600);
     }
   };
@@ -461,12 +586,13 @@ function _tradeFacts() {
   };
 }
 
-async function _tradeApi(url, payload) {
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
+async function _tradeApi(url, payload, method = 'POST') {
+  const options = { method };
+  if (payload !== undefined) {
+    options.headers = { 'Content-Type': 'application/json' };
+    options.body = JSON.stringify(payload);
+  }
+  const response = await fetch(url, options);
   let body;
   try { body = await response.json(); } catch { body = {}; }
   if (!response.ok) {
@@ -623,6 +749,7 @@ async function armTradePlan() {
 document.addEventListener('DOMContentLoaded', () => {
   const input = _byId('sa-input');
   if (input) input.focus();
+  if (_byId('sa-history-body')) loadAnalysisHistory();
 
   // 모달이 있는 화면이면 ESC로 닫기
   document.addEventListener('keydown', (e) => {
