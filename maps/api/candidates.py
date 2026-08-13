@@ -88,7 +88,7 @@ def get_candidates(
     )
     return CandidatesResponse(
         strategy_id=strategy_id,
-        universe_count=quality.total_candidates if quality else len(rows),
+        universe_count=quality.total_candidates if quality else final_count,
         s5_excluded=0,
         missing_count=quality.excluded_count if quality else 0,
         final_count=final_count,

@@ -248,19 +248,32 @@ def test_auth_disabled_returns_everything(ctx) -> None:
 
 
 def test_filter_runs_before_limit(ctx, monkeypatch) -> None:
-    """필터가 .limit(200) 앞에서 걸린다 — 뒤에 걸리면 저점수 200행에 밀려 고점수가 사라진다."""
+    """필터가 .limit(200) 앞에서 걸린다.
+
+    `candidate_min_score` 는 정렬 기준(final_score)과 같은 컬럼의 단조 임계값이라
+    "필터→정렬→limit" 과 "정렬→limit→필터" 가 수학적으로 동치다 — 통과하는 행은
+    이미 최상위권이라 어느 순서로 잘라도 결과가 같다. 그래서 정렬 기준과 무관한
+    `candidate_markets` 를 쓴다: 고득점 KOSDAQ 210행 + 저득점 KOSPI 1행을 넣고
+    KOSPI 만 남기도록 필터링하면, limit 뒤에서 필터링될 경우 KOSDAQ 200행에 밀려
+    KOSPI 행이 잘려 나가 결과가 빈다.
+    """
     client, factory = ctx
-    rows = [_snapshot(f"1{i:05d}", 10.0, "KOSPI") for i in range(210)]
-    rows.append(_snapshot("999999", 95.0, "KOSPI"))
+    rows = [_snapshot(f"1{i:05d}", 90.0, "KOSDAQ") for i in range(210)]
+    rows.append(_snapshot("999999", 10.0, "KOSPI"))
     _seed_snapshots(factory, rows)
-    _seed_user(factory, monkeypatch, "limituser", {"candidate_min_score": 90.0})
+    _seed_user(factory, monkeypatch, "limituser", {"candidate_markets": ["KOSPI"]})
 
     tickers = [c["ticker"] for c in client.get("/api/v1/candidates").json()["candidates"]]
     assert tickers == ["999999"]
 
 
 def test_counts_stay_pipeline_values(ctx, monkeypatch) -> None:
-    """집계는 파이프라인 통계다 — 개인 필터로 줄어들지 않는다."""
+    """집계는 파이프라인 통계다 — 개인 필터로 줄어들지 않는다.
+
+    `UniverseQualityLog` 를 심지 않은 정상 경로(가장 흔한 경우)를 쓴다 — 이 경로에서
+    `universe_count` 는 `len(rows)`(필터+limit 적용된 후보) 로 폴백해서는 안 되고,
+    `final_count` 와 같은 미필터·미제한 파이프라인 카운트를 써야 한다.
+    """
     client, factory = ctx
     _seed_snapshots(factory, [
         _snapshot("000001", 90.0, "KOSPI"),
@@ -271,3 +284,4 @@ def test_counts_stay_pipeline_values(ctx, monkeypatch) -> None:
     body = client.get("/api/v1/candidates").json()
     assert len(body["candidates"]) == 1
     assert body["final_count"] == 2
+    assert body["universe_count"] == 2
