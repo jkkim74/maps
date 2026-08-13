@@ -494,7 +494,7 @@ async function loadCandidates() {
       const p = me.preferences || {};
       const parts = [];
       if (p.candidate_min_score != null) parts.push(`점수 ≥ ${p.candidate_min_score}`);
-      if (p.candidate_markets && p.candidate_markets.length) parts.push(p.candidate_markets.join('·'));
+      if (p.candidate_markets && p.candidate_markets.length) parts.push(p.candidate_markets.map(esc).join('·'));
       if (parts.length) {
         filterBadge = `<div id="candidates-filter-badge" class="text-muted mb-16" style="font-size:12px">
           내 필터 적용 중: ${parts.join(' / ')} · <a href="/settings">해제</a>
