@@ -1,6 +1,111 @@
 # HANDOFF
 
-## 8/12 개인화 1차 — 계정·권한·개인설정 (로컬 구현 완료, 미배포)
+## 8/13 개인화 2차 — A(개인 후보 필터) 구현 완료·미병합 / B(운영 설정 편집) 미착수
+
+**작업 중단 지점이다.** A 는 브랜치에 구현이 끝나 원격에 올라가 있고, B 는 스펙·계획만 있다.
+둘 다 **병합·배포하지 않았다.** 운영은 여전히 `eac342c` / alembic `0024_app_user` 다.
+
+### 무엇을 왜 하는가
+
+8/12 개인화 1차에서 `/settings` 에 개인 설정 6개를 만들었는데 **실제로 동작하는 것은
+`landing_screen` 하나뿐**이었다. 나머지 5개는 저장·조회만 되고 읽는 곳이 없었다.
+`/ops-config` 는 59개 항목을 보여주면서 바꿀 수 있는 건 `MAPS_AI_SCORING_MODE` 하나뿐이라
+나머지는 SSH 로 `.env` 를 고쳐야 했다. 이 두 가지를 각각 A·B 로 나눴다.
+
+| | 내용 | 상태 |
+|---|---|---|
+| **A** | 후보 필터 2개 연결 + 알림 3개 삭제 | 구현 완료, 원격 push, **미병합** |
+| **B** | OPS-02/03 운영 설정 편집·변경 이력 | 스펙·계획만, **미착수** |
+
+### 문서 (master 에 있음)
+
+- 스펙: `docs/superpowers/specs/2026-08-13-personal-candidate-filter-design.md`,
+  `docs/superpowers/specs/2026-08-13-ops-config-editing-design.md` (커밋 `7c146cc`)
+- 계획: `docs/superpowers/plans/2026-08-13-personal-candidate-filter.md`,
+  `docs/superpowers/plans/2026-08-13-ops-config-editing.md` (커밋 `ef5320e`)
+
+### A 브랜치 — `worktree-personal-candidate-filter`
+
+`origin` 에 push 완료. `ef5320e` 위 6커밋이고 전체 스위트 **883 passed**(기준 875 + 신규 8).
+
+| 커밋 | 내용 |
+|---|---|
+| `56217da` | 계획 외 선행 작업 — `tests/test_strategy_catalog.py` 격리 결함 수정 |
+| `2483b91` | `notify_push`/`notify_telegram`/`telegram_chat_id` 삭제 |
+| `f7934d3` | `GET /api/v1/candidates` 에 개인 필터 적용 |
+| `6ff1b18` | 위 리뷰 지적 2건 수정 |
+| `a6e6a2b` | 후보 화면 필터 배지 |
+| `0e8251a` | 배지의 `candidate_markets` 이스케이프 |
+
+로컬 worktree 는 `.claude/worktrees/personal-candidate-filter` 에 남겨 뒀다(이 PC 한정).
+다른 PC 에서는 `git fetch && git checkout worktree-personal-candidate-filter` 로 받으면 된다.
+
+### 🔴 A 에서 남은 일
+
+1. **전체 브랜치 최종 리뷰를 아직 안 했다.** 작업별 리뷰는 4건 모두 통과했지만
+   whole-branch 리뷰는 실행하지 않았다.
+2. **이월 Minor 3건** — 병합 전 처리 여부 미판단:
+   - `docs/ui-design/maps-auth-screen-design.html` "현재 비밀번호" 행의 여는 따옴표
+     U+201C 가 U+201D 로 바뀜(인접 행 삭제 부수효과, 렌더링 무해)
+   - `maps/common/user_prefs.py` 모듈 docstring 과 `resolve()` docstring 이
+     **삭제된 전역 폴백을 여전히 설명한다** — 문서가 안전 관련 동작을 틀리게 기술 중
+   - `resolve()` 의 `settings` 파라미터가 미사용(시그니처 유지는 `api/users.py` 호환 목적, 의도됨)
+3. 병합·배포. **A 는 마이그레이션이 없어** `git pull` + `systemctl restart` 로 끝난다.
+
+### A 에서 배운 것 (반복 방지)
+
+- **`user_prefs.resolve()` 가 `candidate_min_score` 를 전역 `maps_candidate_min_score`
+  로 채우고 있었다.** 그대로 필터에 쓰면 설정한 적 없는 사용자에게도 필터가 걸리고,
+  **화면 필터와 주문 게이트가 한 값으로 묶인다.** 그 채움을 삭제했다.
+  `ops/order_preview.py`·`ops/scheduler.py` 의 전역값 사용은 주문 게이트이므로 그대로 둔다.
+- **계획에 넣었던 테스트 하나가 회귀 방어가 안 되는 설계였다.**
+  `test_filter_runs_before_limit` 이 정렬 키(`final_score`)와 **같은 컬럼**에 임계값을
+  걸어서, 필터를 `.limit(200)` 앞에 두든 뒤에 두든 결과가 같았다(단조 임계값이라 수학적 동치).
+  리뷰어가 실제로 필터를 뒤로 옮겨 5개 테스트가 전부 통과하는 것을 확인해 잡아냈다.
+  정렬과 무관한 컬럼(`candidate_markets`)으로 다시 썼다.
+  → **정렬 키에 거는 필터로는 limit 순서를 검증할 수 없다.**
+- `universe_count` 는 `quality` 로그가 없을 때 `len(rows)` 로 폴백하고 있었다. `rows` 가
+  필터링되면서 파이프라인 총계가 아니라 필터 결과 개수가 나갔다. `final_count`(미필터
+  카운트 쿼리)로 바꿨다.
+- `tests/test_strategy_catalog.py` 의 `client` 픽스처가 `get_db` 오버라이드 없이 실제
+  `maps.db` 를 쳤다. **`maps.db` 가 없는 새 클론의 첫 실행에서만 실패하고 그 뒤로는
+  파일이 생겨 스스로 숨는다.** 오늘 새 worktree 에서 처음 드러났다.
+
+### B — 미착수
+
+계획은 7개 작업이고 migration `0025_ops_config_log` 를 포함한다. 핵심 설계:
+
+- 편집 메타데이터(타입·선택지·범위)를 **`MapsSettings.model_fields` 에서 파생**한다.
+  59행짜리 표를 손으로 만들지 않는다. `Literal` → 선택지, `Ge/Le` → 범위,
+  `secret` 은 `_field(..., secret=True)` 에 **이미 선언돼 있고 지금은 버려지는** 것을 싣는다.
+- 허용목록은 `get_config_status()` 자체다. 거기 없는 `env_var` 는 400.
+- 반영은 `.env` 쓰기 + `lru_cache` 설정 객체 갱신(`set_ai_scoring_mode` 가 쓰는 방식).
+  `CronTrigger` 에 구워지는 **9개만** 재시작 필요 배지.
+- `POST /ai-scoring-mode` 는 삭제한다 — 남기면 `.env` 쓰기 경로가 둘이 되고 그중 하나만
+  감사 로그를 남기는 구멍이 생긴다.
+- **탐색 중 발견**: 파이프라인 스케줄 시각 5종(`MAPS_DATA_COLLECTION_TIME` 등)이
+  `get_config_status()` 에서 누락돼 있었다. 추가해 59 → **64항목**이 된다.
+  `test_config_sections_and_counts_are_documented` 가 **섹션별 개수까지** 대조하므로
+  화면설계서 표의 runtime 21 → 26, 합계 59 → 64 도 함께 고쳐야 한다.
+- 위험 항목은 설계서의 5개에 **`MAPS_DB_URL` 을 더해 6개**다. 잘못 넣으면 다음 기동에서
+  앱이 안 뜨고 화면으로 복구할 수 없다.
+
+배포 시 **백업 + `alembic upgrade head` 필수**, 16:00~16:45 KST 금지.
+
+### 다음 세션 재개 지침
+
+1. A 를 마무리할 거면: `git fetch && git checkout worktree-personal-candidate-filter` →
+   전체 브랜치 리뷰 → Minor 3건 판단 → master 병합 → 배포(마이그레이션 없음).
+2. B 를 시작할 거면: `docs/superpowers/plans/2026-08-13-ops-config-editing.md` 의 Task 1부터.
+   **A 와 독립이므로 A 병합을 기다릴 필요 없다.** 단 둘 다 `maps/api/schemas.py` 를 만지므로
+   병합 시 충돌 가능성이 있다.
+3. ⚠️ **worktree 를 새로 만들 때 주의**: `worktree.baseRef` 기본값이 `fresh` 라
+   `origin/master` 기준으로 생성된다. 로컬 master 가 앞서 있으면 스펙·계획 파일이 없는
+   상태로 시작되므로 `git merge master` 를 먼저 해야 한다.
+4. SDD ledger 는 `.superpowers/` 아래에 있고 **gitignore 대상이라 전달되지 않는다.**
+   위 "이월 Minor 3건"과 "배운 것"이 그 내용을 옮긴 것이다.
+
+## 8/12 개인화 1차 — 계정·권한·개인설정 (8/13 09:35 KST 운영 배포 완료)
 
 - MAPS 는 지금까지 공용 비밀번호 1개짜리 단일 사용자 시스템이었다. `app_user` 테이블과
   역할(`admin`/`user`)을 도입해 **"누가 요청했는지"를 시스템 전체가 알게** 만들었다.
@@ -33,9 +138,49 @@
 - 검증: 전체 Python **861 passed**(경고 22건), `maps/tests` **81 passed**,
   신규 `tests/test_passwords.py` 9 + `tests/test_users.py` 18,
   빈 SQLite 전체 migration 0001→0024, JS 문법 검사 통과.
-- **아직 커밋·배포하지 않았다.** 배포 시 `alembic upgrade head`(0024)가 필수이며, 운영
-  PostgreSQL 백업을 먼저 만든다. 배포 직후 최초 기동에서 기존 `.env` 자격증명으로 관리자
-  계정이 1건 시드되는지 확인할 것.
+### 8/13 운영 배포·검증 (완료)
+
+- 운영 HEAD `3fcfae6` → **`eac342c`**, alembic `0023_score_readiness_feeds` →
+  **`0024_app_user (head)`**. 09:35:58 KST 기동, systemd `maps=active`, 내·외부 `/health` 200,
+  재시작 이후 ERROR/Traceback **0건**. 배포 전 전체 **875 passed**(경고 13건).
+- 배포 전 custom-format 전체 백업
+  `/opt/maps/backups/pre_personalization_20260813_093403.dump`
+  (324,959,550 bytes, mode 600, `pg_restore -l` 278항목). 앱 계정 권한이 없는
+  `order_log_backup_20260724` 만 제외했다(0023 배포 때와 같은 이유).
+- **순서가 중요하다** — `git pull` → `alembic upgrade head` → `systemctl restart`. 재시작을
+  마지막에 두면 구 코드가 도는 동안 `create_all()` 이 `app_user` 를 먼저 만들지 않는다.
+- 부트스트랩 관리자 시드 확인(로그 원문):
+  `09:36:01 INFO [maps.api.auth] 부트스트랩 관리자 계정 생성: admin`.
+  `app_user` 1행 = `admin`/운영자/`role=admin`/`status=active`/`plan=free`/한도 `None`,
+  해시 접두사 `scrypt`. 기존 `.env` 비밀번호가 그대로 이관됐다.
+- 소유권 경계 실측 — backfill 없이 기존 데이터 전부 `NULL`(=운영자):
+  `analysis_pick` 5/5, `stock_analysis_history` 2/2.
+- 비로그인 게이트 스모크: `/`·`/settings`·`/admin/users` → 303(로그인), `/api/v1/users/me` → 401
+  (API는 리다이렉트가 아니라 상태코드), `/login` → 200.
+
+### 8/13 유료 테스트 계정 (운영에 생성됨)
+
+- `testpaid` (id=2, 표시이름 "유료 테스트", `role=user`, `status=active`, **`plan=paid`**,
+  한도 미설정 → 기본 10회/일). 권한 경계 테스트용이다.
+- 운영 실측: 허용 200 = `/stock-analysis`·`/candidates`·`/market`·`/analysis-picks`·
+  `/settings`·`/api/v1/users/me`. 차단 403 = `/admin/users`·`/orders`·`/risk`·`/strategies`·
+  `/api/v1/users`·`/api/v1/orders`. `POST /api/v1/analysis-picks/1/arm-plan` 403,
+  `POST /api/v1/mobile/login` 403. 첫 진입은 `/` → 303 → `/stock-analysis` 1홉(루프 없음).
+- ⚠️ 초기 비밀번호가 생성 세션 대화에 평문으로 남아 있다. **재발급하거나 `/settings` 에서
+  변경할 것.** 테스트가 끝나면 `status=disabled` 로 내리는 편이 낫다.
+
+### ⚠️ 발견된 구멍 — 개인 설정 2개가 저장만 되고 적용되지 않는다
+
+- `UserPreferences.candidate_min_score` 는 **소비처가 `static/js/settings.js` 뿐이다.**
+  후보 필터링은 여전히 전역 `settings.maps_candidate_min_score` 를 쓴다
+  (`ops/order_preview.py`, `ops/scheduler.py`). `maps/api/candidates.py` 는 개인화 커밋에서
+  수정되지 않았다. 위 절이 이 설정을 "후보 표시 필터" 로 적어 둔 것은 **과장**이다.
+- `notify_push` / `notify_telegram` 도 같은 상태다(발송은 여전히 전역 대상).
+- 즉 `/settings` 에 **동작하지 않는 스위치가 3개** 있다. 2차에서 연결하거나 화면에서 빼야
+  한다 — 사용자가 켜 놓고 안 먹는 상태가 제일 나쁘다.
+- 참고: `plan` 값은 권한 판정에 **전혀 쓰이지 않는다**(`_PLANS` 검증과 응답 echo 뿐).
+  권한은 오직 `role` 기준이라 `paid` 계정과 `free` 계정의 동작은 지금 완전히 같다.
+  PAY-01~04 가 서버 미구현이기 때문이다.
 
 ### 다음 단계 (2차 후보)
 
@@ -237,8 +382,10 @@
   전달 코드와 `--bg-base` 불투명 배경도 직접 확인했다. 재시작 직후 최초 health는 애플리케이션
   기동 전 호출되어 일시적으로 실패했으나, 시작 로그와 포트 바인딩을 확인한 뒤 정상화됐다.
 
-> 갱신일: 2026-08-11 KST · 작성자: 세션 에이전트 (**현재 PC, 키 `D:\ssh_maps\`**)
-> 운영 서버 기능 커밋 = **`3725bee`**, alembic **`0021_analysis_pick_split_plan`**(head).
+> 갱신일: 2026-08-13 KST · 작성자: 세션 에이전트 (**현재 PC, 키 `D:\ssh_maps\`**)
+> 운영 서버 HEAD = **`eac342c`**, alembic **`0024_app_user`**(head), `maps=active`,
+> 내·외부 `/health` 200. 개인화 1차(계정·권한·개인설정)까지 배포 완료다.
+> 아래 줄들은 그 이전 상태 기록이라 값이 낡았다 — 현재 상태는 이 두 줄이 정본이다.
 > 종목분석→전략매매 구현과 8/11 가격 인계·팝업 수정은 운영 배포 완료 상태다.
 > 기능 커밋은 `8214235`~`b00c029`, 신규 migration head는 **`0021_analysis_pick_split_plan`**이다.
 > 후보 퍼널 Phase 2 AI Scoring 구현·운영 배포와 Ops Config 모드 제어 완료. KIS 주문번호
@@ -282,6 +429,15 @@ Sharpe 왜곡 수정(8/2)과 자동 강등(8/2)이 8/3에 처음 실측됐다.
 
 ## Next Steps
 
+- 🔴 **점수 준비도 게이트 실측 확인 — 아직 안 했다(8/12 예약 → 8/13 현재 미확인).**
+  8/12 16:00 analyze·16:40 수집이 돈 뒤 `market_regime_log` 최신 행의
+  `score_coverage_ratio=1.0`·`score_ready=true` 와 `investor_flow_snapshot` 당일 적재를
+  확인해야 한다. **이 확인 전에는 눌림목 전략을 mock 후보로 올리거나 신규 주문 게이트를
+  끄지 말 것.** 상세는 "8/12 시장·후보 점수 100% 실측 게이트" 절.
+- 🟡 **`/settings` 의 동작하지 않는 스위치 3개** (`candidate_min_score`,
+  `notify_push`, `notify_telegram`) — 연결하거나 화면에서 뺀다. 위 8/13 절 참고.
+- ✅ **개인화 1차 운영 배포 완료(8/13 09:35 KST).** HEAD `eac342c`, alembic `0024_app_user`,
+  관리자 시드·소유권 경계·게이트 스모크 전부 확인. 상세는 맨 위 절.
 - ✅ **인바디 자동 손절·감사 이력 복구 및 영구 수정 완료(8/11).** 전체 DB 백업, `051160` 원복,
   `041830` BUY 35주 @69,200원/ATR 5638.281459 진입 행 생성, KIS 복합 감사 ID와 sync 불일치
   방어를 TDD로 구현·배포했다. 장중 broker sync `sync_errors=0`, `skipped_sell_orders=0`,
