@@ -9,8 +9,11 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 import maps.common.models  # noqa: F401
+from maps.api import candidates as candidates_api
+from maps.api.auth import Identity
 from maps.common.db import Base
-from maps.common.models import CandidateSnapshot, UniverseQualityLog
+from maps.common.models import AppUser, CandidateSnapshot, UniverseQualityLog
+from maps.common.passwords import hash_password
 
 
 @pytest.fixture
@@ -40,6 +43,51 @@ def ctx():
     app.dependency_overrides.pop(get_db, None)
     Base.metadata.drop_all(engine)
     engine.dispose()
+
+
+def _snapshot(ticker: str, score: float, market: str) -> CandidateSnapshot:
+    """테스트용 후보 스냅샷 한 행 (기준일 고정)."""
+    return CandidateSnapshot(
+        ref_date=dt.date(2026, 8, 13),
+        strategy_id="pullback_v3",
+        ticker=ticker,
+        name=f"종목{ticker}",
+        market=market,
+        factor_score=score,
+        trend_strength=50.0,
+        ts_bucket="S3",
+        final_score=score,
+        weekly_pass=True,
+    )
+
+
+def _seed_user(factory, monkeypatch, username: str, preferences: dict) -> None:
+    """개인 설정을 가진 계정을 만들고 요청 주체를 그 계정으로 고정한다."""
+    db = factory()
+    try:
+        user = AppUser(
+            username=username,
+            password_hash=hash_password("pw12345678"),
+            role="user",
+            status="active",
+            preferences=preferences,
+        )
+        db.add(user)
+        db.commit()
+        identity = Identity(id=user.id, username=user.username, role=user.role)
+    finally:
+        db.close()
+    monkeypatch.setattr(candidates_api, "current_identity", lambda request: identity)
+
+
+def _seed_snapshots(factory, snapshots: list[CandidateSnapshot]) -> None:
+    """후보 스냅샷을 커밋한다."""
+    db = factory()
+    try:
+        db.add_all(snapshots)
+        db.commit()
+    finally:
+        db.close()
 
 
 def test_candidates_empty_without_snapshot(ctx) -> None:
@@ -159,3 +207,67 @@ def test_candidates_exposes_score_provenance(ctx) -> None:
     assert item["score_source"] == "AI"
     assert item["ai_scoring_mode"] == "rerank"
     assert item["ai_reason_codes"] == ["UPTREND", "HEALTHY_PULLBACK"]
+
+
+def test_personal_min_score_filters_list(ctx, monkeypatch) -> None:
+    """개인 최소 점수 미만 후보는 목록에서 빠진다."""
+    client, factory = ctx
+    _seed_snapshots(factory, [
+        _snapshot("000001", 90.0, "KOSPI"),
+        _snapshot("000002", 20.0, "KOSPI"),
+    ])
+    _seed_user(factory, monkeypatch, "filteruser", {"candidate_min_score": 50.0})
+
+    tickers = [c["ticker"] for c in client.get("/api/v1/candidates").json()["candidates"]]
+    assert tickers == ["000001"]
+
+
+def test_personal_market_filters_list(ctx, monkeypatch) -> None:
+    """선택한 시장만 남는다."""
+    client, factory = ctx
+    _seed_snapshots(factory, [
+        _snapshot("000001", 90.0, "KOSPI"),
+        _snapshot("000003", 90.0, "KOSDAQ"),
+    ])
+    _seed_user(factory, monkeypatch, "marketuser", {"candidate_markets": ["KOSPI"]})
+
+    tickers = [c["ticker"] for c in client.get("/api/v1/candidates").json()["candidates"]]
+    assert tickers == ["000001"]
+
+
+def test_auth_disabled_returns_everything(ctx) -> None:
+    """인증이 꺼진 환경(로컬·테스트 기본)에서는 필터가 걸리지 않는다."""
+    client, factory = ctx
+    _seed_snapshots(factory, [
+        _snapshot("000001", 90.0, "KOSPI"),
+        _snapshot("000002", 1.0, "KOSDAQ"),
+    ])
+
+    body = client.get("/api/v1/candidates").json()
+    assert len(body["candidates"]) == 2
+
+
+def test_filter_runs_before_limit(ctx, monkeypatch) -> None:
+    """필터가 .limit(200) 앞에서 걸린다 — 뒤에 걸리면 저점수 200행에 밀려 고점수가 사라진다."""
+    client, factory = ctx
+    rows = [_snapshot(f"1{i:05d}", 10.0, "KOSPI") for i in range(210)]
+    rows.append(_snapshot("999999", 95.0, "KOSPI"))
+    _seed_snapshots(factory, rows)
+    _seed_user(factory, monkeypatch, "limituser", {"candidate_min_score": 90.0})
+
+    tickers = [c["ticker"] for c in client.get("/api/v1/candidates").json()["candidates"]]
+    assert tickers == ["999999"]
+
+
+def test_counts_stay_pipeline_values(ctx, monkeypatch) -> None:
+    """집계는 파이프라인 통계다 — 개인 필터로 줄어들지 않는다."""
+    client, factory = ctx
+    _seed_snapshots(factory, [
+        _snapshot("000001", 90.0, "KOSPI"),
+        _snapshot("000002", 20.0, "KOSPI"),
+    ])
+    _seed_user(factory, monkeypatch, "countuser", {"candidate_min_score": 50.0})
+
+    body = client.get("/api/v1/candidates").json()
+    assert len(body["candidates"]) == 1
+    assert body["final_count"] == 2

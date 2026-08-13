@@ -33,8 +33,6 @@ def resolve(user: AppUser | None, settings: MapsSettings | None = None) -> UserP
         prefs = UserPreferences.model_validate(stored)
     except Exception:  # noqa: BLE001 — 손상된 설정은 기본값으로 취급한다
         prefs = UserPreferences()
-    if prefs.candidate_min_score is None:
-        prefs.candidate_min_score = settings.maps_candidate_min_score
     return prefs
 
 
