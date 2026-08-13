@@ -141,13 +141,18 @@ def test_preferences_round_trip_and_reject_unknown_keys(client: TestClient) -> N
 
     saved = client.put(
         "/api/v1/users/me/preferences",
-        json={"landing_screen": "candidates", "candidate_min_score": 42.5, "notify_push": True},
+        json={
+            "landing_screen": "candidates",
+            "candidate_min_score": 42.5,
+            "candidate_markets": ["KOSPI"],
+        },
     )
     assert saved.status_code == 200
     assert saved.json()["preferences"]["landing_screen"] == "candidates"
     assert saved.json()["preferences"]["candidate_min_score"] == 42.5
 
-    assert client.get("/api/v1/users/me").json()["preferences"]["notify_push"] is True
+    fetched = client.get("/api/v1/users/me").json()["preferences"]
+    assert fetched["candidate_markets"] == ["KOSPI"]
     rejected = client.put("/api/v1/users/me/preferences", json={"maps_broker_mode": "kis"})
     assert rejected.status_code == 422
 
@@ -313,3 +318,24 @@ def test_general_user_sees_only_own_analysis_history(client: TestClient) -> None
         i["ticker"] for i in client.get("/api/v1/stock-analysis/history").json()["items"]
     ]
     assert set(admin_tickers) == {"005930", "000660"}
+
+
+def test_removed_notification_prefs_are_rejected(client: TestClient) -> None:
+    """삭제한 알림 키는 extra=forbid 로 거절된다 — 조용히 무시되면 안 된다."""
+    login(client, "member", _USER_PW)
+
+    response = client.put(
+        "/api/v1/users/me/preferences",
+        json={"landing_screen": "candidates", "notify_push": True},
+    )
+    assert response.status_code == 422
+
+
+def test_preferences_no_longer_expose_notification_keys(client: TestClient) -> None:
+    """응답에서도 알림 키가 사라져야 한다."""
+    login(client, "member", _USER_PW)
+
+    prefs = client.get("/api/v1/users/me").json()["preferences"]
+    assert "notify_push" not in prefs
+    assert "notify_telegram" not in prefs
+    assert "telegram_chat_id" not in prefs

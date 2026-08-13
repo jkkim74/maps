@@ -1121,9 +1121,6 @@ class UserPreferences(BaseModel):
     landing_screen: str = "stock-analysis"
     candidate_min_score: float | None = None      # 후보 화면 표시 필터 (주문 게이트 아님)
     candidate_markets: list[str] = []             # 빈 목록 = 전체
-    notify_push: bool = False
-    notify_telegram: bool = False
-    telegram_chat_id: str | None = None           # 개인 대상 (전역 chat id 와 별개)
 
 
 class UserSummary(BaseModel):

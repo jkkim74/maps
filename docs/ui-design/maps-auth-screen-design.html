@@ -674,9 +674,9 @@
   <div class="tw"><table>
     <thead><tr><th>등급</th><th>항목</th></tr></thead>
     <tbody>
-      <tr><td>무료</td><td><code>landing_screen</code>, <code>candidate_min_score</code>, <code>candidate_markets</code>, <code>notify_push</code>, <code>notify_telegram</code>, <code>telegram_chat_id</code></td></tr>
-      <tr><td>유료</td><td>위 6키 + 개인 리스크 한도(단일 종목 · 총 노출 · 일 손실) + 개인 킬스위치 + 주문 알림</td></tr>
-      <tr><td>관리자</td><td>위 6키 + 운영 설정 59개(별도 화면)</td></tr>
+      <tr><td>무료</td><td><code>landing_screen</code>, <code>candidate_min_score</code>, <code>candidate_markets</code></td></tr>
+      <tr><td>유료</td><td>위 3키 + 개인 리스크 한도(단일 종목 · 총 노출 · 일 손실) + 개인 킬스위치 + 주문 알림</td></tr>
+      <tr><td>관리자</td><td>위 3키 + 운영 설정 59개(별도 화면)</td></tr>
     </tbody>
   </table></div>
 
@@ -1257,10 +1257,7 @@
           <tr><td>시작 화면</td><td><code>landing_screen</code></td><td>셀렉트</td><td>예</td><td><code>stock-analysis</code></td><td>내 등급에 열린 화면만 목록에 나온다</td></tr>
           <tr><td>후보 최소 점수</td><td><code>candidate_min_score</code></td><td>숫자</td><td>아니오</td><td>전역 <code>MAPS_CANDIDATE_MIN_SCORE</code></td><td>0 이상 / “0 이상 숫자를 입력하세요.”</td></tr>
           <tr><td>표시할 시장</td><td><code>candidate_markets</code></td><td>체크박스</td><td>아니오</td><td>전체(빈 목록)</td><td><code>KOSPI</code>·<code>KOSDAQ</code> 만</td></tr>
-          <tr><td>앱 푸시</td><td><code>notify_push</code></td><td>토글</td><td>아니오</td><td>꺼짐</td><td>—</td></tr>
-          <tr><td>텔레그램</td><td><code>notify_telegram</code></td><td>토글</td><td>아니오</td><td>꺼짐</td><td>chat id 없이 켜면 경고</td></tr>
-          <tr><td>내 텔레그램 chat id</td><td><code>telegram_chat_id</code></td><td>텍스트</td><td>아니오</td><td>없음</td><td>공백은 <code>null</code> 로 저장</td></tr>
-          <tr><td>현재 비밀번호</td><td>—</td><td>비밀번호</td><td>예</td><td>—</td><td>“현재 비밀번호가 올바르지 않습니다.”</td></tr>
+          <tr><td>현재 비밀번호</td><td>—</td><td>비밀번호</td><td>예</td><td>—</td><td>”현재 비밀번호가 올바르지 않습니다.”</td></tr>
           <tr><td>새 비밀번호</td><td>—</td><td>비밀번호</td><td>예</td><td>—</td><td>8자 이상 / “새 비밀번호는 8자 이상이어야 합니다.”</td></tr>
         </tbody>
       </table></div>
@@ -1293,7 +1290,7 @@
         <thead><tr><th>동작</th><th>엔드포인트</th><th>요청 → 응답</th></tr></thead>
         <tbody>
           <tr><td>불러오기</td><td><code>GET /api/v1/users/me</code></td><td>— → <code>user</code>, <code>preferences</code>, <code>analysis_used_today</code>, <code>analysis_limit</code></td></tr>
-          <tr><td>설정 저장</td><td><code>PUT /api/v1/users/me/preferences</code></td><td>6키 전체 → 갱신된 <code>MeResponse</code></td></tr>
+          <tr><td>설정 저장</td><td><code>PUT /api/v1/users/me/preferences</code></td><td>3키 전체 → 갱신된 <code>MeResponse</code></td></tr>
           <tr><td>비밀번호 변경</td><td><code>POST /api/v1/users/me/password</code></td><td><code>current_password</code>, <code>new_password</code> → <code>UserSummary</code></td></tr>
         </tbody>
       </table></div>
