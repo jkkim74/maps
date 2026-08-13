@@ -488,7 +488,24 @@ async function loadCandidates() {
       </tr>`;
     }).join('');
 
-    document.getElementById('candidates-area').innerHTML = `
+    let filterBadge = '';
+    try {
+      const me = await apiFetch('/users/me');
+      const p = me.preferences || {};
+      const parts = [];
+      if (p.candidate_min_score != null) parts.push(`점수 ≥ ${p.candidate_min_score}`);
+      if (p.candidate_markets && p.candidate_markets.length) parts.push(p.candidate_markets.join('·'));
+      if (parts.length) {
+        filterBadge = `<div id="candidates-filter-badge" class="text-muted mb-16" style="font-size:12px">
+          내 필터 적용 중: ${parts.join(' / ')} · <a href="/settings">해제</a>
+          <span> — 위 집계는 필터 이전의 파이프라인 값입니다</span>
+        </div>`;
+      }
+    } catch (e) {
+      filterBadge = '';   // ponytail: 배지 실패로 후보 목록을 막지 않는다
+    }
+
+    document.getElementById('candidates-area').innerHTML = filterBadge + `
       <table>
         <thead>
           <tr>
