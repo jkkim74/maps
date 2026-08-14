@@ -1,5 +1,110 @@
 # HANDOFF
 
+## 8/14 🔴 시장 점수 전면 차단 원인 규명·수정·배포 완료
+
+**8/12~14 사흘간 자동 신규 매수가 전량 막혀 있었다.** 8/13 다이제스트는 후보 10건을
+모두 `market_score_incomplete` 로 제외했다. 운영 HEAD `2ef593f` → **`1f3dd86`**,
+14:27:31 KST 기동, `maps=active`, `/health` 200, 재시작 이후 ERROR **0건**.
+마이그레이션 없음. 배포 전 전체 **906 passed**, `maps/tests` 81 passed.
+
+### 원인 — 네이버 API 가 아니다
+
+먼저 의심했던 네이버 뉴스 API 는 **정상이다.** 운영 서버에서 실제 자격증명으로 API Hub 를
+직접 호출해 `http_code=200` 과 기사 목록을 확인했고, `market_news_sentiment` 도 8/13
+`status=success, score=88.0` 이었다.
+
+진짜 원인은 `maps/market/feeds.py:113` 의 수급 NULL 가드였다.
+
+```python
+if any(any(getattr(row, field) is None for field in fields) for row in rows):
+    return None     # 한 행이라도 NULL 이면 그날 수급 전체를 버린다
+```
+
+`investor_flow_snapshot` 의 NULL 은 **수집 실패가 아니다.** `krx_adapter.get_investor_flows`
+가 투자자 유형별 pykrx 프레임을 `values.setdefault(ticker, {})[target]` 로 병합하므로,
+어떤 유형의 프레임에 없는 티커는 그 컬럼이 빠진 채 저장된다(우선주·저유동성 종목에 흔하다).
+
+**운영 실측 8/13: 2,622행 중 외국인 NULL 54행, 기관 NULL 538행(20.5%).** 이 가드는 매일
+반드시 발동했다. 바로 아래 집계는 이미 `or 0.0` 으로 NULL 을 허용하고 있어 **가드와 서로
+모순**이었다.
+
+결과: `liquidity`(0.25) + `psychology`(0.10, 수급을 함께 요구)가 동반 미측정 →
+coverage 0.65 고정 → `score_readiness` 가 모든 자동 신규 BUY 와 전략 승격을 차단.
+**게이트는 설계대로 동작했다** — SELL·손절·익절이 안 막힌 것도 코드로 확인했다.
+버그는 게이트가 아니라 입력이었다.
+
+### 고친 것
+
+| 커밋 | 내용 |
+|---|---|
+| `5e055fd` | 가드를 "**전 행에서** 결측인 필드가 있을 때만 차단"으로. 날짜 행 0건(수집 실패)은 기존대로 fail-closed. 판정마다 필드별 non-NULL 건수를 로그로 남긴다. `ops/scheduler.py:_build_ticker_contexts` 의 같은 결함(조용히 ~20% 종목을 `supply_demand_score` 에서 누락)도 의미론을 통일 |
+| `1f3dd86` | 관측성 2건 + 재계산 스크립트 |
+
+**관측성이 이번 사고의 진짜 교훈이다.** 이틀 넘게 안 드러난 이유가 두 곳의 조용한 실패다.
+
+- `_order_candidates` 가 준비도 미달 후보를 **로그 없이** 버려서, 10건이 막혀도 `order_cycle`
+  잡 결과는 `"skipped_buy_orders": 0` 이었다. 이제 후보마다 WARNING + 사유별 집계를
+  `blocked_by_readiness` 로 잡 결과에 싣는다. 필터 위치는 그대로 뒀다 — 아래로 옮기면
+  준비 안 된 행이 같은 티커의 준비된 행 자리를 뺏는다.
+- `collect_daily` 가 수급 예외를 삼킨 뒤에도 `data_collection` 잡이 `success` 로 끝났다.
+  OHLCV 는 계속 살리되 0건이면 `collection_log.status='partial'` + `logger.error` +
+  잡 details 의 `investor_flow_count` 로 드러낸다.
+
+### 과거 행 복구 (완료)
+
+`scripts/backfill_market_score.py --start 2026-08-12 --end 2026-08-14 --apply` 실행.
+백업: `/opt/maps/backups/market_regime_log_pre_recompute_20260814.json` (3행 전체 컬럼).
+
+- 8/12·8/13 → `coverage 0.65 → 1.0`, `partial → complete`, `ready false → true`
+  (liquidity 66.8, psychology 56.4)
+- 8/14 → `market_observations_unavailable` 로 **건너뜀**. 오늘 OHLCV 수집(16:40) 전이라
+  재계산을 거부한 것이고 의도한 동작이다.
+- 결정 기록(`applied_regime`·`entry_limit_ratio`·`market_mode`·`source`)은 그대로다.
+  `score_reason` 에 `decision-time coverage=0.65` 를 남겨 재생성된 다이제스트가 스스로
+  밝히게 했다.
+
+> ⚠️ **복구한 날짜의 다이제스트·블로그는 재생성하지 않는다.** 재생성하면 결정 시점이
+> 아니라 복구 후 값을 설명하게 된다.
+
+### 🔴 아직 화면은 안 풀렸다 — 오늘 16:50 이후에 풀린다
+
+`market_score_ready(2026-08-13)` 는 이제 `(True, None)` 이지만, **후보 행에 찍힌
+`candidate.market_score_ready` 는 생성 시점 스탬프라 여전히 False** 다. 그래서
+`candidate_score_ready` 는 아직 `market_score_incomplete` 를 돌려준다.
+
+```
+후보 005930: candidate.market_score_ready=False, score_ready=True, coverage=1.0
+candidate_score_ready -> (False, 'market_score_incomplete')
+```
+
+**8/13 후보를 소급 수정하지 않았다.** 오늘 16:50 `candidate_generation` 이 8/14 후보를
+새로 만들면서 `market_score_ready=True` 로 찍고, 주문 경로는 최신 스냅샷만 쓰기 때문에
+자연히 대체된다. 결정 시점 스탬프를 덧쓰는 것보다 낫다고 판단했다.
+
+**다음 거래일은 2026-08-18(화)** 다 — 8/15 광복절이 토요일이라 8/17 이 대체공휴일이다.
+
+### 확인해야 할 것 (순서대로)
+
+1. **오늘 16:50 이후** — `market_regime_log` 의 8/14 행이 `coverage=1.0 / complete / ready=true`
+   로 갱신됐는지. `source` 가 `candidate_generation` 으로 바뀌어야 한다.
+2. `journalctl -u maps --since today | grep 'Investor flow coverage'` → 필드별 non-NULL 건수
+3. `data_collection` 잡 details 의 `investor_flow_count` 가 수천 단위인지
+4. **8/18(화) 08:55 이후** — `order_cycle` details 의 `blocked_by_readiness` 가 `{}` 이고
+   `submitted_buy_orders` 가 0 이 아닌지. 남은 차단이 있으면 이제 사유와 건수가 찍힌다.
+
+### 별건으로 남긴 것 — 역발상 전략은 구조적으로 승격 불가
+
+`maps/strategy/score_features.py` 에 `CONTRARIAN_QUALITY` 분기가 없어, 5개 컴포넌트 중 4개
+(`earnings_revision`·`crowd_neglect`·`accumulation_flow`·`technical_bottom`)를 **생산하는
+코드가 저장소에 0곳**이다. coverage 가 0.30 에 영구 고정된다(운영 실측: 8/13 후보 94건 전부 0.3).
+
+부작용으로 `scoring._measured_score()` 가 측정분으로 재정규화하므로 **밸류에이션 1개만
+100점이면 `final_score=100.0`** 이 되어 5개 만점 후보와 구분되지 않은 채 후보 정렬 1등으로
+올라온다. 8/13 다이제스트 상위 12건이 전부 이 전략이었던 이유다. 이번 수정으로도 안 풀린다.
+
+참고로 이번 수정 후에도 주문 가능 전략은 준비돼 있다 — 8/13 실측 `ath_breakout_v1` 72건 중
+71건, `donchian_v2` 79건 전부가 후보 단계 `score_ready=true` 였다.
+
 ## 8/14 A(개인 후보 필터) 최종 리뷰·병합·운영 배포 완료
 
 운영 HEAD `eac342c` → **`2ef593f`**. alembic 은 **`0024_app_user (head)` 그대로**다
@@ -440,9 +545,10 @@ B 는 여전히 스펙·계획만 있고 미착수다.
   기동 전 호출되어 일시적으로 실패했으나, 시작 로그와 포트 바인딩을 확인한 뒤 정상화됐다.
 
 > 갱신일: 2026-08-14 KST · 작성자: 세션 에이전트 (**현재 PC, 키 `D:\ssh_maps\`**)
-> 운영 서버 HEAD = **`2ef593f`**, alembic **`0024_app_user`**(head — A 는 마이그레이션
-> 없음), `maps=active`, 내·외부 `/health` 200. 개인화 2차 A(개인 후보 필터)까지
-> 배포 완료다. B(운영 설정 편집)는 미착수.
+> 운영 서버 HEAD = **`1f3dd86`**, alembic **`0024_app_user`**(head — A 는 마이그레이션
+> 없음), `maps=active`, 내·외부 `/health` 200. 개인화 2차 A(개인 후보 필터)와
+> 시장 점수 차단 수정까지 배포 완료다. B(운영 설정 편집)는 미착수.
+> **오늘 16:50 이후 8/14 행의 coverage 1.0 확인이 남아 있다** — 맨 위 절 참고.
 > 아래 줄들은 그 이전 상태 기록이라 값이 낡았다 — 현재 상태는 이 두 줄이 정본이다.
 > 종목분석→전략매매 구현과 8/11 가격 인계·팝업 수정은 운영 배포 완료 상태다.
 > 기능 커밋은 `8214235`~`b00c029`, 신규 migration head는 **`0021_analysis_pick_split_plan`**이다.
@@ -487,11 +593,13 @@ Sharpe 왜곡 수정(8/2)과 자동 강등(8/2)이 8/3에 처음 실측됐다.
 
 ## Next Steps
 
-- 🔴 **점수 준비도 게이트 실측 확인 — 아직 안 했다(8/12 예약 → 8/13 현재 미확인).**
-  8/12 16:00 analyze·16:40 수집이 돈 뒤 `market_regime_log` 최신 행의
-  `score_coverage_ratio=1.0`·`score_ready=true` 와 `investor_flow_snapshot` 당일 적재를
-  확인해야 한다. **이 확인 전에는 눌림목 전략을 mock 후보로 올리거나 신규 주문 게이트를
-  끄지 말 것.** 상세는 "8/12 시장·후보 점수 100% 실측 게이트" 절.
+- 🟡 **점수 준비도 게이트 실측 확인 — 이 미확인이 실제 사고로 이어졌다(8/14 규명·수정 완료).**
+  8/12 예약해 두고 미룬 사이, 커버리지가 0.65 에 고정돼 **사흘간 신규 매수가 전량 막혀
+  있었다**. 원인은 수급 NULL 가드였고 8/14 에 수정·배포·과거행 복구까지 마쳤다.
+  8/12·8/13 행은 `coverage=1.0`·`score_ready=true` 로 복구됐다.
+  **남은 확인: 오늘 16:50 이후 8/14 행이 자동으로 1.0 이 되는지, 8/18 08:55 주문이 나가는지.**
+  상세는 맨 위 "8/14 시장 점수 전면 차단" 절.
+  이 확인 전에는 눌림목 전략을 mock 후보로 올리거나 신규 주문 게이트를 끄지 말 것.
 - ✅ **`/settings` 의 동작하지 않는 스위치 3개 해소(8/14 배포).** `candidate_min_score`·
   `candidate_markets` 는 후보 목록에 실제로 적용되고, `notify_push`/`notify_telegram`/
   `telegram_chat_id` 는 화면에서 삭제했다. 맨 위 8/14 절 참고.
