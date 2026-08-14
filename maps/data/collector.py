@@ -86,9 +86,11 @@ class DataCollector:
             except Exception as exc:
                 logger.warning("펀더멘털 수집 실패 (스킵): %s", exc)
                 fundamentals = []
+            flow_error: str | None = None
             try:
                 investor_flows = self._krx.get_investor_flows(ref_date)
             except Exception as exc:
+                flow_error = f"{type(exc).__name__}: {exc}"
                 logger.warning("투자자 수급 수집 실패 (신규매수 fail-closed): %s", exc)
                 investor_flows = []
 
@@ -100,10 +102,24 @@ class DataCollector:
             saved_rows = self._upsert_ohlcv(ohlcv)
             self._upsert_fundamentals(fundamentals)
             self._upsert_investor_flows(investor_flows)
+            result.investor_flow_count = len(investor_flows)
+            result.investor_flow_error = flow_error
             from maps.market.feeds import collect_market_news_sentiment
 
             collect_market_news_sentiment(self._db, ref_date)
-            self._write_log(ref_date, "success", saved_rows)
+            if investor_flows:
+                self._write_log(ref_date, "success", saved_rows)
+            else:
+                # 수집 자체는 이어가되(OHLCV 는 살린다) 0건이라는 사실은 남긴다.
+                # 이 날짜 수급이 비면 다음 거래일 신규 매수가 전량 fail-closed 된다.
+                logger.error(
+                    "투자자 수급 0건 [%s] — 다음 거래일 신규매수 차단 (%s)",
+                    ref_date, flow_error or "adapter returned no rows",
+                )
+                self._write_log(
+                    ref_date, "partial", saved_rows,
+                    note=f"investor_flow_count=0 ({flow_error or 'adapter returned no rows'})",
+                )
             return result
 
         except Exception as exc:

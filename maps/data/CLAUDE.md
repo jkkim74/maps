@@ -95,6 +95,11 @@ DataCollector(krx: KRXAdapterBase, db: Session, broker=None)
 
 > 수급은 **장 마감 후에야** 채워진다. 장중에 부르면 비어 있는 게 정상이고, 그 사실이
 > `ops/score_readiness.py` 의 커버리지 미달로 이어져 신규 매수가 막힌다.
+>
+> 수급 수집 실패는 예외를 삼키고 넘어간다 — **OHLCV 는 살려야** 하기 때문이다. 다만 0건이면
+> `collection_log.status='partial'` + `CollectionResult.investor_flow_count=0` +
+> `logger.error` 로 드러난다. `data_collection` 잡 details 에도 실린다. 조용히 `success` 로
+>끝나면 다음 거래일 신규 매수가 전량 막히는데도 아무 신호가 없다.
 
 내부 헬퍼:
 

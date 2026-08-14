@@ -7,6 +7,7 @@
 | 스크립트 | 용도 |
 |---|---|
 | `backfill_score_feeds.py` | 수급·피드 백필. 점수 커버리지가 비었을 때 (`--calendar-days N`) |
+| `backfill_market_score.py` | **기존** `market_regime_log` 행의 composite 점수만 재계산 (`--start/--end`, 기본 dry-run, `--apply` 로만 쓰기). 결정 기록(`applied_regime`·`entry_limit_ratio` 등)은 건드리지 않고 커버리지를 낮추지도 않는다 |
 | `backfill_fundamentals_naver.py` | Naver 소스로 펀더멘털 백필 |
 | `backfill_entry_atr.py` | 과거 주문 행의 진입 ATR 보정 |
 | `normalize_pick_tick_prices.py` | 픽 가격을 KRX 호가 단위로 정규화 |

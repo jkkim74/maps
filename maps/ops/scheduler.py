@@ -308,6 +308,9 @@ class OperationalPipeline:
                 "meta_count": len(result.meta),
                 "halt_count": len(result.halts),
                 "managed_count": len(result.managed),
+                # 0 이면 다음 거래일 신규 매수가 전량 막힌다 (score_readiness fail-closed).
+                "investor_flow_count": result.investor_flow_count,
+                "investor_flow_error": result.investor_flow_error,
             }
 
         return self._job("data_collection", _run)
@@ -629,6 +632,7 @@ class OperationalPipeline:
             submitted_sell_orders = 0
             skipped_buy_orders = 0
             skipped_sell_orders = 0
+            blocked_by_readiness: dict[str, int] = {}
             note = None
 
             dry_run = getattr(self._settings, "maps_dry_run", False)
@@ -643,7 +647,7 @@ class OperationalPipeline:
                 # H-3: OHLCV 데이터 신선도 검증 — 5일 이상 오래된 데이터면 매수 스킵
                 data_fresh, latest_ohlcv_date, expected_ohlcv_date = self._is_data_fresh(db, ref_date)
                 if data_fresh:
-                    submitted_buy_orders, skipped_buy_orders = self._submit_candidate_orders(
+                    submitted_buy_orders, skipped_buy_orders, blocked_by_readiness = self._submit_candidate_orders(
                         db=db,
                         broker=broker,
                         manager=manager,
@@ -698,6 +702,7 @@ class OperationalPipeline:
                 "submitted_sell_orders": submitted_sell_orders,
                 "skipped_buy_orders": skipped_buy_orders,
                 "skipped_sell_orders": skipped_sell_orders,
+                "blocked_by_readiness": blocked_by_readiness,
             }
 
         return self._job("order_cycle", _run)
@@ -1874,12 +1879,18 @@ class OperationalPipeline:
         manager: OrderManager,
         ref_date: dt.date,
         blocked_tickers: set[str] | None = None,
-    ) -> tuple[int, int]:
+    ) -> tuple[int, int, dict[str, int]]:
         # ── C-2/C-3: 시황 분석 → 진입 한도 비율 적용 ─────────────────────────
         regime = self._analyze_regime()
         regime = apply_hysteresis(db, regime, ref_date, source="order_cycle")
         limit_ratio = regime.entry_limit_ratio
-        candidates = self._order_candidates(db, ref_date)
+        blocked_by_readiness: dict[str, int] = {}
+        candidates = self._order_candidates(db, ref_date, blocked=blocked_by_readiness)
+        if blocked_by_readiness:
+            logger.warning(
+                "Readiness blocked %d buy candidates: %s",
+                sum(blocked_by_readiness.values()), blocked_by_readiness,
+            )
         if limit_ratio == 0.0:
             logger.warning(
                 "시황 일반 진입 한도 0.0 (regime=%s trend=%s) — 전략별 정책으로 재확인",
@@ -2083,7 +2094,9 @@ class OperationalPipeline:
 
         # KillSwitch로 루프가 break 됐을 때 미처리 후보를 skipped에 반영한다.
         skipped += len(candidates) - submitted - skipped
-        return submitted, skipped
+        # 준비도로 막힌 건은 candidates 에 없으므로 위 보정 **뒤에** 더한다.
+        skipped += sum(blocked_by_readiness.values())
+        return submitted, skipped, blocked_by_readiness
 
     def _log_dry_run_candidates(self, db: Session, ref_date: dt.date) -> None:
         """Dry-run 모드: 실제 주문 없이 당일 후보 목록을 로깅한다."""
@@ -2948,7 +2961,13 @@ class OperationalPipeline:
 
         return submitted, closed
 
-    def _order_candidates(self, db: Session, ref_date: dt.date) -> list[CandidateSnapshot]:
+    def _order_candidates(
+        self,
+        db: Session,
+        ref_date: dt.date,
+        *,
+        blocked: dict[str, int] | None = None,
+    ) -> list[CandidateSnapshot]:
         latest_date = (
             db.query(CandidateSnapshot.ref_date)
             .filter(CandidateSnapshot.ref_date <= ref_date)
@@ -2990,8 +3009,17 @@ class OperationalPipeline:
             if latest_promotions.get(row.strategy_id) not in eligible_stages:
                 continue
             if self._settings.maps_score_readiness_required:
-                ready, _ = candidate_score_ready(db, row)
+                ready, reason = candidate_score_ready(db, row)
                 if not ready:
+                    # 조용히 버리면 잡 결과가 "0건 제외"로 보인다 — 2026-08-12~14 에
+                    # 매일 10건이 막혔는데 로그로는 드러나지 않았다.
+                    logger.warning(
+                        "Order candidate blocked [%s %s]: %s",
+                        row.strategy_id, row.ticker, reason,
+                    )
+                    if blocked is not None:
+                        key = reason or "unknown"
+                        blocked[key] = blocked.get(key, 0) + 1
                     continue
             strategy_type = self._strategy_type_for_id(row.strategy_id)
             if (

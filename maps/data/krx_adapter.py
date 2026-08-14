@@ -122,6 +122,9 @@ class CollectionResult:
     halts: list[str] = field(default_factory=list)       # 정지 ticker 목록
     managed: list[str] = field(default_factory=list)     # 관리종목 ticker 목록
     source: str = "krx"
+    # 수급 0건이면 다음 거래일 신규 매수가 전량 막힌다 — 조용히 넘어가면 안 된다.
+    investor_flow_count: int = 0
+    investor_flow_error: str | None = None
 
 
 class KRXAdapterBase(ABC):

@@ -81,6 +81,11 @@ final_score = 0.6 × factor_score(거래대금) + 0.4 × trend_strength   # lega
 - ticker당 최고 score 전략 1개만 사용
 - **시장·후보 점수가 100% 실측** (`score_readiness.py`)
 
+준비도로 막힌 후보는 **후보마다 WARNING 로그**를 남기고 사유별로 집계돼
+`order_cycle` 잡 결과의 `blocked_by_readiness` 로 나간다(`skipped_buy_orders` 에도 더해진다).
+조용히 `continue` 하면 10건이 막혀도 잡 결과가 `"skipped_buy_orders": 0` 으로 보인다 —
+2026-08-12~14 사고에서 원인 규명이 이틀 늦어진 직접적인 이유다.
+
 ### `MapsOperationalScheduler`
 
 ```python
@@ -189,6 +194,11 @@ KRX 거래일이 아니면 잡 실행을 건너뛴다 (`_is_krx_market_day()` �
 | `report_generator.py` | `KostolanyReportGenerator.generate()` → `DailyReport.to_text()` — 시장·섹터·전략·후보·리스크 요약 |
 
 > ⚠️ 다이제스트의 `price_source=rule` 값을 AI 결론처럼 표현하면 안 된다.
+>
+> ⚠️ 다이제스트는 **결정 시점에 저장된 값만** 읽고 재계산하지 않는다.
+> `scripts/backfill_market_score.py` 로 과거 `market_regime_log` 를 복구한 날짜의
+> 다이제스트·블로그는 **재생성하지 않는다** — 재생성하면 결정 시점이 아니라 복구 후 값을
+> 설명하게 된다. 그래서 그 스크립트는 `score_reason` 에 결정 시점 커버리지를 함께 남긴다.
 
 ## 의존성
 
