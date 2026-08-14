@@ -142,7 +142,7 @@ def test_user_api_routes_are_documented(doc: str) -> None:
 
 
 def test_preference_keys_are_documented(doc: str) -> None:
-    """개인 설정 6키가 항목정의서에 있다."""
+    """개인 설정 키가 전부 항목정의서에 있다(`UserPreferences` 기준)."""
     missing = [name for name in UserPreferences.model_fields if f"<code>{name}</code>" not in doc]
     assert not missing, f"내 설정 항목정의서에 없는 키: {missing}"
 

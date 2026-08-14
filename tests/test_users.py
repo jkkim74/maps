@@ -339,3 +339,74 @@ def test_preferences_no_longer_expose_notification_keys(client: TestClient) -> N
     assert "notify_push" not in prefs
     assert "notify_telegram" not in prefs
     assert "telegram_chat_id" not in prefs
+
+
+def test_resolve_keeps_settings_when_legacy_keys_are_stored() -> None:
+    """저장값에 남은 **삭제된 키** 때문에 나머지 설정이 통째로 날아가면 안 된다.
+
+    `UserPreferences` 는 `extra=forbid` 라, 알림 3키를 지우기 전에 저장한 계정의
+    `preferences` JSON 은 이제 검증에 실패한다. `resolve()` 가 통째로 기본값으로
+    되돌리면 `landing_screen` 까지 조용히 초기화된다 — 마이그레이션 없이 배포되는
+    경로라 실제 사용자 설정이 사라진다.
+    """
+    from maps.common.models import AppUser
+    from maps.common.user_prefs import resolve
+
+    user = AppUser(
+        username="legacy",
+        password_hash="x",
+        preferences={
+            "landing_screen": "candidates",
+            "candidate_min_score": 70.0,
+            "candidate_markets": ["KOSPI"],
+            "notify_push": True,
+            "notify_telegram": False,
+            "telegram_chat_id": "123456",
+        },
+    )
+
+    prefs = resolve(user)
+
+    assert prefs.landing_screen == "candidates"
+    assert prefs.candidate_min_score == 70.0
+    assert prefs.candidate_markets == ["KOSPI"]
+
+
+def test_resolve_falls_back_when_value_is_corrupt() -> None:
+    """알 수 없는 키가 아니라 **값이 깨진** 경우는 기존대로 기본값으로 되돌린다."""
+    from maps.common.models import AppUser
+    from maps.common.user_prefs import resolve
+
+    user = AppUser(
+        username="corrupt",
+        password_hash="x",
+        preferences={"landing_screen": "candidates", "candidate_min_score": "무효"},
+    )
+
+    assert resolve(user).landing_screen == "stock-analysis"
+
+
+def test_invalid_candidate_market_is_rejected(client: TestClient) -> None:
+    """`candidate_markets` 는 KOSPI·KOSDAQ 만 받는다.
+
+    검증이 없으면 `"kospi"` 같은 값이 그대로 `market.in_(...)` 로 들어가 후보 목록이
+    영구히 빈 채로 남는다. 화면설계서도 이 검증을 약속하고 있다.
+    """
+    login(client, "member", _USER_PW)
+
+    response = client.put(
+        "/api/v1/users/me/preferences",
+        json={"landing_screen": "candidates", "candidate_markets": ["kospi"]},
+    )
+    assert response.status_code == 422
+
+
+def test_negative_candidate_min_score_is_rejected(client: TestClient) -> None:
+    """최소 점수는 0 이상이다 — 설계서의 '0 이상' 검증."""
+    login(client, "member", _USER_PW)
+
+    response = client.put(
+        "/api/v1/users/me/preferences",
+        json={"landing_screen": "candidates", "candidate_min_score": -1},
+    )
+    assert response.status_code == 422

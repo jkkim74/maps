@@ -285,3 +285,33 @@ def test_counts_stay_pipeline_values(ctx, monkeypatch) -> None:
     assert len(body["candidates"]) == 1
     assert body["final_count"] == 2
     assert body["universe_count"] == 2
+
+
+def test_min_score_filter_uses_canonical_score_in_rerank_mode(ctx, monkeypatch) -> None:
+    """개인 최소 점수는 주문 게이트와 **같은 점수 컬럼**을 봐야 한다.
+
+    `rerank` 모드의 정본은 `candidate_min_score_expression()` = `coalesce(rule_score,
+    final_score)` 다. 원시 `final_score` 로 거르면 주문 파이프라인은 80점으로 취급해
+    주문을 내는 종목이 화면에서는 45점으로 숨는다 — 화면과 주문이 어긋난다.
+    """
+    client, factory = ctx
+    row = _snapshot("000001", 45.0, "KOSPI")
+    row.rule_score = 80.0
+    row.ai_scoring_mode = "rerank"
+    _seed_snapshots(factory, [row])
+    _seed_user(factory, monkeypatch, "rerankuser", {"candidate_min_score": 50.0})
+
+    tickers = [c["ticker"] for c in client.get("/api/v1/candidates").json()["candidates"]]
+    assert tickers == ["000001"]
+
+
+def test_min_score_filter_uses_final_score_when_ai_off(ctx, monkeypatch) -> None:
+    """AI 가 꺼진 모드에서는 정본이 `final_score` 그대로다."""
+    client, factory = ctx
+    row = _snapshot("000002", 45.0, "KOSPI")
+    row.rule_score = 80.0
+    row.ai_scoring_mode = "off"
+    _seed_snapshots(factory, [row])
+    _seed_user(factory, monkeypatch, "offuser", {"candidate_min_score": 50.0})
+
+    assert client.get("/api/v1/candidates").json()["candidates"] == []

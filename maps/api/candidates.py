@@ -15,6 +15,7 @@ from maps.api.schemas import CandidateItem
 from maps.api.schemas import UserPreferences
 from maps.common.models import CandidateSnapshot, UniverseQualityLog
 from maps.common.user_prefs import resolve
+from maps.ops.candidate_selection import candidate_min_score_expression
 
 router = APIRouter(prefix="/api/v1/candidates", tags=["SCR-04 Candidates"])
 
@@ -72,7 +73,9 @@ def get_candidates(
     prefs = _viewer_prefs(request, db)
     if prefs is not None:
         if prefs.candidate_min_score is not None:
-            query = query.filter(CandidateSnapshot.final_score >= prefs.candidate_min_score)
+            # 주문 게이트(`ops/order_preview`·`ops/scheduler`)와 **같은 점수 컬럼**을 쓴다.
+            # 원시 final_score 로 거르면 rerank 모드에서 화면과 주문이 어긋난다.
+            query = query.filter(candidate_min_score_expression() >= prefs.candidate_min_score)
         if prefs.candidate_markets:
             query = query.filter(CandidateSnapshot.market.in_(prefs.candidate_markets))
     rows = (

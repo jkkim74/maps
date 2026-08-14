@@ -629,7 +629,7 @@
       <tr><td>성과 · MDD</td><td>불가 <span class="b b-mute">등급</span></td><td>내 계좌 <span class="b b-warn">미구현</span></td><td>운영 계좌</td></tr>
       <tr><td>리스크 한도 설정</td><td>불가</td><td>개인 한도 <span class="b b-warn">미구현</span></td><td>전역 한도</td></tr>
       <tr><td>킬스위치</td><td>불가</td><td>개인 스위치 <span class="b b-warn">미구현</span></td><td>전역 스위치</td></tr>
-      <tr><td>개인 설정</td><td>6키</td><td>6키 + 매매 설정</td><td>6키</td></tr>
+      <tr><td>개인 설정</td><td>3키</td><td>3키 + 매매 설정</td><td>3키</td></tr>
       <tr><td>운영 설정(<code>.env</code> 59개)</td><td>불가 <span class="b b-mute">권한</span></td><td>불가 <span class="b b-mute">권한</span></td><td>조회 <span class="b b-info">편집 미구현</span></td></tr>
       <tr><td>회원 관리</td><td>불가 <span class="b b-mute">권한</span></td><td>불가 <span class="b b-mute">권한</span></td><td>가능</td></tr>
       <tr><td>전략 승격 · 검증</td><td>불가 <span class="b b-mute">권한</span></td><td>불가 <span class="b b-mute">권한</span></td><td>가능</td></tr>
@@ -1255,9 +1255,9 @@
         <thead><tr><th>항목</th><th>키</th><th>타입</th><th>필수</th><th>기본값</th><th>검증 · 오류 문구</th></tr></thead>
         <tbody>
           <tr><td>시작 화면</td><td><code>landing_screen</code></td><td>셀렉트</td><td>예</td><td><code>stock-analysis</code></td><td>내 등급에 열린 화면만 목록에 나온다</td></tr>
-          <tr><td>후보 최소 점수</td><td><code>candidate_min_score</code></td><td>숫자</td><td>아니오</td><td>전역 <code>MAPS_CANDIDATE_MIN_SCORE</code></td><td>0 이상 / “0 이상 숫자를 입력하세요.”</td></tr>
+          <tr><td>후보 최소 점수</td><td><code>candidate_min_score</code></td><td>숫자</td><td>아니오</td><td>없음(=필터 미적용)</td><td>0 이상 / “0 이상 숫자를 입력하세요.”</td></tr>
           <tr><td>표시할 시장</td><td><code>candidate_markets</code></td><td>체크박스</td><td>아니오</td><td>전체(빈 목록)</td><td><code>KOSPI</code>·<code>KOSDAQ</code> 만</td></tr>
-          <tr><td>현재 비밀번호</td><td>—</td><td>비밀번호</td><td>예</td><td>—</td><td>”현재 비밀번호가 올바르지 않습니다.”</td></tr>
+          <tr><td>현재 비밀번호</td><td>—</td><td>비밀번호</td><td>예</td><td>—</td><td>“현재 비밀번호가 올바르지 않습니다.”</td></tr>
           <tr><td>새 비밀번호</td><td>—</td><td>비밀번호</td><td>예</td><td>—</td><td>8자 이상 / “새 비밀번호는 8자 이상이어야 합니다.”</td></tr>
         </tbody>
       </table></div>

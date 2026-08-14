@@ -34,10 +34,15 @@ common/
 
 | 함수 | 설명 |
 |---|---|
-| `resolve(user, settings)` | 저장된 설정을 검증해 반환. 없거나 깨졌으면 전역 기본값 |
+| `resolve(user, settings)` | 저장된 설정을 검증해 반환. 없거나 깨졌으면 `UserPreferences` 스키마 기본값 |
 | `daily_analysis_limit(user)` | 계정별 하루 분석 허용 횟수. 관리자는 `-1`(무제한) |
 | `analysis_used_today(db, user)` | 오늘(KST) 사용량 |
 | `analysis_quota_exceeded(db, user)` | 한도 초과 여부 |
+
+> ⚠️ **전역 `.env` 값으로 폴백하지 않는다.** `candidate_min_score` 를 전역
+> `MAPS_CANDIDATE_MIN_SCORE` 로 채우면 설정한 적 없는 사용자에게도 화면 필터가 걸리고
+> **화면 필터와 주문 게이트가 한 값으로 묶인다.** 미설정 = 필터 없음이다.
+> `ops/order_preview.py`·`ops/scheduler.py` 의 전역값 사용은 주문 게이트라 별개다.
 
 > ⚠️ 한도 확인은 **Bedrock 을 호출하기 전에** 해야 한다. 비용은 호출 순간 발생한다.
 > 사용량은 `stock_analysis_history` 행 수로 세며 경계는 KST 자정이다

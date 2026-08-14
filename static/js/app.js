@@ -15,6 +15,18 @@ async function apiFetch(path) {
   return res.json();
 }
 
+// 부가 정보 조회용. 실패하면 null 을 돌려주고 **로그인으로 보내지 않는다.**
+// `apiFetch` 는 401 에서 throw 보다 먼저 리다이렉트해서 try/catch 로 못 막는다 —
+// 인증이 꺼진 배포에서는 `/users/me` 가 401 이라 화면이 통째로 튄다.
+async function apiFetchQuiet(path) {
+  try {
+    const res = await fetch('/api/v1' + path);
+    return res.ok ? await res.json() : null;
+  } catch (_) {
+    return null;
+  }
+}
+
 async function apiPost(path, body) {
   const res = await fetch('/api/v1' + path, {
     method: 'POST',
@@ -451,8 +463,26 @@ async function loadCandidates() {
         ${aiKpi}
       </div>`;
 
+    // 개인 필터 배지 — 필터로 목록이 **전부** 걸러진 경우에도 원인과 해제 경로를
+    // 보여야 하므로 빈 목록 early return 보다 앞에서 만든다.
+    let filterBadge = '';
+    const me = await apiFetchQuiet('/users/me');
+    if (me) {
+      const p = me.preferences || {};
+      const parts = [];
+      if (p.candidate_min_score != null) parts.push(`점수 ≥ ${p.candidate_min_score}`);
+      if (p.candidate_markets && p.candidate_markets.length) parts.push(p.candidate_markets.map(esc).join('·'));
+      if (parts.length) {
+        filterBadge = `<div id="candidates-filter-badge" class="text-muted mb-16" style="font-size:12px">
+          내 필터 적용 중: ${parts.join(' / ')} · <a href="/settings">해제</a>
+          <span> — 위 집계는 필터 이전의 파이프라인 값입니다</span>
+        </div>`;
+      }
+    }
+
     if (!d.candidates || d.candidates.length === 0) {
-      empty('candidates-area', '후보 스냅샷 없음');
+      empty('candidates-area', filterBadge ? '내 필터 조건에 맞는 후보가 없습니다' : '후보 스냅샷 없음');
+      if (filterBadge) document.getElementById('candidates-area').insertAdjacentHTML('afterbegin', filterBadge);
       return;
     }
 
@@ -487,23 +517,6 @@ async function loadCandidates() {
         <td class="mono">${c.estimated_qty ?? '—'}</td>
       </tr>`;
     }).join('');
-
-    let filterBadge = '';
-    try {
-      const me = await apiFetch('/users/me');
-      const p = me.preferences || {};
-      const parts = [];
-      if (p.candidate_min_score != null) parts.push(`점수 ≥ ${p.candidate_min_score}`);
-      if (p.candidate_markets && p.candidate_markets.length) parts.push(p.candidate_markets.map(esc).join('·'));
-      if (parts.length) {
-        filterBadge = `<div id="candidates-filter-badge" class="text-muted mb-16" style="font-size:12px">
-          내 필터 적용 중: ${parts.join(' / ')} · <a href="/settings">해제</a>
-          <span> — 위 집계는 필터 이전의 파이프라인 값입니다</span>
-        </div>`;
-      }
-    } catch (e) {
-      filterBadge = '';   // ponytail: 배지 실패로 후보 목록을 막지 않는다
-    }
 
     document.getElementById('candidates-area').innerHTML = filterBadge + `
       <table>
