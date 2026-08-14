@@ -110,8 +110,14 @@ def _flow_observations(db: Session, ref_date: dt.date, total_turnover: float) ->
     if not rows or total_turnover <= 0:
         return None
     fields = ("foreign_net_value", "institutional_net_value", "individual_net_value")
-    if any(any(getattr(row, field) is None for field in fields) for row in rows):
+    # NULL 은 "pykrx 가 그 종목·투자자 유형을 결과에 넣지 않았다" 는 뜻이지 수집 실패가
+    # 아니다(우선주·저유동성 종목에 흔하다). 집계에서 0 으로 더한다. 어떤 필드가
+    # **전 행에서** 결측일 때만 그 투자자 프레임 자체가 오지 않은 것으로 보고 막는다.
+    measured = {field: sum(1 for row in rows if getattr(row, field) is not None) for field in fields}
+    if min(measured.values()) == 0:
+        logger.warning("Investor flow field entirely missing [%s]: %s", ref_date, measured)
         return None
+    logger.info("Investor flow coverage [%s]: rows=%d %s", ref_date, len(rows), measured)
     totals = {field: sum(float(getattr(row, field) or 0.0) for row in rows) for field in fields}
     return {
         "foreign_score": _clamp(50.0 + totals["foreign_net_value"] / total_turnover * 500.0),

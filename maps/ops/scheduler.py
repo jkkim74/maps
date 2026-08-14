@@ -1462,11 +1462,14 @@ class OperationalPipeline:
         )
         flows: dict[str, tuple[float, float]] = {}
         for row in flow_rows:
-            if row.foreign_net_value is None or row.institutional_net_value is None:
+            # NULL 은 pykrx 가 그 종목·투자자 유형을 결과에 넣지 않았다는 뜻이라 0 으로 더한다.
+            # 건너뛰면 우선주·저유동성 종목 20%가 supply_demand_score 에서 조용히 빠진다
+            # (`market/feeds.py:_flow_observations` 와 같은 의미론을 유지한다).
+            if row.foreign_net_value is None and row.institutional_net_value is None:
                 continue
             net, count = flows.get(row.ticker, (0.0, 0.0))
             flows[row.ticker] = (
-                net + float(row.foreign_net_value) + float(row.institutional_net_value),
+                net + float(row.foreign_net_value or 0.0) + float(row.institutional_net_value or 0.0),
                 count + 1.0,
             )
 

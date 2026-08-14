@@ -112,6 +112,15 @@ pykrx(국내) + yfinance(해외) 통합 주봉 종가 제공.
 > `ops/score_readiness.py` 가 커버리지 미달을 보고 신규 매수를 막는다.
 > 채워 넣는 순간 게이트가 조용히 열린다.
 >
+> 🔴 **`investor_flow_snapshot` 의 NULL 은 수집 실패가 아니다.** pykrx 가 그 종목·투자자
+> 유형을 결과에 넣지 않았다는 뜻이고(우선주·저유동성 종목에 흔하다), 집계에서 **0 으로
+> 더한다**. `_flow_observations()` 가 `None` 을 돌려주는 경우는 **그 날짜 행이 0건**이거나
+> **세 필드 중 하나가 전 행에서 결측**일 때뿐이다.
+> "행마다 하나라도 NULL 이면 그날 포기" 로 되돌리지 말 것 — 2026-08-13 실측 기준 2,622행
+> 중 기관 NULL 이 538행(20.5%)이라 **매일 발동해 커버리지가 0.65 에 고정되고 신규 매수가
+> 전면 차단된다**(2026-08-12~14 실제 사고). 같은 의미론을 `ops/scheduler.py` 의
+> `_build_ticker_contexts` 수급 합산도 공유한다.
+>
 > ⚠️ 뉴스 검색은 **Naver API Hub**(`naverapihub.apigw.ntruss.com`, `X-NCP-APIGW-*` 헤더)를
 > 쓴다. 설정 변수명은 `NAVER_CLIENT_ID`/`NAVER_CLIENT_SECRET` 이지만 값은 **NCP API Hub 키**다.
 > 구 `openapi.naver.com` 키는 동작하지 않는다.
