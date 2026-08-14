@@ -27,9 +27,6 @@ function fillForm(data) {
   document.querySelectorAll('.pref-market').forEach((box) => {
     box.checked = markets.includes(box.value);
   });
-  $('pref-notify-push').checked = !!prefs.notify_push;
-  $('pref-notify-telegram').checked = !!prefs.notify_telegram;
-  $('pref-telegram-chat').value = prefs.telegram_chat_id || '';
 }
 
 function readForm() {
@@ -38,9 +35,6 @@ function readForm() {
     landing_screen: $('pref-landing').value,
     candidate_min_score: score === '' ? null : Number(score),
     candidate_markets: Array.from(document.querySelectorAll('.pref-market:checked')).map((b) => b.value),
-    notify_push: $('pref-notify-push').checked,
-    notify_telegram: $('pref-notify-telegram').checked,
-    telegram_chat_id: $('pref-telegram-chat').value.trim() || null,
   };
 }
 

@@ -4,20 +4,38 @@ from __future__ import annotations
 
 import datetime
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from maps.api.auth import current_identity, load_user
 from maps.api.deps import get_db
 from maps.api.schemas import CandidatesResponse
 from maps.api.schemas import CandidateItem
+from maps.api.schemas import UserPreferences
 from maps.common.models import CandidateSnapshot, UniverseQualityLog
+from maps.common.user_prefs import resolve
+from maps.ops.candidate_selection import candidate_min_score_expression
 
 router = APIRouter(prefix="/api/v1/candidates", tags=["SCR-04 Candidates"])
 
 
+def _viewer_prefs(request: Request, db: Session) -> UserPreferences | None:
+    """요청자의 개인 표시 설정. 필터를 걸지 않아야 하면 None.
+
+    인증이 꺼진 환경은 `ANONYMOUS_ADMIN`(id=None)이라 필터 대상이 아니다.
+    계정을 못 찾는 경우도 조회 화면이므로 fail-safe 로 전체를 보여 준다.
+    """
+    identity = current_identity(request)
+    if identity.id is None:
+        return None
+    user = load_user(db, identity.username)
+    return resolve(user) if user is not None else None
+
+
 @router.get("", response_model=CandidatesResponse)
 def get_candidates(
+    request: Request,
     strategy_id: str = Query(default="pullback_v3"),
     db: Session = Depends(get_db),
 ) -> CandidatesResponse:
@@ -48,13 +66,20 @@ def get_candidates(
         .scalar()
         or 0
     )
+    query = db.query(CandidateSnapshot).filter(
+        CandidateSnapshot.strategy_id == strategy_id,
+        CandidateSnapshot.ref_date == latest_date,
+    )
+    prefs = _viewer_prefs(request, db)
+    if prefs is not None:
+        if prefs.candidate_min_score is not None:
+            # 주문 게이트(`ops/order_preview`·`ops/scheduler`)와 **같은 점수 컬럼**을 쓴다.
+            # 원시 final_score 로 거르면 rerank 모드에서 화면과 주문이 어긋난다.
+            query = query.filter(candidate_min_score_expression() >= prefs.candidate_min_score)
+        if prefs.candidate_markets:
+            query = query.filter(CandidateSnapshot.market.in_(prefs.candidate_markets))
     rows = (
-        db.query(CandidateSnapshot)
-        .filter(
-            CandidateSnapshot.strategy_id == strategy_id,
-            CandidateSnapshot.ref_date == latest_date,
-        )
-        .order_by(CandidateSnapshot.final_score.desc(), CandidateSnapshot.ticker.asc())
+        query.order_by(CandidateSnapshot.final_score.desc(), CandidateSnapshot.ticker.asc())
         .limit(200)
         .all()
     )
@@ -66,7 +91,7 @@ def get_candidates(
     )
     return CandidatesResponse(
         strategy_id=strategy_id,
-        universe_count=quality.total_candidates if quality else len(rows),
+        universe_count=quality.total_candidates if quality else final_count,
         s5_excluded=0,
         missing_count=quality.excluded_count if quality else 0,
         final_count=final_count,

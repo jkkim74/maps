@@ -1119,11 +1119,11 @@ class UserPreferences(BaseModel):
     model_config = {"extra": "forbid"}
 
     landing_screen: str = "stock-analysis"
-    candidate_min_score: float | None = None      # 후보 화면 표시 필터 (주문 게이트 아님)
-    candidate_markets: list[str] = []             # 빈 목록 = 전체
-    notify_push: bool = False
-    notify_telegram: bool = False
-    telegram_chat_id: str | None = None           # 개인 대상 (전역 chat id 와 별개)
+    # 후보 화면 표시 필터 (주문 게이트 아님). 미설정(None) = 필터 없음.
+    candidate_min_score: float | None = Field(default=None, ge=0.0)
+    # 빈 목록 = 전체. 값이 그대로 `CandidateSnapshot.market` 조회에 들어가므로
+    # 검증하지 않으면 "kospi" 같은 오타가 후보 목록을 영구히 비운다.
+    candidate_markets: list[Literal["KOSPI", "KOSDAQ"]] = []
 
 
 class UserSummary(BaseModel):

@@ -10,8 +10,13 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
+import maps.common.models  # noqa: F401
 from maps.common.constants import STRATEGY_GROUP_MAP
+from maps.common.db import Base
 from maps.strategy.catalog import (
     STRATEGY_CLASSES,
     STRATEGY_PROSE,
@@ -114,9 +119,36 @@ def test_display_name_falls_back_to_id():
 
 @pytest.fixture
 def client() -> TestClient:
-    from main import app
+    """전략 API 테스트용 클라이언트.
 
-    return TestClient(app)
+    `get_db` 를 인메모리 SQLite 로 오버라이드한다. 오버라이드하지 않으면 개발용
+    `maps.db` 를 직접 쳐서, 그 파일이 없는 새 클론·새 worktree 의 첫 실행에서만
+    `no such table: promotion_history` 로 실패한다(그 뒤로는 파일이 생겨 스스로 숨는다).
+    """
+    from main import app
+    from maps.api.deps import get_db
+
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+    def override_get_db():
+        db = factory()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_db] = override_get_db
+    yield TestClient(app)
+
+    app.dependency_overrides.pop(get_db, None)
+    Base.metadata.drop_all(engine)
+    engine.dispose()
 
 
 def test_guide_endpoint_returns_prose_and_text(client: TestClient):
