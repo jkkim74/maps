@@ -83,14 +83,28 @@ candidate_score_ready -> (False, 'market_score_incomplete')
 
 **다음 거래일은 2026-08-18(화)** 다 — 8/15 광복절이 토요일이라 8/17 이 대체공휴일이다.
 
-### 확인해야 할 것 (순서대로)
+### ✅ 실효 확인 완료 (8/14 16:56~17:00 KST)
 
-1. **오늘 16:50 이후** — `market_regime_log` 의 8/14 행이 `coverage=1.0 / complete / ready=true`
-   로 갱신됐는지. `source` 가 `candidate_generation` 으로 바뀌어야 한다.
-2. `journalctl -u maps --since today | grep 'Investor flow coverage'` → 필드별 non-NULL 건수
-3. `data_collection` 잡 details 의 `investor_flow_count` 가 수천 단위인지
-4. **8/18(화) 08:55 이후** — `order_cycle` details 의 `blocked_by_readiness` 가 `{}` 이고
-   `submitted_buy_orders` 가 0 이 아닌지. 남은 차단이 있으면 이제 사유와 건수가 찍힌다.
+1. **`market_regime_log` 8/14 = `coverage 1.0 / complete / ready=true`**, `source` 가
+   `order_cycle` → `candidate_generation` 으로 갱신됐고 `measured_factors` 에 5개가 전부 들어왔다.
+   `current_market_score_ready(2026-08-18)` = `(True, None)` — 다음 거래일 주문 게이트 통과.
+2. 신규 로그가 **원인을 재확인해 줬다**:
+   `Investor flow coverage [2026-08-14]: rows=2630 {'foreign_net_value': 2565,
+   'institutional_net_value': 2073, 'individual_net_value': 2630}`
+   → 오늘도 기관 NULL 이 **557건(21.2%)** 이다. 옛 가드였으면 **오늘도 차단**됐다.
+3. `data_collection` details 에 `"investor_flow_count": 2630, "investor_flow_error": null`.
+4. 8/14 후보는 **전 전략 `market_score_ready=true`** (ath_breakout_v1 77/77, donchian_v2 93/93 등).
+5. **주문 후보가 0건 → 122건**이 됐다. `blocked_by_readiness` 는
+   `{'candidate_score_incomplete': 3}` 뿐이고, 그 3건도 **사유와 건수가 찍힌다**(관측성 실효).
+6. 주문예정 화면에서 **`market_score_incomplete` 가 완전히 사라졌다.** 남은 사유는
+   `preferred_regime_mismatch:mixed` 9건과 `no_entry_signal` 1건이다.
+
+> ⚠️ **8/18 에 주문이 나갈지는 별개 문제다.** 오늘 장세가 `strong` → **`mixed`** 로 바뀌면서
+> `entry_limit_ratio` 가 0.5 → 0.25 가 됐고, 돌파 전략(`ath_breakout_v1/v2`)은 `strong` 선호라
+> `preferred_regime_mismatch:mixed` 로 막힌다. 주문 가능 단계는 `ath_breakout_v1` 과
+> `donchian_v2` 둘뿐인데(나머지는 `research`), donchian 쪽 상위 후보는 `no_entry_signal` 이었다.
+> **이건 점수 결함이 아니라 설계된 장세 게이트다.** 8/18 08:55 에 장세를 다시 분석하므로
+> 그때 라벨에 따라 달라진다.
 
 ### 별건으로 남긴 것 — 역발상 전략은 구조적으로 승격 불가
 
@@ -548,7 +562,7 @@ B 는 여전히 스펙·계획만 있고 미착수다.
 > 운영 서버 HEAD = **`1f3dd86`**, alembic **`0024_app_user`**(head — A 는 마이그레이션
 > 없음), `maps=active`, 내·외부 `/health` 200. 개인화 2차 A(개인 후보 필터)와
 > 시장 점수 차단 수정까지 배포 완료다. B(운영 설정 편집)는 미착수.
-> **오늘 16:50 이후 8/14 행의 coverage 1.0 확인이 남아 있다** — 맨 위 절 참고.
+> 8/14 16:56 확인: 8/14 행 coverage **1.0**, 주문 후보 **0 → 122건**. 맨 위 절 참고.
 > 아래 줄들은 그 이전 상태 기록이라 값이 낡았다 — 현재 상태는 이 두 줄이 정본이다.
 > 종목분석→전략매매 구현과 8/11 가격 인계·팝업 수정은 운영 배포 완료 상태다.
 > 기능 커밋은 `8214235`~`b00c029`, 신규 migration head는 **`0021_analysis_pick_split_plan`**이다.
@@ -597,7 +611,7 @@ Sharpe 왜곡 수정(8/2)과 자동 강등(8/2)이 8/3에 처음 실측됐다.
   8/12 예약해 두고 미룬 사이, 커버리지가 0.65 에 고정돼 **사흘간 신규 매수가 전량 막혀
   있었다**. 원인은 수급 NULL 가드였고 8/14 에 수정·배포·과거행 복구까지 마쳤다.
   8/12·8/13 행은 `coverage=1.0`·`score_ready=true` 로 복구됐다.
-  **남은 확인: 오늘 16:50 이후 8/14 행이 자동으로 1.0 이 되는지, 8/18 08:55 주문이 나가는지.**
+  **8/14 16:56 실효 확인 완료** — 8/14 행 자동 1.0, 주문 후보 122건. 8/18 08:55 주문 여부만 남았다.
   상세는 맨 위 "8/14 시장 점수 전면 차단" 절.
   이 확인 전에는 눌림목 전략을 mock 후보로 올리거나 신규 주문 게이트를 끄지 말 것.
 - ✅ **`/settings` 의 동작하지 않는 스위치 3개 해소(8/14 배포).** `candidate_min_score`·
