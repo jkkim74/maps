@@ -119,6 +119,48 @@ candidate_score_ready -> (False, 'market_score_incomplete')
 참고로 이번 수정 후에도 주문 가능 전략은 준비돼 있다 — 8/13 실측 `ath_breakout_v1` 72건 중
 71건, `donchian_v2` 79건 전부가 후보 단계 `score_ready=true` 였다.
 
+#### 4개 컴포넌트 구현 사전조사 (8/14, 착수 전)
+
+공수를 가르는 건 코드가 아니라 **데이터 가용성**이고 4개가 서로 많이 다르다.
+
+| 컴포넌트 | 가중치 | 데이터 | 공수 |
+|---|---|---|---|
+| `technical_bottom_score` | 0.10 | OHLCV만 — 전략이 이미 52주 고점 대비 하락·RSI(14)·MA20/60 을 계산한다 | 작음 |
+| `crowd_neglect_score` | 0.20 | OHLCV만 — 거래대금 고갈도 | 작음 |
+| `accumulation_flow_score` | 0.15 | `investor_flow_snapshot`. 배선은 이미 있다(`supply_demand_score` 와 같은 경로) | 중간 |
+| `earnings_revision_score` | **0.25** | **없다** — 아래 참조 | 결정 필요 |
+
+앞의 둘은 기존 `PULLBACK`/`BREAKOUT` 분기와 같은 모양으로 `score_features.py` 에
+`CONTRARIAN_QUALITY` 분기 하나 추가하면 된다(합쳐 40~60줄 수준).
+
+**제약 1 — 수급 이력이 10일뿐이다.** `investor_flow_snapshot` 은 8/3~8/14 10거래일이다.
+매집 플로우는 통상 20~60일을 본다. 짧은 창(5~10일)이면 오늘 당장 되고, 제대로 하려면
+`backfill_score_feeds.py` 로 백필해야 한다 — pykrx 는 하루당 6회 호출이라 60일이면 ~360회.
+**코드가 아니라 운영 작업**이고 KRX 로그인 가드 때문에 나눠 돌려야 한다.
+> WFA·Plateau·MC 는 OHLCV 만 쓰므로 이 이력 부족이 **승격 검증을 막지는 않는다.**
+> 후보 점수 창에만 영향이 있다.
+
+**제약 2 — `earnings_revision` 은 정의부터 정해야 한다.** 통상 이 지표는 애널리스트
+**컨센서스 전망치 리비전**인데 MAPS 에 컨센서스 데이터가 없다. `security_fundamental` 은
+pykrx 의 **후행** PER/PBR/EPS/BPS 뿐이다.
+
+다만 그 테이블에 **5,677,694행 / 2,982종목 / 2016-01-04~2026-08-14 (2,604거래일)** 이
+쌓여 있다(8/14 실측). pykrx EPS 는 후행 12개월이라 실적 발표마다 계단식으로 바뀌므로
+**후행 EPS 변화율**은 오늘 당장 계산 가능하다. 단 그건 "컨센서스 리비전"이 아니라
+"실적 개선 방향"이다. **가중치 0.25 로 가장 큰 항목이라 조용히 바꿔치기하면 안 된다.**
+
+**견적 (사용자 결정 대기)**
+
+- **시나리오 A — 후행 EPS 대용 + 기존 수급 창 재사용**: 집중 세션 한 번(반나절 수준).
+  구조 작업은 `strategy_extra_scores()` 시그니처를 넓혀 EPS 이력 점수를 주입하는 것 하나다
+  (`supply_demand_score` 와 같은 모양. `FundamentalRepository.historical_avg` 가 이미 있다).
+- **시나리오 B — 실제 컨센서스 소스 연결**: 훨씬 크다. 소스 조사(FnGuide·Naver 증권·DART),
+  어댑터 신규 작성, 수집 잡, 스키마·마이그레이션, 이용약관 확인. 외부 의존이라 불확실성도 크다.
+
+부수 효과: 5개가 다 측정되면 **`final_score=100` 랭킹 왜곡이 같이 해소된다.**
+다만 구현해도 즉시 주문으로 이어지진 않는다 — `research` 단계이고 `preferred_regimes` 가
+`weak`/`mixed` 라 승격 게이트(점수 60 + Sharpe ≥ 0)를 따로 통과해야 한다.
+
 ## 8/14 A(개인 후보 필터) 최종 리뷰·병합·운영 배포 완료
 
 운영 HEAD `eac342c` → **`2ef593f`**. alembic 은 **`0024_app_user (head)` 그대로**다
