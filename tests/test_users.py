@@ -320,6 +320,47 @@ def test_general_user_sees_only_own_analysis_history(client: TestClient) -> None
     assert set(admin_tickers) == {"005930", "000660"}
 
 
+def test_pdf_download_is_scoped_to_the_owner(client: TestClient) -> None:
+    """남의 분석 이력 PDF 는 404 다 — 상세 조회와 같은 경계여야 한다."""
+    import datetime
+
+    from maps.common import db as db_module
+    from maps.common.models import AppUser, StockAnalysisHistory
+
+    session = db_module.SessionLocal()
+    try:
+        member_id = session.query(AppUser).filter(AppUser.username == "member").one().id
+        operator_row = StockAnalysisHistory(
+            owner_user_id=None, ticker="005930", name="삼성전자",
+            ref_date=datetime.date(2026, 8, 13), snapshot={}, narrative="",
+            trade_plan={}, recommendation="WATCH",
+        )
+        own_row = StockAnalysisHistory(
+            owner_user_id=member_id, ticker="000660", name="SK하이닉스",
+            ref_date=datetime.date(2026, 8, 13), snapshot={}, narrative="",
+            trade_plan={}, recommendation="BUY",
+        )
+        session.add_all([operator_row, own_row])
+        session.commit()
+        operator_id, own_id = operator_row.id, own_row.id
+    finally:
+        session.close()
+
+    login(client, "member", _USER_PW)
+    assert client.get(
+        f"/api/v1/stock-analysis/history/{operator_id}/pdf"
+    ).status_code == 404
+    mine = client.get(f"/api/v1/stock-analysis/history/{own_id}/pdf")
+    assert mine.status_code == 200
+    assert mine.content.startswith(b"%PDF")
+
+    client.get("/logout")
+    login(client, "admin", _ADMIN_PW)
+    assert client.get(
+        f"/api/v1/stock-analysis/history/{operator_id}/pdf"
+    ).status_code == 200
+
+
 def test_removed_notification_prefs_are_rejected(client: TestClient) -> None:
     """삭제한 알림 키는 extra=forbid 로 거절된다 — 조용히 무시되면 안 된다."""
     login(client, "member", _USER_PW)

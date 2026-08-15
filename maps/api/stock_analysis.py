@@ -6,10 +6,11 @@ import asyncio
 import datetime
 import json
 import logging
+import urllib.parse
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -230,6 +231,42 @@ def get_analysis_history(
         narrative=row.narrative,
         trade_plan=row.trade_plan,
         latest_reference_close=row.latest_reference_close,
+    )
+
+
+@router.get("/history/{history_id}/pdf")
+def download_analysis_history_pdf(
+    history_id: int, request: Request, db: Session = DbDep
+) -> Response:
+    """Return one stored analysis as a downloadable PDF.
+
+    저장 원본만 담는다 — 현재가 오버레이는 넣지 않는다. 소유권 검사는 상세 조회와
+    같은 `_may_read` 를 탄다.
+    """
+    row = db.get(StockAnalysisHistory, history_id)
+    if row is None or not _may_read(request, db, row):
+        raise HTTPException(status_code=404, detail="분석 이력을 찾을 수 없습니다.")
+
+    from maps.stock_analysis.pdf import FontUnavailableError, render_history_pdf
+
+    try:
+        body = render_history_pdf(row)
+    except FontUnavailableError as exc:
+        logger.error("종목분석 PDF 폰트 없음: %s", exc)
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    ref_date = row.ref_date.strftime("%Y%m%d")
+    filename = f"종목분석_{row.ticker}_{row.name}_{ref_date}.pdf"
+    ascii_name = f"stock_analysis_{row.ticker}_{ref_date}.pdf"
+    quoted = urllib.parse.quote(filename)
+    return Response(
+        content=body,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="{ascii_name}"; filename*=UTF-8\'\'{quoted}'
+            ),
+        },
     )
 
 

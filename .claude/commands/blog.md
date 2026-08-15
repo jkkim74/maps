@@ -173,5 +173,23 @@ ai_contrarian_anti_thesis / valuation_margin_reason과 price_source도 기록한
 
 ## 출력
 
-Write로 `blog/<ref_date>.txt`에 저장한다(경로는 `$ARGUMENTS`의 두 번째 인자가 있으면 그것).
-저장 후 파일 경로와 글자 수만 보고한다.
+두 곳에 같은 원고를 남긴다. 둘 다 끝나야 작성이 끝난 것이다.
+
+1. Write로 `blog/<ref_date>.txt`에 저장한다
+   (경로는 `$ARGUMENTS`의 두 번째 인자가 있으면 그것).
+2. **운영 서버 `/opt/maps/diary/<YYYYMMDD>.txt` 에도 같은 내용을 올린다.**
+   파일명은 `ref_date`에서 하이픈을 뺀 8자리다(`2026-08-16` → `20260816.txt`).
+   1번의 `blog/<ref_date>.txt`와 날짜 표기가 다르니 주의한다.
+
+```powershell
+# SSH 키 경로는 PC마다 다르다: 집 PC D:\maps\, 회사 PC D:\ssh_maps\
+$key = "D:\maps\LightsailDefaultKey-ap-northeast-2.pem"
+ssh -i $key ubuntu@3.37.117.246 "mkdir -p /opt/maps/diary"
+scp -i $key blog\<ref_date>.txt ubuntu@3.37.117.246:/opt/maps/diary/<YYYYMMDD>.txt
+```
+
+`mkdir -p`라 디렉터리가 이미 있어도 그대로 둔다. 같은 날짜 파일이 있으면 덮어쓰므로,
+다시 쓰는 것이 맞는지 먼저 확인한다. `scp` 는 로컬 파일을 그대로 올리므로 원고를
+두 번 만들지 않는다. 업로드가 실패하면 성공한 것처럼 보고하지 않는다.
+
+저장 후 두 경로와 글자 수를 보고한다.

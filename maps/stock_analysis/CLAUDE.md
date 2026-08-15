@@ -9,7 +9,8 @@ DART 재무제표를 모아 AI 원고를 만들고, 그 결과를 **불변 이�
 stock_analysis/
 ├── __init__.py   # 빈 패키지 마커
 ├── analyzer.py   # 시세·지표·재무 수집 + Bedrock 스트리밍 분석
-└── history.py    # 분석 이력 저장 · 현재가 오버레이 갱신
+├── history.py    # 분석 이력 저장 · 현재가 오버레이 갱신
+└── pdf.py        # 저장된 이력 → PDF 바이트 (reportlab)
 ```
 
 ## analyzer.py
@@ -42,6 +43,26 @@ stock_analysis/
 
 > ⚠️ `created_at` 은 **UTC naive** 다. API 는 명시적 UTC 로 보정해서 내보내야 브라우저
 > KST 표시가 9시간 어긋나지 않는다.
+
+## pdf.py — 이력 내려받기
+
+`render_history_pdf(row) -> bytes`. `GET /api/v1/stock-analysis/history/{id}/pdf` 가 쓴다.
+
+> ⚠️ **현재가 오버레이(`latest_*`·`price_refreshed_at`)를 읽지 않는다.** 저장 시점 값과
+> 오늘 값이 한 장에 섞이면 무슨 기준의 문서인지 알 수 없어진다. 렌더러는 결정적이라
+> 오버레이만 갱신하면 바이트가 그대로다 — `tests/test_stock_analysis_pdf.py` 가 이걸로
+> 경계를 지킨다.
+
+> ⚠️ 한글 폰트를 못 찾으면 `FontUnavailableError` 로 **실패한다**(라우터에서 503).
+> 폰트 없이 만들면 한글이 전부 빈 네모로 나가는데 그건 알아채기 어려운 실패다.
+> 후보 경로는 운영 서버 `nanum`, 개발 Windows `malgun`, macOS `AppleGothic` 이고,
+> 마지막 폴백은 **pykrx 가 동봉한 `NanumBarunGothic.ttf`** 다 — pykrx 는 필수 의존성이라
+> 시스템 폰트가 하나도 없는 상자에서도 이 경로는 있다.
+
+렌더러가 reportlab 인 이유: WeasyPrint 는 GTK/pango 가 필요해 개발 Windows 에서 import 가
+안 되고, xhtml2pdf 는 `@font-face` 임시파일 처리가 Windows 에서 깨진다. 둘 다 로컬 테스트가
+불가능해서 순수 파이썬인 reportlab 을 골랐다. 한글 TTF 를 **PDF 에 임베드**하므로 받는 쪽
+뷰어에 폰트가 없어도 보인다.
 
 ## 인접 경계
 

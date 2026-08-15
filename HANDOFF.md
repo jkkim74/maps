@@ -1,72 +1,67 @@
 # HANDOFF
 
-## 8/14 종목분석 상세 PDF 내려받기 — 🔴 설계안 제시 완료, **승인 대기**
+## 8/16 종목분석 상세 PDF 내려받기 — ✅ 구현 완료, **미배포**
 
-**여기가 작업 중단 지점이다. 코드는 한 줄도 쓰지 않았다.**
+승인받고 구현했다. 전체 **915 passed**(기준 906 + 신규 9). 마이그레이션 없음.
+**아직 커밋·배포하지 않았다.**
 
-> ⚠️ **승인 없이 구현을 시작하지 말 것.** `superpowers:brainstorming` 의 bounded 경로로
-> 진행 중이고, 그 규약은 설계 승인 전 구현 착수를 금지한다. 아래 설계안을 사용자에게
-> 다시 제시해 "예" 를 받은 뒤에 시작한다.
+### 🔴 배포 시 `pip install -r requirements.txt` 필수
 
-### 목표
+`reportlab>=4.1.0` 이 새로 들어간다. 운영 서버에 **없는 것을 확인했다**
+(`/opt/maps/.venv/bin/python -c 'import reportlab'` → ModuleNotFoundError).
+빼먹으면 PDF 버튼이 500 으로 죽는다. 16:00~16:45 KST 배포 금지는 그대로다.
 
-종목분석 상세 내용을 PDF 로 변환해 내려받는 기능. 분류는 **bounded** 다 —
-상세 화면(`/stock-analysis`)·데이터(`stock_analysis_history`)·상세 API 가 이미 있고
-거기에 내려받기를 붙이는 작업이라 스펙 문서 없이 대화 설계 + 승인으로 간다.
+### 렌더러가 WeasyPrint 가 아니다 — 설계 2번만 교체했다
 
-### 사용자가 고른 것
+설계서가 표시해 둔 "미확인 위험"이 실제로 터졌다. 다만 터진 쪽이 서버가 아니라
+**개발 PC** 였다.
 
-생성 방식 3안 중 **"서버 생성 + 차트 이미지 전송"** 을 골랐다.
-(나머지 2안: 서버 생성 후 차트 제외 / 브라우저 인쇄 CSS)
+| 후보 | 결과 |
+|---|---|
+| WeasyPrint | `pip install` 은 되지만 **Windows 에서 import 불가** — `libgobject-2.0-0` (GTK) 없음. 서버(리눅스)에서는 됐을 것이나 **로컬 테스트가 불가능**해진다 |
+| xhtml2pdf | 순수 파이썬이라 양 OS 설치는 되는데, `@font-face` 가 폰트를 임시파일로 복사한 뒤 다시 여는 구현이라 Windows 에서 `PermissionError` 로 깨진다 |
+| **reportlab** ✅ | 순수 파이썬, 두 OS 동일. 한글 TTF 를 직접 열어 **PDF 에 임베드**(`FontFile2` 확인) |
 
-### 조사로 확인한 사실 (설계 근거)
+설계서가 "실패하면 렌더러만 갈아끼우면 되고 나머지는 유효하다"고 적어 둔 그대로,
+엔드포인트·담는 내용·화면·테스트는 설계안 그대로 갔다. Jinja2 템플릿은 없어졌고
+차트는 인라인 SVG 대신 `reportlab.graphics` 폴리라인으로 그린다.
 
-- **서버에 한글 폰트 49종과 pango/cairo 가 이미 있다.** `fc-list :lang=ko` 49건,
-  `ldconfig` 에 libpango/libcairo 5건. stock_report 도구가 깔아둔 것으로 보인다.
-  → 서버 PDF 생성의 가장 큰 걸림돌인 폰트·시스템 라이브러리 문제가 없다. apt 작업 불필요.
-- **차트 데이터가 이미 서버에 있다.** `snapshot['기술적분석']['차트_6개월']` 이
-  `{date, close}` 배열이고, 화면(`static/js/stock-analysis.js:527-541`)은 그걸로
-  Plotly 선 차트를 그릴 뿐이다.
-  → **브라우저에서 이미지를 올릴 필요가 없다.** 사용자가 고른 안의 결과(차트 있는 서버 PDF)를
-  그대로 얻으면서 업로드 왕복이 사라지고, 고를 때 걸렸던 "저장된 이력을 화면 없이 받으면
-  차트가 빠진다" 는 구멍도 없어진다. **이 개선을 반영한 설계안을 제시한 상태다.**
-- 상세 API 는 `maps/api/stock_analysis.py:219 get_analysis_history` 이고
-  소유권 검사 `_may_read` 를 이미 탄다. 응답 스키마는
-  `schemas.py:886 StockAnalysisHistoryDetail` (`snapshot`, `narrative`, `trade_plan`,
-  `latest_reference_close`).
-- 화면 컨테이너는 `templates/_stock_analysis_panel.html` 의 `#sa-result` 와 `#sa-ai-card`.
-- `requirements.txt` 에 PDF 관련 의존성은 **없다**. `jinja2`·`pillow` 는 있다.
+> ⚠️ **HTML→PDF 엔진을 다시 검토하지 말 것.** 위 표가 그 결론이다. 이 저장소는
+> 개발이 Windows, 운영이 리눅스라 **양쪽에서 도는 렌더러만 후보**다.
 
-### 제시한 설계안 (승인 대기)
+### 만든 것
 
-1. **엔드포인트** `GET /api/v1/stock-analysis/history/{id}/pdf`
-   `application/pdf` + `Content-Disposition: attachment`. 기존 `_may_read` 소유권 검사를
-   그대로 태워 남의 이력은 404(개인정보 경계 유지). 파일명
-   `종목분석_005930_삼성전자_20260814.pdf` 를 RFC 5987 로 인코딩.
-2. **렌더러** 신규 `maps/stock_analysis/pdf.py` 의 `render_history_pdf(row) -> bytes`.
-   Jinja2 템플릿 `templates/pdf/stock_analysis.html` (인쇄용 `@page`, 한글 font-family)
-   → WeasyPrint. **차트는 인라인 SVG 로 직접 그린다** — WeasyPrint 가 SVG 를 렌더링하므로
-   차트 라이브러리를 새로 넣지 않는다.
-3. **담는 내용** 저장된 원본만. 종목명·코드·분석 시각·기술 기준일 / 6개월 차트 /
-   기술적분석 / 이동평균 / 밸류에이션 / 재무 3개년 / 매매계획 / AI 원고.
-   **현재가 오버레이는 제외한다** — 이력은 불변이고 현재가만 따로 갱신한다는 기존 설계
-   (`maps/stock_analysis/CLAUDE.md`)와 맞추기 위해서다. 저장 시점 값과 오늘 값이 섞이면
-   무슨 기준인지 알 수 없어진다. 대신 머리말에 분석 시각을 박는다.
-4. **화면** 상세 화면 상단에 `PDF 내려받기` 버튼 하나. 이력 목록 행에도 붙일 수 있으나
-   일단 상세에만 두기를 권했다.
-5. **의존성** `weasyprint` 1개 추가. **배포 시 `pip install -r requirements.txt` 필요**
-   (루트 CLAUDE.md 의 배포 노트 해당). 마이그레이션은 없다.
-6. **테스트** 반환 바이트가 `%PDF` 로 시작하는지 / 권한 없는 이력은 404 인지 /
-   차트 데이터가 비어도 안 깨지는지 / 한글 파일명 헤더가 유효한지.
-7. **미확인 위험** — **WeasyPrint 가 이 서버에서 실제로 설치되는지 확인하지 않았다.**
-   구현 첫 단계로 검증할 것. 실패하면 설계 2번(렌더러)만 갈아끼우면 되고 나머지는 유효하다.
+| 파일 | 내용 |
+|---|---|
+| `maps/stock_analysis/pdf.py` | `render_history_pdf(row) -> bytes` (신규) |
+| `maps/api/stock_analysis.py` | `GET /history/{id}/pdf` — `_may_read` 재사용, 폰트 없으면 503 |
+| `templates/_stock_analysis_panel.html` | `#sa-download-pdf` 앵커 |
+| `static/js/stock-analysis.js` | `_setPdfLink()` — 이력 상세를 열 때만 노출 |
+| `tests/test_stock_analysis_pdf.py` | 8건 (신규) |
+| `tests/test_users.py` | 소유권 404/200 경계 1건 추가 |
 
-### 다음 세션 재개 지침
+권한은 손대지 않았다 — `_USER_ALLOWED` 가 이미 `/api/v1/stock-analysis` 의 GET 을
+열어 두고 있고, 행 단위 소유권은 `_may_read` 가 본다.
 
-1. 위 설계안을 사용자에게 다시 제시하고 **승인을 받는다.** 승인 전 구현 금지.
-2. 승인되면 WeasyPrint 서버 설치 가능 여부부터 확인한다(`pip install --dry-run` 등).
-3. TDD 로 간다 — 실패 테스트 먼저. 이 저장소 규칙이다.
-4. 배포 시 `pip install -r requirements.txt` 를 빠뜨리지 말 것.
+### 설계보다 나아진 것 두 가지
+
+- **폰트 폴백에 pykrx 동봉 `NanumBarunGothic.ttf` 를 넣었다.** pykrx 는 필수 의존성이라
+  시스템 한글 폰트가 하나도 없는 상자에서도 렌더링된다. 시스템 폰트를 못 찾았을 때만
+  평가해서 불필요한 pykrx import 를 피한다.
+- **폰트를 못 찾으면 `FontUnavailableError` 로 실패한다.** 폰트 없이 만들면 한글이 전부
+  빈 네모로 나가는데, 그건 성공처럼 보이는 실패다.
+
+### 불변 경계를 테스트로 못박았다
+
+렌더러는 결정적(`SimpleDocTemplate(invariant=1)`)이다. `latest_price` 를 바꾸고 다시
+렌더링해 **바이트가 동일한지** 보는 테스트가 있다 — 오버레이가 본문에 새어 들어가면
+이 테스트가 깨진다.
+
+### 남은 것
+
+1. 커밋·푸시(`!ship`) → 배포(`!deploy`, **`pip install` 포함**).
+2. 배포 후 운영에서 실제 이력 하나를 내려받아 한글이 보이는지 눈으로 확인.
+3. 이력 목록 행에도 PDF 버튼을 붙일지는 미정 — 설계대로 상세에만 뒀다.
 
 ## 8/14 미완 — 전략 가이드 09 를 블로그 글로 다시 쓰기
 

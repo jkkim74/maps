@@ -243,6 +243,20 @@ async function loadAnalysisHistory() {
   }
 }
 
+// 저장된 이력을 열었을 때만 PDF 를 받을 수 있다 — 방금 돌린 분석은 이력 저장이
+// 끝난 뒤에야 내려받을 id 가 생긴다.
+function _setPdfLink(historyId) {
+  const link = _byId('sa-download-pdf');
+  if (!link) return;
+  if (!historyId) {
+    link.style.display = 'none';
+    link.removeAttribute('href');
+    return;
+  }
+  link.href = `/api/v1/stock-analysis/history/${historyId}/pdf`;
+  link.style.display = '';
+}
+
 function reanalyzeHistory(ticker) {
   const input = _byId('sa-input');
   if (input) input.value = ticker;
@@ -289,6 +303,7 @@ async function openAnalysisHistory(id) {
       date.textContent = `분석 기준: ${_formatHistoryTime(detail.created_at)} · 기술 기준일: ${detail.ref_date}`;
     }
     finalizeAnalysis();
+    _setPdfLink(id);
     if (_analysisText) _byId('sa-ai-card').style.display = 'block';
     const updated = _byId('r-price-updated');
     if (updated) {
@@ -320,6 +335,7 @@ function runStockAnalysis(ticker) {
 
   // 기존 스트림 종료
   if (_activeEs) { _activeEs.close(); _activeEs = null; }
+  _setPdfLink(null);
 
   _setBtn(true, '분석 중…');
   startProgress(ticker);
