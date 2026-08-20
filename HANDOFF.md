@@ -1,8 +1,11 @@
 # HANDOFF
 
-## 8/20 8월 19일 매매일지 후속 2 → 4 → 3 → 5 — ✅ 로컬 구현 완료
+## 8/20 8월 19일 매매일지 후속 2 → 4 → 3 → 5 — ✅ 운영 배포 완료
 
-사용자가 확정한 순서와 정책대로 구현했다. **아직 commit/push/deploy는 하지 않았다.**
+사용자가 확정한 순서와 정책대로 구현하고 `4b011ea`로 master에 반영해 17:14:49 KST
+운영 배포했다. 운영 HEAD는 `d8ae437` → `4b011ea`, Alembic은 `0024_app_user` →
+`0026_holding_details`다. systemd `maps=active`, 내부·외부 `/health` 200,
+재시작 이후 ERROR/Traceback/CRITICAL 0건을 확인했다.
 6번 Donchian 변경은 범위에서 제외해 건드리지 않았다.
 
 1. **2번 전략매매 안전장치**: 무장 요청의 장세 문자열 대신 서버의 최신 적용 국면을
@@ -22,7 +25,10 @@
    `data_complete=false`, `HOLDING_DETAILS_UNAVAILABLE`로 표시한다.
 
 마이그레이션 체인은 `0025_pick_ai_reco` → `0026_holding_details`이고 단일 head다.
-배포 시 애플리케이션 시작 전에 `alembic upgrade head`가 필요하다.
+배포 전 PostgreSQL custom-format 백업
+`/opt/maps/backups/pre_diary_safety_20260820_171500.dump`(326,876,444 bytes, mode 600,
+`pg_restore -l` 289항목)을 만들었다. 앱 계정 권한이 없는 기존 백업 테이블
+`order_log_backup_20260724`만 제외했다.
 
 검증: `python -m pytest tests -q` **922 passed**, `python -m compileall maps -q`,
 `git diff --check`, `alembic heads` = `0026_holding_details (head)`.
