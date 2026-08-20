@@ -1,8 +1,35 @@
 # HANDOFF
 
-## 8/16 🔴 AI 권고(WATCH)가 무장·주문까지 그대로 흘러간다 — 조사 완료, **미착수**
+## 8/20 8월 19일 매매일지 후속 2 → 4 → 3 → 5 — ✅ 로컬 구현 완료
 
-최근 매매기록과 운영 DB를 대조하다 나왔다. **코드는 한 줄도 안 고쳤다.**
+사용자가 확정한 순서와 정책대로 구현했다. **아직 commit/push/deploy는 하지 않았다.**
+6번 Donchian 변경은 범위에서 제외해 건드리지 않았다.
+
+1. **2번 전략매매 안전장치**: 무장 요청의 장세 문자열 대신 서버의 최신 적용 국면을
+   사용한다. 전략매매 진입에도 일일 손실·현금·단일종목 노출·점수 준비도 검사를 적용했다.
+   분할 주문 회차가 바뀌어도 `strategy_trade:<pick_id>` 단위 Kill Switch를 사용한다.
+   승인 국면과 현재 국면이 다르거나 신규진입 한도가 0인 경우에는 사용자 방침대로
+   경고를 남기고 진입은 허용한다.
+2. **4번 체결 감사 추적**: digest execution에 `analysis_pick_id`, AI 권고, 승인 국면,
+   전략 맥락, 원래 rationale과 경고 코드를 연결했다. `strategy_trade:<pick_id>:leg:...`
+   주문도 분석 픽을 복원하므로 WATCH/SELL을 사람이 승인한 사실이 매매일지에 남는다.
+3. **3번 조건부 진입 분리**: `conditional_entries`를 `tomorrow_orders`와 분리했다.
+   체결 회차, 전체 회차, 다음 회차·가격, 잔여 수량과 waiting/order_pending/stale/
+   entries_cancelled/entries_complete 상태를 제공한다.
+4. **5번 상세 보유현황**: 브로커의 상세 포지션을 `portfolio_snapshot.holding_details`에
+   저장하고 digest `portfolio`에 평균단가·현재가·평가액·평가손익을 제공한다. 기존
+   `holdings` 수량 맵은 호환성을 위해 유지했다. 상세값이 없는 과거 행은 추정하지 않고
+   `data_complete=false`, `HOLDING_DETAILS_UNAVAILABLE`로 표시한다.
+
+마이그레이션 체인은 `0025_pick_ai_reco` → `0026_holding_details`이고 단일 head다.
+배포 시 애플리케이션 시작 전에 `alembic upgrade head`가 필요하다.
+
+검증: `python -m pytest tests -q` **922 passed**, `python -m compileall maps -q`,
+`git diff --check`, `alembic heads` = `0026_holding_details (head)`.
+
+## 8/16 AI 권고(WATCH)가 무장·주문까지 그대로 흘러간다 — 배경 기록 (8/20 구현 완료)
+
+최근 매매기록과 운영 DB를 대조하다 나왔다. **아래 내용은 8/16 조사 당시 기록이다.**
 계획은 로컬 플랜 파일에 있고 요지는 아래에 옮겼다.
 
 ### 무엇이 문제인가

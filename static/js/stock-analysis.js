@@ -600,8 +600,12 @@ function _applyAnalysisTradePlan() {
   _byId('sa-plan-stop').value = plan.stop;
   _tradePlanSource = 'AI';
   _tradeRationale = plan.rationale || '';
-  _byId('sa-trade-warning').textContent =
-    '종목분석에 표시된 매수가·목표가·손절가를 그대로 불러왔습니다.';
+  // 가격은 채우되 권고가 매수가 아니면 그 사실을 화면이 먼저 말한다.
+  // WATCH 계획의 가격이 매수 신호로 읽혀 그대로 체결된 적이 있다.
+  const label = { WATCH: '관찰', SELL: '매도 의견' }[plan.recommendation];
+  _byId('sa-trade-warning').textContent = label
+    ? `분석 의견은 '${label}'입니다 — 매수 권고가 아닙니다. 가격은 참고용으로만 불러왔습니다.`
+    : '종목분석에 표시된 매수가·목표가·손절가를 그대로 불러왔습니다.';
   return true;
 }
 
@@ -740,6 +744,7 @@ function _buildTradeLimitPayload() {
     rationale: _tradeRationale || null,
     regime: 'mixed',
     strategy_context: 'stock_analysis',
+    ai_recommendation: usesAnalysisPrices ? (analysisPlan.recommendation || null) : null,
   };
 }
 
@@ -759,6 +764,7 @@ function _renderTradePreview(preview) {
   const blockerHtml = (preview.blockers || []).map(item =>
     `<li><b>${saFmt(item.code)}</b> ${saFmt(item.message)}</li>`
   ).join('');
+  const warningHtml = _tradeWarningHtml(preview.warnings);
   const legRows = (preview.legs || []).map(leg => `
     <tr><td>${leg.sequence}차</td><td>${_won(leg.entry_price)}</td><td>${leg.weight_pct}%</td>
       <td>${leg.planned_qty}주</td><td>${_won(leg.order_amount)}</td></tr>`).join('');
@@ -773,7 +779,16 @@ function _renderTradePreview(preview) {
     </div>
     <table><thead><tr><th>회차</th><th>진입가</th><th>비중</th><th>planned_qty</th><th>주문금액</th></tr></thead>
       <tbody>${legRows}</tbody></table>
+    ${warningHtml}
     ${blockerHtml ? `<ul class="sa-trade-blockers">${blockerHtml}</ul>` : '<p class="sa-trade-ok">서버 안전검증을 통과했습니다.</p>'}`;
+}
+
+// 경고는 차단이 아니다 — 무장을 막지 않고 상충 사실만 남긴다.
+function _tradeWarningHtml(warnings) {
+  const html = (warnings || []).map(item =>
+    `<li><b>${saFmt(item.code)}</b> ${saFmt(item.message)}</li>`
+  ).join('');
+  return html ? `<ul class="sa-trade-warnings">${html}</ul>` : '';
 }
 
 function _renderTradeLimits(result) {
@@ -790,6 +805,7 @@ function _renderTradeLimits(result) {
       <div class="sa-safe-max"><span>안전 최대금액</span><b>${_won(result.safe_max_amount)}</b></div>
       <div><span>최소 주문가능 금액</span><b>${_won(result.minimum_orderable_amount)}</b></div>
     </div>
+    ${_tradeWarningHtml(result.warnings)}
     ${blockerHtml ? `<ul class="sa-trade-blockers">${blockerHtml}</ul>` : ''}`;
 }
 

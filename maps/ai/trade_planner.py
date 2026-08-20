@@ -75,7 +75,14 @@ class StockTradeFacts(BaseModel):
 
 
 class AITradePlan(BaseModel):
-    """Strict provider output; only BUY may contain executable prices."""
+    """Strict provider output; every recommendation carries executable prices.
+
+    WATCH/SELL 도 entries/target/stop 을 반드시 갖는다 — 검증자가 세 값을 필수로
+    강제하기 때문이다. 즉 **가격의 존재는 매수 권고가 아니다.** 하류(화면·무장·주문)
+    는 가격만 보고 매수로 해석하면 안 되고 `recommendation` 을 함께 읽어야 한다.
+    (예전 docstring 은 "only BUY may contain executable prices" 라고 적어 코드에 없는
+    안전장치를 있다고 주장했고, 그 오독으로 WATCH 계획이 그대로 체결된 적이 있다.)
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 

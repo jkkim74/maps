@@ -179,6 +179,13 @@ class MockBroker(BrokerAdapter):
     def get_positions(self) -> dict[str, int]:
         return {t: p.quantity for t, p in self._positions.items() if p.quantity > 0}
 
+    def get_position_details(self) -> dict[str, Position]:
+        return {
+            ticker: position
+            for ticker in self.get_positions()
+            if (position := self.get_position(ticker)) is not None
+        }
+
     def get_open_orders(self) -> list[PendingOrder]:
         return [
             PendingOrder(

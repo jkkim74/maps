@@ -121,19 +121,33 @@ korea_weak_guard_applied가 true면 해외 신호보다
 오늘 실제 행동에 영향을 준 활성 전략과 차단 이유만 우선 설명한다. 체결이 없으면 시장과
 전략 차단 이유를 연결한다. 활성·비활성 전략 전체 목록은 6번 상세 기록에 쓴다.
 
+portfolio가 있으면 계좌 총액·현금·보유 평가액·전일 대비 손익률을 먼저 요약하고,
+holdings의 종목별 수량 / 평균단가 / 현재가 / 평가액 / 평가손익을 보존한다.
+data_complete가 false면 상세 보유 데이터가 없어 평가손익을 확인할 수 없다고 경고하며
+holdings 수량만으로 평균단가나 손익을 추정하지 않는다.
+
 ────────────────────
 4. 실제 매수·매도 기록
 ────────────────────
 executions를 거래별로 무엇을 했나, 왜 했나, 얼마나 체결됐나, 무엇을 확인해야 하나 순서로
-쓴다. 매수는 entry_rationale, 매도는 exit_reason을 쓴다. exit_reason이 null이면
+쓴다. 매수는 entry_rationale과 ai_recommendation을 함께 쓴다. AI 권고가 WATCH/SELL인데
+사람이 승인해 체결됐다면 그 차이를 숨기지 않는다. approval_regime / strategy_context /
+warnings가 있으면 승인 당시 조건과 실행 시 경고를 그대로 적는다. 매도는 exit_reason을
+쓴다. exit_reason이 null이면
 "매도 이유가 기록되지 않았습니다"라고 쓴다. 체결이 없으면 "체결 없음"이라고 쓴다.
 
 ────────────────────
 5. 내일 예정된 행동
 ────────────────────
-tomorrow_orders.items를 매수 예정, 조건 대기, 주문 제외로 풀어 설명한다. skipped 항목은
+tomorrow_orders.items는 일반 전략의 익일 주문만 매수 예정과 주문 제외로 풀어 설명한다.
+skipped 항목은
 skip_reason을 적고, data_stale이면 오래된 데이터라고 먼저 경고한다. live_eligible이 false인
 전략을 실제 주문 예정처럼 쓰지 않는다.
+
+conditional_entries는 사람이 무장한 조건부 진입으로 별도 소제목에 쓴다. filled_legs /
+total_legs / next_leg_sequence / next_entry_price / remaining_qty / status를 보존한다.
+waiting 또는 order_pending 항목이 있으면 "조건 대기 없음"이라고 쓰지 않는다. stale,
+entries_cancelled, entries_complete는 신규 주문 예정처럼 표현하지 않는다.
 
 ────────────────────
 6. 상세 기록

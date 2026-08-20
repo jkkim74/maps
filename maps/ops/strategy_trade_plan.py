@@ -38,6 +38,9 @@ class StrategyTradeLimitInput(BaseModel):
     rationale: str | None = None
     regime: str | None = None
     strategy_context: str | None = None
+    # AI 매매계획의 권고. 수동 입력 경로에는 없으므로 선택 필드다.
+    # 무장을 막지는 않고 경고와 감사 기록에만 쓴다 — 전략매매는 사람이 승인하는 경로다.
+    ai_recommendation: Literal["BUY", "WATCH", "SELL"] | None = None
 
     @field_validator("ticker")
     @classmethod
@@ -78,6 +81,8 @@ class CalculatedTradeLimits(BaseModel):
 
     blocked: bool
     blockers: tuple[TradePlanBlocker, ...]
+    warnings: tuple[TradePlanBlocker, ...] = ()
+    regime_used: Literal["strong", "mixed", "weak"] = "mixed"
     limits: dict[str, float]
     safe_max_amount: float
     minimum_orderable_amount: float
@@ -88,6 +93,8 @@ class ValidatedTradePlan(BaseModel):
 
     blocked: bool
     blockers: tuple[TradePlanBlocker, ...]
+    warnings: tuple[TradePlanBlocker, ...] = ()
+    regime_used: Literal["strong", "mixed", "weak"] = "mixed"
     limits: dict[str, float]
     safe_max_amount: float
     expected_remaining_cash: float
@@ -102,6 +109,11 @@ def _minimum_cash_ratio(request: StrategyTradeLimitInput, settings: MapsSettings
     if regime == "weak":
         return settings.maps_min_cash_ratio_weak
     return settings.maps_min_cash_ratio_mixed
+
+
+def _regime_used(request: StrategyTradeLimitInput) -> Literal["strong", "mixed", "weak"]:
+    regime = (request.regime or "mixed").lower()
+    return regime if regime in {"strong", "mixed", "weak"} else "mixed"
 
 
 def calculate_trade_limits(
@@ -123,6 +135,16 @@ def calculate_trade_limits(
         block("GATE_OFF", "전략매매 마스터 스위치가 꺼져 있습니다.")
     if has_active_pick:
         block("DUPLICATE_ACTIVE_TICKER", "동일 종목의 활성 전략이 이미 있습니다.")
+
+    warnings: list[TradePlanBlocker] = []
+    if request.ai_recommendation is not None and request.ai_recommendation != "BUY":
+        label = {"WATCH": "관찰", "SELL": "매도 의견"}[request.ai_recommendation]
+        warnings.append(
+            TradePlanBlocker(
+                code="AI_RECOMMENDATION_NOT_BUY",
+                message=f"AI 분석 의견은 '{label}'입니다. 매수 권고가 아닌 계획으로 무장합니다.",
+            )
+        )
 
     legs = tuple(sorted(request.entries, key=lambda item: item.sequence))
     expected_sequences = [1] if request.trade_mode == "single" else [1, 2, 3]
@@ -223,6 +245,8 @@ def calculate_trade_limits(
     return CalculatedTradeLimits(
         blocked=bool(blockers),
         blockers=tuple(blockers),
+        warnings=tuple(warnings),
+        regime_used=_regime_used(request),
         limits=limits,
         safe_max_amount=safe_max_amount,
         minimum_orderable_amount=minimum_orderable_amount,
@@ -285,6 +309,8 @@ def validate_trade_plan(
     return ValidatedTradePlan(
         blocked=bool(blockers),
         blockers=tuple(blockers),
+        warnings=calculated.warnings,
+        regime_used=calculated.regime_used,
         limits=calculated.limits,
         safe_max_amount=calculated.safe_max_amount,
         expected_remaining_cash=max(

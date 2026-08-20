@@ -120,7 +120,13 @@ class OrderManager:
         self._notifier = notifier or SlackNotifier()
         self._research: set[str] = research_strategies or set()
 
-    def submit(self, order: Order, daily_pnl: float = 0.0) -> OrderResult:
+    def submit(
+        self,
+        order: Order,
+        daily_pnl: float = 0.0,
+        *,
+        risk_strategy_id: str | None = None,
+    ) -> OrderResult:
         """주문을 제출한다.
 
         Args:
@@ -135,7 +141,12 @@ class OrderManager:
             KillSwitchError: Kill Switch 발동 또는 일일 손실 한도 초과.
             ExposureCapError: 단일 종목 노출 한도 초과.
         """
-        return self._submit(order, daily_pnl=daily_pnl, check_entry_risk=True)
+        return self._submit(
+            order,
+            daily_pnl=daily_pnl,
+            check_entry_risk=True,
+            risk_strategy_id=risk_strategy_id,
+        )
 
     def submit_exit(self, order: Order, *, exit_reason: str | None = None) -> OrderResult:
         """Submit a strategy exit without applying new-entry exposure checks.
@@ -159,6 +170,7 @@ class OrderManager:
         daily_pnl: float,
         check_entry_risk: bool,
         exit_reason: str | None = None,
+        risk_strategy_id: str | None = None,
     ) -> OrderResult:
         if order.strategy_id in self._research:
             raise ResearchStrategyError(order.strategy_id, "research")
@@ -166,7 +178,14 @@ class OrderManager:
 
         if check_entry_risk:
             account = self._broker.get_account_balance()
-            self._risk.check_before_order(order, account, daily_pnl)
+            self._risk.check_before_order(
+                order,
+                account,
+                daily_pnl,
+                risk_strategy_id=risk_strategy_id,
+            )
+
+        risk_id = risk_strategy_id or order.strategy_id
 
         try:
             result = self._place_with_retry(order)
@@ -186,11 +205,11 @@ class OrderManager:
                     order.strategy_id, order.ticker, order.side.value,
                 )
                 self._risk.on_order_failure(
-                    order.strategy_id,
+                    risk_id,
                     reason=f"broker rejected ({order.ticker} {order.side.value})",
                 )
             else:
-                self._risk.on_order_success(order.strategy_id)
+                self._risk.on_order_success(risk_id)
             self._log_order(order, result, exit_reason=exit_reason)
             return result
         except Exception as exc:
@@ -199,7 +218,7 @@ class OrderManager:
                 "주문 제출 실패 [%s %s %s]: %s",
                 order.strategy_id, order.ticker, order.side.value, exc,
             )
-            self._risk.on_order_failure(order.strategy_id, reason=str(exc))
+            self._risk.on_order_failure(risk_id, reason=str(exc))
             raise
 
     def cancel(self, order_id: str) -> bool:

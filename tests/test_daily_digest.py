@@ -17,10 +17,12 @@ import maps.common.models  # noqa: F401 — 모델 등록
 from maps.common.db import Base
 from maps.common.models import (
     AnalysisPick,
+    AnalysisPickLeg,
     CandidateSnapshot,
     HistoricalOHLCV,
     MarketRegimeLog,
     OrderLog,
+    PortfolioSnapshot,
     PromotionHistory,
     SecurityMetadata,
     StockReportRun,
@@ -145,6 +147,126 @@ def test_digest_executions_respect_kst_boundary(db, settings) -> None:
     assert by_side["buy"].entry_rationale == "20일 신고가 돌파 + 거래대금 상위"
     assert by_side["sell"].exit_reason == "stop_loss"
     assert by_side["sell"].entry_rationale is None      # 매도엔 진입 근거를 붙이지 않는다
+
+
+def test_strategy_trade_execution_includes_pick_audit_context(db, settings) -> None:
+    _seed(db)
+    decision_date = dt.date(2026, 7, 24)
+    db.add(MarketRegimeLog(
+        ref_date=decision_date, raw_regime="weak", applied_regime="weak",
+        up_count=1, total_assets=8, weekly_trend="fail", vol_regime="high",
+        floor_applied=False, breadth_pct=0.12, entry_limit_ratio=0.0,
+    ))
+    pick = AnalysisPick(
+        ref_date=decision_date, ticker="475150", name="SK이터닉스", market="KOSDAQ",
+        buy_price=80_000.0, target_price=95_000.0, stop_price=74_000.0,
+        rationale="승인 당시 분석 근거", regime="strong",
+        strategy_context="manual approval", ai_recommendation="WATCH",
+        strategy_trade_enabled=True, state="ARMED",
+    )
+    db.add(pick)
+    db.flush()
+    db.add(OrderLog(
+        order_id="PICK-LEG-2", strategy_id=f"strategy_trade:{pick.id}:leg:2:try:1",
+        ticker="475150", side="buy", qty=3, order_price=79_000.0,
+        fill_price=78_900.0, fill_qty=3, status="filled", broker="kis", mode="mock",
+        created_at=dt.datetime(2026, 7, 27, 0, 5, 0),
+    ))
+    db.commit()
+
+    digest = build_daily_digest(db, settings, REF_DATE)
+
+    execution = next(e for e in digest.executions if e.order_id == "PICK-LEG-2")
+    assert execution.analysis_pick_id == pick.id
+    assert execution.entry_rationale == "승인 당시 분석 근거"
+    assert execution.ai_recommendation == "WATCH"
+    assert execution.approval_regime == "strong"
+    assert execution.strategy_context == "manual approval"
+    assert execution.warnings == [
+        "AI_RECOMMENDATION_NOT_BUY",
+        "MARKET_ENTRY_BLOCK_OVERRIDDEN",
+    ]
+
+
+def test_digest_separates_remaining_conditional_entries(db, settings) -> None:
+    _seed(db)
+    pick = AnalysisPick(
+        ref_date=REF_DATE, ticker="475150", name="SK이터닉스", market="KOSDAQ",
+        buy_price=80_000.0, target_price=95_000.0, stop_price=74_000.0,
+        qty=10, trade_mode="split", total_budget=800_000.0,
+        strategy_trade_enabled=True, state="BOUGHT", ai_recommendation="BUY",
+    )
+    pick.legs = [
+        AnalysisPickLeg(
+            sequence=1, entry_price=80_000.0, weight_pct=40,
+            planned_qty=4, filled_qty=4, status="FILLED",
+        ),
+        AnalysisPickLeg(
+            sequence=2, entry_price=77_000.0, weight_pct=60,
+            planned_qty=6, filled_qty=2, order_id="LEG-2", status="PARTIAL",
+        ),
+    ]
+    db.add(pick)
+    db.commit()
+
+    digest = build_daily_digest(db, settings, REF_DATE)
+
+    assert len(digest.conditional_entries) == 1
+    entry = digest.conditional_entries[0]
+    assert entry.pick_id == pick.id
+    assert entry.trade_mode == "split"
+    assert entry.filled_legs == 1
+    assert entry.total_legs == 2
+    assert entry.next_leg_sequence == 2
+    assert entry.next_entry_price == 77_000.0
+    assert entry.remaining_qty == 4
+    assert entry.status == "order_pending"
+    assert entry.ai_recommendation == "BUY"
+
+
+def test_digest_reports_decision_time_portfolio_details(db, settings) -> None:
+    db.add_all([
+        PortfolioSnapshot(
+            ref_date=REF_DATE - dt.timedelta(days=3), source="broker",
+            total_assets=1_000_000.0, cash=700_000.0, positions_value=300_000.0,
+        ),
+        PortfolioSnapshot(
+            ref_date=REF_DATE, source="broker", total_assets=1_020_000.0,
+            cash=690_000.0, positions_value=330_000.0, holdings={"475150": 4},
+            holding_details={
+                "475150": {
+                    "name": "SK이터닉스", "quantity": 4, "avg_price": 80_000.0,
+                    "current_price": 82_500.0, "evaluation_value": 330_000.0,
+                    "unrealized_pnl": 10_000.0, "unrealized_pnl_pct": 0.03125,
+                }
+            },
+        ),
+    ])
+    db.commit()
+
+    digest = build_daily_digest(db, settings, REF_DATE)
+
+    assert digest.portfolio is not None
+    assert digest.portfolio.daily_pnl_pct == pytest.approx(0.02)
+    assert digest.portfolio.data_complete is True
+    assert digest.portfolio.holdings[0].ticker == "475150"
+    assert digest.portfolio.holdings[0].unrealized_pnl == 10_000.0
+
+
+def test_digest_marks_legacy_portfolio_details_incomplete(db, settings) -> None:
+    db.add(PortfolioSnapshot(
+        ref_date=REF_DATE, source="broker", total_assets=1_000_000.0,
+        cash=700_000.0, positions_value=300_000.0, holdings={"475150": 4},
+        holding_details=None,
+    ))
+    db.commit()
+
+    digest = build_daily_digest(db, settings, REF_DATE)
+
+    assert digest.portfolio is not None
+    assert digest.portfolio.data_complete is False
+    assert digest.portfolio.warnings == ["HOLDING_DETAILS_UNAVAILABLE"]
+    assert digest.portfolio.holdings == []
 
 
 def test_unmeasured_factors_are_flagged(db, settings) -> None:

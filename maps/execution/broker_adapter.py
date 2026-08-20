@@ -220,6 +220,14 @@ class BrokerAdapter(abc.ABC):
         """보유 포지션 {ticker: quantity} 딕셔너리 (하위 호환)."""
         raise NotImplementedError
 
+    def get_position_details(self) -> dict[str, Position]:
+        """Return detailed positions, using legacy methods when necessary."""
+        return {
+            ticker: position
+            for ticker, quantity in self.get_positions().items()
+            if quantity > 0 and (position := self.get_position(ticker)) is not None
+        }
+
     def get_balance(self) -> float:
         """현금 잔고 (하위 호환)."""
         return self.get_account_balance().cash

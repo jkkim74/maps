@@ -778,6 +778,8 @@ class AnalysisPickItem(BaseModel):
     rationale: str | None = None
     regime: str | None = None
     strategy_context: str | None = None
+    # 무장 시점의 AI 권고. NULL = 기록 이전이거나 수동 입력이라 권고가 없다.
+    ai_recommendation: str | None = None
     strategy_trade_enabled: bool
     state: str
     entry_order_id: str | None = None
@@ -1055,12 +1057,55 @@ class DigestExecution(BaseModel):
     exit_reason: str | None = None           # 매도만. 없으면 컬럼 도입 전 기록이다.
     created_at: str
     entry_rationale: str | None = None       # 매수 시 후보 스냅샷의 score_reason
+    analysis_pick_id: int | None = None
+    ai_recommendation: str | None = None
+    approval_regime: str | None = None
+    strategy_context: str | None = None
+    warnings: list[str] = []
 
 
 class DigestReportExcerpt(BaseModel):
     report_type: str
     trade_date: str | None = None
     excerpt: str
+
+
+class DigestConditionalEntry(BaseModel):
+    pick_id: int
+    ticker: str
+    name: str
+    state: str
+    trade_mode: str
+    filled_legs: int
+    total_legs: int
+    next_leg_sequence: int | None = None
+    next_entry_price: float | None = None
+    remaining_qty: int
+    status: str
+    stale_reason: str | None = None
+    ai_recommendation: str | None = None
+
+
+class DigestHolding(BaseModel):
+    ticker: str
+    name: str | None = None
+    quantity: int
+    avg_price: float
+    current_price: float | None = None
+    evaluation_value: float
+    unrealized_pnl: float
+    unrealized_pnl_pct: float | None = None
+
+
+class DigestPortfolio(BaseModel):
+    ref_date: str
+    total_assets: float
+    cash: float
+    positions_value: float
+    daily_pnl_pct: float | None = None
+    data_complete: bool
+    warnings: list[str] = []
+    holdings: list[DigestHolding] = []
 
 
 class DailyDigest(BaseModel):
@@ -1078,7 +1123,9 @@ class DailyDigest(BaseModel):
     universe_kept: int | None = None
     universe_excluded: int | None = None
     universe_rejection_ratio: float | None = None
+    portfolio: DigestPortfolio | None = None
     tomorrow_orders: OrderPreviewResponse | None = None
+    conditional_entries: list[DigestConditionalEntry] = []
     executions: list[DigestExecution] = []
     market_context: list[DigestReportExcerpt] = []
     errors: list[str] = []

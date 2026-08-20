@@ -70,7 +70,7 @@ from maps.execution.broker_adapter import (
 from maps.execution.order_manager import OrderManager
 from maps.market.breadth import classify_breadth, compute_pct_above_ma
 from maps.market.regime import RegimeResult, WeeklyTrendLabel, create_regime_analyzer
-from maps.market.regime_history import apply_hysteresis
+from maps.market.regime_history import apply_hysteresis, latest_applied_regime
 from maps.market.sector_selector import SectorRegimeSelector, SectorSelector
 from maps.market.trading_rules import (
     is_krx_closed_date,
@@ -623,8 +623,10 @@ class OperationalPipeline:
             broker = get_broker(self._settings.maps_broker_mode)
             manager = OrderManager(broker=broker, risk=self._make_risk_manager(broker, db), db=db)
             sync = manager.sync_broker_state()
-            holdings = self._broker_positions(broker)
-            self._save_portfolio_snapshot(db, ref_date, sync, holdings=holdings)
+            holdings, holding_details = self._portfolio_snapshot_positions(db, broker)
+            self._save_portfolio_snapshot(
+                db, ref_date, sync, holdings=holdings, holding_details=holding_details,
+            )
             live_enabled = self._settings.maps_live_trading_enabled
             submitted_orders = 0
             skipped_orders = 0
@@ -666,12 +668,12 @@ class OperationalPipeline:
                 submitted_orders = submitted_sell_orders + submitted_buy_orders
                 skipped_orders = skipped_sell_orders + skipped_buy_orders
                 final_balance = broker.get_account_balance()
-                holdings = self._broker_positions(broker)
+                holdings, holding_details = self._portfolio_snapshot_positions(db, broker)
                 self._save_portfolio_snapshot(db, ref_date, {
                     "cash": final_balance.cash,
                     "positions_value": final_balance.positions_value,
                     "total_assets": final_balance.total_value,
-                }, holdings=holdings)
+                }, holdings=holdings, holding_details=holding_details)
             elif dry_run:
                 # Dry-run: 실거래 주문 없이 후보·포지션 계획만 로깅한다.
                 self._log_dry_run_candidates(db, ref_date)
@@ -714,8 +716,11 @@ class OperationalPipeline:
             broker = get_broker(self._settings.maps_broker_mode)
             manager = OrderManager(broker=broker, risk=self._make_risk_manager(broker, db), db=db)
             sync = manager.sync_broker_state()
-            holdings = self._broker_positions(broker)
-            self._save_portfolio_snapshot(db, ref_date, sync, holdings=holdings)
+            holdings, holding_details = self._portfolio_snapshot_positions(db, broker)
+            self._save_portfolio_snapshot(
+                db, ref_date, sync, holdings=holdings, holding_details=holding_details,
+            )
+            daily_pnl = self._calc_daily_pnl(db, ref_date)
             live_enabled = self._settings.maps_live_trading_enabled
             market_open = False
             submitted_sell_orders = 0
@@ -762,7 +767,12 @@ class OperationalPipeline:
                 )
                 if strategy_trade_active:
                     st_submitted, st_closed = self._process_strategy_trades(
-                        db=db, broker=broker, manager=manager, picks=st_picks, prices=prices,
+                        db=db,
+                        broker=broker,
+                        manager=manager,
+                        picks=st_picks,
+                        prices=prices,
+                        daily_pnl=daily_pnl,
                     )
                 if submitted_sell_orders or st_submitted or st_closed:
                     final_balance = broker.get_account_balance()
@@ -772,8 +782,12 @@ class OperationalPipeline:
                         "positions_value": final_balance.positions_value,
                         "total_assets": final_balance.total_value,
                     }
-                    holdings = self._broker_positions(broker)
-                    self._save_portfolio_snapshot(db, ref_date, sync, holdings=holdings)
+                    holdings, holding_details = self._portfolio_snapshot_positions(db, broker)
+                    self._save_portfolio_snapshot(
+                        db, ref_date, sync,
+                        holdings=holdings,
+                        holding_details=holding_details,
+                    )
 
             self._write_log(
                 db,
@@ -1842,6 +1856,7 @@ class OperationalPipeline:
         ref_date: dt.date,
         sync: dict[str, float | int],
         holdings: dict[str, int] | None = None,
+        holding_details: dict[str, dict] | None = None,
     ) -> None:
         cash = float(sync.get("cash", 0.0))
         positions_value = float(sync.get("positions_value", 0.0))
@@ -1860,6 +1875,7 @@ class OperationalPipeline:
                     cash=cash,
                     positions_value=positions_value,
                     holdings=holdings,
+                    holding_details=holding_details,
                 )
             )
         else:
@@ -1868,6 +1884,8 @@ class OperationalPipeline:
             row.positions_value = positions_value
             if holdings is not None:
                 row.holdings = holdings
+            if holding_details is not None:
+                row.holding_details = holding_details
             row.updated_at = dt.datetime.now(dt.timezone.utc)
         db.commit()
 
@@ -2563,6 +2581,7 @@ class OperationalPipeline:
         pos: Position | None,
         current: float | None,
         now: dt.datetime,
+        daily_pnl: float = 0.0,
     ) -> tuple[int, int]:
         """Process exits first, then submit at most one eligible split leg."""
         held_qty = pos.quantity if pos is not None and pos.quantity > 0 else 0
@@ -2716,6 +2735,22 @@ class OperationalPipeline:
             if not ready:
                 logger.warning("Split strategy entry blocked [%s]: %s", pick.ticker, reason)
                 return 0, 0
+        market_row = latest_applied_regime(db, dt.date.today())
+        if market_row is not None and (
+            market_row.entry_limit_ratio == 0
+            or (
+                pick.regime is not None
+                and market_row.applied_regime != pick.regime
+            )
+        ):
+            logger.warning(
+                "Split strategy market warning, entry allowed [%s]: "
+                "armed=%s current=%s entry_limit=%s",
+                pick.ticker,
+                pick.regime or "unknown",
+                market_row.applied_regime,
+                market_row.entry_limit_ratio,
+            )
         remaining = max(next_leg.planned_qty - next_leg.filled_qty, 0)
         if remaining <= 0:
             next_leg.status = "FILLED"
@@ -2757,7 +2792,11 @@ class OperationalPipeline:
             ),
         )
         try:
-            result = manager.submit(order)
+            result = manager.submit(
+                order,
+                daily_pnl=daily_pnl,
+                risk_strategy_id=f"strategy_trade:{pick.id}",
+            )
         except (KillSwitchError, DuplicateOrderError, ExposureCapError, BrokerAdapterError) as exc:
             logger.warning("Split strategy entry failed [%s]: %s", pick.ticker, exc)
             return 0, 0
@@ -2777,6 +2816,7 @@ class OperationalPipeline:
         manager: OrderManager,
         picks: list[AnalysisPick],
         prices: dict[str, float],
+        daily_pnl: float = 0.0,
     ) -> tuple[int, int]:
         """무장된 워치리스트 픽에 대해 결정론적 브래킷(진입/익절/손절, OCO)을 집행한다.
 
@@ -2793,6 +2833,7 @@ class OperationalPipeline:
             )
         positions = self._broker_position_details(broker)
         now = dt.datetime.now(dt.timezone.utc)
+        market_row = latest_applied_regime(db, dt.date.today())
         submitted = 0
         closed = 0
 
@@ -2824,6 +2865,7 @@ class OperationalPipeline:
                     pos=pos,
                     current=current,
                     now=now,
+                    daily_pnl=daily_pnl,
                 )
                 submitted += split_submitted
                 closed += split_closed
@@ -2901,6 +2943,20 @@ class OperationalPipeline:
                             pick.ticker, pick.ref_date, pick.buy_price, current,
                         )
                         continue
+                    if market_row is not None and (
+                        market_row.entry_limit_ratio == 0
+                        or (
+                            pick.regime is not None
+                            and market_row.applied_regime != pick.regime
+                        )
+                    ):
+                        logger.warning(
+                            "전략매매 장세 경고 후 허용 [%s]: armed=%s current=%s entry_limit=%s",
+                            pick.ticker,
+                            pick.regime or "unknown",
+                            market_row.applied_regime,
+                            market_row.entry_limit_ratio,
+                        )
                     qty = self._strategy_trade_qty(broker, pick)
                     if qty <= 0:
                         logger.warning("전략매매 진입 스킵 [%s]: 수량 0 (사이즈 산정 실패)", pick.ticker)
@@ -2916,7 +2972,11 @@ class OperationalPipeline:
                         memo=f"strategy_trade entry buy={pick.buy_price:.0f} cur={current:.0f}",
                     )
                     try:
-                        result = manager.submit(order)
+                        result = manager.submit(
+                            order,
+                            daily_pnl=daily_pnl,
+                            risk_strategy_id=f"strategy_trade:{pick.id}",
+                        )
                     except (KillSwitchError, DuplicateOrderError, ExposureCapError, BrokerAdapterError) as exc:
                         logger.warning("전략매매 진입 실패 [%s]: %s", pick.ticker, exc)
                         continue
@@ -3356,16 +3416,74 @@ class OperationalPipeline:
             return None
 
     @staticmethod
-    def _broker_position_details(broker) -> dict[str, Position]:
+    def _portfolio_position_details(broker) -> dict[str, Position] | None:
+        get_details = getattr(broker, "get_position_details", None)
+        if callable(get_details):
+            try:
+                return get_details()
+            except NotImplementedError:
+                pass
         fetch_positions = getattr(broker, "_fetch_positions_and_balance", None)
         if callable(fetch_positions):
             positions, _balance = fetch_positions()
             return positions
+        holdings = OperationalPipeline._broker_positions(broker)
+        if holdings is None:
+            return None
         return {
             ticker: position
-            for ticker, qty in (OperationalPipeline._broker_positions(broker) or {}).items()
+            for ticker, qty in holdings.items()
             if qty > 0 and (position := broker.get_position(ticker)) is not None
         }
+
+    @staticmethod
+    def _broker_position_details(broker) -> dict[str, Position]:
+        return OperationalPipeline._portfolio_position_details(broker) or {}
+
+    @staticmethod
+    def _portfolio_snapshot_positions(
+        db: Session,
+        broker,
+    ) -> tuple[dict[str, int] | None, dict[str, dict] | None]:
+        positions = OperationalPipeline._portfolio_position_details(broker)
+        if positions is None:
+            return OperationalPipeline._broker_positions(broker), None
+
+        names = (
+            {
+                row.ticker: row.name
+                for row in db.query(SecurityMetadata)
+                .filter(SecurityMetadata.ticker.in_(positions))
+                .all()
+            }
+            if positions
+            else {}
+        )
+        details: dict[str, dict] = {}
+        for ticker, position in positions.items():
+            quantity = int(position.quantity)
+            avg_price = float(position.avg_price)
+            current_price = (
+                float(position.current_price)
+                if position.current_price is not None and position.current_price > 0
+                else None
+            )
+            evaluation_value = float(position.market_value)
+            cost = quantity * avg_price
+            unrealized_pnl = evaluation_value - cost
+            details[ticker] = {
+                "name": position.name or names.get(ticker),
+                "quantity": quantity,
+                "avg_price": avg_price,
+                "current_price": current_price,
+                "evaluation_value": evaluation_value,
+                "unrealized_pnl": unrealized_pnl,
+                "unrealized_pnl_pct": unrealized_pnl / cost if cost > 0 else None,
+            }
+        return (
+            {ticker: detail["quantity"] for ticker, detail in details.items()},
+            details,
+        )
 
     @staticmethod
     def _write_log(

@@ -23,6 +23,7 @@ from maps.common.models import (
     ParameterPlateauResults,
     PortfolioSnapshot,
     PromotionHistory,
+    SecurityMetadata,
     UniverseQualityLog,
     WalkForwardResults,
 )
@@ -896,6 +897,48 @@ def test_save_portfolio_snapshot_clears_holdings_when_all_sold() -> None:
         db.expire_all()
         row = db.query(PortfolioSnapshot).one()
         assert row.holdings == {}
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def test_portfolio_snapshot_stores_detailed_position_values() -> None:
+    engine, factory = _session_factory()
+    db = factory()
+    try:
+        db.add(SecurityMetadata(
+            ticker="AAAA", name="테스트 종목", market="KOSPI", security_type="stock",
+        ))
+        db.commit()
+        broker = MockBroker(initial_cash=1_000_000, price_feed={"AAAA": 11_000})
+        broker.place_order(Order(
+            strategy_id="test", ticker="AAAA", side=OrderSide.BUY,
+            order_type=OrderType.LIMIT, quantity=10, limit_price=10_000,
+        ))
+
+        holdings, details = OperationalPipeline._portfolio_snapshot_positions(db, broker)
+        OperationalPipeline._save_portfolio_snapshot(
+            db,
+            dt.date(2026, 8, 20),
+            {"cash": 900_000, "positions_value": 110_000, "total_assets": 1_010_000},
+            holdings=holdings,
+            holding_details=details,
+        )
+
+        row = db.query(PortfolioSnapshot).one()
+        assert row.holdings == {"AAAA": 10}
+        assert row.holding_details == {
+            "AAAA": {
+                "name": "테스트 종목",
+                "quantity": 10,
+                "avg_price": 10_000.0,
+                "current_price": 11_000.0,
+                "evaluation_value": 110_000.0,
+                "unrealized_pnl": 10_000.0,
+                "unrealized_pnl_pct": 0.1,
+            }
+        }
     finally:
         db.close()
         Base.metadata.drop_all(engine)

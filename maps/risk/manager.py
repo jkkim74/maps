@@ -104,6 +104,8 @@ class RiskManager:
         order: Order,
         account: AccountBalance,
         daily_pnl: float = 0.0,
+        *,
+        risk_strategy_id: str | None = None,
     ) -> None:
         """주문 전 리스크 체크. 위반 시 예외 발생.
 
@@ -121,19 +123,20 @@ class RiskManager:
             KillSwitchError: Kill Switch 활성 또는 일일 손실 한도 초과.
             ExposureCapError: 단일 종목 노출 한도 초과.
         """
-        if self.is_new_entry_blocked(order.strategy_id):
+        strategy_id = risk_strategy_id or order.strategy_id
+        if self.is_new_entry_blocked(strategy_id):
             raise KillSwitchError(
-                f"Kill Switch 발동 중 — 신규 주문 차단: {order.strategy_id}"
+                f"Kill Switch 발동 중 — 신규 주문 차단: {strategy_id}"
             )
 
         if daily_pnl <= -self._cfg.daily_loss_limit:
             self._trigger_kill(
-                order.strategy_id,
+                strategy_id,
                 KillSwitchReason.DAILY_LOSS_LIMIT,
                 f"일일 손실 {daily_pnl:.2%} > 한도 {self._cfg.daily_loss_limit:.2%}",
             )
             raise KillSwitchError(
-                f"일일 손실 한도 초과 → Kill Switch 발동: {order.strategy_id}"
+                f"일일 손실 한도 초과 → Kill Switch 발동: {strategy_id}"
             )
 
         # limit_price 없는 시장가 주문도 current_price로 노출 검사

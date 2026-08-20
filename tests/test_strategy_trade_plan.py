@@ -89,6 +89,7 @@ def test_limits_do_not_require_total_budget() -> None:
     assert result.safe_max_amount == 10_000_000
     assert result.minimum_orderable_amount == 233_334
     assert result.blocked is False
+    assert result.regime_used == "strong"
 
 
 def test_safe_budget_reports_all_relevant_blocker_codes() -> None:

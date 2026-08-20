@@ -322,6 +322,7 @@ class PortfolioSnapshot(Base):
     cash: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     positions_value: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     holdings: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    holding_details: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc)
     )
@@ -642,6 +643,9 @@ class AnalysisPick(Base):
     rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
     regime: Mapped[str | None] = mapped_column(String(16), nullable=True)
     strategy_context: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # 무장 시점의 AI 권고(BUY|WATCH|SELL). NULL = 기록 이전이거나 수동 입력이라 권고가 없다.
+    # 무장을 막지 않으므로 이 컬럼이 "왜 샀는지"를 사후에 설명하는 유일한 근거가 된다.
+    ai_recommendation: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
     # 화면설계 기반 주문 계획. 기존 행은 single로 해석하고 회차 행을 만들지 않는다.
     trade_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="single")

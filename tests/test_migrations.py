@@ -10,8 +10,8 @@ from alembic.config import Config
 from sqlalchemy import create_engine, inspect, text
 
 
-def test_fresh_database_reaches_stock_analysis_history_schema(tmp_path, monkeypatch) -> None:
-    """새 설치에서 종목분석 이력과 분할 계획 스키마 누락을 막는다."""
+def test_fresh_database_reaches_current_schema(tmp_path, monkeypatch) -> None:
+    """새 설치에서 분석·포트폴리오 최신 스키마 누락을 막는다."""
     db_path = tmp_path / "maps-migration.db"
     monkeypatch.setenv("MAPS_DB_URL", f"sqlite:///{db_path.as_posix()}")
     application_logger = logging.getLogger("maps.risk.manager")
@@ -22,12 +22,17 @@ def test_fresh_database_reaches_stock_analysis_history_schema(tmp_path, monkeypa
     engine = create_engine(f"sqlite:///{db_path.as_posix()}")
     inspector = inspect(engine)
     pick_columns = {column["name"] for column in inspector.get_columns("analysis_pick")}
+    portfolio_columns = {
+        column["name"] for column in inspector.get_columns("portfolio_snapshot")
+    }
     with engine.connect() as connection:
         revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
     engine.dispose()
 
-    assert revision == "0024_app_user"
+    assert revision == "0026_holding_details"
     assert {"trade_mode", "total_budget", "entries_cancelled", "exit_pending_reason"} <= pick_columns
+    assert "ai_recommendation" in pick_columns
+    assert "holding_details" in portfolio_columns
     assert "analysis_pick_leg" in inspector.get_table_names()
     history_columns = {
         column["name"]

@@ -19,14 +19,17 @@ import logging
 import re
 from html.parser import HTMLParser
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from maps.api.schemas import (
     DailyDigest,
     DigestCandidate,
+    DigestConditionalEntry,
     DigestExecution,
     DigestFactor,
+    DigestHolding,
     DigestMarket,
+    DigestPortfolio,
     DigestReportExcerpt,
     DigestSector,
     DigestSectors,
@@ -37,13 +40,15 @@ from maps.common.models import (
     CandidateSnapshot,
     MarketRegimeLog,
     OrderLog,
+    PortfolioSnapshot,
     SecurityMetadata,
     StockReportRun,
     UniverseQualityLog,
 )
 from maps.common.settings import MapsSettings
 from maps.execution.order_manager import kst_day_bounds_utc
-from maps.ops.pick_freshness import pick_cutoff_date
+from maps.market.trading_rules import previous_trading_day
+from maps.ops.pick_freshness import is_pick_stale, pick_cutoff_date
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +56,7 @@ logger = logging.getLogger(__name__)
 _MAX_CANDIDATES = 12
 # stock_report 본문 발췌 상한(문자). 요약이 아니라 원문 앞부분을 그대로 자른다.
 _MAX_EXCERPT_CHARS = 1500
+_STRATEGY_TRADE_ID = re.compile(r"^strategy_trade:(\d+)(?::|$)")
 
 
 class _TextExtractor(HTMLParser):
@@ -470,6 +476,128 @@ def _build_candidates(
     return top, total_tickers, excluded, quality
 
 
+def _build_conditional_entries(
+    db: Session,
+    settings: MapsSettings,
+    ref_date: dt.date,
+) -> list[DigestConditionalEntry]:
+    """Return armed entries separately from the normal next-session preview."""
+    picks = (
+        db.query(AnalysisPick)
+        .options(selectinload(AnalysisPick.legs))
+        .filter(AnalysisPick.strategy_trade_enabled.is_(True))
+        .filter(AnalysisPick.state.in_(["ARMED", "BOUGHT"]))
+        .order_by(AnalysisPick.id)
+        .all()
+    )
+    cutoff = pick_cutoff_date(settings, today=ref_date)
+    entries: list[DigestConditionalEntry] = []
+    for pick in picks:
+        split = pick.trade_mode == "split" and bool(pick.legs)
+        legs = sorted(pick.legs, key=lambda leg: leg.sequence) if split else []
+        if split:
+            filled_legs = sum(leg.status == "FILLED" for leg in legs)
+            remaining_qty = sum(
+                max(int(leg.planned_qty or 0) - int(leg.filled_qty or 0), 0)
+                for leg in legs
+            )
+            next_leg = next(
+                (leg for leg in legs if int(leg.filled_qty or 0) < int(leg.planned_qty or 0)),
+                None,
+            )
+            if pick.state == "BOUGHT" and remaining_qty <= 0:
+                continue
+            total_legs = len(legs)
+        else:
+            if pick.state != "ARMED":
+                continue
+            filled_legs = 0
+            total_legs = 1
+            remaining_qty = max(int(pick.qty or 0), 0)
+            next_leg = None
+
+        stale = is_pick_stale(pick, cutoff)
+        pending_order = (
+            next_leg.order_id if next_leg is not None else pick.entry_order_id
+        )
+        if pick.entries_cancelled:
+            status = "entries_cancelled"
+        elif stale:
+            status = "stale"
+        elif remaining_qty <= 0:
+            status = "entries_complete"
+        elif pending_order:
+            status = "order_pending"
+        else:
+            status = "waiting"
+
+        entries.append(DigestConditionalEntry(
+            pick_id=pick.id,
+            ticker=pick.ticker,
+            name=pick.name,
+            state=pick.state,
+            trade_mode="split" if split else "single",
+            filled_legs=filled_legs,
+            total_legs=total_legs,
+            next_leg_sequence=(
+                next_leg.sequence if next_leg is not None else (1 if not split else None)
+            ),
+            next_entry_price=next_leg.entry_price if next_leg is not None else pick.buy_price,
+            remaining_qty=remaining_qty,
+            status=status,
+            stale_reason="expired" if stale else None,
+            ai_recommendation=pick.ai_recommendation,
+        ))
+    return entries
+
+
+def _build_portfolio(db: Session, ref_date: dt.date) -> DigestPortfolio | None:
+    """Build the portfolio section only from the persisted decision-time snapshot."""
+    row = (
+        db.query(PortfolioSnapshot)
+        .filter(
+            PortfolioSnapshot.ref_date == ref_date,
+            PortfolioSnapshot.source == "broker",
+        )
+        .first()
+    )
+    if row is None:
+        return None
+    previous = (
+        db.query(PortfolioSnapshot)
+        .filter(
+            PortfolioSnapshot.ref_date < ref_date,
+            PortfolioSnapshot.source == "broker",
+        )
+        .order_by(PortfolioSnapshot.ref_date.desc())
+        .first()
+    )
+    daily_pnl_pct = (
+        (row.total_assets - previous.total_assets) / previous.total_assets
+        if previous is not None and previous.total_assets > 0
+        else None
+    )
+    raw_details = row.holding_details
+    data_complete = raw_details is not None and (
+        row.positions_value <= 0 or bool(raw_details)
+    )
+    warnings = [] if data_complete else ["HOLDING_DETAILS_UNAVAILABLE"]
+    holdings = [
+        DigestHolding(ticker=ticker, **detail)
+        for ticker, detail in sorted((raw_details or {}).items())
+    ]
+    return DigestPortfolio(
+        ref_date=row.ref_date.isoformat(),
+        total_assets=row.total_assets,
+        cash=row.cash,
+        positions_value=row.positions_value,
+        daily_pnl_pct=daily_pnl_pct,
+        data_complete=data_complete,
+        warnings=warnings,
+        holdings=holdings,
+    )
+
+
 def _build_executions(db: Session, ref_date: dt.date) -> list[DigestExecution]:
     """당일 체결·주문 내역. order_log 는 UTC 저장이라 KST 경계 변환이 필수다."""
     start, end = kst_day_bounds_utc(ref_date)
@@ -499,27 +627,75 @@ def _build_executions(db: Session, ref_date: dt.date) -> list[DigestExecution]:
         if key not in rationale and snap.score_reason:
             rationale[key] = snap.score_reason
 
-    return [
-        DigestExecution(
-            order_id=r.order_id,
-            strategy_id=r.strategy_id,
-            ticker=r.ticker,
-            name=names.get(r.ticker),
-            side=r.side,
-            qty=r.qty,
-            order_price=r.order_price,
-            fill_price=r.fill_price,
-            fill_qty=r.fill_qty,
-            status=r.status,
-            mode=r.mode,
-            exit_reason=r.exit_reason,
-            created_at=r.created_at.isoformat(),
+    strategy_pick_ids = {
+        int(match.group(1))
+        for row in rows
+        if row.strategy_id and (match := _STRATEGY_TRADE_ID.match(row.strategy_id))
+    }
+    picks = (
+        db.query(AnalysisPick)
+        .filter(AnalysisPick.ticker.in_(tickers), AnalysisPick.ref_date <= ref_date)
+        .order_by(AnalysisPick.id.desc())
+        .all()
+    )
+    picks_by_id = {pick.id: pick for pick in picks if pick.id in strategy_pick_ids}
+    picks_by_order_id = {
+        pick.entry_order_id: pick for pick in picks if pick.entry_order_id
+    }
+    decision_date = previous_trading_day(ref_date)
+    execution_regime = (
+        db.query(MarketRegimeLog)
+        .filter(MarketRegimeLog.ref_date <= decision_date)
+        .order_by(MarketRegimeLog.ref_date.desc())
+        .first()
+    )
+
+    executions: list[DigestExecution] = []
+    for row in rows:
+        match = _STRATEGY_TRADE_ID.match(row.strategy_id or "")
+        pick = picks_by_id.get(int(match.group(1))) if match else None
+        if pick is None and row.strategy_id == "strategy_trade":
+            pick = picks_by_order_id.get(row.order_id)
+
+        warnings: list[str] = []
+        if pick is not None and row.side == "buy":
+            if pick.ai_recommendation and pick.ai_recommendation.upper() != "BUY":
+                warnings.append("AI_RECOMMENDATION_NOT_BUY")
+            if execution_regime is not None:
+                if execution_regime.entry_limit_ratio == 0:
+                    warnings.append("MARKET_ENTRY_BLOCK_OVERRIDDEN")
+                elif pick.regime and execution_regime.applied_regime != pick.regime:
+                    warnings.append("EXECUTION_REGIME_CHANGED")
+
+        executions.append(DigestExecution(
+            order_id=row.order_id,
+            strategy_id=row.strategy_id,
+            ticker=row.ticker,
+            name=names.get(row.ticker),
+            side=row.side,
+            qty=row.qty,
+            order_price=row.order_price,
+            fill_price=row.fill_price,
+            fill_qty=row.fill_qty,
+            status=row.status,
+            mode=row.mode,
+            exit_reason=row.exit_reason,
+            created_at=row.created_at.isoformat(),
             entry_rationale=(
-                rationale.get((r.ticker, r.strategy_id or "")) if r.side == "buy" else None
+                (
+                    pick.rationale
+                    if pick is not None
+                    else rationale.get((row.ticker, row.strategy_id or ""))
+                )
+                if row.side == "buy" else None
             ),
-        )
-        for r in rows
-    ]
+            analysis_pick_id=pick.id if pick is not None else None,
+            ai_recommendation=pick.ai_recommendation if pick is not None else None,
+            approval_regime=pick.regime if pick is not None else None,
+            strategy_context=pick.strategy_context if pick is not None else None,
+            warnings=warnings,
+        ))
+    return executions
 
 
 def _build_market_context(db: Session, ref_date: dt.date) -> list[DigestReportExcerpt]:
@@ -587,11 +763,17 @@ def build_daily_digest(
             digest.universe_excluded = quality.excluded_count
             digest.universe_rejection_ratio = quality.rejection_ratio
 
+    digest.portfolio = _section("portfolio", lambda: _build_portfolio(db, ref_date))
+
     def _preview():  # noqa: ANN202
         from maps.ops.order_preview import build_order_preview
         return build_order_preview(db, settings)
 
     digest.tomorrow_orders = _section("tomorrow_orders", _preview)
+    digest.conditional_entries = _section(
+        "conditional_entries",
+        lambda: _build_conditional_entries(db, settings, ref_date),
+    ) or []
     digest.executions = _section("executions", lambda: _build_executions(db, ref_date)) or []
     digest.market_context = _section(
         "market_context", lambda: _build_market_context(db, ref_date)

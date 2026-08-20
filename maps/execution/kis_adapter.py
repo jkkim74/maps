@@ -297,6 +297,10 @@ class KISAdapter(BrokerAdapter):
         positions, _balance = self._fetch_positions_and_balance()
         return {ticker: pos.quantity for ticker, pos in positions.items()}
 
+    def get_position_details(self) -> dict[str, Position]:
+        positions, _balance = self._fetch_positions_and_balance()
+        return positions
+
     def get_same_day_buys(self) -> dict[str, SameDayBuy]:
         """Return quantities bought today from the KIS balance response."""
         data = self._fetch_balance_data()

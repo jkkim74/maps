@@ -11,7 +11,13 @@ from sqlalchemy.pool import StaticPool
 
 import maps.common.models  # noqa: F401
 from maps.common.db import Base
-from maps.common.models import AnalysisPick, AnalysisPickLeg, OrderLog
+from maps.common.models import (
+    AnalysisPick,
+    AnalysisPickLeg,
+    KillSwitchLog,
+    MarketRegimeLog,
+    OrderLog,
+)
 from maps.common.settings import MapsSettings
 from maps.execution.broker_adapter import Order, OrderResult, OrderSide, OrderStatus, OrderType
 from maps.execution.mock_broker import MockBroker
@@ -53,9 +59,16 @@ def _pick(db, *, ticker="005930", buy=70000, target=80000, stop=66000, qty=10, s
     return p
 
 
-def _run(pipeline, broker, manager, db, picks, prices):
+def _run(pipeline, broker, manager, db, picks, prices, *, daily_pnl=0.0):
     broker.update_prices(prices)
-    return pipeline._process_strategy_trades(db=db, broker=broker, manager=manager, picks=picks, prices=prices)
+    return pipeline._process_strategy_trades(
+        db=db,
+        broker=broker,
+        manager=manager,
+        picks=picks,
+        prices=prices,
+        daily_pnl=daily_pnl,
+    )
 
 
 def test_incomplete_market_score_blocks_new_strategy_buy(env):
@@ -139,6 +152,49 @@ def test_split_submits_only_first_eligible_leg_per_cycle(env):
     assert pick.legs[0].order_id
     assert pick.legs[1].order_id is None
     assert pick.legs[2].order_id is None
+
+
+def test_split_daily_loss_uses_stable_pick_kill_switch(env):
+    pipeline, broker, manager, db = env
+    pick = _split_pick(db)
+
+    submitted, closed = _run(
+        pipeline,
+        broker,
+        manager,
+        db,
+        [pick],
+        {pick.ticker: 63_000},
+        daily_pnl=-0.02,
+    )
+
+    assert (submitted, closed) == (0, 0)
+    assert db.query(OrderLog).count() == 0
+    kill = db.query(KillSwitchLog).one()
+    assert kill.strategy_id == f"strategy_trade:{pick.id}"
+    assert kill.reason == "daily_loss_limit"
+
+
+def test_split_market_block_policy_warns_but_allows(env, caplog):
+    pipeline, broker, manager, db = env
+    pick = _split_pick(db)
+    pick.regime = "mixed"
+    db.add(MarketRegimeLog(
+        ref_date=_TODAY,
+        raw_regime="weak",
+        applied_regime="weak",
+        weekly_trend="fail",
+        vol_regime="high",
+        entry_limit_ratio=0.0,
+    ))
+    db.commit()
+
+    submitted, closed = _run(
+        pipeline, broker, manager, db, [pick], {pick.ticker: 63_000}
+    )
+
+    assert (submitted, closed) == (1, 0)
+    assert "market warning, entry allowed" in caplog.text
 
 
 def test_split_waits_for_full_fill_before_next_leg(env):

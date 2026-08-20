@@ -34,6 +34,7 @@ from maps.common.models import AnalysisPick, AnalysisPickLeg, HistoricalOHLCV, O
 from maps.common.settings import MapsSettings, get_settings
 from maps.execution.broker_adapter import AccountBalance, get_broker
 from maps.execution.order_manager import OrderManager
+from maps.market.regime_history import latest_applied_regime
 from maps.ops.pick_freshness import (
     is_pick_stale,
     pick_age_trading_days,
@@ -54,7 +55,7 @@ router = APIRouter(prefix="/api/v1/analysis-picks", tags=["SCR-19 Analysis Picks
 
 def _trade_account_context(
     ticker: str, db: Session
-) -> tuple[MapsSettings, AccountBalance, float, bool]:
+) -> tuple[MapsSettings, AccountBalance, float, bool, str]:
     """Load the current broker account and duplicate state once per request."""
     settings = get_settings()
     broker = get_broker(settings.maps_broker_mode)
@@ -70,7 +71,10 @@ def _trade_account_context(
         .first()
         is not None
     )
-    return settings, account, existing_position_value, has_active_pick
+    regime_row = latest_applied_regime(db, datetime.date.today())
+    # ponytail: missing persisted market state uses the most conservative cash floor.
+    regime_used = regime_row.applied_regime if regime_row is not None else "weak"
+    return settings, account, existing_position_value, has_active_pick, regime_used
 
 
 def _validate_requested_plan(
@@ -78,11 +82,12 @@ def _validate_requested_plan(
     db: Session,
 ) -> ValidatedTradePlan:
     """Refresh account and duplicate state, then run the shared pure validator."""
-    settings, account, existing_position_value, has_active_pick = _trade_account_context(
+    settings, account, existing_position_value, has_active_pick, regime_used = _trade_account_context(
         body.ticker, db
     )
+    effective_body = body.model_copy(update={"regime": regime_used})
     return validate_trade_plan(
-        body,
+        effective_body,
         account=account,
         settings=settings,
         existing_position_value=existing_position_value,
@@ -96,11 +101,12 @@ def trade_limits(
     db: Session = DbDep,
 ) -> StrategyTradeLimitResponse:
     """Calculate current safe limits without a budget or database write."""
-    settings, account, existing_position_value, has_active_pick = _trade_account_context(
+    settings, account, existing_position_value, has_active_pick, regime_used = _trade_account_context(
         body.ticker, db
     )
+    effective_body = body.model_copy(update={"regime": regime_used})
     limits = calculate_trade_limits(
-        body,
+        effective_body,
         account=account,
         settings=settings,
         existing_position_value=existing_position_value,
@@ -146,8 +152,9 @@ def arm_trade_plan(
         trade_mode=body.trade_mode,
         total_budget=body.total_budget,
         rationale=body.rationale,
-        regime=body.regime,
+        regime=plan.regime_used,
         strategy_context=body.strategy_context,
+        ai_recommendation=body.ai_recommendation,
         strategy_trade_enabled=True,
         state="ARMED",
         last_action_at=datetime.datetime.now(datetime.timezone.utc),
@@ -393,6 +400,7 @@ def _to_item(
         rationale=p.rationale,
         regime=p.regime,
         strategy_context=p.strategy_context,
+        ai_recommendation=p.ai_recommendation,
         strategy_trade_enabled=p.strategy_trade_enabled,
         state=p.state,
         entry_order_id=p.entry_order_id,
