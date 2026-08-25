@@ -87,6 +87,9 @@ class Order:
     # 진입 시점 ATR(14). 사이징에 쓴 값을 그대로 order_log 에 남겨 청산·화면이
     # 재사용한다. memo 와 같은 MAPS 내부 필드이고 브로커 어댑터는 읽지 않는다.
     atr14: float | None = None
+    # 자동매수 판단에 사용한 후보·시장·사이징 입력. 브로커에는 의미가 없는
+    # MAPS 내부 감사 필드이며 OrderManager가 order_log에 그대로 고정한다.
+    decision_context: dict | None = None
 
 
 @dataclass

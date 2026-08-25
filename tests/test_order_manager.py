@@ -63,6 +63,45 @@ def _buy(ticker: str = "AAAA", strategy: str = "live_strat") -> Order:
     )
 
 
+def test_submit_persists_the_exact_decision_context(db, broker) -> None:
+    """주문 이후 후보·장세가 바뀌어도 제출 당시 근거는 order_log에 고정돼야 한다."""
+    context = {
+        "version": 1,
+        "origin": "live",
+        "candidate": {
+            "snapshot_id": 406247,
+            "ref_date": "2026-08-21",
+            "score": 38.27,
+            "score_reason": "decision-time candidate",
+        },
+        "market": {
+            "ref_date": "2026-08-24",
+            "regime": "mixed",
+            "weekly_trend": "pass",
+            "vol_regime": "high",
+            "entry_limit_ratio": 0.25,
+        },
+    }
+    order = Order(
+        strategy_id="live_strat",
+        ticker="AAAA",
+        side=OrderSide.BUY,
+        order_type=OrderType.LIMIT,
+        quantity=10,
+        limit_price=10_000,
+        decision_context=context,
+    )
+    manager = OrderManager(
+        broker=broker,
+        risk=RiskManager(broker=broker, db=db, config=RiskConfig()),
+        db=db,
+    )
+
+    manager.submit(order)
+
+    assert db.query(OrderLog).one().decision_context == context
+
+
 def test_kis_order_log_id_includes_account_and_kst_day() -> None:
     """같은 KIS ODNO라도 거래일이 다르면 감사 ID가 충돌하지 않아야 한다."""
     first = order_log_id(

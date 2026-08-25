@@ -136,6 +136,11 @@ warnings가 있으면 승인 당시 조건과 실행 시 경고를 그대로 적
 쓴다. exit_reason이 null이면
 "매도 이유가 기록되지 않았습니다"라고 쓴다. 체결이 없으면 "체결 없음"이라고 쓴다.
 
+매수 주문에 decision_context가 있으면 이것을 주문 순간의 확정 근거로 사용한다. 최상위 market은
+장 마감 시점의 시장 상태일 수 있으므로 주문 순간의 regime, weekly_trend, vol_regime,
+entry_limit_ratio, 후보 점수와 섞지 않는다. warnings에 DECISION_CONTEXT_INFERRED가 있으면
+해당 근거는 과거 데이터로 추론한 값이라고 명시하고 확정 사실처럼 쓰지 않는다.
+
 ────────────────────
 5. 내일 예정된 행동
 ────────────────────
@@ -166,7 +171,8 @@ excluded_reason을 보존한다. candidate_total과 candidate_excluded를 함께
 ai_contrarian_anti_thesis / valuation_margin_reason과 price_source도 기록한다.
 
 주문가·체결가·수량·상태·청산 사유를 보존한다. market_context가 있으면 외부 리포트
-출처를 밝히고 여기에 기록한다. 새로운 해석이나 숫자를 만들지 않는다.
+출처를 밝히고 여기에 기록한다. status가 failed인 항목은 excerpt를 인용하지 말고
+error_message에 기록된 검증 실패만 밝힌다. 새로운 해석이나 숫자를 만들지 않는다.
 
 ────────────────────
 7. 투자 유의사항

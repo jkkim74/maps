@@ -25,14 +25,16 @@ def test_fresh_database_reaches_current_schema(tmp_path, monkeypatch) -> None:
     portfolio_columns = {
         column["name"] for column in inspector.get_columns("portfolio_snapshot")
     }
+    order_columns = {column["name"] for column in inspector.get_columns("order_log")}
     with engine.connect() as connection:
         revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
     engine.dispose()
 
-    assert revision == "0026_holding_details"
+    assert revision == "0027_order_decision_context"
     assert {"trade_mode", "total_budget", "entries_cancelled", "exit_pending_reason"} <= pick_columns
     assert "ai_recommendation" in pick_columns
     assert "holding_details" in portfolio_columns
+    assert "decision_context" in order_columns
     assert "analysis_pick_leg" in inspector.get_table_names()
     history_columns = {
         column["name"]

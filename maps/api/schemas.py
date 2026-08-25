@@ -1061,6 +1061,7 @@ class DigestExecution(BaseModel):
     ai_recommendation: str | None = None
     approval_regime: str | None = None
     strategy_context: str | None = None
+    decision_context: dict[str, Any] | None = None
     warnings: list[str] = []
 
 
@@ -1068,6 +1069,8 @@ class DigestReportExcerpt(BaseModel):
     report_type: str
     trade_date: str | None = None
     excerpt: str
+    status: str = "completed"
+    error_message: str | None = None
 
 
 class DigestConditionalEntry(BaseModel):

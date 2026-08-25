@@ -57,6 +57,14 @@ _MAX_CANDIDATES = 12
 # stock_report 본문 발췌 상한(문자). 요약이 아니라 원문 앞부분을 그대로 자른다.
 _MAX_EXCERPT_CHARS = 1500
 _STRATEGY_TRADE_ID = re.compile(r"^strategy_trade:(\d+)(?::|$)")
+_KST = dt.timezone(dt.timedelta(hours=9))
+
+
+def _utc_to_kst_iso(value: dt.datetime) -> str:
+    """DB의 UTC datetime(naive/aware)을 명시적 KST ISO 문자열로 변환한다."""
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=dt.timezone.utc)
+    return value.astimezone(_KST).isoformat()
 
 
 class _TextExtractor(HTMLParser):
@@ -615,11 +623,17 @@ def _build_executions(db: Session, ref_date: dt.date) -> list[DigestExecution]:
         m.ticker: m.name
         for m in db.query(SecurityMetadata).filter(SecurityMetadata.ticker.in_(tickers)).all()
     }
+    decision_date = previous_trading_day(ref_date)
     # 매수의 "왜 샀나"는 같은 종목·전략의 최근 후보 스냅샷 score_reason 에서 가져온다.
+    # 감사 컬럼 도입 전 주문도 장 마감 후 생성된 당일 후보를 보지 않도록 전 거래일까지
+    # 제한한다. 이 경로는 추론임을 execution warning으로 명시한다.
     rationale: dict[tuple[str, str], str] = {}
     for snap in (
         db.query(CandidateSnapshot)
-        .filter(CandidateSnapshot.ticker.in_(tickers), CandidateSnapshot.ref_date <= ref_date)
+        .filter(
+            CandidateSnapshot.ticker.in_(tickers),
+            CandidateSnapshot.ref_date <= decision_date,
+        )
         .order_by(CandidateSnapshot.ref_date.desc())
         .all()
     ):
@@ -642,7 +656,6 @@ def _build_executions(db: Session, ref_date: dt.date) -> list[DigestExecution]:
     picks_by_order_id = {
         pick.entry_order_id: pick for pick in picks if pick.entry_order_id
     }
-    decision_date = previous_trading_day(ref_date)
     execution_regime = (
         db.query(MarketRegimeLog)
         .filter(MarketRegimeLog.ref_date <= decision_date)
@@ -658,6 +671,8 @@ def _build_executions(db: Session, ref_date: dt.date) -> list[DigestExecution]:
             pick = picks_by_order_id.get(row.order_id)
 
         warnings: list[str] = []
+        if row.side == "buy" and pick is None and row.decision_context is None:
+            warnings.append("DECISION_CONTEXT_INFERRED")
         if pick is not None and row.side == "buy":
             if pick.ai_recommendation and pick.ai_recommendation.upper() != "BUY":
                 warnings.append("AI_RECOMMENDATION_NOT_BUY")
@@ -666,6 +681,13 @@ def _build_executions(db: Session, ref_date: dt.date) -> list[DigestExecution]:
                     warnings.append("MARKET_ENTRY_BLOCK_OVERRIDDEN")
                 elif pick.regime and execution_regime.applied_regime != pick.regime:
                     warnings.append("EXECUTION_REGIME_CHANGED")
+
+        decision_candidate = (
+            row.decision_context.get("candidate")
+            if isinstance(row.decision_context, dict)
+            and isinstance(row.decision_context.get("candidate"), dict)
+            else {}
+        )
 
         executions.append(DigestExecution(
             order_id=row.order_id,
@@ -680,12 +702,13 @@ def _build_executions(db: Session, ref_date: dt.date) -> list[DigestExecution]:
             status=row.status,
             mode=row.mode,
             exit_reason=row.exit_reason,
-            created_at=row.created_at.isoformat(),
+            created_at=_utc_to_kst_iso(row.created_at),
             entry_rationale=(
                 (
                     pick.rationale
                     if pick is not None
-                    else rationale.get((row.ticker, row.strategy_id or ""))
+                    else decision_candidate.get("score_reason")
+                    or rationale.get((row.ticker, row.strategy_id or ""))
                 )
                 if row.side == "buy" else None
             ),
@@ -693,6 +716,7 @@ def _build_executions(db: Session, ref_date: dt.date) -> list[DigestExecution]:
             ai_recommendation=pick.ai_recommendation if pick is not None else None,
             approval_regime=pick.regime if pick is not None else None,
             strategy_context=pick.strategy_context if pick is not None else None,
+            decision_context=row.decision_context,
             warnings=warnings,
         ))
     return executions
@@ -704,7 +728,7 @@ def _build_market_context(db: Session, ref_date: dt.date) -> list[DigestReportEx
     rows = (
         db.query(StockReportRun)
         .filter(
-            StockReportRun.status == "completed",
+            StockReportRun.status.in_(("completed", "failed")),
             StockReportRun.created_at >= start,
             StockReportRun.created_at < end,
         )
@@ -713,6 +737,17 @@ def _build_market_context(db: Session, ref_date: dt.date) -> list[DigestReportEx
     )
     out: list[DigestReportExcerpt] = []
     for row in rows:
+        if row.status == "failed":
+            out.append(
+                DigestReportExcerpt(
+                    report_type=row.report_type,
+                    trade_date=row.trade_date,
+                    excerpt="",
+                    status="failed",
+                    error_message=row.error_message,
+                )
+            )
+            continue
         text = _html_to_text(row.html_content or "")
         if not text:
             continue
@@ -721,6 +756,7 @@ def _build_market_context(db: Session, ref_date: dt.date) -> list[DigestReportEx
                 report_type=row.report_type,
                 trade_date=row.trade_date,
                 excerpt=text[:_MAX_EXCERPT_CHARS],
+                status="completed",
             )
         )
     return out

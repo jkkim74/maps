@@ -29,6 +29,37 @@ REPORT_TYPES = {
 }
 
 
+def _validate_summary_metadata(meta: dict) -> None:
+    """Market Summary가 올바른 국내 지수와 연속 데이터로 계산됐는지 검증한다."""
+    errors: list[str] = []
+    inputs = meta.get("index_inputs") if isinstance(meta, dict) else None
+    if (
+        not isinstance(meta, dict)
+        or meta.get("data_valid") is not True
+        or not isinstance(inputs, dict)
+    ):
+        errors.append("missing validity metadata")
+    else:
+        for name, expected_ticker in (("kospi", "^KS11"), ("kosdaq", "^KQ11")):
+            item = inputs.get(name)
+            if not isinstance(item, dict):
+                errors.append(f"{name}: missing")
+                continue
+            if item.get("ticker") != expected_ticker:
+                errors.append(f"{name}: ticker={item.get('ticker')}")
+            checks = (
+                ("row_count", 60, lambda value, limit: value >= limit),
+                ("latest_age_days", 7, lambda value, limit: 0 <= value <= limit),
+                ("max_gap_days", 7, lambda value, limit: 0 <= value <= limit),
+            )
+            for field, limit, valid in checks:
+                value = item.get(field)
+                if not isinstance(value, (int, float)) or not valid(value, limit):
+                    errors.append(f"{name}: {field}={value}")
+    if errors:
+        raise RuntimeError("index metadata invalid: " + "; ".join(errors))
+
+
 def _add_stock_report_to_path() -> None:
     """stock-report 소스 디렉토리를 Python 경로에 추가한다."""
     settings = get_settings()
@@ -101,6 +132,11 @@ def run_report(db: Session, report_type: str) -> int:
             raise RuntimeError("리포트 생성 실패: 조건 미충족 또는 데이터 없음")
 
         meta = report_data.metadata if hasattr(report_data, "metadata") else {}
+
+        if report_type == "summary":
+            # 실패하더라도 어떤 입력 검증에서 막혔는지 감사할 수 있게 메타데이터는 남긴다.
+            run.meta_json = json.dumps(meta, ensure_ascii=False, default=str)
+            _validate_summary_metadata(meta)
 
         row = db.query(StockReportRun).filter(StockReportRun.id == run_id).first()
         if row:

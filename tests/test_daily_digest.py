@@ -77,6 +77,12 @@ def _seed(db) -> None:
         weekly_pass=True,
     ))
     db.add(CandidateSnapshot(
+        ref_date=dt.date(2026, 7, 24), strategy_id="donchian_v2", ticker="475150",
+        name="SK이터닉스", market="KOSDAQ", factor_score=68.0, trend_strength=80.0,
+        ts_bucket="S1", final_score=72.0, score_reason="20일 신고가 돌파 + 거래대금 상위",
+        weekly_pass=True,
+    ))
+    db.add(CandidateSnapshot(
         ref_date=REF_DATE, strategy_id="pullback_v3", ticker="005930",
         name="삼성전자", market="KOSPI", factor_score=40.0, trend_strength=30.0,
         ts_bucket="S4", final_score=36.0, weekly_pass=True,
@@ -147,6 +153,65 @@ def test_digest_executions_respect_kst_boundary(db, settings) -> None:
     assert by_side["buy"].entry_rationale == "20일 신고가 돌파 + 거래대금 상위"
     assert by_side["sell"].exit_reason == "stop_loss"
     assert by_side["sell"].entry_rationale is None      # 매도엔 진입 근거를 붙이지 않는다
+
+
+def test_digest_prefers_pinned_order_context_and_displays_kst(db, settings) -> None:
+    """장 마감 후보가 달라져도 매수 근거와 주문 시각은 제출 당시 값이어야 한다."""
+    _seed(db)
+    row = db.query(OrderLog).filter(OrderLog.order_id == "B1").one()
+    row.decision_context = {
+        "version": 1,
+        "origin": "live",
+        "candidate": {
+            "snapshot_id": 123,
+            "ref_date": "2026-07-24",
+            "score": 38.27,
+            "score_reason": "주문 당시 후보 근거",
+        },
+        "market": {
+            "ref_date": "2026-07-27",
+            "source": "order_cycle",
+            "regime": "mixed",
+            "weekly_trend": "pass",
+            "vol_regime": "high",
+            "entry_limit_ratio": 0.25,
+        },
+    }
+    # _seed의 당일 후보 근거는 서로 다르다. 이 값이 붙으면 사후 스냅샷 누출이다.
+    current = db.query(CandidateSnapshot).filter(
+        CandidateSnapshot.ref_date == REF_DATE,
+        CandidateSnapshot.ticker == "475150",
+        CandidateSnapshot.strategy_id == "donchian_v2",
+    ).one()
+    current.score_reason = "장 마감 후 달라진 후보 근거"
+    db.commit()
+
+    digest = build_daily_digest(db, settings, REF_DATE)
+
+    execution = next(e for e in digest.executions if e.order_id == "B1")
+    assert execution.entry_rationale == "주문 당시 후보 근거"
+    assert execution.decision_context["candidate"]["score"] == 38.27
+    assert execution.created_at == "2026-07-27T08:55:18+09:00"
+    assert execution.warnings == []
+
+
+def test_legacy_order_uses_only_pre_execution_candidate_and_warns(db, settings) -> None:
+    """감사 컬럼 도입 전 주문에 당일 장 마감 후보를 매수 근거로 붙이면 안 된다."""
+    _seed(db)
+    prior = db.query(CandidateSnapshot).filter(
+        CandidateSnapshot.ref_date == dt.date(2026, 7, 24),
+        CandidateSnapshot.ticker == "475150",
+        CandidateSnapshot.strategy_id == "donchian_v2",
+    ).one()
+    prior.score_reason = "직전 거래일 후보 근거"
+    db.commit()
+
+    digest = build_daily_digest(db, settings, REF_DATE)
+
+    execution = next(e for e in digest.executions if e.order_id == "B1")
+    assert execution.decision_context is None
+    assert execution.entry_rationale == "직전 거래일 후보 근거"
+    assert execution.warnings == ["DECISION_CONTEXT_INFERRED"]
 
 
 def test_strategy_trade_execution_includes_pick_audit_context(db, settings) -> None:
@@ -322,6 +387,24 @@ def test_market_context_extracts_report_text(db, settings) -> None:
     excerpt = digest.market_context[0].excerpt
     assert "외국인 순매도 우위" in excerpt
     assert "<" not in excerpt and "b{}" not in excerpt     # 태그·style 내용 제거
+
+
+def test_market_context_exposes_failed_report_without_invalid_html(db, settings) -> None:
+    _seed(db)
+    db.add(StockReportRun(
+        report_type="summary", status="failed", trade_date="20260727",
+        html_content="<p>invalid market summary</p>",
+        error_message="index metadata invalid: kospi max_gap_days=39",
+        created_at=dt.datetime(2026, 7, 27, 9, 5, 0),
+    ))
+    db.commit()
+
+    digest = build_daily_digest(db, settings, REF_DATE)
+
+    failed = next(item for item in digest.market_context if item.report_type == "summary")
+    assert failed.status == "failed"
+    assert failed.excerpt == ""
+    assert failed.error_message == "index metadata invalid: kospi max_gap_days=39"
 
 
 def test_digest_survives_empty_database(db, settings) -> None:

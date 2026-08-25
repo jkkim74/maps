@@ -482,6 +482,7 @@ class OrderManager:
                     mode=_order_log_mode(),
                     exit_reason=exit_reason,
                     atr14=order.atr14,
+                    decision_context=order.decision_context,
                 )
             )
             self._db.commit()

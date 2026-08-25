@@ -514,6 +514,9 @@ class OrderLog(Base):
     # 089860 이 0.50% → 0.55%). **손절가 자체는 저장하지 않는다.**
     # effective_stop_price() 가 유일한 산출 경로여야 하므로 그 입력만 고정한다.
     atr14: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # 자동매수 주문 당시 후보·시장·사이징 입력. 이후 일일 후보와 장세 로그가
+    # 갱신돼도 매수 근거가 바뀌지 않도록 주문 행에 원자적으로 고정한다.
+    decision_context: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc)
     )

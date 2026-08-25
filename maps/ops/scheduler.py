@@ -2071,6 +2071,41 @@ class OperationalPipeline:
                 # 사이징(_order_qty)에 넘긴 것과 **같은 변수**를 기록한다. 청산·화면이
                 # 이 값을 재사용해야 손절폭이 진입 후에도 사이징 가정과 일치한다.
                 atr14=signal.atr14,
+                decision_context={
+                    "version": 1,
+                    "origin": "live",
+                    "candidate": {
+                        "snapshot_id": candidate.id,
+                        "ref_date": candidate.ref_date.isoformat(),
+                        "score": candidate.final_score,
+                        "score_source": candidate.score_source,
+                        "score_reason": candidate.score_reason,
+                        "trend_strength": candidate.trend_strength,
+                        "ts_bucket": candidate.ts_bucket,
+                        "weekly_pass": candidate.weekly_pass,
+                        "entry_signal": bool(signal.entry_signal),
+                        "score_ready": candidate.score_ready,
+                    },
+                    "market": {
+                        "ref_date": ref_date.isoformat(),
+                        "source": "order_cycle",
+                        "regime": regime.regime.value,
+                        "weekly_trend": regime.weekly_trend.value,
+                        "vol_regime": regime.vol_regime.value,
+                        "entry_limit_ratio": limit_ratio,
+                        "effective_entry_limit_ratio": policy.entry_limit_ratio,
+                        "strategy_type": policy.strategy_type.lower(),
+                        "policy_reason": policy.reason,
+                    },
+                    "order_inputs": {
+                        "signal_close": signal_close,
+                        "current_close": current_close,
+                        "gap_pct": gap_pct,
+                        "limit_price": float(limit_price),
+                        "quantity": qty,
+                        "atr14": signal.atr14,
+                    },
+                },
                 memo=(
                     f"candidate_snapshot:{candidate.ref_date.isoformat()} "
                     f"signal={signal_close:.0f} gap={gap_pct:+.3f}"

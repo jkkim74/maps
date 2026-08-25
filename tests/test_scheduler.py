@@ -235,6 +235,9 @@ def test_order_cycle_submits_promoted_candidate_when_live_enabled(monkeypatch) -
             trend_strength=80,
             ts_bucket="S5",
             final_score=95,
+            score_source="RULE",
+            score_reason="decision-time reason",
+            score_ready=True,
             weekly_pass=True,
         ))
         db.add(PromotionHistory(
@@ -269,6 +272,42 @@ def test_order_cycle_submits_promoted_candidate_when_live_enabled(monkeypatch) -
         # 손절 10,100 × 0.95 = 9,595 → 호가 10원 단위 내림 9,590 → 손절폭 510.
         # 계좌위험 0.5%(500,000) ÷ 510 = 980 주. 고정비중 상한(990)보다 작아 이쪽이 결정한다.
         assert order.fill_qty == 980
+        candidate = db.query(CandidateSnapshot).filter(CandidateSnapshot.ticker == "AAAA").one()
+        assert order.decision_context == {
+            "version": 1,
+            "origin": "live",
+            "candidate": {
+                "snapshot_id": candidate.id,
+                "ref_date": "2026-05-05",
+                "score": 95.0,
+                "score_source": "RULE",
+                "score_reason": "decision-time reason",
+                "trend_strength": 80.0,
+                "ts_bucket": "S5",
+                "weekly_pass": True,
+                "entry_signal": True,
+                "score_ready": True,
+            },
+            "market": {
+                "ref_date": "2026-05-05",
+                "source": "order_cycle",
+                "regime": "mixed",
+                "weekly_trend": "pass",
+                "vol_regime": "normal",
+                "entry_limit_ratio": 0.5,
+                "effective_entry_limit_ratio": 0.5,
+                "strategy_type": "pullback",
+                "policy_reason": "mixed_market_allows_strategy",
+            },
+            "order_inputs": {
+                "signal_close": 10_000.0,
+                "current_close": 10_000.0,
+                "gap_pct": 0.0,
+                "limit_price": 10_100.0,
+                "quantity": 980,
+                "atr14": None,
+            },
+        }
         row = db.query(CollectionLog).filter(CollectionLog.source == "scheduler.orders").first()
         assert row is not None
         assert row.status == "success"
