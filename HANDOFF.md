@@ -1,5 +1,43 @@
 # HANDOFF
 
+## 8/25 8월 24일 주문 감사·Market Summary P1 — ✅ 운영 배포 / 모바일 QR만 대기
+
+커밋 `9503791`을 master와 운영 서버에 배포했다. 운영 HEAD는 `9503791`, Alembic은
+`0027_order_decision_context (head)`, systemd `maps=active`, 내부 `/health` 200이다.
+전체 회귀 테스트는 **931 passed, 13 warnings**다.
+
+- 자동매수 주문에 후보 스냅샷, 주문 순간 장세·주간추세·변동성·진입한도, 가격·수량·ATR을
+  `order_log.decision_context` JSON으로 원자적으로 고정한다.
+- digest execution은 주문 시점 근거를 우선하며 UTC DB 시각을 KST ISO로 출력한다. 기존 주문은
+  같은 날 장 마감 후보를 보지 않고 직전 거래일까지 제한하며 `DECISION_CONTEXT_INFERRED`를 붙인다.
+- Market Summary는 KOSPI `^KS11`, KOSDAQ `^KQ11`만 허용하고 각각 60행 이상, 최신 7일 이내,
+  최근 60행 최대 공백 7일 이내인지 검사한다. 실패한 외부 리포트는 HTML을 인용하지 않고
+  digest에 상태와 오류만 노출한다.
+
+운영 외부 도구 `/opt/stock_report/report_generator.py`와 `marketSummary.py`도 교정했다.
+배포 후 summary smoke run `id=356`은 `completed`; 두 지수 모두 202행, 최신일 2026-08-25,
+최대 공백 4일, HTML 47,659 bytes다. 배포 후 SHA-256은 각각
+`0c784de408f40ea2cc2949d585bf65437936aa254c467e3518e443c4e3dd5e51`,
+`60bbbb5f065a2cc365683bef64db6767818e2cfb21b898f382a784a759906af7`이다.
+
+8/24 주문 `kis:d59a650c:20260824:0000000683`(row 71)에 검증된 역사 감사정보를 백필했다.
+실제 주문 근거는 8/21 후보 406247, 점수 38.27, 추세강도 76.52, 주문 시각
+2026-08-24 08:55:35 KST, MIXED/pass/HIGH, 진입한도 0.25다. 마감 뒤 저장된
+fail/0.0과 당일 후보 50.02/100.0은 주문 근거가 아니다. 기존 summary row 354는
+`^KS200` 오사용과 2026-07-16..2026-08-24 39일 공백 때문에 HTML을 보존한 채 `failed`로
+무효화했다. 교정 digest는 `/opt/maps/logs/digest_2026-08-24-p1.json`, 교정 일지는
+`/opt/maps/diary/20260824.txt`; 원본은 `20260824.txt.bak-p1-20260825`다. 로컬 원본도
+`docs/diary/20260824.pre-p1-20260825.bak.txt`로 보존했다.
+
+배포 전 전체 DB 백업은
+`/opt/maps/backups/pre_p1_order_audit_20260825_155521.dump`(327,795,975 bytes, mode 600)다.
+외부 도구 원본은 `/opt/stock_report/*.bak-p1-20260825_155521`에 보존했다.
+
+모바일 환경은 공식 ChatGPT Windows 앱 `26.818.8289.0`을 설치·실행했다. 현재 고성능 전원
+계획에서 AC/DC 절전 타이머 모두 0(절전 안 함)이다. 남은 단계는 사용자 본인 확인이 필요한
+동일 ChatGPT 계정 로그인 및 `Settings > Connections > Control this PC` QR 페어링뿐이다.
+페어링 뒤 모바일 Remote 탭에서 완료 알림 수신과 새 작업지시를 시험해야 한다.
+
 ## 8/21 8월 20일 매매기록 운영 점검 — P0 설계 작성 후 ⏸️ 보류
 
 `docs/diary/20260820.txt`를 코드·HANDOFF와 대조했다. 8/20 주문 사고나 리스크 게이트
