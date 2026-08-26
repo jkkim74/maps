@@ -1,6 +1,6 @@
 # alembic/
 
-DB 스키마 마이그레이션. `alembic/versions/` 에 리비전 28개가 있고 **head 는 하나**다.
+DB 스키마 마이그레이션. `alembic/versions/` 에 리비전 33개가 있고 **head 는 하나**다.
 
 ## 명령
 
@@ -22,7 +22,7 @@ alembic downgrade -1                             # 한 단계 되돌리기
 파일명이 아니라 각 파일의 `down_revision` 을 따라간다. 예: `efca8676041a` 의
 `down_revision` 은 `0005_stock_report_runs` 다.
 
-현재 head: **`0023_score_readiness_feeds`**.
+현재 head: **`0028_holding_regime_audit`**.
 
 ## 규칙
 

@@ -1089,6 +1089,19 @@ class DigestConditionalEntry(BaseModel):
     ai_recommendation: str | None = None
 
 
+class DigestHoldingRegimeOverlay(BaseModel):
+    action: str
+    reason_code: str
+    mode: str
+    entry_regime: str | None = None
+    current_regime: str | None = None
+    weekly_trend: str | None = None
+    vol_regime: str | None = None
+    confirmed: bool = False
+    current_adverse_causes: list[str] = Field(default_factory=list)
+    confirmed_adverse_causes: list[str] = Field(default_factory=list)
+
+
 class DigestHolding(BaseModel):
     ticker: str
     name: str | None = None
@@ -1098,6 +1111,7 @@ class DigestHolding(BaseModel):
     evaluation_value: float
     unrealized_pnl: float
     unrealized_pnl_pct: float | None = None
+    regime_overlay: DigestHoldingRegimeOverlay | None = None
 
 
 class DigestPortfolio(BaseModel):
@@ -1109,6 +1123,9 @@ class DigestPortfolio(BaseModel):
     data_complete: bool
     warnings: list[str] = []
     holdings: list[DigestHolding] = []
+    regime_overlay_summary: dict[str, int] = Field(
+        default_factory=lambda: {"hold": 0, "watch": 0, "exit": 0}
+    )
 
 
 class DailyDigest(BaseModel):

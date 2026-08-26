@@ -26,15 +26,41 @@ def test_fresh_database_reaches_current_schema(tmp_path, monkeypatch) -> None:
         column["name"] for column in inspector.get_columns("portfolio_snapshot")
     }
     order_columns = {column["name"] for column in inspector.get_columns("order_log")}
+    audit_columns = {
+        column["name"] for column in inspector.get_columns("holding_regime_audit")
+    }
     with engine.connect() as connection:
         revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
     engine.dispose()
 
-    assert revision == "0027_order_decision_context"
+    assert revision == "0028_holding_regime_audit"
     assert {"trade_mode", "total_budget", "entries_cancelled", "exit_pending_reason"} <= pick_columns
     assert "ai_recommendation" in pick_columns
     assert "holding_details" in portfolio_columns
     assert "decision_context" in order_columns
+    assert {
+        "id",
+        "ref_date",
+        "position_key",
+        "ticker",
+        "strategy_id",
+        "entry_regime",
+        "current_regime",
+        "weekly_trend",
+        "vol_regime",
+        "action",
+        "reason_code",
+        "confirmed",
+        "mode",
+        "details",
+        "created_at",
+        "updated_at",
+    } <= audit_columns
+    audit_uniques = inspector.get_unique_constraints("holding_regime_audit")
+    assert any(
+        set(constraint["column_names"]) == {"ref_date", "position_key"}
+        for constraint in audit_uniques
+    )
     assert "analysis_pick_leg" in inspector.get_table_names()
     history_columns = {
         column["name"]

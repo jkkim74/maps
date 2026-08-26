@@ -105,6 +105,11 @@ KRX 거래일이 아니면 잡 실행을 건너뛴다 (`_is_krx_market_day()` �
 
 `broker_sync`는 `IntervalTrigger`(60초 간격), 나머지는 `CronTrigger`(월~금 지정 시각).
 
+broker sync는 기존 손절·익절·전략 청산을 먼저 처리한 뒤 보유 장세 shadow 감사를 별도
+경계에서 기록한다. 감사 오류는 rollback·로그만 남기고 기존 청산을 막지 않는다. 오버레이는
+`source=candidate_generation` 장마감 행만 읽고 주문을 제출하지 않으며, 동일 입력의 당일 감사는
+다시 쓰지 않는다. `BOUGHT AnalysisPick`은 전략매매 설정과 무관하게 오버레이에서 제외한다.
+
 ### 전역 함수
 
 | 함수 | 설명 |
@@ -199,6 +204,10 @@ KRX 거래일이 아니면 잡 실행을 건너뛴다 (`_is_krx_market_day()` �
 > `scripts/backfill_market_score.py` 로 과거 `market_regime_log` 를 복구한 날짜의
 > 다이제스트·블로그는 **재생성하지 않는다** — 재생성하면 결정 시점이 아니라 복구 후 값을
 > 설명하게 된다. 그래서 그 스크립트는 `score_reason` 에 결정 시점 커버리지를 함께 남긴다.
+
+포트폴리오의 `regime_overlay`는 해당 날짜 `holding_regime_audit` 중 실제 최신 BUY의
+`position_key=order:<id>`와 일치하는 행만 연결한다. `action=exit`도 v1에서는 실제 매도가 아니라
+shadow 후보라는 뜻이다.
 
 ## 의존성
 

@@ -20,6 +20,7 @@ from maps.common.models import (
     AnalysisPickLeg,
     CandidateSnapshot,
     HistoricalOHLCV,
+    HoldingRegimeAudit,
     MarketRegimeLog,
     OrderLog,
     PortfolioSnapshot,
@@ -316,6 +317,93 @@ def test_digest_reports_decision_time_portfolio_details(db, settings) -> None:
     assert digest.portfolio.data_complete is True
     assert digest.portfolio.holdings[0].ticker == "475150"
     assert digest.portfolio.holdings[0].unrealized_pnl == 10_000.0
+
+
+def test_digest_connects_shadow_overlay_by_entry_order_and_counts_actions(db, settings) -> None:
+    db.add(PortfolioSnapshot(
+        ref_date=REF_DATE,
+        source="broker",
+        total_assets=1_020_000.0,
+        cash=690_000.0,
+        positions_value=330_000.0,
+        holdings={"475150": 4},
+        holding_details={
+            "475150": {
+                "name": "SK이터닉스",
+                "quantity": 4,
+                "avg_price": 80_000.0,
+                "current_price": 82_500.0,
+                "evaluation_value": 330_000.0,
+                "unrealized_pnl": 10_000.0,
+                "unrealized_pnl_pct": 0.03125,
+            }
+        },
+    ))
+    entry = OrderLog(
+        order_id="overlay-entry",
+        strategy_id="donchian_v2",
+        ticker="475150",
+        side="buy",
+        qty=4,
+        fill_qty=4,
+        status="filled",
+        created_at=dt.datetime(2026, 7, 26, 23, 55),
+    )
+    db.add(entry)
+    db.flush()
+    db.add(HoldingRegimeAudit(
+        ref_date=REF_DATE,
+        position_key=f"order:{entry.id}",
+        ticker="475150",
+        strategy_id="donchian_v2",
+        entry_regime="mixed",
+        current_regime="mixed",
+        weekly_trend="fail",
+        vol_regime="high",
+        action="exit",
+        reason_code="CONFIRMED_ADVERSE_REGIME",
+        confirmed=True,
+        mode="shadow",
+        details={
+            "current_adverse_causes": ["weekly_fail"],
+            "confirmed_adverse_causes": ["weekly_fail"],
+        },
+    ))
+    db.commit()
+
+    digest = build_daily_digest(db, settings, REF_DATE)
+
+    assert digest.portfolio is not None
+    overlay = digest.portfolio.holdings[0].regime_overlay
+    assert overlay is not None
+    assert overlay.action == "exit"
+    assert overlay.mode == "shadow"
+    assert overlay.confirmed_adverse_causes == ["weekly_fail"]
+    assert digest.portfolio.regime_overlay_summary == {
+        "hold": 0,
+        "watch": 0,
+        "exit": 1,
+    }
+
+    db.add(AnalysisPick(
+        ref_date=REF_DATE,
+        ticker="475150",
+        name="SK인터넷",
+        source="manual",
+        state="BOUGHT",
+        strategy_trade_enabled=True,
+    ))
+    db.commit()
+
+    digest_after_pick = build_daily_digest(db, settings, REF_DATE)
+
+    assert digest_after_pick.portfolio is not None
+    assert digest_after_pick.portfolio.holdings[0].regime_overlay is None
+    assert digest_after_pick.portfolio.regime_overlay_summary == {
+        "hold": 0,
+        "watch": 0,
+        "exit": 0,
+    }
 
 
 def test_digest_marks_legacy_portfolio_details_incomplete(db, settings) -> None:

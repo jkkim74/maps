@@ -32,6 +32,7 @@
 | 스케줄 잡·실행 시각 | `maps/ops/scheduler.py` + `maps/common/settings.py` |
 | 승격 단계 판정 | `maps/promotion/gate.py`, 단계 스냅샷 `stage_snapshot.py` |
 | Kill Switch | `maps/risk/manager.py`, 화면은 `maps/api/risk.py` |
+| 보유 장세 shadow 판정·감사 | `maps/risk/holding_regime_overlay.py`, 연결은 `maps/ops/scheduler.py` |
 | WFA·Plateau·MC | `maps/validation/` |
 | 종목분석 이력·현재가 | `maps/stock_analysis/history.py` |
 | 일일 다이제스트·블로그 | `maps/ops/daily_digest.py`, `maps/api/blog.py` |

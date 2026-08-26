@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import pytest
+from pydantic import ValidationError
+
 from maps.common.settings import MapsSettings, get_config_status, get_missing_required_settings
 
 
@@ -122,6 +125,28 @@ def test_analysis_pick_max_age_appears_in_config_status() -> None:
         for field in section.fields
     }
     assert "MAPS_ANALYSIS_PICK_MAX_AGE_TRADING_DAYS" in envs
+
+
+def test_holding_regime_overlay_defaults_to_shadow_only() -> None:
+    settings = MapsSettings(_env_file=None)
+
+    assert settings.maps_holding_regime_overlay_mode == "shadow"
+    assert settings.maps_holding_regime_max_age_days == 3
+    with pytest.raises(ValidationError):
+        MapsSettings(_env_file=None, maps_holding_regime_overlay_mode="enforce")
+
+
+def test_holding_regime_overlay_settings_appear_in_config_status() -> None:
+    envs = {
+        field.env_var
+        for section in get_config_status(MapsSettings(_env_file=None))
+        for field in section.fields
+    }
+
+    assert {
+        "MAPS_HOLDING_REGIME_OVERLAY_MODE",
+        "MAPS_HOLDING_REGIME_MAX_AGE_DAYS",
+    } <= envs
 
 
 def test_ai_scoring_settings_appear_in_config_status() -> None:

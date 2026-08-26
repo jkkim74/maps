@@ -630,7 +630,7 @@
       <tr><td>리스크 한도 설정</td><td>불가</td><td>개인 한도 <span class="b b-warn">미구현</span></td><td>전역 한도</td></tr>
       <tr><td>킬스위치</td><td>불가</td><td>개인 스위치 <span class="b b-warn">미구현</span></td><td>전역 스위치</td></tr>
       <tr><td>개인 설정</td><td>3키</td><td>3키 + 매매 설정</td><td>3키</td></tr>
-      <tr><td>운영 설정(<code>.env</code> 59개)</td><td>불가 <span class="b b-mute">권한</span></td><td>불가 <span class="b b-mute">권한</span></td><td>조회 <span class="b b-info">편집 미구현</span></td></tr>
+      <tr><td>운영 설정(<code>.env</code> 61개)</td><td>불가 <span class="b b-mute">권한</span></td><td>불가 <span class="b b-mute">권한</span></td><td>조회 <span class="b b-info">편집 미구현</span></td></tr>
       <tr><td>회원 관리</td><td>불가 <span class="b b-mute">권한</span></td><td>불가 <span class="b b-mute">권한</span></td><td>가능</td></tr>
       <tr><td>전략 승격 · 검증</td><td>불가 <span class="b b-mute">권한</span></td><td>불가 <span class="b b-mute">권한</span></td><td>가능</td></tr>
       <tr><td>모바일 앱</td><td>불가 <span class="b b-mute">등급</span></td><td>불가 <span class="b b-warn">미구현</span></td><td>가능</td></tr>
@@ -651,7 +651,7 @@
   <div class="tw"><table>
     <thead><tr><th>층</th><th>저장 위치</th><th>고칠 수 있는 사람</th><th>적용 범위</th><th>항목 수</th></tr></thead>
     <tbody>
-      <tr><td><b>운영 설정</b></td><td>서버 <code>.env</code></td><td>관리자만</td><td>프로세스 전체</td><td class="num">59 (비밀 15)</td></tr>
+      <tr><td><b>운영 설정</b></td><td>서버 <code>.env</code></td><td>관리자만</td><td>프로세스 전체</td><td class="num">61 (비밀 15)</td></tr>
       <tr><td><b>개인 설정</b></td><td><code>app_user.preferences</code> JSON</td><td>본인</td><td>자기 화면만</td><td class="num">6 (유료 +4)</td></tr>
       <tr><td><b>개인 매매 설정</b></td><td><code>user_broker_account</code> 신설</td><td>본인(유료)</td><td>자기 계좌만</td><td class="num">미정</td></tr>
     </tbody>
@@ -661,7 +661,7 @@
   <div class="tw"><table>
     <thead><tr><th>섹션 키</th><th>제목</th><th>항목</th><th>대표 항목</th></tr></thead>
     <tbody>
-      <tr><td><code>runtime</code></td><td>Runtime</td><td class="num">21</td><td>브로커 모드, 실거래 스위치, 스케줄러, KRX 로그인 회로차단기</td></tr>
+      <tr><td><code>runtime</code></td><td>Runtime</td><td class="num">23</td><td>브로커 모드, 실거래 스위치, 스케줄러, KRX 로그인 회로차단기</td></tr>
       <tr><td><code>kis</code></td><td>KIS Korea Investment</td><td class="num">6</td><td>앱키·시크릿·계좌번호, 실거래/모의 엔드포인트</td></tr>
       <tr><td><code>kiwoom</code></td><td>Kiwoom</td><td class="num">2</td><td>계좌번호, 비밀번호</td></tr>
       <tr><td><code>data</code></td><td>External Data</td><td class="num">19</td><td>DART · AWS Bedrock · Naver · AI 스코어링 · 점수 준비도</td></tr>
@@ -676,14 +676,14 @@
     <tbody>
       <tr><td>무료</td><td><code>landing_screen</code>, <code>candidate_min_score</code>, <code>candidate_markets</code></td></tr>
       <tr><td>유료</td><td>위 3키 + 개인 리스크 한도(단일 종목 · 총 노출 · 일 손실) + 개인 킬스위치 + 주문 알림</td></tr>
-      <tr><td>관리자</td><td>위 3키 + 운영 설정 59개(별도 화면)</td></tr>
+      <tr><td>관리자</td><td>위 3키 + 운영 설정 61개(별도 화면)</td></tr>
     </tbody>
   </table></div>
 
   <div class="note danger">
     <span class="t">지금 뚫려 있는 구멍</span>
     <ul>
-      <li><code>/ops-config</code> 는 <strong>조회 전용</strong>이다. 59개 항목을 마스킹해
+      <li><code>/ops-config</code> 는 <strong>조회 전용</strong>이다. 61개 항목을 마스킹해
         보여줄 뿐, 값을 바꿀 수 있는 건 <code>POST /api/v1/ops/config/ai-scoring-mode</code>
         <strong>하나뿐</strong>이다.</li>
       <li>나머지 58개는 <strong>서버에 SSH 로 들어가 <code>.env</code> 를 직접 고쳐야</strong> 한다.</li>
@@ -707,7 +707,7 @@
       <span class="b b-info">조회만 구현됨</span>
     </header>
     <div class="body">
-      <p>관리자가 서버 <code>.env</code> 59개 항목의 현재 상태를 확인하고, 항목별로 편집을 시작하는 화면.</p>
+      <p>관리자가 서버 <code>.env</code> 61개 항목의 현재 상태를 확인하고, 항목별로 편집을 시작하는 화면.</p>
 
       <div class="mock">
         <div class="top"><span class="ttl">Ops Config</span><span class="sp"></span>
@@ -807,7 +807,7 @@
           여기서 <b>추가</b>란 <code>get_config_status()</code> 에 <strong>정의돼 있으나 아직
           비어 있는</strong> 항목에 값을 넣는 것을 말한다. 정의되지 않은 이름을 화면에서
           만들 수 있게 하면 오타 하나로 다음 기동이 깨진다. 편집 대상은
-          <strong>59개 허용목록으로 고정</strong>하고, 목록에 없는 키는 서버가 400 으로 거절한다.
+          <strong>61개 허용목록으로 고정</strong>하고, 목록에 없는 키는 서버가 400 으로 거절한다.
         </p>
       </div>
 
@@ -905,7 +905,7 @@
 
       <h5>필요한 서버 작업</h5>
       <ul>
-        <li><code>PUT /api/v1/ops/config/{env_var}</code> — 59개 허용목록 검증, 타입 검증,
+        <li><code>PUT /api/v1/ops/config/{env_var}</code> — 61개 허용목록 검증, 타입 검증,
           응답에 <code>applied_immediately</code>(즉시 반영 여부) 포함</li>
         <li>항목 메타데이터에 <code>type</code>, <code>enum</code>, <code>min/max</code>,
           <code>restart_required</code>, <code>dangerous</code> 추가 (현재
@@ -1914,7 +1914,7 @@ flowchart TD
     Q1 -- "예" --> P2
     T -- "운영 설정" --> R1{"role=admin 인가?"}
     R1 -- "아니오" --> RX["403"]
-    R1 -- "예" --> R2{"59개 허용목록에 있는 키인가?"}
+    R1 -- "예" --> R2{"61개 허용목록에 있는 키인가?"}
     R2 -- "아니오" --> R3["400<br/>임의 키 생성 불가"]
     R2 -- "예" --> R4["타입·범위·열거값 검증"]
     R4 --> R5{"위험 항목인가?"}
@@ -2054,7 +2054,7 @@ flowchart TD
 
   <h4>F · 비밀 항목 규칙</h4>
   <p>
-    운영 설정 59개 중 <strong>15개가 비밀 항목</strong>이다 —
+    운영 설정 61개 중 <strong>15개가 비밀 항목</strong>이다 —
     <code>MAPS_DB_URL</code>, <code>KIS_APP_KEY</code>, <code>KIS_APP_SECRET</code>,
     <code>KIS_ACCOUNT_NO</code>, <code>KIWOOM_ACCOUNT_NO</code>, <code>KIWOOM_PASSWORD</code>,
     <code>DART_API_KEY</code>, <code>AWS_ACCESS_KEY_ID</code>, <code>AWS_SECRET_ACCESS_KEY</code>,

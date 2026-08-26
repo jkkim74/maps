@@ -28,6 +28,7 @@ from maps.api.schemas import (
     DigestExecution,
     DigestFactor,
     DigestHolding,
+    DigestHoldingRegimeOverlay,
     DigestMarket,
     DigestPortfolio,
     DigestReportExcerpt,
@@ -38,6 +39,7 @@ from maps.api.schemas import (
 from maps.common.models import (
     AnalysisPick,
     CandidateSnapshot,
+    HoldingRegimeAudit,
     MarketRegimeLog,
     OrderLog,
     PortfolioSnapshot,
@@ -590,10 +592,90 @@ def _build_portfolio(db: Session, ref_date: dt.date) -> DigestPortfolio | None:
         row.positions_value <= 0 or bool(raw_details)
     )
     warnings = [] if data_complete else ["HOLDING_DETAILS_UNAVAILABLE"]
-    holdings = [
-        DigestHolding(ticker=ticker, **detail)
-        for ticker, detail in sorted((raw_details or {}).items())
-    ]
+    tickers = set(raw_details or {})
+    analysis_tickers = {
+        ticker
+        for (ticker,) in (
+            db.query(AnalysisPick.ticker)
+            .filter(
+                AnalysisPick.ticker.in_(tickers),
+                AnalysisPick.state == "BOUGHT",
+            )
+            .all()
+        )
+    } if tickers else set()
+    entries: dict[str, OrderLog] = {}
+    if tickers:
+        entry_rows = (
+            db.query(OrderLog)
+            .filter(
+                OrderLog.ticker.in_(tickers),
+                OrderLog.side == "buy",
+                OrderLog.status.in_(["filled", "partially_filled"]),
+            )
+            .order_by(OrderLog.created_at.desc(), OrderLog.id.desc())
+            .all()
+        )
+        for entry in entry_rows:
+            entries.setdefault(entry.ticker, entry)
+        missing = tickers - set(entries)
+        if missing:
+            expired_rows = (
+                db.query(OrderLog)
+                .filter(
+                    OrderLog.ticker.in_(missing),
+                    OrderLog.side == "buy",
+                    OrderLog.status == "expired",
+                )
+                .order_by(OrderLog.created_at.desc(), OrderLog.id.desc())
+                .all()
+            )
+            for entry in expired_rows:
+                entries.setdefault(entry.ticker, entry)
+
+    position_keys = {f"order:{entry.id}" for entry in entries.values()}
+    audits = {
+        audit.position_key: audit
+        for audit in (
+            db.query(HoldingRegimeAudit)
+            .filter(
+                HoldingRegimeAudit.ref_date == ref_date,
+                HoldingRegimeAudit.position_key.in_(position_keys),
+            )
+            .all()
+            if position_keys
+            else []
+        )
+    }
+    summary = {"hold": 0, "watch": 0, "exit": 0}
+    holdings: list[DigestHolding] = []
+    for ticker, detail in sorted((raw_details or {}).items()):
+        entry = entries.get(ticker)
+        audit = (
+            audits.get(f"order:{entry.id}")
+            if entry is not None and ticker not in analysis_tickers
+            else None
+        )
+        overlay = None
+        if audit is not None:
+            audit_details = audit.details if isinstance(audit.details, dict) else {}
+            overlay = DigestHoldingRegimeOverlay(
+                action=audit.action,
+                reason_code=audit.reason_code,
+                mode=audit.mode,
+                entry_regime=audit.entry_regime,
+                current_regime=audit.current_regime,
+                weekly_trend=audit.weekly_trend,
+                vol_regime=audit.vol_regime,
+                confirmed=audit.confirmed,
+                current_adverse_causes=audit_details.get("current_adverse_causes", []),
+                confirmed_adverse_causes=audit_details.get(
+                    "confirmed_adverse_causes", []
+                ),
+            )
+            if audit.action in summary:
+                summary[audit.action] += 1
+        holdings.append(DigestHolding(ticker=ticker, regime_overlay=overlay, **detail))
     return DigestPortfolio(
         ref_date=row.ref_date.isoformat(),
         total_assets=row.total_assets,
@@ -603,6 +685,7 @@ def _build_portfolio(db: Session, ref_date: dt.date) -> DigestPortfolio | None:
         data_complete=data_complete,
         warnings=warnings,
         holdings=holdings,
+        regime_overlay_summary=summary,
     )
 
 

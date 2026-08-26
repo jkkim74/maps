@@ -523,6 +523,47 @@ class OrderLog(Base):
 
 
 # ---------------------------------------------------------------------------
+# 보유 장세 오버레이 감사 — v1 shadow 전용
+# ---------------------------------------------------------------------------
+class HoldingRegimeAudit(Base):
+    """holding_regime_audit — 일자·진입 주문별 read-only 판정."""
+
+    __tablename__ = "holding_regime_audit"
+    __table_args__ = (
+        UniqueConstraint(
+            "ref_date",
+            "position_key",
+            name="uq_holding_regime_audit_ref_position",
+        ),
+        Index("ix_holding_regime_audit_ref_date", "ref_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ref_date: Mapped[datetime.date] = mapped_column(Date, nullable=False)
+    position_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    ticker: Mapped[str] = mapped_column(String(16), nullable=False)
+    strategy_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    entry_regime: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    current_regime: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    weekly_trend: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    vol_regime: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    action: Mapped[str] = mapped_column(String(8), nullable=False)
+    reason_code: Mapped[str] = mapped_column(String(64), nullable=False)
+    confirmed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    mode: Mapped[str] = mapped_column(String(16), nullable=False, default="shadow")
+    details: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc)
+    )
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+        default=lambda: datetime.datetime.now(datetime.timezone.utc),
+        onupdate=lambda: datetime.datetime.now(datetime.timezone.utc),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Stock Report 실행 이력
 # ---------------------------------------------------------------------------
 class StockReportRun(Base):

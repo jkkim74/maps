@@ -32,6 +32,7 @@ from maps.common.models import (
     CandidateSnapshot,
     CollectionLog,
     HistoricalOHLCV,
+    HoldingRegimeAudit,
     InvestorFlowSnapshot,
     JobRunLog,
     MonteCarloSequenceResults,
@@ -39,6 +40,7 @@ from maps.common.models import (
     PortfolioSnapshot,
     PromotionHistory,
     OrderLog,
+    MarketRegimeLog,
     SecurityMetadata,
     WalkForwardFoldResults,
     WalkForwardResults,
@@ -88,6 +90,12 @@ from maps.ops.pick_freshness import is_pick_stale, pick_cutoff_date
 from maps.ops.score_readiness import candidate_score_ready, current_market_score_ready
 from maps.promotion.gate import PromotionGate, PromotionStage
 from maps.risk.manager import RiskConfig, RiskManager
+from maps.risk.holding_regime_overlay import (
+    HoldingRegimeAction,
+    HoldingRegimeDecision,
+    HoldingRegimeSnapshot,
+    evaluate_holding_regime,
+)
 from maps.strategy.ath_breakout_v1 import ATHBreakoutV1Strategy
 from maps.strategy.live_rules import effective_stop_price
 from maps.strategy.ath_breakout_v2 import ATHBreakoutV2Strategy
@@ -737,6 +745,7 @@ class OperationalPipeline:
             strategy_trade_active = exit_monitor_active and self._settings.maps_strategy_trade_enabled
             st_submitted = 0
             st_closed = 0
+            bracket_tickers: set[str] = set()
             if exit_monitor_active:
                 # H-2: 손절 정확도 향상 — 장중 현재가로 price_feed 갱신
                 held_tickers = list(self._broker_position_details(broker).keys())
@@ -788,6 +797,19 @@ class OperationalPipeline:
                         holdings=holdings,
                         holding_details=holding_details,
                     )
+
+            try:
+                self._record_holding_regime_shadow(
+                    db=db,
+                    broker=broker,
+                    ref_date=ref_date,
+                    exclude_tickers=bracket_tickers | exit_tickers,
+                )
+            except Exception:
+                db.rollback()
+                logger.exception(
+                    "Holding regime shadow audit failed; existing exits remain active"
+                )
 
             self._write_log(
                 db,
@@ -2200,6 +2222,293 @@ class OperationalPipeline:
             .first()
         )
 
+    @staticmethod
+    def _latest_entry_orders(
+        db: Session,
+        tickers: set[str],
+    ) -> dict[str, OrderLog]:
+        """Return the latest recorded BUY for each held ticker."""
+        if not tickers:
+            return {}
+        rows = (
+            db.query(OrderLog)
+            .filter(OrderLog.ticker.in_(tickers))
+            .filter(OrderLog.side == OrderSide.BUY.value)
+            .filter(OrderLog.status.in_(["filled", "partially_filled"]))
+            .order_by(OrderLog.created_at.desc(), OrderLog.id.desc())
+            .all()
+        )
+        entries: dict[str, OrderLog] = {}
+        for row in rows:
+            entries.setdefault(row.ticker, row)
+
+        missing = tickers - set(entries)
+        if missing:
+            expired_rows = (
+                db.query(OrderLog)
+                .filter(OrderLog.ticker.in_(missing))
+                .filter(OrderLog.side == OrderSide.BUY.value)
+                .filter(OrderLog.status == "expired")
+                .order_by(OrderLog.created_at.desc(), OrderLog.id.desc())
+                .all()
+            )
+            for row in expired_rows:
+                if row.ticker not in entries and row.strategy_id:
+                    entries[row.ticker] = row
+                    logger.warning(
+                        "Stop-loss fallback: using expired buy order [%s %s] as entry "
+                        "(order_price=%.0f)",
+                        row.strategy_id,
+                        row.ticker,
+                        row.order_price or 0,
+                    )
+        return entries
+
+    @staticmethod
+    def _entry_regime_snapshot(
+        entry: OrderLog,
+        candidate_snapshots: dict[int, CandidateSnapshot],
+        as_of: dt.date,
+    ) -> tuple[HoldingRegimeSnapshot | None, str | None]:
+        if entry.status not in {"filled", "partially_filled"} or int(entry.fill_qty or 0) <= 0:
+            return None, "ENTRY_FILL_UNVERIFIED"
+        context = entry.decision_context
+        if not (
+            isinstance(context, dict)
+            and context.get("version") == 1
+            and context.get("origin") == "live"
+            and isinstance(context.get("candidate"), dict)
+            and isinstance(context.get("market"), dict)
+        ):
+            return None, "ENTRY_CONTEXT_UNAVAILABLE"
+        candidate = context["candidate"]
+        market = context["market"]
+        if market.get("source") != "order_cycle":
+            return None, "ENTRY_CONTEXT_UNAVAILABLE"
+        try:
+            snapshot_id = candidate["snapshot_id"]
+            if (
+                not isinstance(snapshot_id, int)
+                or isinstance(snapshot_id, bool)
+                or snapshot_id <= 0
+            ):
+                return None, "ENTRY_CONTEXT_INVALID"
+            candidate_ref_date = dt.date.fromisoformat(str(candidate["ref_date"]))
+        except (KeyError, TypeError, ValueError):
+            return None, "ENTRY_CONTEXT_INVALID"
+        snapshot = candidate_snapshots.get(snapshot_id)
+        if (
+            snapshot is None
+            or snapshot.ticker != entry.ticker
+            or snapshot.strategy_id != entry.strategy_id
+            or snapshot.ref_date != candidate_ref_date
+        ):
+            return None, "ENTRY_CONTEXT_INVALID"
+        try:
+            market_ref_date = dt.date.fromisoformat(str(market["ref_date"]))
+            if market_ref_date > as_of or market_ref_date < candidate_ref_date:
+                return None, "ENTRY_CONTEXT_INVALID"
+            return HoldingRegimeSnapshot(
+                ref_date=market_ref_date,
+                regime=str(market["regime"]),
+                weekly_trend=str(market["weekly_trend"]),
+                vol_regime=str(market["vol_regime"]),
+            ), None
+        except (KeyError, TypeError, ValueError):
+            return None, "ENTRY_CONTEXT_UNAVAILABLE"
+
+    @staticmethod
+    def _overlay_position_provenance_errors(
+        db: Session,
+        entries: dict[str, OrderLog],
+        positions: dict[str, Position],
+    ) -> dict[str, str]:
+        """Reject entry links that cannot conservatively explain the holding."""
+        valid_entries = {
+            ticker: entry
+            for ticker, entry in entries.items()
+            if entry.status in {"filled", "partially_filled"}
+            and int(entry.fill_qty or 0) > 0
+        }
+        if not valid_entries:
+            return {}
+
+        sell_rows = (
+            db.query(OrderLog)
+            .filter(OrderLog.ticker.in_(valid_entries))
+            .filter(OrderLog.side == OrderSide.SELL.value)
+            .filter(OrderLog.status.in_(["filled", "partially_filled"]))
+            .filter(OrderLog.fill_qty > 0)
+            .all()
+        )
+        later_sell_tickers = {
+            row.ticker
+            for row in sell_rows
+            if (row.created_at, row.id)
+            > (valid_entries[row.ticker].created_at, valid_entries[row.ticker].id)
+        }
+        return {
+            ticker: "POSITION_PROVENANCE_AMBIGUOUS"
+            for ticker, entry in valid_entries.items()
+            if ticker in later_sell_tickers
+            or int(positions[ticker].quantity) > int(entry.fill_qty or 0)
+        }
+
+    @staticmethod
+    def _recent_close_regime_snapshots(
+        db: Session,
+        ref_date: dt.date,
+    ) -> tuple[HoldingRegimeSnapshot | None, HoldingRegimeSnapshot | None]:
+        rows = (
+            db.query(MarketRegimeLog)
+            .filter(
+                MarketRegimeLog.ref_date <= ref_date,
+                MarketRegimeLog.source == "candidate_generation",
+            )
+            .order_by(MarketRegimeLog.ref_date.desc())
+            .limit(2)
+            .all()
+        )
+
+        def snapshot(row: MarketRegimeLog) -> HoldingRegimeSnapshot:
+            return HoldingRegimeSnapshot(
+                ref_date=row.ref_date,
+                regime=row.applied_regime,
+                weekly_trend=row.weekly_trend,
+                vol_regime=row.vol_regime,
+            )
+
+        current = snapshot(rows[0]) if rows else None
+        previous = snapshot(rows[1]) if len(rows) > 1 else None
+        return previous, current
+
+    def _record_holding_regime_shadow(
+        self,
+        *,
+        db: Session,
+        broker,
+        ref_date: dt.date,
+        exclude_tickers: set[str],
+    ) -> None:
+        """Persist one read-only overlay decision per held entry and day."""
+        if self._settings.maps_holding_regime_overlay_mode == "off":
+            return
+
+        analysis_tickers = {
+            ticker
+            for (ticker,) in (
+                db.query(AnalysisPick.ticker)
+                .filter(AnalysisPick.state == "BOUGHT")
+                .all()
+            )
+        }
+        positions = {
+            ticker: position
+            for ticker, position in self._broker_position_details(broker).items()
+            if ticker not in exclude_tickers and ticker not in analysis_tickers
+        }
+        entries = self._latest_entry_orders(db, set(positions))
+        if not entries:
+            return
+        provenance_errors = self._overlay_position_provenance_errors(
+            db, entries, positions
+        )
+        candidate_ids = {
+            candidate.get("snapshot_id")
+            for entry in entries.values()
+            if isinstance(entry.decision_context, dict)
+            and isinstance(
+                candidate := entry.decision_context.get("candidate"), dict
+            )
+            and isinstance(candidate.get("snapshot_id"), int)
+            and not isinstance(candidate.get("snapshot_id"), bool)
+            and candidate.get("snapshot_id") > 0
+        }
+        candidate_snapshots = {
+            row.id: row
+            for row in (
+                db.query(CandidateSnapshot)
+                .filter(CandidateSnapshot.id.in_(candidate_ids))
+                .all()
+            )
+        } if candidate_ids else {}
+
+        previous, current = self._recent_close_regime_snapshots(db, ref_date)
+        position_keys = [f"order:{entry.id}" for entry in entries.values()]
+        existing = {
+            row.position_key: row
+            for row in (
+                db.query(HoldingRegimeAudit)
+                .filter(
+                    HoldingRegimeAudit.ref_date == ref_date,
+                    HoldingRegimeAudit.position_key.in_(position_keys),
+                )
+                .all()
+            )
+        }
+        changed = False
+        for ticker, entry in entries.items():
+            if not entry.strategy_id:
+                continue
+            entry_snapshot, entry_error = self._entry_regime_snapshot(
+                entry, candidate_snapshots, ref_date
+            )
+            entry_error = entry_error or provenance_errors.get(ticker)
+            if entry_error:
+                decision = HoldingRegimeDecision(
+                    action=HoldingRegimeAction.HOLD,
+                    reason_code=entry_error,
+                    strategy_id=entry.strategy_id,
+                    strategy_group=STRATEGY_GROUP_MAP.get(entry.strategy_id),
+                    entry=None,
+                    previous=previous,
+                    current=current,
+                )
+            else:
+                decision = evaluate_holding_regime(
+                    strategy_id=entry.strategy_id,
+                    entry=entry_snapshot,
+                    previous=previous,
+                    current=current,
+                    as_of=ref_date,
+                    max_age_days=self._settings.maps_holding_regime_max_age_days,
+                )
+
+            details = {
+                "policy_version": 1,
+                "max_age_days": self._settings.maps_holding_regime_max_age_days,
+                **decision.to_dict(),
+            }
+            position_key = f"order:{entry.id}"
+            values = {
+                "ticker": ticker,
+                "strategy_id": entry.strategy_id,
+                "entry_regime": entry_snapshot.regime if entry_snapshot else None,
+                "current_regime": current.regime if current else None,
+                "weekly_trend": current.weekly_trend if current else None,
+                "vol_regime": current.vol_regime if current else None,
+                "action": decision.action.value,
+                "reason_code": decision.reason_code,
+                "confirmed": decision.confirmed,
+                "mode": "shadow",
+                "details": details,
+            }
+            row = existing.get(position_key)
+            if row is None:
+                db.add(HoldingRegimeAudit(
+                    ref_date=ref_date,
+                    position_key=position_key,
+                    **values,
+                ))
+                changed = True
+                continue
+            if any(getattr(row, key) != value for key, value in values.items()):
+                for key, value in values.items():
+                    setattr(row, key, value)
+                changed = True
+        if changed:
+            db.commit()
+
     def _high_water_mark(
         self, db: Session, ticker: str, since_date: dt.date, fallback: float
     ) -> float:
@@ -2228,38 +2537,7 @@ class OperationalPipeline:
         if not positions:
             return 0, 0, set()
 
-        rows = (
-            db.query(OrderLog)
-            .filter(OrderLog.ticker.in_(set(positions)))
-            .filter(OrderLog.side == OrderSide.BUY.value)
-            .filter(OrderLog.status.in_(["filled", "partially_filled"]))
-            .order_by(OrderLog.created_at.desc(), OrderLog.id.desc())
-            .all()
-        )
-        entries: dict[str, OrderLog] = {}
-        for row in rows:
-            if row.ticker not in entries:
-                entries[row.ticker] = row
-
-        # 체결 기록이 없는 포지션에 대한 폴백: expired 주문으로 진입 정보 복원
-        # (당일 체결됐지만 sync에서 filled로 갱신되지 못한 경우 등)
-        missing = set(positions) - set(entries)
-        if missing:
-            expired_rows = (
-                db.query(OrderLog)
-                .filter(OrderLog.ticker.in_(missing))
-                .filter(OrderLog.side == OrderSide.BUY.value)
-                .filter(OrderLog.status == "expired")
-                .order_by(OrderLog.created_at.desc(), OrderLog.id.desc())
-                .all()
-            )
-            for row in expired_rows:
-                if row.ticker not in entries and row.strategy_id:
-                    entries[row.ticker] = row
-                    logger.warning(
-                        "Stop-loss fallback: using expired buy order [%s %s] as entry (order_price=%.0f)",
-                        row.strategy_id, row.ticker, row.order_price or 0,
-                    )
+        entries = self._latest_entry_orders(db, set(positions))
 
         submitted = 0
         skipped = 0

@@ -7,8 +7,16 @@ Kill Switch와 노출 한도를 포함한 리스크 관리 패키지.
 ```
 risk/
 ├── __init__.py       # 빈 패키지 마커
+├── holding_regime_overlay.py # 보유 종목 HOLD/WATCH/EXIT 순수 shadow 판정
 └── manager.py        # RiskManager, KillSwitchEvent, RiskConfig, KillSwitchReason
 ```
+
+## holding_regime_overlay.py
+
+`evaluate_holding_regime()`은 자동후보 진입 당시 장세와 최근 두 장마감 관측을 비교한다.
+같은 불리 원인(`weekly_fail` 또는 `weak_transition`)이 두 관측에 공통으로 지속될 때만
+`confirmed=True`다. v1은 감사용 `HOLD/WATCH/EXIT`만 반환하며 주문을 제출하지 않는다.
+누락·노후·잘못된 입력은 `HOLD`로 fail-open한다.
 
 ## manager.py — 주요 구성 요소
 

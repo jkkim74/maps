@@ -127,6 +127,7 @@ MAPSError (base)
 | `promotion_history` | `PromotionHistory` | 승격 결정 감사 로그 |
 | `tradeability_weight_log` | `TradeabilityWeightLog` | 가중치 프리셋 변경 이력 |
 | `order_log` | `OrderLog` | Mock+Live 주문 감사 로그 |
+| `holding_regime_audit` | `HoldingRegimeAudit` | 보유 종목 장세 오버레이의 일자·진입주문별 shadow 판정 |
 | `app_user` | `AppUser` | 로그인 계정 · 역할(admin/user) · 개인 설정 JSON · 요금제 |
 | `stock_report_runs` | `StockReportRun` | Stock Report 생성 이력 |
 | `kill_switch_log` | `KillSwitchLog` | Kill Switch 이벤트 감사 |
@@ -147,6 +148,10 @@ MAPSError (base)
 | `get_missing_required_settings(settings?)` | 필수 env var 누락 목록 반환 |
 
 **규칙**: 피처 모듈에서 `os.getenv()` 직접 호출 금지 — 반드시 `get_settings()` 사용.
+
+보유 장세 오버레이는 `MAPS_HOLDING_REGIME_OVERLAY_MODE=off|shadow`만 허용한다.
+`enforce`는 v1 설정값이 아니며 실제 매도 코드도 없다. 장세 신선도와 두 관측 사이의 최대
+달력 간격은 `MAPS_HOLDING_REGIME_MAX_AGE_DAYS`(기본 3일) 하나로 관리한다.
 
 ## logging_config.py
 
