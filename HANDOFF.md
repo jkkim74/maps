@@ -2,8 +2,8 @@
 
 ## 8/26 보유 장세 오버레이 — ✅ shadow 구현·운영 배포 완료
 
-**현재 장세와 매수 당시 장세를 비교하는 보유 장세 오버레이**를 로컬 기능 브랜치
-`codex/holding-regime-shadow`에 구현했다. 구현 계획 정본은 아래 문서다.
+**현재 장세와 매수 당시 장세를 비교하는 보유 장세 오버레이**를 `master`에 구현·운영
+반영했다. 구현 계획 정본은 아래 문서다.
 
 `docs/superpowers/plans/2026-08-25-holding-regime-overlay.md`
 
@@ -37,7 +37,7 @@ TDD로 구현했다. 후보 스냅샷 실체·날짜·종목·전략을 검증�
 `python -m compileall maps -q`, `git diff --check`, `python -m alembic heads`
 (`0028_holding_regime_audit`)도 확인했다.
 
-운영 배포 커밋은 `dcb1656`이다. 배포 전 PostgreSQL custom-format 백업은
+기능 배포 커밋은 `dcb1656`, 문서까지 포함한 최종 운영 HEAD는 `45c4d4e`다. 배포 전 PostgreSQL custom-format 백업은
 `/opt/maps/backups/pre_holding_regime_shadow_20260826_153013.dump`
 (328,208,835 bytes, mode 600)이며 `pg_restore -l` 검증을 통과했다. 운영 Alembic은
 `0027_order_decision_context`에서 `0028_holding_regime_audit`로 올라갔고, 실효 설정은
