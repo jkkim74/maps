@@ -1,6 +1,6 @@
 # HANDOFF
 
-## 8/26 보유 장세 오버레이 — ✅ shadow 구현·전체 회귀 완료
+## 8/26 보유 장세 오버레이 — ✅ shadow 구현·운영 배포 완료
 
 **현재 장세와 매수 당시 장세를 비교하는 보유 장세 오버레이**를 로컬 기능 브랜치
 `codex/holding-regime-shadow`에 구현했다. 구현 계획 정본은 아래 문서다.
@@ -31,11 +31,23 @@
 순수 판정기, 감사 테이블/Alembic 0028, 자동후보 보유 연결, 다이제스트와 운영문서를
 TDD로 구현했다. 후보 스냅샷 실체·날짜·종목·전략을 검증하고, 진입 이후 체결 SELL이나
 진입수량을 초과한 현재 보유는 출처 불명으로 HOLD 처리한다. BOUGHT 분석픽은 감사 생성과
-다이제스트 연결 양쪽에서 제외한다. **운영 마이그레이션과 배포는 수행하지 않았다.**
+다이제스트 연결 양쪽에서 제외한다.
 
 최종 전체 회귀는 **957 passed, 13 warnings**, 집중 회귀는 **117 passed, 5 warnings**다.
 `python -m compileall maps -q`, `git diff --check`, `python -m alembic heads`
 (`0028_holding_regime_audit`)도 확인했다.
+
+운영 배포 커밋은 `dcb1656`이다. 배포 전 PostgreSQL custom-format 백업은
+`/opt/maps/backups/pre_holding_regime_shadow_20260826_153013.dump`
+(328,208,835 bytes, mode 600)이며 `pg_restore -l` 검증을 통과했다. 운영 Alembic은
+`0027_order_decision_context`에서 `0028_holding_regime_audit`로 올라갔고, 실효 설정은
+`shadow`, 최대 간격은 3일이다. systemd `maps=active`, 내부·외부 `/health` 200,
+재시작 이후 ERROR/CRITICAL/Traceback 0건이다.
+
+배포 후 `broker_sync`는 2026-08-26 15:33:07 KST에 성공했다. 기존 보유분 감사 11건은
+모두 `HOLD/ENTRY_CONTEXT_UNAVAILABLE`이다. 이 포지션들은 새 `decision_context` 도입 전에
+진입해 검증 가능한 진입 장세가 없으므로 의도대로 실패 개방됐다. 배포 이후 생성된 SELL
+주문은 0건이다.
 
 ## 8/25 8월 24일 주문 감사·Market Summary P1 — ✅ 운영·모바일 연결 완료
 
