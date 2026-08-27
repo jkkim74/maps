@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 
+import pandas as pd
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -14,7 +15,7 @@ from maps.common.models import CandidateSnapshot, OrderLog, PromotionHistory
 from maps.common.settings import MapsSettings
 from maps.data.security_repo import Security
 from maps.execution.broker_adapter import OrderSide, OrderStatus
-from maps.ops.scheduler import OperationalPipeline
+from maps.ops.scheduler import OperationalPipeline, StrategySignal, TickerContext
 
 
 def _memory_factory():
@@ -332,3 +333,107 @@ def test_save_candidate_snapshot_replaces_day_strategy_rows() -> None:
         db.close()
         Base.metadata.drop_all(engine)
         engine.dispose()
+
+
+def test_snapshot_observation_limit_prefers_complete_score_over_higher_partial(
+    monkeypatch,
+    db,
+) -> None:
+    """부분 100점 정렬을 유지하면 더 낮은 완성 후보가 저장 전 탈락한다."""
+    ref_date = dt.date(2026, 8, 26)
+    partial = Security(
+        ticker="PARTIAL",
+        name="부분점수",
+        market="KOSPI",
+        security_type="STOCK",
+        turnover_cache={ref_date: 10_000_000_000.0},
+    )
+    complete = Security(
+        ticker="COMPLETE",
+        name="완성점수",
+        market="KOSPI",
+        security_type="STOCK",
+        turnover_cache={ref_date: 5_000_000_000.0},
+    )
+    contexts = {
+        partial.ticker: TickerContext(
+            frame=pd.DataFrame(),
+            trend_strength=50.0,
+            ts_bucket="S3",
+            close=0.0,
+            atr14=None,
+            trend_strength_measured=False,
+        ),
+        complete.ticker: TickerContext(
+            frame=pd.DataFrame(),
+            trend_strength=50.0,
+            ts_bucket="S3",
+            close=0.0,
+            atr14=None,
+            trend_strength_measured=True,
+        ),
+    }
+    monkeypatch.setattr(OperationalPipeline, "_signal_from_frame", lambda *_: None)
+    pipeline = OperationalPipeline(
+        settings=MapsSettings(maps_candidate_snapshot_top_n=1)
+    )
+
+    pipeline._save_candidate_snapshot(
+        db,
+        ref_date,
+        "pullback_v3",
+        [partial, complete],
+        contexts=contexts,
+    )
+
+    row = db.query(CandidateSnapshot).one()
+    assert row.ticker == "COMPLETE"
+    assert row.final_score == 50.0
+    assert row.score_ready is True
+
+
+def test_snapshot_keeps_incomplete_entry_signal_for_audit(monkeypatch, db) -> None:
+    """저장 정렬을 바꿔도 실제 진입 신호의 미완성 감사 행은 사라지면 안 된다."""
+    ref_date = dt.date(2026, 8, 26)
+    stock = Security(
+        ticker="SIGNAL",
+        name="미완성신호",
+        market="KOSPI",
+        security_type="STOCK",
+        turnover_cache={ref_date: 10_000_000_000.0},
+    )
+    contexts = {
+        stock.ticker: TickerContext(
+            frame=pd.DataFrame(),
+            trend_strength=50.0,
+            ts_bucket="S3",
+            close=0.0,
+            atr14=None,
+            trend_strength_measured=False,
+        )
+    }
+    monkeypatch.setattr(
+        OperationalPipeline,
+        "_signal_from_frame",
+        lambda *_: StrategySignal(
+            entry_signal=True,
+            exit_signal=False,
+            close=10_000.0,
+        ),
+    )
+    pipeline = OperationalPipeline(
+        settings=MapsSettings(maps_candidate_snapshot_top_n=0)
+    )
+
+    pipeline._save_candidate_snapshot(
+        db,
+        ref_date,
+        "pullback_v3",
+        [stock],
+        contexts=contexts,
+    )
+
+    row = db.query(CandidateSnapshot).one()
+    assert row.ticker == "SIGNAL"
+    assert row.entry_signal is True
+    assert row.score_ready is False

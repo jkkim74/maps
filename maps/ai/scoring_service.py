@@ -20,6 +20,7 @@ from maps.ai.technical_scorer import (
 )
 from maps.common.models import AIScoringInvocation, CandidateSnapshot
 from maps.common.settings import MapsSettings
+from maps.ops.candidate_selection import candidate_score_complete
 from maps.strategy.holding_type import HoldingTypeClassifier, HoldingTypeInput
 
 
@@ -218,7 +219,8 @@ class AIStockScoringService:
     def _is_eligible(self, row: CandidateSnapshot) -> bool:
         """Return whether rule gates allow this row to be an AI target."""
         return (
-            row.entry_signal is True
+            candidate_score_complete(row)
+            and row.entry_signal is True
             and row.weekly_pass is True
             and not row.excluded_reason
             and self._rule_score(row) >= self._settings.maps_candidate_min_score

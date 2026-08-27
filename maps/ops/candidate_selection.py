@@ -2,10 +2,26 @@
 
 from __future__ import annotations
 
-from sqlalchemy import case, func, or_
+from sqlalchemy import and_, case, func, or_
 from sqlalchemy.sql.elements import ColumnElement
 
 from maps.common.models import CandidateSnapshot
+
+
+def candidate_score_complete(candidate: CandidateSnapshot) -> bool:
+    """Return whether a persisted candidate score is fully measured."""
+    return bool(
+        candidate.score_ready
+        and float(candidate.score_coverage_ratio or 0.0) >= 1.0
+    )
+
+
+def candidate_score_complete_expression() -> ColumnElement[bool]:
+    """Return the SQL equivalent of :func:`candidate_score_complete`."""
+    return and_(
+        CandidateSnapshot.score_ready.is_(True),
+        func.coalesce(CandidateSnapshot.score_coverage_ratio, 0.0) >= 1.0,
+    )
 
 
 def candidate_min_score_expression() -> ColumnElement[float]:

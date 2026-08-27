@@ -94,6 +94,8 @@ def _seed_candidate(
     entry_signal: bool = True,
     weekly_pass: bool = True,
     excluded_reason: str | None = None,
+    score_ready: bool = True,
+    score_coverage_ratio: float = 1.0,
 ) -> None:
     """Persist one rule-only candidate row."""
     db.add(
@@ -114,6 +116,8 @@ def _seed_candidate(
             entry_signal=entry_signal,
             weekly_pass=weekly_pass,
             excluded_reason=excluded_reason,
+            score_ready=score_ready,
+            score_coverage_ratio=score_coverage_ratio,
         )
     )
     db.commit()
@@ -151,6 +155,26 @@ def test_service_only_targets_rule_eligible_signals(db) -> None:
     )
 
     assert [call.ticker for call in scorer.calls] == ["SIGNAL"]
+
+
+def test_service_does_not_spend_ai_budget_on_incomplete_candidate(db) -> None:
+    """주문 불가능한 부분점수가 완성 후보보다 먼저 AI 예산을 쓰면 안 된다."""
+    _seed_candidate(db, ticker="PARTIAL", rule_score=100, score_ready=False,
+                    score_coverage_ratio=0.3)
+    _seed_candidate(db, ticker="COMPLETE", rule_score=70)
+    scorer = FakeScorer()
+
+    summary = AIStockScoringService(settings=_settings(), scorer=scorer).apply(
+        db,
+        REF_DATE,
+        {"PARTIAL": _frame(), "COMPLETE": _frame()},
+        {"pullback_v3"},
+    )
+
+    assert summary.targets == 1
+    assert summary.calls == 1
+    assert [call.ticker for call in scorer.calls] == ["COMPLETE"]
+    assert db.query(AIScoringInvocation).count() == 1
 
 
 def test_unconfigured_scorer_consumes_no_budget_or_network_call(db) -> None:
