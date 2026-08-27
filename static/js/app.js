@@ -1652,6 +1652,7 @@ function _renderOrderPreview(p) {
     const skipLabel = {
       gap_exceeded: 'GAP초과',
       insufficient_cash: '수량부족',
+      insufficient_liquidity: '유동성 부족',
       no_entry_signal: '진입신호없음',
       weekly_trend_fail: '주간추세 미달',
     }[item.skip_reason]
@@ -1660,6 +1661,17 @@ function _renderOrderPreview(p) {
     const statusBadge = item.skipped
       ? badge(skipLabel, isRegimeBlock ? 'warn' : 'fail')
       : badge('예정', 'pass');
+    // 유동성 한도로 수량이 줄거나 막힌 경우를 반드시 드러낸다. 조용히 줄어들면
+    // 사용자는 왜 이만큼만 샀는지 알 방법이 없다.
+    let liquidityHtml = '<span class="text-muted">—</span>';
+    if (item.liquidity_reason === 'LIQUIDITY_CAPPED') {
+      liquidityHtml = badge('유동성 축소', 'warn')
+        + `<br><span class="text-muted">원래 수량 ${item.original_qty}주</span>`;
+    } else if (item.liquidity_reason === 'TURNOVER_UNAVAILABLE') {
+      liquidityHtml = badge('거래대금 미확인·차단', 'fail');
+    } else if (item.liquidity_reason === 'BELOW_MIN_ORDER_AMOUNT') {
+      liquidityHtml = badge('축소 후 최소금액 미달·차단', 'fail');
+    }
     return `
       <tr class="${item.skipped ? 'text-muted' : ''}">
         <td class="mono">${idx + 1}</td>
@@ -1673,6 +1685,7 @@ function _renderOrderPreview(p) {
         <td class="mono">${item.limit_price.toLocaleString('ko-KR')}</td>
         <td class="mono">${item.estimated_qty}</td>
         <td class="mono">${fmt.krw(item.estimated_amount)}</td>
+        <td>${liquidityHtml}</td>
         <td>${statusBadge}</td>
       </tr>`;
   }).join('');
@@ -1680,7 +1693,8 @@ function _renderOrderPreview(p) {
     `<table><thead><tr>
       <th>#</th><th>전략</th><th>티커</th><th>종목명</th>
       <th>신호일</th><th>신호종가</th><th>현재종가</th><th>GAP</th>
-      <th>예상주문가</th><th>예상수량</th><th>예상금액</th><th>상태</th>
+      <th>예상주문가</th><th>예상수량</th><th>예상금액</th>
+      <th title="20거래일 평균 거래대금 대비 주문 한도">유동성</th><th>상태</th>
     </tr></thead><tbody>${rows}</tbody></table>`;
 }
 

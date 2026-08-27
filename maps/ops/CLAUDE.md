@@ -10,6 +10,7 @@ ops/
 ├── __init__.py             # 빈 패키지 마커
 ├── candidate_selection.py  # AI 모드별 후보 주문 자격 SQL 식
 ├── daily_digest.py         # 하루치 매매 기록 결정적 조립 (블로그 입력)
+├── liquidity_cap.py        # 주문 수량 유동성 한도 (순수 함수)
 ├── notifications.py        # Slack / Telegram / FCM 알림
 ├── order_preview.py        # 다음 거래일 예정 주문 미리보기
 ├── order_state.py          # claimed_candidate_tickers — 중복 주문 방지 헬퍼
@@ -150,6 +151,39 @@ broker sync는 기존 손절·익절·전략 청산을 먼저 처리한 뒤 보�
 > 픽이 다시 실주문을 낸다(2026-07-30: 6/30 픽 무장 17초 만에 진입, 그사이 주가 -39%).
 > 신선도는 반드시 `ref_date`(KST `Date`)로 계산한다 — `created_at` 은 UTC naive 라
 > 09:00 KST 이전에 하루씩 어긋난다. **`BOUGHT` 픽에는 만료를 적용하지 않는다.**
+
+## liquidity_cap.py — 주문 수량 유동성 한도 (순수 함수)
+
+| 이름 | 설명 |
+|---|---|
+| `apply_liquidity_cap(qty, price, turnover_20d, settings)` | 주문 수량을 20거래일 평균 거래대금 대비 상한 이하로 축소 |
+| `LiquidityCapResult` | `qty` / `original_qty` / `reason` / `turnover_20d` / `limit_amount` |
+| `BLOCKING_REASONS` | 주문을 아예 내지 않는 사유 집합 |
+
+사유 코드는 셋이다.
+
+| 코드 | 뜻 |
+|---|---|
+| `LIQUIDITY_CAPPED` | 한도에 맞춰 수량을 줄였다. 주문은 나간다 |
+| `BELOW_MIN_ORDER_AMOUNT` | 줄인 결과가 최소 주문금액 미만이라 주문하지 않는다 |
+| `TURNOVER_UNAVAILABLE` | 20거래일 평균 거래대금을 구할 수 없어 주문하지 않는다(fail-closed) |
+
+설정은 `MAPS_ORDER_MAX_TURNOVER_PCT`(기본 0.02, `0` 이면 비활성)와
+`MAPS_ORDER_MIN_AMOUNT_KRW`(기본 500,000)다.
+
+> ⚠️ **주문 경로와 주문 미리보기가 이 함수 하나를 공유한다.** 경로마다 따로 구현하면
+> 화면이 보여 준 수량과 실제 주문이 갈린다 — 손절가가 사이징과 화면에서 갈려 포지션이
+> 2배로 잡혔던 2026-07-29 사고와 같은 구조다(CLAUDE.md 제약 7번).
+> 두 경로는 **같은 후보 스냅샷 기준일**로 거래대금을 조회해야 한다.
+>
+> ⚠️ **매도에는 적용하지 않는다.** 유동성 때문에 청산을 막으면 얇은 종목에 갇힌다.
+> 킬스위치가 신규 진입만 막는 것과 같은 이유다.
+>
+> ⚠️ `TURNOVER_UNAVAILABLE` 은 fail-closed 라 데이터 사고 시 매수가 전량 멎을 수 있다.
+> 2026-08-14 에 수급 NULL 하나로 신규 매수가 사흘간 막혔고 아무도 알아채지 못했다.
+> 그래서 축소·차단 사유를 화면(`예정 주문` 유동성 열)과 다이제스트
+> (`liquidity_capped_total` / `liquidity_blocked_total` / `liquidity_notes`)에 드러내는 것은
+> **선택이 아니라 게이트의 일부**다.
 
 ## candidate_selection.py — 모드별 자격 SQL
 

@@ -253,6 +253,11 @@ class PreviewOrderItem(BaseModel):
     skipped: bool
     skip_reason: str | None
     live_eligible: bool = True   # True=실주문 대상(live_candidate/live), False=모의(mock_candidate)
+    # 유동성 한도 — 실제 주문과 **같은 함수**(ops/liquidity_cap)가 만든 값이다.
+    original_qty: int = 0            # 축소 전 수량
+    liquidity_reason: str | None = None
+    turnover_20d: float | None = None
+    liquidity_limit_amount: float = 0.0
 
 
 class OrderPreviewResponse(BaseModel):
@@ -1143,6 +1148,10 @@ class DailyDigest(BaseModel):
     candidate_ready_total: int = 0           # 완성 점수가 하나라도 있는 고유 ticker 수
     candidate_incomplete_total: int = 0      # 완성 점수가 전혀 없는 고유 ticker 수
     candidate_excluded: int = 0              # 점수식이 excluded_reason 을 남긴 스냅샷 수
+    # 유동성 한도 — 축소는 order_log 에 남고, 차단은 주문 자체가 없어 미리보기에서 센다.
+    liquidity_capped_total: int = 0          # 수량이 줄어 나간 주문 수
+    liquidity_blocked_total: int = 0         # 유동성 때문에 아예 나가지 않은 후보 수
+    liquidity_notes: list[str] = []          # "195990 2323주 → 524주 (한도 752,122원)"
     # 데이터 품질 필터(universe_quality_log) 통계 — 후보 스냅샷과 별개의 상류 단계.
     # 스냅샷 행 수를 세면 "유니버스 × 전략 수"가 되어 제외율이 항상 0으로 보인다.
     universe_total: int | None = None

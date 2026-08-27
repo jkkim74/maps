@@ -181,6 +181,11 @@ missing_components가 비어 있으면 추정하지 말고 `누락 항목 미기
 값이 있으면 ai_analysis_memo / ai_contrarian_thesis /
 ai_contrarian_anti_thesis / valuation_margin_reason과 price_source도 기록한다.
 
+liquidity_capped_total 이 0 보다 크면 유동성 축소가 있었다는 사실을 반드시 쓴다. 축소된
+주문은 `유동성 축소` 라고 부르고 원래 계획대로 매수한 것처럼 쓰지 않는다. liquidity_notes 의
+원래 수량과 실제 수량을 함께 보존한다. liquidity_blocked_total 이 0 보다 크면 유동성 때문에
+매수하지 못한 후보가 있었다고 쓴다. 유동성 차단을 현금 부족이라고 바꿔 쓰지 않는다.
+
 주문가·체결가·수량·상태·청산 사유를 보존한다. market_context가 있으면 외부 리포트
 출처를 밝히고 여기에 기록한다. status가 failed인 항목은 excerpt를 인용하지 말고
 error_message에 기록된 검증 실패만 밝힌다. 새로운 해석이나 숫자를 만들지 않는다.

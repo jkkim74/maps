@@ -8,6 +8,7 @@ from maps.execution.broker_adapter import OrderSide, OrderStatus
 from maps.api.orders import get_orders
 from maps.market.trading_rules import previous_trading_day
 from maps.ops.order_preview import _get_order_candidates, build_order_preview, next_trading_day
+from maps.ops.scheduler import OperationalPipeline, StrategySignal
 
 
 def _seed_candidate(db, *, ref_date: dt.date) -> None:
@@ -255,3 +256,88 @@ def test_orders_read_does_not_expire_stale_pending_row(db) -> None:
 
     row = db.query(OrderLog).filter(OrderLog.order_id == "stale-pending").one()
     assert row.status == OrderStatus.PENDING.value
+
+
+def _force_entry_signal(monkeypatch) -> None:
+    """미리보기가 전략 신호 단계에서 멈추지 않게 한다."""
+    monkeypatch.setattr(
+        OperationalPipeline,
+        "_latest_strategy_signal",
+        staticmethod(
+            lambda *args, **kwargs: StrategySignal(
+                entry_signal=True, exit_signal=False, close=2_000.0
+            )
+        ),
+    )
+
+
+def _seed_thin_candidate(db, *, ref_date: dt.date, ticker: str, bars: int = 20) -> None:
+    """20거래일 평균 거래대금 2,000만원짜리 얇은 종목 후보."""
+    for offset in range(bars):
+        db.add(HistoricalOHLCV(
+            ticker=ticker,
+            date=ref_date - dt.timedelta(days=offset),
+            open=2_000, high=2_000, low=2_000, close=2_000, volume=10_000,
+        ))
+    db.add(CandidateSnapshot(
+        ref_date=ref_date, strategy_id="donchian_v2", ticker=ticker,
+        name=ticker, market="KOSDAQ", factor_score=90, trend_strength=80,
+        ts_bucket="S5", final_score=95, weekly_pass=True,
+    ))
+    db.add(PromotionHistory(
+        strategy_id="donchian_v2", from_stage="research",
+        to_stage="mock_candidate", tradeability_score=70, passed=True,
+        evaluated_at=dt.datetime.combine(ref_date, dt.time(8)),
+    ))
+    db.commit()
+
+
+def test_preview_shows_liquidity_capped_quantity(db, monkeypatch) -> None:
+    """미리보기 수량은 실제 주문 수량과 같아야 한다.
+
+    화면이 원래 수량을 보여 주고 실제로는 축소된 수량이 나가면, 사용자는
+    왜 이만큼만 샀는지 알 방법이 없다.
+    """
+    ref_date = dt.date.today()
+    _seed_thin_candidate(db, ref_date=ref_date, ticker="THIN")
+    monkeypatch.setattr(
+        "maps.ops.order_preview.next_trading_day", lambda value: value + dt.timedelta(days=1)
+    )
+    _force_entry_signal(monkeypatch)
+    settings = MapsSettings(
+        maps_market_regime_override="strong",
+        maps_weekly_trend_override="pass",
+        maps_order_max_turnover_pct=0.02,
+        maps_order_min_amount_krw=100_000,
+    )
+
+    preview = build_order_preview(db, settings)
+    item = next(i for i in preview.items if i.ticker == "THIN")
+
+    assert item.liquidity_reason == "LIQUIDITY_CAPPED"
+    assert item.original_qty > item.estimated_qty
+    assert item.estimated_amount <= item.liquidity_limit_amount
+    assert item.skipped is False
+
+
+def test_preview_marks_blocked_when_turnover_unknown(db, monkeypatch) -> None:
+    """차단도 조용히 넘어가지 않고 사유가 보여야 한다."""
+    ref_date = dt.date.today()
+    _seed_thin_candidate(db, ref_date=ref_date, ticker="NOHIST", bars=1)
+    monkeypatch.setattr(
+        "maps.ops.order_preview.next_trading_day", lambda value: value + dt.timedelta(days=1)
+    )
+    _force_entry_signal(monkeypatch)
+    settings = MapsSettings(
+        maps_market_regime_override="strong",
+        maps_weekly_trend_override="pass",
+        maps_order_max_turnover_pct=0.02,
+    )
+
+    preview = build_order_preview(db, settings)
+    item = next(i for i in preview.items if i.ticker == "NOHIST")
+
+    assert item.skipped is True
+    assert item.liquidity_reason == "TURNOVER_UNAVAILABLE"
+    assert item.estimated_qty == 0
+    assert item.skip_reason == "insufficient_liquidity"

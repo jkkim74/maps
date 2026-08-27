@@ -708,3 +708,58 @@ def test_backdated_digest_uses_its_own_ref_date_window(db, settings) -> None:
     candidate = next(c for c in digest.candidates if c.ticker == "475150")
     assert candidate.price_source == "analysis_pick"
     assert candidate.ai_buy_price == 80000.0
+
+
+def _order_with_liquidity(db, *, ticker: str, original_qty: int, qty: int, reason: str):
+    """유동성 한도가 적용된 매수 주문 한 건."""
+    from maps.common.models import OrderLog
+
+    db.add(OrderLog(
+        order_id=f"liq-{ticker}",
+        strategy_id="donchian_v2",
+        ticker=ticker,
+        side="buy",
+        qty=qty,
+        order_price=1434,
+        fill_price=1434,
+        fill_qty=qty,
+        status="filled",
+        decision_context={
+            "version": 1,
+            "origin": "live",
+            "liquidity": {
+                "original_qty": original_qty,
+                "turnover_20d": 37_606_136.0,
+                "limit_amount": 752_122.72,
+                "reason": reason,
+            },
+        },
+    ))
+    db.commit()
+
+
+def test_digest_counts_liquidity_capped_orders(db) -> None:
+    """축소된 주문이 다이제스트에 집계되고 원래 수량이 보존돼야 한다."""
+    ref_date = dt.date.today()
+    _order_with_liquidity(
+        db, ticker="195990", original_qty=2323, qty=524, reason="LIQUIDITY_CAPPED"
+    )
+
+    digest = build_daily_digest(db, MapsSettings(), ref_date)
+
+    assert digest.liquidity_capped_total == 1
+    assert any("195990" in note for note in digest.liquidity_notes)
+    assert any("2323" in note for note in digest.liquidity_notes)
+
+
+def test_digest_ignores_orders_without_liquidity_cap(db) -> None:
+    """축소되지 않은 정상 주문은 세지 않는다."""
+    ref_date = dt.date.today()
+    _order_with_liquidity(
+        db, ticker="005930", original_qty=100, qty=100, reason=None
+    )
+
+    digest = build_daily_digest(db, MapsSettings(), ref_date)
+
+    assert digest.liquidity_capped_total == 0
+    assert digest.liquidity_notes == []

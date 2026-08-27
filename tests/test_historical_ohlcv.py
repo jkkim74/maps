@@ -205,3 +205,71 @@ def test_collect_daily_skips_invalid_zero_price_ohlcv() -> None:
         db.close()
         Base.metadata.drop_all(engine)
         engine.dispose()
+
+
+def _bar(db, ticker: str, date: dt.date, close: float, volume: int) -> None:
+    """테스트용 일봉 한 개."""
+    db.add(
+        HistoricalOHLCV(
+            ticker=ticker,
+            date=date,
+            open=close,
+            high=close,
+            low=close,
+            close=close,
+            volume=volume,
+            source="test",
+        )
+    )
+
+
+def test_avg_turnover_20d_uses_twenty_bars_not_one(db) -> None:
+    """하루만 급등한 종목이 20일 평균으로는 하한에 못 미치는 것을 잡는다.
+
+    2026-08-20 195990 실제 사례 — 8/20 하루치 3.36억이 코스닥 하한 3억을 넘겨
+    유니버스를 통과했지만 20일 평균은 3,760만이었다.
+    """
+    base = dt.date(2026, 7, 1)
+    days = [base + dt.timedelta(days=i) for i in range(20)]
+    for day in days[:19]:
+        _bar(db, "195990", day, close=1000.0, volume=10_000)
+    _bar(db, "195990", days[19], close=1400.0, volume=242_857)
+    db.commit()
+
+    result = HistoricalOHLCVRepository(db).avg_turnover_20d(["195990"], days[19])
+
+    assert "195990" in result
+    assert result["195990"] < 300_000_000
+    assert 25_000_000 < result["195990"] < 28_000_000
+
+
+def test_avg_turnover_20d_excludes_ticker_with_short_history(db) -> None:
+    """봉이 20개가 안 되면 부분 평균을 주지 않고 아예 제외한다."""
+    base = dt.date(2026, 7, 1)
+    for i in range(19):
+        _bar(db, "000001", base + dt.timedelta(days=i), close=1000.0, volume=10_000)
+    db.commit()
+
+    repo = HistoricalOHLCVRepository(db)
+
+    assert repo.avg_turnover_20d(["000001"], base + dt.timedelta(days=18)) == {}
+
+
+def test_avg_turnover_20d_ignores_bars_after_as_of(db) -> None:
+    """as_of 이후 봉은 쓰지 않는다 — as-of-date 생성기 제약."""
+    base = dt.date(2026, 7, 1)
+    for i in range(20):
+        _bar(db, "000002", base + dt.timedelta(days=i), close=1000.0, volume=10_000)
+    _bar(db, "000002", base + dt.timedelta(days=20), close=1000.0, volume=10_000_000)
+    db.commit()
+
+    result = HistoricalOHLCVRepository(db).avg_turnover_20d(
+        ["000002"], base + dt.timedelta(days=19)
+    )
+
+    assert result["000002"] == 10_000_000.0
+
+
+def test_avg_turnover_20d_returns_empty_for_no_tickers(db) -> None:
+    """티커가 없으면 쿼리하지 않는다."""
+    assert HistoricalOHLCVRepository(db).avg_turnover_20d([], dt.date(2026, 7, 1)) == {}

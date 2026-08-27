@@ -65,6 +65,10 @@ class MapsSettings(BaseSettings):
     maps_kis_timeout: float = Field(default=30.0, ge=1.0)  # KIS API read timeout (초). 모의서버 지연 대응
     maps_order_slippage_pct: float = Field(default=0.01, ge=0.0)   # 지정가 = 최신종가 * (1 + slippage)
     maps_order_max_gap_pct: float = Field(default=0.02, ge=0.0)    # 신호 이후 갭 상승 허용 상한 (초과 시 주문 스킵)
+    # 주문금액 / 20거래일 평균 거래대금 상한. 0 이면 유동성 게이트 비활성.
+    maps_order_max_turnover_pct: float = Field(default=0.02, ge=0.0)
+    # 유동성 축소 후 이 금액 미만이면 주문하지 않는다.
+    maps_order_min_amount_krw: int = Field(default=500_000, ge=0)
     maps_candidate_min_score: float = Field(default=10.0, ge=0.0)  # CandidateSnapshot final_score 최소 기준 (미만 종목 주문 제외)
     # 자동 강등 판정 연속 평가 횟수. 검증 잡이 거래일 1회 돌므로 10회 ≈ 2주.
     # 점수가 TRADEABILITY_THRESHOLDS["demotion"](50) 미만으로 이 횟수만큼 연속되면
