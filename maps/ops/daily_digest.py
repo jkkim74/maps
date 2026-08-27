@@ -51,6 +51,7 @@ from maps.common.settings import MapsSettings
 from maps.execution.order_manager import kst_day_bounds_utc
 from maps.market.trading_rules import previous_trading_day
 from maps.ops.candidate_selection import candidate_score_complete
+from maps.ops.liquidity_cap import BLOCKING_REASONS
 from maps.ops.pick_freshness import is_pick_stale, pick_cutoff_date
 
 logger = logging.getLogger(__name__)
@@ -729,6 +730,42 @@ def _build_portfolio(db: Session, ref_date: dt.date) -> DigestPortfolio | None:
     )
 
 
+def _build_liquidity(db: Session, ref_date: dt.date) -> tuple[int, list[str]]:
+    """그날 매수 주문 중 유동성으로 수량이 줄어든 건을 센다.
+
+    축소는 실제로 나간 주문이라 ``order_log`` 에 남는다. 차단은 주문 자체가
+    없으므로 여기서 세지 않고 주문 미리보기 사유에서 센다.
+    """
+    start, end = kst_day_bounds_utc(ref_date)
+    rows = (
+        db.query(OrderLog)
+        .filter(
+            OrderLog.side == "buy",
+            OrderLog.created_at >= start,
+            OrderLog.created_at < end,
+        )
+        .order_by(OrderLog.created_at.asc())
+        .all()
+    )
+    notes: list[str] = []
+    for row in rows:
+        context = row.decision_context if isinstance(row.decision_context, dict) else {}
+        liquidity = context.get("liquidity")
+        if not isinstance(liquidity, dict) or liquidity.get("reason") != "LIQUIDITY_CAPPED":
+            continue
+        notes.append(
+            "%s %s주 → %s주 (20일 평균 거래대금 %s원, 한도 %s원)"
+            % (
+                row.ticker,
+                liquidity.get("original_qty"),
+                row.qty,
+                format(int(liquidity.get("turnover_20d") or 0), ","),
+                format(int(liquidity.get("limit_amount") or 0), ","),
+            )
+        )
+    return len(notes), notes
+
+
 def _build_executions(db: Session, ref_date: dt.date) -> list[DigestExecution]:
     """당일 체결·주문 내역. order_log 는 UTC 저장이라 KST 경계 변환이 필수다."""
     start, end = kst_day_bounds_utc(ref_date)
@@ -942,6 +979,16 @@ def build_daily_digest(
         lambda: _build_conditional_entries(db, settings, ref_date),
     ) or []
     digest.executions = _section("executions", lambda: _build_executions(db, ref_date)) or []
+    liquidity = _section("liquidity", lambda: _build_liquidity(db, ref_date))
+    if liquidity is not None:
+        digest.liquidity_capped_total, digest.liquidity_notes = liquidity
+    preview = digest.tomorrow_orders
+    if preview is not None:
+        digest.liquidity_blocked_total = sum(
+            1
+            for item in preview.items
+            if item.liquidity_reason in BLOCKING_REASONS
+        )
     digest.market_context = _section(
         "market_context", lambda: _build_market_context(db, ref_date)
     ) or []

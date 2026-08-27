@@ -112,3 +112,13 @@ def test_prompt_keeps_incomplete_scores_out_of_candidate_ranking() -> None:
 
 def test_style_guide_describes_readability_validation() -> None:
     assert "핵심 전문용어의 쉬운 설명 누락까지 검사한다" in STYLE
+
+
+def test_blog_prompt_requires_liquidity_cap_disclosure() -> None:
+    """축소된 주문을 원래 계획대로 산 것처럼 쓰지 못하게 한다."""
+    prompt = Path(".claude/commands/blog.md").read_text(encoding="utf-8")
+
+    assert "liquidity_capped_total" in prompt
+    assert "liquidity_blocked_total" in prompt
+    assert "유동성 축소" in prompt
+    assert "원래 계획대로" in prompt
