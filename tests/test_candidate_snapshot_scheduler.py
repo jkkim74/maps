@@ -437,3 +437,99 @@ def test_snapshot_keeps_incomplete_entry_signal_for_audit(monkeypatch, db) -> No
     assert row.ticker == "SIGNAL"
     assert row.entry_signal is True
     assert row.score_ready is False
+
+
+def _history_bar(db, ticker: str, date: dt.date, close: float, volume: int) -> None:
+    """유동성 계산용 일봉."""
+    from maps.common.models import HistoricalOHLCV
+
+    db.add(
+        HistoricalOHLCV(
+            ticker=ticker,
+            date=date,
+            open=close,
+            high=close,
+            low=close,
+            close=close,
+            volume=volume,
+            source="test",
+        )
+    )
+
+
+def _thin_collection(ref_date: dt.date):
+    """195990 한 종목짜리 수집 결과 — 당일만 거래대금이 터진 상태."""
+    from maps.data.krx_adapter import CollectionResult, OHLCVData, SecurityMeta
+
+    meta = [
+        SecurityMeta(
+            ticker="195990",
+            name="테스트종목",
+            market="KOSDAQ",
+            security_type="STOCK",
+            listing_date=dt.date(2020, 1, 1),
+        )
+    ]
+    return meta, CollectionResult(
+        ref_date=ref_date,
+        ohlcv=[
+            OHLCVData(
+                date=ref_date,
+                ticker="195990",
+                open=1400.0,
+                high=1400.0,
+                low=1400.0,
+                close=1400.0,
+                volume=240_000,
+            )
+        ],
+        meta=meta,
+    )
+
+
+def test_universe_turnover_uses_twenty_day_average() -> None:
+    """하루 급등 거래대금으로 유니버스를 통과하던 회귀를 막는다.
+
+    2026-08-20 195990: 그날 하루치는 3.36억으로 코스닥 하한 3억을 넘겼지만
+    20거래일 평균은 3,760만으로 하한의 1/8이었다.
+    """
+    engine, factory = _memory_factory()
+    db = factory()
+    try:
+        ref_date = dt.date(2026, 8, 20)
+        for i in range(19):
+            _history_bar(
+                db, "195990", ref_date - dt.timedelta(days=19 - i),
+                close=1000.0, volume=10_000,
+            )
+        _history_bar(db, "195990", ref_date, close=1400.0, volume=240_000)
+        db.commit()
+
+        pipeline = OperationalPipeline(session_factory=factory)
+        meta, collection = _thin_collection(ref_date)
+        securities = pipeline._to_securities(db, meta, collection, ref_date)
+
+        target = next(s for s in securities if s.ticker == "195990")
+        assert target.avg_turnover_20d_as_of(ref_date) < 300_000_000
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def test_universe_turnover_is_zero_when_history_missing() -> None:
+    """20거래일 이력이 없으면 0 이라 유동성 필터가 걸러낸다(fail-closed)."""
+    engine, factory = _memory_factory()
+    db = factory()
+    try:
+        ref_date = dt.date(2026, 8, 20)
+        pipeline = OperationalPipeline(session_factory=factory)
+        meta, collection = _thin_collection(ref_date)
+        securities = pipeline._to_securities(db, meta, collection, ref_date)
+
+        target = next(s for s in securities if s.ticker == "195990")
+        assert target.avg_turnover_20d_as_of(ref_date) == 0.0
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()

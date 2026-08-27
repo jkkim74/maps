@@ -1419,10 +1419,18 @@ class OperationalPipeline:
             .filter(SecurityMetadata.ticker.in_([item.ticker for item in meta]))
             .all()
         }
+        # 유동성 판정은 당일 하루치가 아니라 20거래일 평균이어야 한다.
+        # 돌파·던키언 전략은 거래량 급증일에 신호를 내므로, 하루치로 판정하면
+        # 하필 그 전략들이 종목을 고르는 순간에만 게이트가 느슨해진다
+        # (2026-08-20 195990: 당일 3.36억으로 통과, 20일 평균은 3,760만).
+        turnover_by_ticker = HistoricalOHLCVRepository(db).avg_turnover_20d(
+            [item.ticker for item in meta], ref_date
+        )
         securities: list[Security] = []
         for item in meta:
             ohlcv = ohlcv_by_ticker.get(item.ticker)
-            turnover = (ohlcv.close * ohlcv.volume) if ohlcv else 0.0
+            # 20거래일 이력이 없으면 0 — 유동성 필터가 low_turnover 로 걸러낸다.
+            turnover = turnover_by_ticker.get(item.ticker, 0.0)
             missing_fields = self._missing_ohlcv_fields(ohlcv)
             securities.append(
                 Security(
