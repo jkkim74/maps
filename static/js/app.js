@@ -431,6 +431,7 @@ function krPrice(p) {
 async function loadCandidates() {
   loading('candidates-kpi');
   loading('candidates-area');
+  loading('candidates-incomplete-area');
   try {
     const params = new URLSearchParams(location.search);
     const strategyId = params.get('strategy_id') || 'pullback_v3';
@@ -458,7 +459,8 @@ async function loadCandidates() {
     document.getElementById('candidates-kpi').innerHTML = `
       <div class="kpi-grid">
         <div class="kpi-card"><div class="kpi-label">Universe</div><div class="kpi-value">${d.universe_count}</div><div class="kpi-sub">${d.ref_date}</div></div>
-        <div class="kpi-card pass"><div class="kpi-label">Final</div><div class="kpi-value">${d.final_count}</div><div class="kpi-sub">저장 후보</div></div>
+        <div class="kpi-card pass"><div class="kpi-label">완성 후보</div><div class="kpi-value">${d.ready_count}</div><div class="kpi-sub">순위 포함</div></div>
+        <div class="kpi-card warn"><div class="kpi-label">미완성 후보</div><div class="kpi-value">${d.incomplete_count}</div><div class="kpi-sub">전체 저장 ${d.final_count}</div></div>
         <div class="kpi-card warn"><div class="kpi-label">Excluded</div><div class="kpi-value">${d.missing_count}</div><div class="kpi-sub">품질 필터 제외</div></div>
         ${aiKpi}
       </div>`;
@@ -481,63 +483,96 @@ async function loadCandidates() {
     }
 
     if (!d.candidates || d.candidates.length === 0) {
-      empty('candidates-area', filterBadge ? '내 필터 조건에 맞는 후보가 없습니다' : '후보 스냅샷 없음');
+      empty('candidates-area', filterBadge ? '내 필터 조건에 맞는 완성 후보가 없습니다' : '완성된 매매 후보가 없습니다');
       if (filterBadge) document.getElementById('candidates-area').insertAdjacentHTML('afterbegin', filterBadge);
-      return;
+    } else {
+      const rows = d.candidates.map(c => {
+        // AI 분석 행 (메모 툴팁)
+        const confidence = c.ai_confidence == null
+          ? '<span class="text-muted">—</span>'
+          : `<span class="mono">${Math.round(c.ai_confidence * 100)}%</span>`;
+        // 목표 수익률 표시 (목표가/매수가 - 1)
+        let rrHtml = '<span class="text-muted">—</span>';
+        if (c.ai_target_price && c.ai_buy_price && c.ai_buy_price > 0) {
+          const rr = ((c.ai_target_price - c.ai_buy_price) / c.ai_buy_price * 100).toFixed(1);
+          rrHtml = `<span class="mono text-muted">+${rr}%</span>`;
+        }
+        const marketReady = c.market_score_ready
+          ? badge('시장 데이터 완료', 'pass')
+          : badge('시장 데이터 미완성·주문 차단', 'fail');
+        return `
+        <tr>
+          <td class="mono">${c.ticker}</td>
+          <td>${c.name} <span class="text-muted" style="font-size:10px">${c.market}</span></td>
+          <td>${badge(c.ts_bucket, 'info')}</td>
+          <td class="mono">${fmt.score(c.factor_score)}</td>
+          <td class="mono">${fmt.score(c.trend_strength)}</td>
+          <td class="mono">${fmt.score(c.rule_score)}</td>
+          <td>${aiScoreBadge(c.ai_score)}</td>
+          <td class="mono"><strong>${fmt.score(c.recommendation_score)}</strong> ${scoreSourceBadge(c.score_source)}</td>
+          <td>${confidence}</td>
+          <td>${aiReasonText(c.ai_reason_codes)}</td>
+          <td>${krPrice(c.ai_buy_price)}</td>
+          <td>${krPrice(c.ai_stop_price)}</td>
+          <td>${krPrice(c.ai_target_price)}</td>
+          <td>${rrHtml}</td>
+          <td>${c.weekly_pass ? passBadge(true) : passBadge(false)}</td>
+          <td>${marketReady}</td>
+          <td class="mono">${c.estimated_qty ?? '—'}</td>
+        </tr>`;
+      }).join('');
+
+      document.getElementById('candidates-area').innerHTML = filterBadge + `
+        <table>
+          <thead>
+            <tr>
+              <th>티커</th><th>종목명</th><th>TS</th>
+              <th>Factor</th><th>Trend</th><th>규칙점수</th>
+              <th title="구조화 AI 항목의 서버 합산 점수 (0-100)">AI점수</th>
+              <th>추천점수·출처</th><th>신뢰도</th><th>AI 사유</th>
+              <th title="규칙 기반 계획 매수가">계획 매수가</th>
+              <th title="규칙 기반 계획 손절가">계획 손절가</th>
+              <th title="규칙 기반 계획 목표가">계획 목표가</th>
+              <th title="규칙 기반 목표 수익률">목표수익</th>
+              <th>Weekly</th><th>시장 데이터</th><th>수량</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>`;
     }
 
-    const rows = d.candidates.map(c => {
-      // AI 분석 행 (메모 툴팁)
-      const confidence = c.ai_confidence == null
-        ? '<span class="text-muted">—</span>'
-        : `<span class="mono">${Math.round(c.ai_confidence * 100)}%</span>`;
-      // 목표 수익률 표시 (목표가/매수가 - 1)
-      let rrHtml = '<span class="text-muted">—</span>';
-      if (c.ai_target_price && c.ai_buy_price && c.ai_buy_price > 0) {
-        const rr = ((c.ai_target_price - c.ai_buy_price) / c.ai_buy_price * 100).toFixed(1);
-        rrHtml = `<span class="mono text-muted">+${rr}%</span>`;
-      }
-      return `
-      <tr>
-        <td class="mono">${c.ticker}</td>
-        <td>${c.name} <span class="text-muted" style="font-size:10px">${c.market}</span></td>
-        <td>${badge(c.ts_bucket, 'info')}</td>
-        <td class="mono">${fmt.score(c.factor_score)}</td>
-        <td class="mono">${fmt.score(c.trend_strength)}</td>
-        <td class="mono">${fmt.score(c.rule_score)}</td>
-        <td>${aiScoreBadge(c.ai_score)}</td>
-        <td class="mono"><strong>${fmt.score(c.recommendation_score)}</strong> ${scoreSourceBadge(c.score_source)}</td>
-        <td>${confidence}</td>
-        <td>${aiReasonText(c.ai_reason_codes)}</td>
-        <td>${krPrice(c.ai_buy_price)}</td>
-        <td>${krPrice(c.ai_stop_price)}</td>
-        <td>${krPrice(c.ai_target_price)}</td>
-        <td>${rrHtml}</td>
-        <td>${c.weekly_pass ? passBadge(true) : passBadge(false)}</td>
-        <td class="mono">${c.estimated_qty ?? '—'}</td>
-      </tr>`;
-    }).join('');
-
-    document.getElementById('candidates-area').innerHTML = filterBadge + `
-      <table>
-        <thead>
-          <tr>
-            <th>티커</th><th>종목명</th><th>TS</th>
-            <th>Factor</th><th>Trend</th><th>규칙점수</th>
-            <th title="구조화 AI 항목의 서버 합산 점수 (0-100)">AI점수</th>
-            <th>추천점수·출처</th><th>신뢰도</th><th>AI 사유</th>
-            <th title="규칙 기반 계획 매수가">계획 매수가</th>
-            <th title="규칙 기반 계획 손절가">계획 손절가</th>
-            <th title="규칙 기반 계획 목표가">계획 목표가</th>
-            <th title="규칙 기반 목표 수익률">목표수익</th>
-            <th>Weekly</th><th>수량</th>
-          </tr>
-        </thead>
-        <tbody>${rows}</tbody>
-      </table>`;
+    const incomplete = d.incomplete_candidates || [];
+    const incompleteSection = document.getElementById('candidates-incomplete-section');
+    if (incomplete.length === 0) {
+      if (incompleteSection) incompleteSection.style.display = 'none';
+    } else {
+      if (incompleteSection) incompleteSection.style.display = '';
+      const incompleteRows = incomplete.map(c => {
+        const coverage = `${((c.score_coverage_ratio || 0) * 100).toFixed(0)}%`;
+        const missing = c.missing_components && c.missing_components.length
+          ? c.missing_components.map(esc).join(', ')
+          : '누락 항목 미기록';
+        return `
+        <tr>
+          <td class="mono">${c.ticker}</td>
+          <td>${esc(c.name)} <span class="text-muted" style="font-size:10px">${esc(c.market)}</span></td>
+          <td class="mono"><strong>${fmt.score(c.final_score)}</strong><br><span class="text-muted">부분 산출값</span></td>
+          <td class="mono">${coverage}</td>
+          <td>${missing}</td>
+          <td>${badge('순위 비교 금지', 'warn')}</td>
+        </tr>`;
+      }).join('');
+      document.getElementById('candidates-incomplete-area').innerHTML = `
+        <div class="text-muted mb-16">측정 자료가 부족해 매매 후보 순위와 AI 스코어링에서 제외된 종목입니다.</div>
+        <table>
+          <thead><tr><th>티커</th><th>종목명</th><th>부분점수</th><th>커버리지</th><th>누락 평가항목</th><th>상태</th></tr></thead>
+          <tbody>${incompleteRows}</tbody>
+        </table>`;
+    }
   } catch (e) {
     empty('candidates-kpi', `오류: ${e.message}`);
     empty('candidates-area', '');
+    empty('candidates-incomplete-area', '');
   }
 }
 

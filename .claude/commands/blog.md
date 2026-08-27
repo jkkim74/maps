@@ -102,6 +102,8 @@ description: 일일 다이제스트로 매매 기록 블로그 글 작성
 1. 오늘의 매매 한눈에
 ────────────────────
 세 문장 이내로 매수·매도 체결 건수, 신규매수 중단 여부, 확인이 필요한 데이터를 요약한다.
+candidate_incomplete_total이 0보다 크면 데이터 미완성 후보가 순위에서 분리됐다는 사실을
+한 문장으로 알린다.
 말미에서 같은 내용을 다시 요약하지 않는다.
 
 ────────────────────
@@ -166,8 +168,17 @@ reason / overheat_warning을 기록한다. applied_to_trading: false면 첫 줄�
 기간 수익률 순위만 사용했다고 쓴다.
 
 전략 ID·활성 상태·단계·차단 이유와 후보의 final_score / score_reason / ts_bucket /
-excluded_reason을 보존한다. candidate_total과 candidate_excluded를 함께 쓰고 제외 비율을
-언급한다. 값이 있으면 ai_analysis_memo / ai_contrarian_thesis /
+excluded_reason을 보존한다. `candidates`만 완성된 매매 후보 순위로 설명한다.
+candidate_total / candidate_ready_total / candidate_incomplete_total / candidate_excluded를
+함께 쓰고 제외 비율을 언급한다.
+
+`incomplete_candidates`는 `데이터 미완성 후보`라는 별도 소제목에 기록한다. 각 행의
+final_score는 반드시 `부분 산출값`이라고 부르고 `순위 비교 금지`라고 명시한다.
+score_coverage_ratio / score_status / missing_components를 함께 보존한다.
+missing_components가 비어 있으면 추정하지 말고 `누락 항목 미기록`이라고 쓴다. 미완성 행을
+100점 만점 후보, 추천점수, 상위 후보, 매수 후보라고 표현하지 않는다.
+
+값이 있으면 ai_analysis_memo / ai_contrarian_thesis /
 ai_contrarian_anti_thesis / valuation_margin_reason과 price_source도 기록한다.
 
 주문가·체결가·수량·상태·청산 사유를 보존한다. market_context가 있으면 외부 리포트

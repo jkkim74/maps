@@ -155,10 +155,23 @@ broker sync는 기존 손절·익절·전략 청산을 먼저 처리한 뒤 보�
 
 | 함수 | 설명 |
 |---|---|
+| `candidate_score_complete(row)` | 그 후보 행의 점수가 **완성**인가 (`score_ready` AND 커버리지 ≥ 1.0) |
+| `candidate_score_complete_expression()` | 위 판정의 SQL 등가식 |
 | `candidate_min_score_expression()` | AI 모드별로 최소 점수 게이트에 쓸 점수 컬럼 |
 | `candidate_recommendation_eligible_expression()` | `replace` 모드에서 AI 후보군에 못 든 행만 제외 |
 
 주문 경로와 화면이 같은 식을 공유하도록 SQL 표현식을 한곳에 둔다.
+
+> ⚠️ **미완성 점수는 매매 후보 순위에 섞지 않는다.** 5개 평가항목 중 일부만 채워진 행도
+> `final_score` 를 갖기 때문에, 정렬만 하면 부분점수가 100점처럼 상위를 차지한다
+> (2026-08-24 실제 발생: `valuation_margin_score` 하나만 채워진 후보들이 `final_score=100.0`).
+> `score_ready=false` 라 자동주문은 이미 차단되지만 **화면·다이제스트에서는 완성 후보처럼
+> 보였다.** 그래서 완성 판정은 이 한 함수로만 하고 저장 상한(`scheduler`), AI 대상
+> (`ai/scoring_service._is_eligible`), 후보 API, 다이제스트가 모두 이것을 쓴다.
+>
+> - 저장 상한: 비신호 행은 **완성 우선 → 점수 내림차순 → ticker** 로 정렬한다.
+>   신호 행(`entry_signal`)은 미완성이라도 감사용으로 보존한다.
+> - AI 스코어링: 미완성 행은 호출·예약 대상에서 제외한다 (예산 낭비 방지).
 
 ## strategy_trade_plan.py — 전략매매 안전 한도 (순수 함수)
 
@@ -197,6 +210,20 @@ broker sync는 기존 손절·익절·전략 청산을 먼저 처리한 뒤 보�
 |---|---|
 | `daily_digest.py` | `build_daily_digest(ref_date)` — 하루치 매매 기록을 **결정적으로** 조립. 블로그 원고와 SCR-20 의 유일한 사실 출처 |
 | `report_generator.py` | `KostolanyReportGenerator.generate()` → `DailyReport.to_text()` — 시장·섹터·전략·후보·리스크 요약 |
+
+`build_daily_digest` 의 후보 섹션은 **완성·미완성을 분리**해서 돌려준다.
+
+| 필드 | 뜻 |
+|---|---|
+| `candidates` | 완성 점수 후보 상위 N건 (ticker당 최고 점수 전략 1행) — 유일한 순위 목록 |
+| `incomplete_candidates` | 완성 행이 **하나도 없는** ticker만, 커버리지 내림차순 감사 목록 |
+| `candidate_total` / `candidate_ready_total` / `candidate_incomplete_total` | 고유 ticker 기준 전체 / 완성 / 미완성 수 |
+
+같은 ticker 가 두 목록에 동시에 들어가지 않는다 — 완성 행이 하나라도 있으면 완성 목록에만 싣는다.
+
+> ⚠️ 매매기록·블로그는 `incomplete_candidates` 의 `final_score` 를 **부분 산출값**으로만
+> 부르고 순위 비교에 쓰지 않는다. `missing_components` 가 비면 추정하지 말고
+> `누락 항목 미기록` 이라고 쓴다 (규칙 정본은 `.claude/commands/blog.md`).
 
 > ⚠️ 다이제스트의 `price_source=rule` 값을 AI 결론처럼 표현하면 안 된다.
 >
