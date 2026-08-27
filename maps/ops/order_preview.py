@@ -12,7 +12,9 @@ from sqlalchemy.orm import Session
 from maps.api.schemas import OrderPreviewResponse, PreviewOrderItem
 from maps.common.models import CandidateSnapshot, HistoricalOHLCV, PortfolioSnapshot, PromotionHistory
 from maps.common.settings import MapsSettings
+from maps.data.ohlcv_repo import HistoricalOHLCVRepository
 from maps.market.trading_rules import previous_trading_day, round_up_krx_price
+from maps.ops.liquidity_cap import BLOCKING_REASONS, apply_liquidity_cap
 from maps.ops.candidate_selection import (
     candidate_min_score_expression,
     candidate_recommendation_eligible_expression,
@@ -252,6 +254,17 @@ def build_order_preview(db: Session, settings: MapsSettings) -> OrderPreviewResp
     seen_tickers: set[str] = set()
     remaining_cash = cash
 
+    # 유동성 한도는 후보 전체를 한 번에 조회한다. 기준일은 주문 경로
+    # (`ops/scheduler`)와 **같은 후보 스냅샷 기준일**이어야 한다 — 다르면
+    # 화면 수량과 실주문 수량이 갈린다.
+    turnover_by_ticker = (
+        HistoricalOHLCVRepository(db).avg_turnover_20d(
+            [c.ticker for c in candidates], candidates[0].ref_date
+        )
+        if candidates
+        else {}
+    )
+
     for candidate in candidates:
         if submitted >= effective_max:
             break
@@ -362,6 +375,13 @@ def build_order_preview(db: Session, settings: MapsSettings) -> OrderPreviewResp
             continue
 
         qty = _estimated_qty(total_value, remaining_cash, limit_price, remaining_slots, max_exposure)
+        cap = apply_liquidity_cap(
+            qty=qty,
+            price=limit_price,
+            turnover_20d=turnover_by_ticker.get(candidate.ticker),
+            settings=settings,
+        )
+        qty = cap.qty
         if qty <= 0:
             items.append(PreviewOrderItem(
                 ticker=candidate.ticker,
@@ -376,8 +396,18 @@ def build_order_preview(db: Session, settings: MapsSettings) -> OrderPreviewResp
                 estimated_qty=0,
                 estimated_amount=0,
                 skipped=True,
-                skip_reason="insufficient_cash",
+                # 유동성 차단은 현금 부족과 다른 사유다 — 뭉뚱그리면 사용자가
+                # 현금을 채워도 안 사지는 이유를 알 수 없다.
+                skip_reason=(
+                    "insufficient_liquidity"
+                    if cap.reason in BLOCKING_REASONS
+                    else "insufficient_cash"
+                ),
                 live_eligible=live_eligible,
+                original_qty=cap.original_qty,
+                liquidity_reason=cap.reason,
+                turnover_20d=cap.turnover_20d,
+                liquidity_limit_amount=cap.limit_amount,
             ))
             continue
 
@@ -397,6 +427,10 @@ def build_order_preview(db: Session, settings: MapsSettings) -> OrderPreviewResp
             skipped=False,
             skip_reason=None,
             live_eligible=live_eligible,
+            original_qty=cap.original_qty,
+            liquidity_reason=cap.reason,
+            turnover_20d=cap.turnover_20d,
+            liquidity_limit_amount=cap.limit_amount,
         ))
         seen_tickers.add(candidate.ticker)
         submitted += 1

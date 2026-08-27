@@ -253,6 +253,11 @@ class PreviewOrderItem(BaseModel):
     skipped: bool
     skip_reason: str | None
     live_eligible: bool = True   # True=실주문 대상(live_candidate/live), False=모의(mock_candidate)
+    # 유동성 한도 — 실제 주문과 **같은 함수**(ops/liquidity_cap)가 만든 값이다.
+    original_qty: int = 0            # 축소 전 수량
+    liquidity_reason: str | None = None
+    turnover_20d: float | None = None
+    liquidity_limit_amount: float = 0.0
 
 
 class OrderPreviewResponse(BaseModel):

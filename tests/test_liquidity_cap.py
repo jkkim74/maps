@@ -95,3 +95,22 @@ def test_non_positive_qty_is_returned_as_is(settings: MapsSettings) -> None:
 
     assert result.qty == 0
     assert result.reason is None
+
+
+def test_preview_and_order_paths_share_one_implementation() -> None:
+    """미리보기와 주문 경로가 같은 함수를 부르는지 소스로 확인한다.
+
+    손절가가 사이징과 화면에서 갈려 포지션이 2배로 잡혔던 2026-07-29 사고와
+    같은 구조다 — 경로마다 따로 구현하면 화면 수량과 실주문이 어긋난다.
+    """
+    from pathlib import Path
+
+    preview = Path("maps/ops/order_preview.py").read_text(encoding="utf-8")
+    scheduler = Path("maps/ops/scheduler.py").read_text(encoding="utf-8")
+
+    for source, name in ((preview, "order_preview"), (scheduler, "scheduler")):
+        assert "apply_liquidity_cap(" in source, f"{name} 이 공용 한도 함수를 쓰지 않는다"
+        assert "avg_turnover_20d(" in source, f"{name} 이 공용 거래대금 계산을 쓰지 않는다"
+        assert "candidates[0].ref_date" in source, (
+            f"{name} 의 유동성 기준일이 후보 스냅샷 기준일이 아니다"
+        )
