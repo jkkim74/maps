@@ -187,7 +187,10 @@ class CandidatesResponse(BaseModel):
     s5_excluded: int
     missing_count: int
     final_count: int
+    ready_count: int = 0
+    incomplete_count: int = 0
     candidates: list[CandidateItem]
+    incomplete_candidates: list[CandidateItem] = []
     ref_date: str
 
 
@@ -1135,7 +1138,10 @@ class DailyDigest(BaseModel):
     sectors: DigestSectors | None = None
     strategies: list[DigestStrategy] = []
     candidates: list[DigestCandidate] = []
+    incomplete_candidates: list[DigestCandidate] = []
     candidate_total: int = 0                 # 고유 ticker 수 (전략 중복 제거)
+    candidate_ready_total: int = 0           # 완성 점수가 하나라도 있는 고유 ticker 수
+    candidate_incomplete_total: int = 0      # 완성 점수가 전혀 없는 고유 ticker 수
     candidate_excluded: int = 0              # 점수식이 excluded_reason 을 남긴 스냅샷 수
     # 데이터 품질 필터(universe_quality_log) 통계 — 후보 스냅샷과 별개의 상류 단계.
     # 스냅샷 행 수를 세면 "유니버스 × 전략 수"가 되어 제외율이 항상 0으로 보인다.

@@ -84,6 +84,7 @@ from maps.ops.notifications import Notification, SlackNotifier
 from maps.ops.candidate_selection import (
     candidate_min_score_expression,
     candidate_recommendation_eligible_expression,
+    candidate_score_complete,
 )
 from maps.ops.order_state import claimed_candidate_tickers
 from maps.ops.pick_freshness import is_pick_stale, pick_cutoff_date
@@ -1854,7 +1855,12 @@ class OperationalPipeline:
         top_n = self._settings.maps_candidate_snapshot_top_n
         signalled = [row for row in pending if row[1]]
         observed = sorted(
-            (row for row in pending if not row[1]), key=lambda row: row[0], reverse=True
+            (row for row in pending if not row[1]),
+            key=lambda row: (
+                not candidate_score_complete(row[2]),
+                -row[0],
+                row[2].ticker,
+            ),
         )[:top_n]
         for _score, _signal, snapshot in signalled + observed:
             db.add(snapshot)

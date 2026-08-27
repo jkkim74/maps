@@ -94,5 +94,21 @@ def test_prompt_uses_rule_data_when_ai_is_not_authoritative() -> None:
     assert "AI 결론으로 표현하지 않는다" in PROMPT
 
 
+def test_prompt_keeps_incomplete_scores_out_of_candidate_ranking() -> None:
+    """부분 산출값을 정상 100점 후보나 추천 순위로 쓰는 회귀를 막는다."""
+    required = (
+        "incomplete_candidates",
+        "candidate_ready_total",
+        "candidate_incomplete_total",
+        "부분 산출값",
+        "순위 비교 금지",
+        "score_coverage_ratio",
+        "missing_components",
+        "누락 항목 미기록",
+    )
+    for phrase in required:
+        assert phrase in PROMPT
+
+
 def test_style_guide_describes_readability_validation() -> None:
     assert "핵심 전문용어의 쉬운 설명 누락까지 검사한다" in STYLE

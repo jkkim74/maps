@@ -1,5 +1,55 @@
 # HANDOFF
 
+## 8/27 미완성 후보 점수의 순위 격리 — ✅ 구현·검증 완료, ⏸️ 미배포
+
+8/25 절이 다음 작업으로 예약해 둔 **미완성 후보 점수 격리**를 브랜치
+`feat/incomplete-candidate-score-isolation` 에 TDD로 구현했다. 설계·계획 정본은 아래 두 문서다.
+
+- `docs/superpowers/specs/2026-08-27-incomplete-candidate-score-isolation-design.md`
+- `docs/superpowers/plans/2026-08-27-incomplete-candidate-score-isolation.md`
+
+문제는 8/24에 실제로 드러났다. 5개 평가항목 중 `valuation_margin_score` 하나만 채워진
+후보들이 `final_score=100.0` 으로 상위 목록을 차지했다. `score_ready=false` 라 자동주문은
+이미 차단됐지만 **화면과 매매일지에서는 완성된 100점 후보처럼 보였다.**
+
+완성 판정을 `ops/candidate_selection` 한곳으로 모으고 저장·AI·API·다이제스트·화면·매매일지가
+모두 그 하나를 쓰게 했다.
+
+- `candidate_score_complete(row)` / `candidate_score_complete_expression()` —
+  `score_ready` AND 커버리지 ≥ 1.0. 파이썬 판정과 SQL 식이 같은 규칙이다.
+- 스냅샷 저장 상한은 비신호 행을 **완성 우선 → 점수 내림차순 → ticker** 로 정렬한다.
+  `entry_signal` 행은 미완성이라도 감사용으로 보존한다.
+- AI 스코어링 대상에서 미완성 행을 제외했다 — 완성될 수 없는 행에 예산을 쓰지 않는다.
+- 후보 API 는 `candidates`(완성)와 `incomplete_candidates`(미완성)를 분리하고
+  `ready_count` / `incomplete_count` 를 필터 전 기준으로 함께 준다. 개인 `candidate_min_score`
+  필터는 완성 목록에만 건다 — 미완성 점수는 비교 대상이 아니다.
+- 다이제스트에 `candidate_ready_total` / `candidate_incomplete_total` /
+  `incomplete_candidates` 를 추가했다. 완성 행이 하나라도 있는 ticker 는 완성 목록에만 실어
+  같은 종목이 두 목록에 겹치지 않는다.
+- 화면은 `완성된 매매 후보` 표와 `데이터 미완성 후보` 감사 표를 나누고, 미완성 행에
+  커버리지·누락 평가항목·`순위 비교 금지` 배지를 붙인다. KPI 도 완성/미완성으로 쪼갰다.
+  전략 선택에 빠져 있던 `contrarian_quality_accumulation_v1` 도 넣었다.
+- 매매일지 규칙(`.claude/commands/blog.md`)에 미완성 후보 서술 규칙을 넣었다. `final_score`
+  는 반드시 `부분 산출값`·`순위 비교 금지` 로 쓰고, `missing_components` 가 비면 추정하지
+  말고 `누락 항목 미기록` 이라고 쓴다.
+
+DB 마이그레이션·백필·새 설정·새 의존성은 없다. Alembic head 는 `0028_holding_regime_audit`
+그대로다. 자동 BUY/SELL 안전 게이트와 주문 미리보기 감사 행의 동작도 바꾸지 않았다.
+
+커밋은 `7d87ad3`(설계) → `b2a7006`(공통 판정·저장·AI) → `a9cb1e4`(API·다이제스트) →
+`521682c`(화면·매매일지·패키지 문서)다.
+
+검증은 집중 회귀 **98 passed**, `pytest tests -q` **971 passed, 13 warnings**,
+`pytest maps/tests -q` **81 passed**, `python -m compileall maps -q`,
+`python -m alembic heads`(`0028_holding_regime_audit`), `git diff --check` 전부 통과다.
+
+> ⏸️ **아직 배포하지 않았다.** `master` 병합도 하지 않았고 운영 HEAD 는 `45c4d4e` /
+> Alembic `0028_holding_regime_audit` 그대로다. 마이그레이션이 없으므로 배포는 병합 후
+> `git pull` + `systemctl restart` 만으로 끝나지만, 16:00~16:45 KST analyze 창은 피한다.
+
+작업공간에는 사용자의 기존 변경인 `docs/blog_series_backtest/11_눌림목_전략_부검기.txt`
+삭제와 `docs/diary/`·`docs/stock/` 미추적 파일이 그대로 남아 있다. 어느 커밋에도 넣지 않았다.
+
 ## 8/26 보유 장세 오버레이 — ✅ shadow 구현·운영 배포 완료
 
 **현재 장세와 매수 당시 장세를 비교하는 보유 장세 오버레이**를 `master`에 구현·운영

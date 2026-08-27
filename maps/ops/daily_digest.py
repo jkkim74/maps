@@ -50,6 +50,7 @@ from maps.common.models import (
 from maps.common.settings import MapsSettings
 from maps.execution.order_manager import kst_day_bounds_utc
 from maps.market.trading_rules import previous_trading_day
+from maps.ops.candidate_selection import candidate_score_complete
 from maps.ops.pick_freshness import is_pick_stale, pick_cutoff_date
 
 logger = logging.getLogger(__name__)
@@ -448,33 +449,62 @@ def _candidate_from_row(r: CandidateSnapshot, pick: AnalysisPick | None) -> Dige
 
 def _build_candidates(
     db: Session, ref_date: dt.date, settings: MapsSettings
-) -> tuple[list[DigestCandidate], int, int, UniverseQualityLog | None]:
-    """후보 종목 섹션. 상위 N건(종목 중복 제거)과 집계, 유니버스 품질 로그를 반환한다.
+) -> tuple[
+    list[DigestCandidate],
+    list[DigestCandidate],
+    int,
+    int,
+    int,
+    int,
+    UniverseQualityLog | None,
+]:
+    """완성·미완성 후보 상위 N건과 집계, 유니버스 품질 로그를 반환한다.
 
     스냅샷은 (ref_date, strategy_id, ticker)당 1행이라 행 수를 그대로 세면
-    "유니버스 × 전략 수"가 된다. 전체 건수는 고유 ticker, 상위 목록은 ticker당
-    최고 점수 전략 1행만 쓴다 (주문 경로의 dedupe 와 동일 규칙).
+    "유니버스 × 전략 수"가 된다. 전체 건수는 고유 ticker로 세고, 완성 행이 하나라도
+    있는 ticker는 완성 목록에만 최고 점수 전략 1행을 싣는다.
     """
-    rows = (
-        db.query(CandidateSnapshot)
-        .filter(CandidateSnapshot.ref_date == ref_date)
-        .order_by(CandidateSnapshot.final_score.desc())
-        .all()
-    )
+    rows = db.query(CandidateSnapshot).filter(CandidateSnapshot.ref_date == ref_date).all()
     excluded = sum(1 for r in rows if r.excluded_reason)
 
-    seen_tickers: set[str] = set()
-    top_rows: list[CandidateSnapshot] = []
-    for r in rows:
-        if r.ticker in seen_tickers:
-            continue
-        seen_tickers.add(r.ticker)
-        top_rows.append(r)
-        if len(top_rows) >= _MAX_CANDIDATES:
-            break
+    complete_rows = sorted(
+        (row for row in rows if candidate_score_complete(row)),
+        key=lambda row: (-row.final_score, row.ticker, row.strategy_id),
+    )
+    complete_tickers = {row.ticker for row in complete_rows}
+    incomplete_rows = sorted(
+        (
+            row
+            for row in rows
+            if not candidate_score_complete(row) and row.ticker not in complete_tickers
+        ),
+        key=lambda row: (
+            -float(row.score_coverage_ratio or 0.0),
+            row.ticker,
+            row.strategy_id,
+        ),
+    )
 
-    picks = _latest_picks(db, {r.ticker for r in top_rows}, ref_date, settings)
+    def _dedupe(source: list[CandidateSnapshot]) -> list[CandidateSnapshot]:
+        seen: set[str] = set()
+        result: list[CandidateSnapshot] = []
+        for row in source:
+            if row.ticker in seen:
+                continue
+            seen.add(row.ticker)
+            result.append(row)
+            if len(result) >= _MAX_CANDIDATES:
+                break
+        return result
+
+    top_rows = _dedupe(complete_rows)
+    incomplete_top_rows = _dedupe(incomplete_rows)
+    selected_rows = top_rows + incomplete_top_rows
+    picks = _latest_picks(db, {r.ticker for r in selected_rows}, ref_date, settings)
     top = [_candidate_from_row(r, picks.get(r.ticker)) for r in top_rows]
+    incomplete_top = [
+        _candidate_from_row(r, picks.get(r.ticker)) for r in incomplete_top_rows
+    ]
 
     quality = (
         db.query(UniverseQualityLog)
@@ -483,7 +513,17 @@ def _build_candidates(
         .first()
     )
     total_tickers = len({r.ticker for r in rows})
-    return top, total_tickers, excluded, quality
+    ready_total = len(complete_tickers)
+    incomplete_total = total_tickers - ready_total
+    return (
+        top,
+        incomplete_top,
+        total_tickers,
+        ready_total,
+        incomplete_total,
+        excluded,
+        quality,
+    )
 
 
 def _build_conditional_entries(
@@ -875,7 +915,15 @@ def build_daily_digest(
 
     candidates = _section("candidates", lambda: _build_candidates(db, ref_date, settings))
     if candidates is not None:
-        digest.candidates, digest.candidate_total, digest.candidate_excluded, quality = candidates
+        (
+            digest.candidates,
+            digest.incomplete_candidates,
+            digest.candidate_total,
+            digest.candidate_ready_total,
+            digest.candidate_incomplete_total,
+            digest.candidate_excluded,
+            quality,
+        ) = candidates
         if quality is not None:
             digest.universe_total = quality.total_candidates
             digest.universe_kept = quality.kept_count

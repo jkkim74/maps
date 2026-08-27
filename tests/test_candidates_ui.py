@@ -50,6 +50,31 @@ def test_filter_badge_shown_when_filter_empties_the_list() -> None:
     """내 필터로 전량 걸러진 경우에도 원인과 해제 경로를 보여 준다."""
     source = Path("static/js/app.js").read_text(encoding="utf-8")
 
-    empty_index = source.index("'후보 스냅샷 없음'")
+    empty_index = source.index("'완성된 매매 후보가 없습니다'")
     badge_index = source.index("candidates-filter-badge")
     assert badge_index < empty_index, "배지는 빈 목록 early return 보다 먼저 만들어져야 한다"
+
+
+def test_candidate_screen_separates_incomplete_score_audit() -> None:
+    """부분점수가 완성 후보 표와 같은 순위 행으로 렌더링되는 회귀를 막는다."""
+    template = Path("templates/candidates.html").read_text(encoding="utf-8")
+    script = Path("static/js/app.js").read_text(encoding="utf-8")
+
+    assert "완성된 매매 후보" in template
+    assert "데이터 미완성 후보" in template
+    assert "candidates-incomplete-area" in template
+    assert "contrarian_quality_accumulation_v1" in template
+    assert "incomplete_candidates" in script
+    assert "부분 산출값" in script
+    assert "순위 비교 금지" in script
+    assert "누락 항목 미기록" in script
+    assert "시장 데이터 미완성·주문 차단" in script
+
+
+def test_incomplete_candidates_render_without_ready_candidates() -> None:
+    """완성 후보 0건 early return이 미완성 감사 표까지 숨기면 안 된다."""
+    source = Path("static/js/app.js").read_text(encoding="utf-8")
+
+    empty_index = source.index("'완성된 매매 후보가 없습니다'")
+    incomplete_index = source.index("d.incomplete_candidates")
+    assert empty_index < incomplete_index
