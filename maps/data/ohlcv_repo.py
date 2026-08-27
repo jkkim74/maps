@@ -68,6 +68,53 @@ class HistoricalOHLCVRepository:
         )
         return [row[0] for row in rows]
 
+    def avg_turnover_20d(
+        self, tickers: list[str], as_of: dt.date
+    ) -> dict[str, float]:
+        """``as_of`` 를 포함한 직전 20거래일의 평균 거래대금(종가×거래량).
+
+        유동성 판정의 **유일한 정의**다. 유니버스 필터와 주문 경로가 같은 값을
+        보도록 여기 한 곳에서만 계산한다.
+
+        봉이 20개 미만인 종목은 부분 평균을 주지 않고 결과에서 제외한다 —
+        거래정지·수집 누락 구간의 부분 평균을 정상 유동성으로 인정하지 않기
+        위해서다. 호출자는 결측을 "유동성 미확인"으로 다뤄야 한다.
+        """
+        if not tickers:
+            return {}
+        ranked = (
+            self._db.query(
+                HistoricalOHLCV.ticker.label("ticker"),
+                (HistoricalOHLCV.close * HistoricalOHLCV.volume).label("turnover"),
+                func.row_number()
+                .over(
+                    partition_by=HistoricalOHLCV.ticker,
+                    order_by=HistoricalOHLCV.date.desc(),
+                )
+                .label("rn"),
+            )
+            .filter(
+                HistoricalOHLCV.ticker.in_(tickers),
+                HistoricalOHLCV.date <= as_of,
+            )
+            .subquery()
+        )
+        rows = (
+            self._db.query(
+                ranked.c.ticker,
+                func.avg(ranked.c.turnover),
+                func.count(ranked.c.turnover),
+            )
+            .filter(ranked.c.rn <= 20)
+            .group_by(ranked.c.ticker)
+            .all()
+        )
+        return {
+            ticker: float(avg)
+            for ticker, avg, count in rows
+            if count >= 20 and avg is not None
+        }
+
     def list_tickers_with_counts(
         self,
         *,
