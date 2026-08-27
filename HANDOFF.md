@@ -1,9 +1,9 @@
 # HANDOFF
 
-## 8/27 미완성 후보 점수의 순위 격리 — ✅ 구현·검증 완료, ⏸️ 미배포
+## 8/27 미완성 후보 점수의 순위 격리 — ✅ 구현·운영 배포 완료
 
-8/25 절이 다음 작업으로 예약해 둔 **미완성 후보 점수 격리**를 브랜치
-`feat/incomplete-candidate-score-isolation` 에 TDD로 구현했다. 설계·계획 정본은 아래 두 문서다.
+8/25 절이 다음 작업으로 예약해 둔 **미완성 후보 점수 격리**를 TDD로 구현하고
+`master` 에 병합·운영 배포했다. 설계·계획 정본은 아래 두 문서다.
 
 - `docs/superpowers/specs/2026-08-27-incomplete-candidate-score-isolation-design.md`
 - `docs/superpowers/plans/2026-08-27-incomplete-candidate-score-isolation.md`
@@ -37,18 +37,32 @@ DB 마이그레이션·백필·새 설정·새 의존성은 없다. Alembic head
 그대로다. 자동 BUY/SELL 안전 게이트와 주문 미리보기 감사 행의 동작도 바꾸지 않았다.
 
 커밋은 `7d87ad3`(설계) → `b2a7006`(공통 판정·저장·AI) → `a9cb1e4`(API·다이제스트) →
-`521682c`(화면·매매일지·패키지 문서)다.
+`521682c`(화면·매매일지·패키지 문서) → `5fcdf08`(HANDOFF)이고, 병합 커밋 `8b7e613` 이 배포본이다.
+작업 브랜치 `feat/incomplete-candidate-score-isolation` 과 그 워크트리는 병합 후 정리했다.
 
 검증은 집중 회귀 **98 passed**, `pytest tests -q` **971 passed, 13 warnings**,
 `pytest maps/tests -q` **81 passed**, `python -m compileall maps -q`,
 `python -m alembic heads`(`0028_holding_regime_audit`), `git diff --check` 전부 통과다.
 
-> ⏸️ **아직 배포하지 않았다.** `master` 병합도 하지 않았고 운영 HEAD 는 `45c4d4e` /
-> Alembic `0028_holding_regime_audit` 그대로다. 마이그레이션이 없으므로 배포는 병합 후
-> `git pull` + `systemctl restart` 만으로 끝나지만, 16:00~16:45 KST analyze 창은 피한다.
+배포는 2026-08-27 12:43:44 KST에 했다. 배포 직전 12:39 KST에 `flock -n /tmp/maps_analyze.lock`
+으로 analyze 미실행을 확인했다(16:00~16:45 창 밖). 마이그레이션·`requirements.txt` 변경이 없어
+`alembic upgrade head` 와 `pip install` 은 실행하지 않았고, 배포 후 운영 Alembic 이
+`0028_holding_regime_audit (head)` 그대로임을 확인했다. 운영 HEAD `8b7e613`, systemd
+`maps=active (running)`, 내부·외부 `/health` 200, 재시작 이후 ERROR/CRITICAL/Traceback 0건,
+스케줄러 5개 잡 전부 등록됐다.
+
+> 🟡 **실효 확인은 아직 안 났다.** 배포 시각 12:43 은 후보 생성 잡(16:50) 이전이다. 16:50 KST
+> 후보 생성 회차 뒤에 `/candidates` 화면의 `완성 후보`/`미완성 후보` KPI 가 갈리는지,
+> 부분점수 행이 `데이터 미완성 후보` 감사 표로 내려가는지, 다이제스트에
+> `candidate_ready_total`/`candidate_incomplete_total` 이 붙는지 확인해야 한다.
+> 8/24 처럼 `valuation_margin_score` 하나만 채워진 행이 상위에 남아 있으면 회귀다.
+
+다음 작업 후보는 8/25 절이 지정한 순서대로 **자동매수 유동성 하한 적용**이다. 8/21 의 AI 권고
+NULL 방어 P0 설계는 계속 보류이며 별도 재개 지시 없이는 구현하지 않는다.
 
 작업공간에는 사용자의 기존 변경인 `docs/blog_series_backtest/11_눌림목_전략_부검기.txt`
-삭제와 `docs/diary/`·`docs/stock/` 미추적 파일이 그대로 남아 있다. 어느 커밋에도 넣지 않았다.
+삭제와 `docs/diary/`·`docs/stock/` 미추적 파일이 그대로 남아 있다. 어느 커밋에도 넣지 않았고,
+배포 시에도 이 dirty 상태를 그대로 두었다(전부 문서이고 서버는 `origin/master` 를 받는다).
 
 ## 8/26 보유 장세 오버레이 — ✅ shadow 구현·운영 배포 완료
 
