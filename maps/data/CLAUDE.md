@@ -117,12 +117,24 @@ DataCollector(krx: KRXAdapterBase, db: Session, broker=None)
 |---|---|
 | `to_dataframe(ticker, end?, start?)` | date 인덱스 OHLCV DataFrame 반환 |
 | `list_tickers_with_history(end, min_bars)` | 최소 `min_bars` 일치 이상의 ticker 목록 |
+| `avg_turnover_20d(tickers, as_of)` | **유동성 판정의 유일한 정의** — `as_of` 포함 직전 20거래일 `avg(close×volume)` |
 
 추가 조회 메서드: `top_tickers_by_trading_value()`, `list_tickers_on_date()`,
 `list_tickers_with_counts()`, `recent_dataframes()`.
 
 > ⚠️ `recent_dataframes()` 는 전체 이력을 정렬하지 말고 **필요한 캘린더 구간만** 읽는다.
 > 586만 행 전수 정렬로 시장폭 계산이 장시간 걸린 적이 있다(2026-08-07).
+
+> ⚠️ **유동성은 `avg_turnover_20d()` 하나로만 구한다.** 유니버스 필터
+> (`data_quality/universe_filter`)와 주문 경로(`ops/scheduler`·`ops/order_preview`)가
+> 같은 값을 봐야 한다. 봉이 **20개 미만이면 부분 평균을 주지 않고 결과에서 제외**하므로,
+> 호출자는 결측을 "유동성 미확인"으로 다뤄야 한다(거래정지·수집 누락 구간).
+>
+> 예전에는 `scheduler._to_securities` 가 **당일 하루치**(`close × volume`)를 넣어 놓고
+> `avg_turnover_20d_as_of()` 라는 이름으로 읽었다. 그래서 거래량이 하루 급증한 종목이
+> 유니버스를 통과했다(2026-08-20 `195990`: 당일 3.36억으로 코스닥 하한 3억 통과, 20일
+> 평균은 3,760만). 돌파·던키언 전략은 **거래량 급증일에 신호를 내므로** 이 구멍은 하필
+> 그 전략들이 종목을 고르는 순간에만 열렸다.
 
 ## security_repo.py — SecurityRepository
 
