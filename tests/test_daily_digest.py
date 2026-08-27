@@ -75,12 +75,14 @@ def _seed(db) -> None:
         ref_date=REF_DATE, strategy_id="donchian_v2", ticker="475150",
         name="SK이터닉스", market="KOSDAQ", factor_score=70.0, trend_strength=80.0,
         ts_bucket="S1", final_score=74.0, score_reason="20일 신고가 돌파 + 거래대금 상위",
+        score_ready=True, score_coverage_ratio=1.0,
         weekly_pass=True,
     ))
     db.add(CandidateSnapshot(
         ref_date=dt.date(2026, 7, 24), strategy_id="donchian_v2", ticker="475150",
         name="SK이터닉스", market="KOSDAQ", factor_score=68.0, trend_strength=80.0,
         ts_bucket="S1", final_score=72.0, score_reason="20일 신고가 돌파 + 거래대금 상위",
+        score_ready=True, score_coverage_ratio=1.0,
         weekly_pass=True,
     ))
     db.add(CandidateSnapshot(
@@ -137,6 +139,8 @@ def test_digest_collects_all_sections(db, settings) -> None:
     assert digest.market.regime == "mixed"
     assert digest.market.source == "market_regime_log"
     assert digest.candidate_total == 2
+    assert digest.candidate_ready_total == 1
+    assert digest.candidate_incomplete_total == 1
     assert digest.candidate_excluded == 1
     assert digest.candidates[0].ticker == "475150"       # final_score 내림차순
     assert digest.candidates[0].score_reason is not None
@@ -542,7 +546,8 @@ def test_top_candidates_dedupe_across_strategies(db, settings) -> None:
     db.add(CandidateSnapshot(
         ref_date=REF_DATE, strategy_id="pullback_v3", ticker="475150",
         name="SK이터닉스", market="KOSDAQ", factor_score=70.0, trend_strength=60.0,
-        ts_bucket="S2", final_score=66.0, weekly_pass=True,
+        ts_bucket="S2", final_score=66.0, score_ready=True,
+        score_coverage_ratio=1.0, weekly_pass=True,
     ))
     db.commit()
 
@@ -553,6 +558,56 @@ def test_top_candidates_dedupe_across_strategies(db, settings) -> None:
     winner = next(c for c in digest.candidates if c.ticker == "475150")
     assert winner.strategy_id == "donchian_v2"          # final_score 74.0 > 66.0
     assert digest.candidate_total == 2                  # 고유 ticker 수 (행 수 3이 아니라)
+
+
+def test_digest_separates_partial_scores_and_prefers_complete_duplicate(
+    db,
+    settings,
+) -> None:
+    """부분 100점은 순위 밖으로 이동하고 같은 티커의 완성 전략이 주 목록을 대표한다."""
+    db.add_all(
+        [
+            CandidateSnapshot(
+                ref_date=REF_DATE, strategy_id="contrarian_quality_accumulation_v1",
+                ticker="DUP", name="중복부분", market="KOSPI", factor_score=100.0,
+                trend_strength=50.0, ts_bucket="S3", final_score=100.0,
+                score_ready=False, score_coverage_ratio=0.3, score_status="partial",
+                missing_components=["earnings_revision_score"], weekly_pass=True,
+            ),
+            CandidateSnapshot(
+                ref_date=REF_DATE, strategy_id="pullback_v3", ticker="DUP",
+                name="중복완성", market="KOSPI", factor_score=70.0,
+                trend_strength=70.0, ts_bucket="S2", final_score=70.0,
+                score_ready=True, score_coverage_ratio=1.0, score_status="complete",
+                weekly_pass=True,
+            ),
+            CandidateSnapshot(
+                ref_date=REF_DATE, strategy_id="contrarian_quality_accumulation_v1",
+                ticker="PARTIAL", name="부분전용", market="KOSPI", factor_score=100.0,
+                trend_strength=50.0, ts_bucket="S3", final_score=100.0,
+                score_ready=False, score_coverage_ratio=0.3, score_status="partial",
+                missing_components=["crowd_neglect_score"], weekly_pass=True,
+            ),
+            CandidateSnapshot(
+                ref_date=REF_DATE, strategy_id="pullback_v3", ticker="READY",
+                name="완성전용", market="KOSPI", factor_score=60.0,
+                trend_strength=60.0, ts_bucket="S2", final_score=60.0,
+                score_ready=True, score_coverage_ratio=1.0, score_status="complete",
+                weekly_pass=True,
+            ),
+        ]
+    )
+    db.commit()
+
+    digest = build_daily_digest(db, settings, REF_DATE)
+
+    assert [row.ticker for row in digest.candidates] == ["DUP", "READY"]
+    assert [row.ticker for row in digest.incomplete_candidates] == ["PARTIAL"]
+    assert digest.candidate_total == 3
+    assert digest.candidate_ready_total == 2
+    assert digest.candidate_incomplete_total == 1
+    assert digest.incomplete_candidates[0].final_score == 100.0
+    assert digest.incomplete_candidates[0].missing_components == ["crowd_neglect_score"]
 
 
 def test_price_source_labels_rule_based_fallback(db, settings) -> None:
@@ -638,7 +693,8 @@ def test_backdated_digest_uses_its_own_ref_date_window(db, settings) -> None:
     db.add(CandidateSnapshot(
         ref_date=old_ref, strategy_id="donchian_v2", ticker="475150",
         name="SK이터닉스", market="KOSDAQ", factor_score=70.0, trend_strength=80.0,
-        ts_bucket="S1", final_score=74.0, weekly_pass=True,
+        ts_bucket="S1", final_score=74.0, score_ready=True,
+        score_coverage_ratio=1.0, weekly_pass=True,
     ))
     db.add(AnalysisPick(
         ref_date=old_ref, ticker="475150", name="SK이터닉스", market="KOSDAQ",

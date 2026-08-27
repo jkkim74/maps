@@ -45,7 +45,14 @@ def ctx():
     engine.dispose()
 
 
-def _snapshot(ticker: str, score: float, market: str) -> CandidateSnapshot:
+def _snapshot(
+    ticker: str,
+    score: float,
+    market: str,
+    *,
+    score_ready: bool = True,
+    coverage: float = 1.0,
+) -> CandidateSnapshot:
     """테스트용 후보 스냅샷 한 행 (기준일 고정)."""
     return CandidateSnapshot(
         ref_date=dt.date(2026, 8, 13),
@@ -57,6 +64,8 @@ def _snapshot(ticker: str, score: float, market: str) -> CandidateSnapshot:
         trend_strength=50.0,
         ts_bucket="S3",
         final_score=score,
+        score_ready=score_ready,
+        score_coverage_ratio=coverage,
         weekly_pass=True,
     )
 
@@ -99,6 +108,9 @@ def test_candidates_empty_without_snapshot(ctx) -> None:
     data = response.json()
     assert data["final_count"] == 0
     assert data["candidates"] == []
+    assert data["ready_count"] == 0
+    assert data["incomplete_count"] == 0
+    assert data["incomplete_candidates"] == []
 
 
 def test_candidates_returns_latest_snapshot(ctx) -> None:
@@ -138,6 +150,8 @@ def test_candidates_returns_latest_snapshot(ctx) -> None:
             trend_strength=50.0,
             ts_bucket="S3",
             final_score=90.0,
+            score_ready=True,
+            score_coverage_ratio=1.0,
             weekly_pass=True,
         ))
         db.add(CandidateSnapshot(
@@ -150,6 +164,8 @@ def test_candidates_returns_latest_snapshot(ctx) -> None:
             trend_strength=50.0,
             ts_bucket="S3",
             final_score=80.0,
+            score_ready=True,
+            score_coverage_ratio=1.0,
             weekly_pass=True,
         ))
         db.commit()
@@ -164,6 +180,8 @@ def test_candidates_returns_latest_snapshot(ctx) -> None:
     assert data["universe_count"] == 3
     assert data["missing_count"] == 1
     assert data["final_count"] == 2
+    assert data["ready_count"] == 2
+    assert data["incomplete_count"] == 0
     assert [item["ticker"] for item in data["candidates"]] == ["005930", "000660"]
 
 
@@ -192,6 +210,8 @@ def test_candidates_exposes_score_provenance(ctx) -> None:
                 ai_confidence=0.82,
                 ai_reason_codes=["UPTREND", "HEALTHY_PULLBACK"],
                 ai_model_id="test-model",
+                score_ready=True,
+                score_coverage_ratio=1.0,
                 weekly_pass=True,
             )
         )
@@ -207,6 +227,61 @@ def test_candidates_exposes_score_provenance(ctx) -> None:
     assert item["score_source"] == "AI"
     assert item["ai_scoring_mode"] == "rerank"
     assert item["ai_reason_codes"] == ["UPTREND", "HEALTHY_PULLBACK"]
+
+
+def test_candidates_separates_incomplete_score_from_trade_ranking(ctx) -> None:
+    """부분 100점이 더 낮은 완성점수보다 주 목록 위에 보이면 안 된다."""
+    client, factory = ctx
+    ready = _snapshot("READY", 70.0, "KOSPI")
+    partial = _snapshot(
+        "PARTIAL",
+        100.0,
+        "KOSPI",
+        score_ready=False,
+        coverage=0.3,
+    )
+    partial.score_status = "partial"
+    partial.missing_components = [
+        "earnings_revision_score",
+        "crowd_neglect_score",
+    ]
+    _seed_snapshots(factory, [partial, ready])
+
+    body = client.get("/api/v1/candidates").json()
+
+    assert body["final_count"] == 2
+    assert body["ready_count"] == 1
+    assert body["incomplete_count"] == 1
+    assert [row["ticker"] for row in body["candidates"]] == ["READY"]
+    assert [row["ticker"] for row in body["incomplete_candidates"]] == ["PARTIAL"]
+    incomplete = body["incomplete_candidates"][0]
+    assert incomplete["final_score"] == 100.0
+    assert incomplete["score_coverage_ratio"] == 0.3
+    assert incomplete["missing_components"] == [
+        "earnings_revision_score",
+        "crowd_neglect_score",
+    ]
+
+
+def test_personal_min_score_does_not_hide_incomplete_audit_list(
+    ctx,
+    monkeypatch,
+) -> None:
+    """부분점수는 비교 불가라 개인 점수 임계값으로 감사 목록에서 숨기지 않는다."""
+    client, factory = ctx
+    _seed_snapshots(
+        factory,
+        [
+            _snapshot("READY", 70.0, "KOSPI"),
+            _snapshot("PARTIAL", 10.0, "KOSPI", score_ready=False, coverage=0.3),
+        ],
+    )
+    _seed_user(factory, monkeypatch, "partialuser", {"candidate_min_score": 80.0})
+
+    body = client.get("/api/v1/candidates").json()
+
+    assert body["candidates"] == []
+    assert [row["ticker"] for row in body["incomplete_candidates"]] == ["PARTIAL"]
 
 
 def test_personal_min_score_filters_list(ctx, monkeypatch) -> None:
@@ -228,11 +303,14 @@ def test_personal_market_filters_list(ctx, monkeypatch) -> None:
     _seed_snapshots(factory, [
         _snapshot("000001", 90.0, "KOSPI"),
         _snapshot("000003", 90.0, "KOSDAQ"),
+        _snapshot("000004", 100.0, "KOSPI", score_ready=False, coverage=0.3),
+        _snapshot("000005", 100.0, "KOSDAQ", score_ready=False, coverage=0.3),
     ])
     _seed_user(factory, monkeypatch, "marketuser", {"candidate_markets": ["KOSPI"]})
 
-    tickers = [c["ticker"] for c in client.get("/api/v1/candidates").json()["candidates"]]
-    assert tickers == ["000001"]
+    body = client.get("/api/v1/candidates").json()
+    assert [c["ticker"] for c in body["candidates"]] == ["000001"]
+    assert [c["ticker"] for c in body["incomplete_candidates"]] == ["000004"]
 
 
 def test_auth_disabled_returns_everything(ctx) -> None:
