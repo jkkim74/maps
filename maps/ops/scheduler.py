@@ -81,6 +81,7 @@ from maps.market.trading_rules import (
     round_up_krx_price,
 )
 from maps.ops.notifications import Notification, SlackNotifier
+from maps.ops.liquidity_cap import apply_liquidity_cap
 from maps.ops.candidate_selection import (
     candidate_min_score_expression,
     candidate_recommendation_eligible_expression,
@@ -1975,6 +1976,18 @@ class OperationalPipeline:
         slippage_pct = self._settings.maps_order_slippage_pct
         max_gap_pct = self._settings.maps_order_max_gap_pct
 
+        # 유동성 한도는 후보 전체를 한 번에 조회한다 — 종목마다 쿼리하면 08:55
+        # 주문 창에서 왕복이 쌓인다. 기준일은 후보 스냅샷 기준일이고, 후보는
+        # 전부 같은 ref_date 를 갖는다. 주문 미리보기도 **같은 기준일**을 써야
+        # 화면 수량과 실주문 수량이 갈리지 않는다.
+        turnover_by_ticker = (
+            HistoricalOHLCVRepository(db).avg_turnover_20d(
+                [c.ticker for c in candidates], candidates[0].ref_date
+            )
+            if candidates
+            else {}
+        )
+
         order_regime_label = regime.regime.value
         for candidate in candidates:
             if self._settings.maps_score_readiness_required:
@@ -2092,6 +2105,20 @@ class OperationalPipeline:
                 remaining_slots,
                 atr14=signal.atr14,
             )
+            cap = apply_liquidity_cap(
+                qty=qty,
+                price=limit_price,
+                turnover_20d=turnover_by_ticker.get(candidate.ticker),
+                settings=self._settings,
+            )
+            if cap.reason is not None:
+                logger.info(
+                    "유동성 한도 [%s %s]: %d주 → %d주 (%s, 20일 평균 거래대금 %.0f원)",
+                    candidate.strategy_id, candidate.ticker,
+                    cap.original_qty, cap.qty, cap.reason, cap.turnover_20d or 0.0,
+                )
+            qty = cap.qty
+
             if qty <= 0:
                 skipped += 1
                 continue
@@ -2110,6 +2137,12 @@ class OperationalPipeline:
                 decision_context={
                     "version": 1,
                     "origin": "live",
+                    "liquidity": {
+                        "original_qty": cap.original_qty,
+                        "turnover_20d": cap.turnover_20d,
+                        "limit_amount": cap.limit_amount,
+                        "reason": cap.reason,
+                    },
                     "candidate": {
                         "snapshot_id": candidate.id,
                         "ref_date": candidate.ref_date.isoformat(),

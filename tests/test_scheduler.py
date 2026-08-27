@@ -138,12 +138,24 @@ def _force_regime_pass(monkeypatch) -> None:
     )
 
 
-def _add_fresh_ohlcv(db, ref_date: dt.date, ticker: str = "AAAA", close: float = 10_000.0) -> None:
-    """테스트용 OHLCV를 MIN_FRESH_TICKERS 이상 삽입해 _is_data_fresh=True 조건을 충족시킨다."""
-    db.add(HistoricalOHLCV(
-        ticker=ticker, date=ref_date,
-        open=int(close), high=int(close), low=int(close), close=int(close), volume=100_000,
-    ))
+def _add_fresh_ohlcv(
+    db,
+    ref_date: dt.date,
+    ticker: str = "AAAA",
+    close: float = 10_000.0,
+    volume: int = 100_000,
+) -> None:
+    """테스트용 OHLCV를 MIN_FRESH_TICKERS 이상 삽입해 _is_data_fresh=True 조건을 충족시킨다.
+
+    주문 대상 종목에는 **20거래일치**를 넣는다. 유동성 게이트가 20거래일 평균
+    거래대금을 요구하고, 이력이 모자라면 fail-closed 로 매수가 막히기 때문이다.
+    """
+    for offset in range(20):
+        db.add(HistoricalOHLCV(
+            ticker=ticker, date=ref_date - dt.timedelta(days=offset),
+            open=int(close), high=int(close), low=int(close), close=int(close),
+            volume=volume,
+        ))
     # 나머지 티커는 더미 값으로 채운다 (MIN_FRESH_TICKERS - 1개)
     for i in range(OperationalPipeline._MIN_FRESH_TICKERS - 1):
         dummy_ticker = f"DUMMY{i:04d}"
@@ -153,6 +165,27 @@ def _add_fresh_ohlcv(db, ref_date: dt.date, ticker: str = "AAAA", close: float =
             ticker=dummy_ticker, date=ref_date,
             open=1_000, high=1_000, low=1_000, close=1_000, volume=1_000,
         ))
+
+
+def _backfill_turnover_history(factory) -> None:
+    """수집된 종목마다 19거래일치 과거 봉을 채운다.
+
+    유동성 게이트가 20거래일 평균 거래대금을 요구한다. mock 수집은 하루치만
+    만들기 때문에, 그대로 두면 전 종목이 low_turnover 로 탈락한다(거부율 100%).
+    """
+    db = factory()
+    try:
+        rows = db.query(HistoricalOHLCV).all()
+        seeds = [(r.ticker, r.date, r.close, r.volume) for r in rows]
+        for ticker, date, close, volume in seeds:
+            for offset in range(1, 20):
+                db.add(HistoricalOHLCV(
+                    ticker=ticker, date=date - dt.timedelta(days=offset),
+                    open=close, high=close, low=close, close=close, volume=volume,
+                ))
+        db.commit()
+    finally:
+        db.close()
 
 
 def test_pipeline_collect_and_candidate_generation_with_mock_provider() -> None:
@@ -165,6 +198,7 @@ def test_pipeline_collect_and_candidate_generation_with_mock_provider() -> None:
     pipeline = OperationalPipeline(settings=settings, session_factory=factory)
 
     collect = pipeline.collect_data()
+    _backfill_turnover_history(factory)
     candidates = pipeline.generate_candidates()
 
     assert collect.status == "success"
@@ -175,7 +209,8 @@ def test_pipeline_collect_and_candidate_generation_with_mock_provider() -> None:
     db = factory()
     try:
         assert db.query(CollectionLog).filter(CollectionLog.source == "krx").count() >= 1
-        assert db.query(HistoricalOHLCV).count() == 3
+        # 수집 3행 + 유동성 판정용 백필 3×19행
+        assert db.query(HistoricalOHLCV).count() == 60
         assert db.query(UniverseQualityLog).count() == 1
     finally:
         db.close()
@@ -276,6 +311,14 @@ def test_order_cycle_submits_promoted_candidate_when_live_enabled(monkeypatch) -
         assert order.decision_context == {
             "version": 1,
             "origin": "live",
+            "liquidity": {
+                # 20거래일 평균 거래대금 10억의 2% = 2,000만원. 주문은 그 안쪽이라
+                # 축소되지 않았고 reason 은 None 이다.
+                "original_qty": 980,
+                "turnover_20d": 1_000_000_000.0,
+                "limit_amount": 20_000_000.0,
+                "reason": None,
+            },
             "candidate": {
                 "snapshot_id": candidate.id,
                 "ref_date": "2026-05-05",
@@ -1280,6 +1323,7 @@ def test_generate_candidates_sets_weekly_pass_false_when_trend_override_is_fail(
     pipeline = OperationalPipeline(settings=settings, session_factory=factory)
 
     pipeline.collect_data()
+    _backfill_turnover_history(factory)
     pipeline.generate_candidates()
 
     db = factory()
@@ -1752,6 +1796,7 @@ def test_generate_candidates_saves_snapshots_even_when_regime_blocks_entry() -> 
     pipeline = OperationalPipeline(settings=settings, session_factory=factory)
 
     pipeline.collect_data()
+    _backfill_turnover_history(factory)
     run = pipeline.generate_candidates()
 
     assert run.status == "success"
@@ -2064,6 +2109,169 @@ def test_validation_auto_demotes_after_consecutive_low_scores(monkeypatch) -> No
         assert len(notifier.sent) == 1
         assert notifier.sent[0].level == "WARN"
         assert "pullback_v3" in notifier.sent[0].title
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def test_order_cycle_caps_buy_quantity_by_liquidity(monkeypatch) -> None:
+    """얇은 종목은 20거래일 평균 거래대금의 2%까지만 산다.
+
+    2026-08-20 195990: 20일 평균 3,760만원짜리 종목을 333만원어치 샀다
+    (하루 거래대금의 8.86%).
+    """
+    engine, factory = _session_factory()
+    settings = MapsSettings(
+        maps_broker_mode="mock",
+        maps_data_provider="mock",
+        maps_live_trading_enabled=True,
+        max_single_exposure=0.10,
+        maps_order_max_gap_pct=0.05,
+        maps_order_slippage_pct=0.0,
+        maps_order_max_turnover_pct=0.02,
+        maps_order_min_amount_krw=100_000,
+    )
+    pipeline = OperationalPipeline(settings=settings, session_factory=factory)
+    _force_entry_signal(monkeypatch)
+    _force_regime_pass(monkeypatch)
+    ref_date = dt.date(2026, 5, 5)
+
+    db = factory()
+    try:
+        # 하루 거래대금 2,000만원(종가 2,000원 × 1만주)짜리 얇은 종목
+        _add_fresh_ohlcv(db, ref_date, ticker="THIN", close=2_000.0, volume=10_000)
+        db.add(CandidateSnapshot(
+            ref_date=ref_date, strategy_id="pullback_v3", ticker="THIN",
+            name="THIN", market="KOSDAQ", factor_score=90, trend_strength=80,
+            ts_bucket="S5", final_score=95, weekly_pass=True,
+        ))
+        db.add(PromotionHistory(
+            strategy_id="pullback_v3", from_stage="mock_candidate",
+            to_stage="live_candidate", tradeability_score=70, passed=True,
+            evaluated_at=dt.datetime(2026, 5, 5, 8, 0),
+        ))
+        db.commit()
+    finally:
+        db.close()
+
+    pipeline.run_order_cycle(ref_date)
+
+    db = factory()
+    try:
+        order = db.query(OrderLog).filter(OrderLog.ticker == "THIN").one()
+        # _add_fresh_ohlcv 당일 봉(volume 100_000)까지 섞여 20일 평균은
+        # 2,000만보다 조금 크지만, 한도 2% 는 여전히 60만원 안쪽이다.
+        assert order.qty * order.order_price <= 600_000
+        liquidity = (order.decision_context or {})["liquidity"]
+        assert liquidity["reason"] == "LIQUIDITY_CAPPED"
+        assert liquidity["original_qty"] > order.qty
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def test_order_cycle_skips_buy_when_turnover_history_missing(monkeypatch) -> None:
+    """20거래일 이력이 없으면 사지 않는다(fail-closed)."""
+    engine, factory = _session_factory()
+    settings = MapsSettings(
+        maps_broker_mode="mock",
+        maps_data_provider="mock",
+        maps_live_trading_enabled=True,
+        max_single_exposure=0.10,
+        maps_order_max_gap_pct=0.05,
+        maps_order_max_turnover_pct=0.02,
+    )
+    pipeline = OperationalPipeline(settings=settings, session_factory=factory)
+    _force_entry_signal(monkeypatch)
+    _force_regime_pass(monkeypatch)
+    ref_date = dt.date(2026, 5, 5)
+
+    db = factory()
+    try:
+        # 다른 종목으로 데이터 신선도만 만족시키고, NOHIST 는 당일 봉 하나뿐이라
+        # 20거래일 평균을 낼 수 없다
+        _add_fresh_ohlcv(db, ref_date, ticker="OTHER", close=10_000.0)
+        db.add(HistoricalOHLCV(
+            ticker="NOHIST", date=ref_date,
+            open=10_000, high=10_000, low=10_000, close=10_000, volume=100_000,
+        ))
+        db.add(CandidateSnapshot(
+            ref_date=ref_date, strategy_id="pullback_v3", ticker="NOHIST",
+            name="NOHIST", market="KOSPI", factor_score=90, trend_strength=80,
+            ts_bucket="S5", final_score=95, weekly_pass=True,
+        ))
+        db.add(PromotionHistory(
+            strategy_id="pullback_v3", from_stage="mock_candidate",
+            to_stage="live_candidate", tradeability_score=70, passed=True,
+            evaluated_at=dt.datetime(2026, 5, 5, 8, 0),
+        ))
+        db.commit()
+    finally:
+        db.close()
+
+    pipeline.run_order_cycle(ref_date)
+
+    db = factory()
+    try:
+        assert db.query(OrderLog).filter(OrderLog.ticker == "NOHIST").count() == 0
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def test_exit_orders_are_not_capped_by_liquidity() -> None:
+    """청산은 막지 않는다 — 유동성으로 매도를 조이면 얇은 종목에 갇힌다."""
+    engine, factory = _session_factory()
+    settings = MapsSettings(
+        maps_broker_mode="mock",
+        maps_data_provider="mock",
+        maps_live_trading_enabled=True,
+        maps_order_max_turnover_pct=0.02,
+    )
+    pipeline = OperationalPipeline(settings=settings, session_factory=factory)
+    broker = MockBroker(initial_cash=1_000_000, price_feed={"THIN": 10_000})
+    broker.place_order(Order(
+        strategy_id="pullback_v3",
+        ticker="THIN",
+        side=OrderSide.BUY,
+        order_type=OrderType.MARKET,
+        quantity=10,
+    ))
+    broker.set_price("THIN", 9_400)
+    ref_date = dt.date(2026, 5, 5)
+
+    db = factory()
+    try:
+        db.add(OrderLog(
+            order_id="entry-THIN",
+            strategy_id="pullback_v3",
+            ticker="THIN",
+            side="buy",
+            qty=10,
+            order_price=10_000,
+            fill_price=10_000,
+            fill_qty=10,
+            status="filled",
+        ))
+        # 거래대금 이력이 아예 없다 — 매수라면 fail-closed 로 막힐 상황
+        db.add(HistoricalOHLCV(
+            ticker="THIN", date=ref_date,
+            open=9_400, high=9_400, low=9_400, close=9_400, volume=100,
+        ))
+        db.commit()
+        manager = OrderManager(broker=broker, risk=RiskManager(broker=broker, db=db), db=db)
+
+        submitted, _skipped, exit_tickers = pipeline._submit_exit_orders(
+            db=db, broker=broker, manager=manager, ref_date=ref_date,
+        )
+
+        assert submitted == 1
+        assert exit_tickers == {"THIN"}
+        sell = db.query(OrderLog).filter(OrderLog.side == "sell").one()
+        assert sell.qty == 10
     finally:
         db.close()
         Base.metadata.drop_all(engine)

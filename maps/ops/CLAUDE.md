@@ -10,6 +10,7 @@ ops/
 ├── __init__.py             # 빈 패키지 마커
 ├── candidate_selection.py  # AI 모드별 후보 주문 자격 SQL 식
 ├── daily_digest.py         # 하루치 매매 기록 결정적 조립 (블로그 입력)
+├── liquidity_cap.py        # 주문 수량 유동성 한도 (순수 함수)
 ├── notifications.py        # Slack / Telegram / FCM 알림
 ├── order_preview.py        # 다음 거래일 예정 주문 미리보기
 ├── order_state.py          # claimed_candidate_tickers — 중복 주문 방지 헬퍼
