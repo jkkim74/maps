@@ -1,0 +1,324 @@
+"""Pure price rules and state transitions for the upper-limit V1 engine."""
+
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass
+from enum import Enum
+
+from maps.market.trading_rules import krx_tick_size, round_up_krx_price
+
+
+MIN_TURNOVER_FLOOR_KRW = 50_000_000_000
+
+
+class LimitUpState(str, Enum):
+    """Persisted lifecycle states for one ticker and trading day."""
+
+    WATCHING = "watching"
+    NET_OPEN = "net_open"
+    FILLED_WAIT_LOCK = "filled_wait_lock"
+    LOCKED = "locked"
+    EOD_REVIEW = "eod_review"
+    OVERNIGHT = "overnight"
+    CLOSED = "closed"
+    RECONCILING = "reconciling"
+    MANUAL_LOCK = "manual_lock"
+
+
+class CommandKind(str, Enum):
+    """Side effects requested by the pure state machine."""
+
+    FIRE_NET = "fire_net"
+    CANCEL_BUYS = "cancel_buys"
+    MARKET_SELL = "market_sell"
+
+
+@dataclass(frozen=True)
+class LimitUpConfig:
+    """Validated V1 constants with only turnover configurable upward."""
+
+    min_turnover_krw: int = MIN_TURNOVER_FLOOR_KRW
+    min_execution_strength: float = 150.0
+    no_fill_timeout_seconds: float = 180.0
+    fill_timeout_seconds: float = 180.0
+    lock_seconds: float = 10.0
+    hard_stop_drawdown: float = 0.05
+
+    def __post_init__(self) -> None:
+        """Reject any setting that weakens the hard liquidity floor."""
+        if self.min_turnover_krw < MIN_TURNOVER_FLOOR_KRW:
+            raise ValueError("min_turnover_krw must be at least 50,000,000,000")
+
+
+@dataclass(frozen=True)
+class GridLeg:
+    """One fixed V1 limit-buy leg."""
+
+    name: str
+    budget_krw: int
+    price: int
+    quantity: int
+
+
+@dataclass(frozen=True)
+class TradeEvent:
+    """Normalized real-time execution event."""
+
+    at: float
+    price: int
+    buy_initiated: bool
+    cumulative_turnover_krw: int
+    execution_strength: float
+
+
+@dataclass(frozen=True)
+class QuoteEvent:
+    """Normalized best-ask snapshot."""
+
+    at: float
+    price: int
+    best_ask_price: int
+    best_ask_qty: int
+
+
+@dataclass(frozen=True)
+class MachineCommand:
+    """Idempotent side-effect intent emitted by the state machine."""
+
+    kind: CommandKind
+    reason: str
+
+
+def trigger_price(upper_limit_price: int) -> int:
+    """Return exactly three quotation ticks below the broker upper limit."""
+    tick = krx_tick_size(upper_limit_price)
+    return upper_limit_price - (3 * tick)
+
+
+def build_grid(*, upper_limit_price: int, budget_krw: int) -> tuple[GridLeg, GridLeg]:
+    """Build the fixed 60/40 S/A grid using ceil-to-tick prices."""
+    if upper_limit_price <= 0 or budget_krw <= 0:
+        raise ValueError("upper_limit_price and budget_krw must be positive")
+    specs = (("S", 0.60, 0.012), ("A", 0.40, 0.025))
+    legs: list[GridLeg] = []
+    for name, weight, discount in specs:
+        leg_budget = math.floor(budget_krw * weight)
+        price = round_up_krx_price(upper_limit_price * (1.0 - discount))
+        legs.append(
+            GridLeg(
+                name=name,
+                budget_krw=leg_budget,
+                price=price,
+                quantity=leg_budget // price,
+            )
+        )
+    if any(leg.quantity <= 0 for leg in legs):
+        raise ValueError("budget must buy at least one share in both grid legs")
+    return legs[0], legs[1]
+
+
+def eod_hold_allowed(
+    *,
+    upper_limit_price: int,
+    best_bid_price: int,
+    best_bid_qty: int,
+    total_listed_shares: int,
+    quote_fresh: bool,
+    shares_fresh: bool,
+) -> bool:
+    """Return the strict V1 overnight verdict for one fresh EOD snapshot."""
+    if not quote_fresh or not shares_fresh or total_listed_shares <= 0:
+        return False
+    if best_bid_price != upper_limit_price or best_bid_qty <= 0:
+        return False
+    quantity_ratio = best_bid_qty / total_listed_shares
+    bid_value = best_bid_qty * upper_limit_price
+    return quantity_ratio >= 0.01 and bid_value >= 3_000_000_000
+
+
+class DailyGuard:
+    """Latched per-day entry guard shared by all V1 ticker sessions."""
+
+    def __init__(self) -> None:
+        """Create a fresh trading-day guard."""
+        self.attempts = 0
+        self.pattern_failures = 0
+        self.daily_pnl = 0.0
+        self.kosdaq_high: float | None = None
+        self.halted_reasons: set[str] = set()
+
+    def register_attempt(self) -> None:
+        """Count a durable net command and latch at the fifth attempt."""
+        self.attempts += 1
+        if self.attempts >= 5:
+            self.halted_reasons.add("max_attempts")
+
+    def register_pattern_failure(self) -> None:
+        """Count hard/time exits regardless of their realized P/L sign."""
+        self.pattern_failures += 1
+        if self.pattern_failures >= 2:
+            self.halted_reasons.add("pattern_failures")
+
+    def update_daily_pnl(self, value: float) -> None:
+        """Latch new entries at the account's normal daily loss limit."""
+        self.daily_pnl = value
+        if value <= -300_000:
+            self.halted_reasons.add("daily_loss")
+
+    def observe_kosdaq(self, value: float) -> bool:
+        """Update the intraday high and report a newly latched 1.5% drawdown."""
+        if value <= 0:
+            return False
+        if self.kosdaq_high is None or value > self.kosdaq_high:
+            self.kosdaq_high = value
+        if "kosdaq_drawdown" in self.halted_reasons or self.kosdaq_high is None:
+            return False
+        drawdown = (self.kosdaq_high - value) / self.kosdaq_high
+        if drawdown >= 0.015:
+            self.halted_reasons.add("kosdaq_drawdown")
+            return True
+        return False
+
+    def can_enter(self, *, active_sessions: int) -> bool:
+        """Return whether both daily and concurrent-session gates are open."""
+        return not self.halted_reasons and active_sessions < 2
+
+
+class LimitUpMachine:
+    """Pure single-session state machine driven by normalized market events."""
+
+    def __init__(
+        self,
+        ticker: str,
+        *,
+        upper_limit_price: int,
+        config: LimitUpConfig,
+    ) -> None:
+        """Create an untriggered WATCHING session."""
+        if not ticker or upper_limit_price <= 0:
+            raise ValueError("ticker and upper_limit_price are required")
+        self.ticker = ticker
+        self.upper_limit_price = upper_limit_price
+        self.config = config
+        self.state = LimitUpState.WATCHING
+        self.last_trade_price: int | None = None
+        self.net_fired_at: float | None = None
+        self.first_fill_at: float | None = None
+        self.lock_started_at: float | None = None
+        self.filled_quantity = 0
+        self.pattern_failure_pending = False
+        self.market_halted = False
+
+    def fire_net(self, *, at: float) -> None:
+        """Record one net attempt before the command worker submits orders."""
+        if self.state is not LimitUpState.WATCHING:
+            raise ValueError(f"cannot fire net from {self.state.value}")
+        self.state = LimitUpState.NET_OPEN
+        self.net_fired_at = at
+
+    def on_trade(self, event: TradeEvent) -> list[MachineCommand]:
+        """Apply an execution event and return ordered side-effect intents."""
+        if self._hard_stop_crossed(event.price):
+            return self._protective_exit("hard_stop")
+
+        if self.state is LimitUpState.NET_OPEN and self.filled_quantity == 0:
+            if event.price == self.upper_limit_price:
+                self.state = LimitUpState.CLOSED
+                return [MachineCommand(CommandKind.CANCEL_BUYS, "upper_limit_without_fill")]
+
+        previous = self.last_trade_price
+        self.last_trade_price = event.price
+        if self.state is not LimitUpState.WATCHING or self.market_halted:
+            return []
+        crossed = (
+            previous is not None
+            and previous < trigger_price(self.upper_limit_price) <= event.price
+        )
+        gates_pass = (
+            event.buy_initiated
+            and event.cumulative_turnover_krw >= self.config.min_turnover_krw
+            and event.execution_strength >= self.config.min_execution_strength
+        )
+        if not crossed or not gates_pass:
+            return []
+        self.fire_net(at=event.at)
+        return [MachineCommand(CommandKind.FIRE_NET, "three_tick_upward_cross")]
+
+    def on_quote(self, event: QuoteEvent) -> list[MachineCommand]:
+        """Track continuous upper-limit locking and quote-driven hard stops."""
+        if self._hard_stop_crossed(event.price):
+            return self._protective_exit("hard_stop")
+        if self.state is not LimitUpState.FILLED_WAIT_LOCK:
+            return []
+        locked_now = event.price == self.upper_limit_price and event.best_ask_qty == 0
+        if locked_now:
+            if self.lock_started_at is None:
+                self.lock_started_at = event.at
+        else:
+            self.lock_started_at = None
+        return []
+
+    def on_fill(self, *, at: float, cumulative_quantity: int) -> None:
+        """Start the time cut on the first broker-confirmed share."""
+        if cumulative_quantity <= 0:
+            return
+        self.filled_quantity = max(self.filled_quantity, cumulative_quantity)
+        if self.first_fill_at is None:
+            self.first_fill_at = at
+        if self.state in {LimitUpState.NET_OPEN, LimitUpState.RECONCILING}:
+            self.state = LimitUpState.FILLED_WAIT_LOCK
+
+    def on_timer(self, now: float) -> list[MachineCommand]:
+        """Apply no-fill expiry, lock confirmation, or filled time cut."""
+        if (
+            self.state is LimitUpState.NET_OPEN
+            and self.filled_quantity == 0
+            and self.net_fired_at is not None
+            and now - self.net_fired_at >= self.config.no_fill_timeout_seconds
+        ):
+            self.state = LimitUpState.CLOSED
+            return [MachineCommand(CommandKind.CANCEL_BUYS, "no_fill_timeout")]
+        if self.state is not LimitUpState.FILLED_WAIT_LOCK or self.first_fill_at is None:
+            return []
+        deadline = self.first_fill_at + self.config.fill_timeout_seconds
+        if (
+            self.lock_started_at is not None
+            and self.lock_started_at + self.config.lock_seconds <= min(now, deadline)
+        ):
+            self.state = LimitUpState.LOCKED
+            self.lock_started_at = None
+            return [MachineCommand(CommandKind.CANCEL_BUYS, "locked")]
+        if now >= deadline:
+            return self._protective_exit("time_stop")
+        return []
+
+    def on_market_halt(self, *, at: float) -> list[MachineCommand]:
+        """Latch new-entry halt and pull only still-pending buy orders."""
+        del at
+        self.market_halted = True
+        if self.state is LimitUpState.NET_OPEN and self.filled_quantity == 0:
+            self.state = LimitUpState.CLOSED
+            return [MachineCommand(CommandKind.CANCEL_BUYS, "market_halt")]
+        return []
+
+    def _hard_stop_crossed(self, price: int) -> bool:
+        """Return whether a held position crossed below the absolute stop."""
+        held_state = self.state in {
+            LimitUpState.FILLED_WAIT_LOCK,
+            LimitUpState.LOCKED,
+            LimitUpState.EOD_REVIEW,
+            LimitUpState.OVERNIGHT,
+        }
+        return held_state and price < self.upper_limit_price * (1.0 - self.config.hard_stop_drawdown)
+
+    def _protective_exit(self, reason: str) -> list[MachineCommand]:
+        """Enter reconciliation and request cancel-before-sell exactly once."""
+        if self.state is LimitUpState.RECONCILING:
+            return []
+        self.state = LimitUpState.RECONCILING
+        self.pattern_failure_pending = reason in {"hard_stop", "time_stop"}
+        return [
+            MachineCommand(CommandKind.CANCEL_BUYS, reason),
+            MachineCommand(CommandKind.MARKET_SELL, reason),
+        ]

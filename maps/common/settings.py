@@ -22,6 +22,7 @@ DataProvider = Literal["pykrx", "mock"]
 AIAnalysisMode = Literal["technical_only", "all"]
 AIScoringMode = Literal["off", "rerank", "replace"]
 HoldingRegimeOverlayMode = Literal["off", "shadow"]
+LimitUpModeSetting = Literal["off", "recommend_only", "automatic"]
 
 
 class MapsSettings(BaseSettings):
@@ -44,6 +45,9 @@ class MapsSettings(BaseSettings):
 
     maps_broker_mode: BrokerMode = "mock"
     maps_live_trading_enabled: bool = False
+    maps_limit_up_mode: LimitUpModeSetting = "recommend_only"
+    maps_limit_up_min_turnover_krw: int = Field(default=50_000_000_000, ge=50_000_000_000)
+    maps_limit_up_healthchecks_ping_url: str = ""
     # 브로커 계좌 재생성·교체 시 현재 계좌의 성과 이력을 시작할 KST 날짜.
     # 이전 주문·스냅샷은 감사용으로 보존하되 성과·mock_months 계산에서는 제외한다.
     maps_account_history_start_date: dt.date | None = None
@@ -111,6 +115,8 @@ class MapsSettings(BaseSettings):
     kis_real_trading: bool = False
     kis_real_base_url: str = "https://openapi.koreainvestment.com:9443"
     kis_paper_base_url: str = "https://openapivts.koreainvestment.com:29443"
+    kis_real_websocket_url: str = "ws://ops.koreainvestment.com:21000"
+    kis_paper_websocket_url: str = "ws://ops.koreainvestment.com:31000"
 
     kiwoom_account_no: str = ""
     kiwoom_password: str = ""
@@ -269,6 +275,15 @@ class MapsSettings(BaseSettings):
     def kis_base_url(self) -> str:
         """KIS base URL selected by paper/live trading mode."""
         return self.kis_real_base_url if self.kis_real_trading else self.kis_paper_base_url
+
+    @property
+    def kis_websocket_url(self) -> str:
+        """KIS real-time URL selected by paper/live trading mode."""
+        return (
+            self.kis_real_websocket_url
+            if self.kis_real_trading
+            else self.kis_paper_websocket_url
+        )
 
     @property
     def is_paper_account(self) -> bool:

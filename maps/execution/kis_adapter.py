@@ -50,6 +50,9 @@ _CANCEL_PATH = "/uapi/domestic-stock/v1/trading/order-rvsecncl"
 _BALANCE_PATH = "/uapi/domestic-stock/v1/trading/inquire-balance"
 _DAILY_CCLD_PATH = "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
 _PRICE_PATH = "/uapi/domestic-stock/v1/quotations/inquire-price"
+_VOLUME_RANK_PATH = "/uapi/domestic-stock/v1/quotations/volume-rank"
+_INDEX_TIME_PRICE_PATH = "/uapi/domestic-stock/v1/quotations/inquire-index-timeprice"
+_WS_APPROVAL_PATH = "/oauth2/Approval"
 
 
 def _kst_now_naive() -> dt.datetime:
@@ -57,6 +60,8 @@ def _kst_now_naive() -> dt.datetime:
     return dt.datetime.now(_KST).replace(tzinfo=None)
 # 시세 조회 TR_ID는 모의/실거래 공통 (FHKST01010100).
 _PRICE_TR_ID = "FHKST01010100"
+_VOLUME_RANK_TR_ID = "FHPST01710000"
+_INDEX_TIME_PRICE_TR_ID = "FHPUP02110200"
 
 _TR_IDS = {
     "paper": {
@@ -212,6 +217,140 @@ class KISAdapter(BrokerAdapter):
         self._request("POST", _CANCEL_PATH, tr_id=self._tr_id("cancel"), json=body, hash_body=body)
         self._invalidate_balance_cache()
         return True
+
+    def place_opening_auction_sell(
+        self, *, ticker: str, quantity: int, strategy_id: str
+    ) -> OrderResult:
+        """Submit an explicit 01 market sell for the 08:30-09:00 call auction."""
+        if quantity <= 0:
+            raise BrokerAdapterError("Opening-auction sell quantity must be positive.")
+        return self.place_order(
+            Order(
+                strategy_id=strategy_id,
+                ticker=ticker,
+                side=OrderSide.SELL,
+                order_type=OrderType.MARKET,
+                quantity=quantity,
+            )
+        )
+
+    def issue_websocket_approval_key(self) -> str:
+        """Issue the KIS approval key required by real-time subscriptions."""
+        body = {
+            "grant_type": "client_credentials",
+            "appkey": self._app_key,
+            "secretkey": self._app_secret,
+        }
+        try:
+            response = self._http.post(
+                f"{self._base_url}{_WS_APPROVAL_PATH}",
+                json=body,
+                timeout=self._timeout,
+            )
+            data = response.json()
+        except (requests.RequestException, ValueError) as exc:
+            raise BrokerAdapterError("KIS websocket approval request failed") from exc
+        approval_key = str(data.get("approval_key") or "")
+        if response.status_code >= 400 or not approval_key:
+            raise BrokerAdapterError(
+                f"KIS websocket approval failed: {data.get('msg1') or response.text}"
+            )
+        return approval_key
+
+    def get_kosdaq_index(self) -> float:
+        """Return the current KOSDAQ composite (official index code 1001)."""
+        data = self._request(
+            "GET",
+            _INDEX_TIME_PRICE_PATH,
+            tr_id=_INDEX_TIME_PRICE_TR_ID,
+            params={
+                "FID_COND_MRKT_DIV_CODE": "U",
+                "FID_INPUT_ISCD": "1001",
+                "FID_INPUT_HOUR_1": dt.datetime.now(_KST).strftime("%H%M%S"),
+            },
+        )
+        rows = self._as_list(data.get("output"))
+        if not rows:
+            raise BrokerAdapterError("KIS KOSDAQ index response was empty")
+        value = self._to_float(
+            rows[0].get("bstp_nmix_prpr")
+            or rows[0].get("bstp_nmix_prpr_1")
+            or rows[0].get("value")
+        )
+        if value <= 0:
+            raise BrokerAdapterError("KIS KOSDAQ index response had no current value")
+        return value
+
+    def get_limit_up_candidates(self) -> list[dict[str, Any]]:
+        """Return +25% KRX volume-rank rows enriched with broker quote facts."""
+        rank_data = self._request(
+            "GET",
+            _VOLUME_RANK_PATH,
+            tr_id=_VOLUME_RANK_TR_ID,
+            params={
+                "FID_COND_MRKT_DIV_CODE": "J",
+                "FID_COND_SCR_DIV_CODE": "20171",
+                "FID_INPUT_ISCD": "0000",
+                "FID_DIV_CLS_CODE": "0",
+                "FID_BLNG_CLS_CODE": "0",
+                "FID_TRGT_CLS_CODE": "111111111",
+                "FID_TRGT_EXLS_CLS_CODE": "0000000000",
+                "FID_INPUT_PRICE_1": "",
+                "FID_INPUT_PRICE_2": "",
+                "FID_VOL_CNT": "",
+                "FID_INPUT_DATE_1": "",
+                "FID_RANK_SORT_CLS_CODE": "0",
+                "FID_INPUT_CNT_1": "0",
+                "FID_PRC_CLS_CODE": "0",
+                "FID_INPUT_PRICE_3": "",
+                "FID_INPUT_PRICE_4": "",
+            },
+        )
+        candidates: list[dict[str, Any]] = []
+        for ranked in self._as_list(rank_data.get("output")):
+            ticker = str(
+                ranked.get("mksc_shrn_iscd")
+                or ranked.get("stck_shrn_iscd")
+                or ranked.get("code")
+                or ""
+            )
+            if not ticker or self._to_float(ranked.get("prdy_ctrt") or ranked.get("chgrate")) < 25.0:
+                continue
+            quote_data = self._request(
+                "GET",
+                _PRICE_PATH,
+                tr_id=_PRICE_TR_ID,
+                params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": ticker},
+            )
+            quote = quote_data.get("output") or {}
+            upper = self._to_int(quote.get("stck_mxpr") or quote.get("uplmtprice"))
+            listed = self._to_int(quote.get("lstn_stcn"))
+            current = self._to_int(quote.get("stck_prpr") or quote.get("price"))
+            if upper <= 0 or listed <= 0 or current <= 0:
+                continue
+            market_name = str(
+                quote.get("rprs_mrkt_kor_name")
+                or ranked.get("rprs_mrkt_kor_name")
+                or ""
+            ).upper()
+            market = "KOSDAQ" if "KOSDAQ" in market_name or "코스닥" in market_name else "KOSPI"
+            candidates.append(
+                {
+                    "ticker": ticker,
+                    "market": market,
+                    "current_price": current,
+                    "change_rate": self._to_float(quote.get("prdy_ctrt") or ranked.get("prdy_ctrt")),
+                    "cumulative_turnover_krw": self._to_int(
+                        quote.get("acml_tr_pbmn") or ranked.get("acml_tr_pbmn")
+                    ),
+                    "execution_strength": self._to_float(
+                        quote.get("cttr") or ranked.get("cttr")
+                    ),
+                    "upper_limit_price": upper,
+                    "total_listed_shares": listed,
+                }
+            )
+        return candidates
 
     def get_position(self, ticker: str) -> Position | None:
         positions, _balance = self._fetch_positions_and_balance()

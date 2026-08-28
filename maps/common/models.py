@@ -9,6 +9,7 @@ from __future__ import annotations
 import datetime
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     Date,
     DateTime,
@@ -982,4 +983,117 @@ class MarketRegimeLog(Base):
         DateTime, nullable=False,
         default=lambda: datetime.datetime.now(datetime.timezone.utc),
         onupdate=lambda: datetime.datetime.now(datetime.timezone.utc),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Intraday upper-limit V1 audit state
+# ---------------------------------------------------------------------------
+class LimitUpSession(Base):
+    """One upper-limit V1 ticker lifecycle for one KRX trading day."""
+
+    __tablename__ = "limit_up_session"
+    __table_args__ = (
+        UniqueConstraint("ref_date", "ticker", name="uq_limit_up_session_day_ticker"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ref_date: Mapped[datetime.date] = mapped_column(Date, nullable=False, index=True)
+    ticker: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    market: Mapped[str] = mapped_column(String(16), nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False, default="watching")
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    upper_limit_price: Mapped[int] = mapped_column(Integer, nullable=False)
+    trigger_price: Mapped[int] = mapped_column(Integer, nullable=False)
+    total_listed_shares: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    trigger_turnover_krw: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    trigger_strength: Mapped[float | None] = mapped_column(Float, nullable=True)
+    kosdaq_drawdown: Mapped[float | None] = mapped_column(Float, nullable=True)
+    trigger_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)
+    net_fired_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)
+    first_fill_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)
+    locked_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)
+    eod_decision: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    end_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    pattern_failure_counted: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc)
+    )
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+        default=lambda: datetime.datetime.now(datetime.timezone.utc),
+        onupdate=lambda: datetime.datetime.now(datetime.timezone.utc),
+    )
+
+
+class LimitUpOrderLeg(Base):
+    """Broker state for one fixed S or A upper-limit buy leg."""
+
+    __tablename__ = "limit_up_order_leg"
+    __table_args__ = (
+        UniqueConstraint("session_id", "name", name="uq_limit_up_order_leg_session_name"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[int] = mapped_column(
+        ForeignKey("limit_up_session.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(String(1), nullable=False)
+    broker_order_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    price: Mapped[int] = mapped_column(Integer, nullable=False)
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    filled_quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    avg_fill_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="created")
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc)
+    )
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+        default=lambda: datetime.datetime.now(datetime.timezone.utc),
+        onupdate=lambda: datetime.datetime.now(datetime.timezone.utc),
+    )
+
+
+class LimitUpEvent(Base):
+    """Append-only state transition and broker-command audit event."""
+
+    __tablename__ = "limit_up_event"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key", name="uq_limit_up_event_idempotency_key"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[int] = mapped_column(
+        ForeignKey("limit_up_session.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    action: Mapped[str] = mapped_column(String(64), nullable=False)
+    leg: Mapped[str | None] = mapped_column(String(1), nullable=True)
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc)
+    )
+
+
+class LimitUpTape(Base):
+    """One bounded market-tape snapshot captured at a critical transition."""
+
+    __tablename__ = "limit_up_tape"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[int] = mapped_column(
+        ForeignKey("limit_up_session.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    transition: Mapped[str] = mapped_column(String(32), nullable=False)
+    started_at_monotonic: Mapped[float | None] = mapped_column(Float, nullable=True)
+    ended_at_monotonic: Mapped[float | None] = mapped_column(Float, nullable=True)
+    payload: Mapped[list[dict]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc)
     )

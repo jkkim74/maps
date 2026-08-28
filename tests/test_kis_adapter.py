@@ -76,6 +76,8 @@ class FakeSession:
         self.calls.append({"method": "POST", "url": url, **kwargs})
         if url.endswith("/oauth2/tokenP"):
             return FakeResponse({"access_token": "token", "expires_in": 86400})
+        if url.endswith("/oauth2/Approval"):
+            return FakeResponse({"approval_key": "approval"})
         if url.endswith("/uapi/hashkey"):
             return FakeResponse({"HASH": "hash"})
         if url.endswith("/order-cash"):
@@ -109,6 +111,10 @@ class FakeSession:
             if price is None:
                 return FakeResponse({"rt_cd": "1", "msg_cd": "40580000", "msg1": "no data"})
             return FakeResponse({"rt_cd": "0", "output": {"stck_prpr": price}})
+        if url.endswith("/quotations/inquire-index-timeprice"):
+            return FakeResponse(
+                {"rt_cd": "0", "output": [{"bstp_nmix_prpr": "875.25"}]}
+            )
         if url.endswith("/order-cash"):
             return FakeResponse(self.order_payload)
         if url.endswith("/order-rvsecncl"):
@@ -144,6 +150,27 @@ def test_token_is_shared_across_adapter_instances(settings: MapsSettings) -> Non
     token_calls_2 = [call for call in http2.calls if call["url"].endswith("/oauth2/tokenP")]
     assert len(token_calls_1) == 1
     assert token_calls_2 == []
+
+
+def test_websocket_approval_and_kosdaq_index_use_official_contract(
+    settings: MapsSettings,
+) -> None:
+    """Runtime inputs must use the official approval endpoint and KOSDAQ 1001."""
+    http = FakeSession()
+    broker = KISAdapter(settings, http=http)
+
+    assert broker.issue_websocket_approval_key() == "approval"
+    assert broker.get_kosdaq_index() == 875.25
+
+    approval = next(call for call in http.calls if call["url"].endswith("/oauth2/Approval"))
+    index = next(
+        call
+        for call in http.calls
+        if call["url"].endswith("/quotations/inquire-index-timeprice")
+    )
+    assert approval["json"]["grant_type"] == "client_credentials"
+    assert index["headers"]["tr_id"] == "FHPUP02110200"
+    assert index["params"]["FID_INPUT_ISCD"] == "1001"
 
 
 def test_token_is_reused_from_file_cache_after_memory_cache_clear(settings: MapsSettings) -> None:
@@ -206,6 +233,73 @@ def test_place_order_uses_paper_buy_tr_id_and_hashkey(settings: MapsSettings) ->
     assert order_call["json"]["ORD_UNPR"] == "0"
     assert result.order_id == "12345"
     assert result.status == OrderStatus.PENDING
+
+
+def test_limit_up_candidate_scan_uses_rank_then_broker_quote(
+    settings: MapsSettings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The scanner must use actual KIS upper-limit and turnover fields, not projections."""
+    broker = KISAdapter(settings, http=FakeSession())
+    calls: list[tuple[str, str]] = []
+
+    def fake_request(method, path, *, tr_id, params=None, **kwargs):
+        calls.append((path, tr_id))
+        if path.endswith("/volume-rank"):
+            return {
+                "output": [
+                    {"mksc_shrn_iscd": "005930", "prdy_ctrt": "25.10"},
+                    {"mksc_shrn_iscd": "000660", "prdy_ctrt": "24.99"},
+                ]
+            }
+        assert params["FID_INPUT_ISCD"] == "005930"
+        return {
+            "output": {
+                "stck_prpr": "99700",
+                "prdy_ctrt": "29.10",
+                "acml_tr_pbmn": "50000000000",
+                "cttr": "151.5",
+                "stck_mxpr": "100000",
+                "lstn_stcn": "10000000",
+                "rprs_mrkt_kor_name": "KOSPI",
+            }
+        }
+
+    monkeypatch.setattr(broker, "_request", fake_request)
+
+    rows = broker.get_limit_up_candidates()
+
+    assert rows == [
+        {
+            "ticker": "005930",
+            "market": "KOSPI",
+            "current_price": 99_700,
+            "change_rate": 29.1,
+            "cumulative_turnover_krw": 50_000_000_000,
+            "execution_strength": 151.5,
+            "upper_limit_price": 100_000,
+            "total_listed_shares": 10_000_000,
+        }
+    ]
+    assert calls == [
+        ("/uapi/domestic-stock/v1/quotations/volume-rank", "FHPST01710000"),
+        ("/uapi/domestic-stock/v1/quotations/inquire-price", "FHKST01010100"),
+    ]
+
+
+def test_opening_auction_sell_has_explicit_market_order_path(settings: MapsSettings) -> None:
+    """The 08:59:30 exit must not be rejected by regular-session clock guards."""
+    http = FakeSession()
+    broker = KISAdapter(settings, http=http)
+
+    result = broker.place_opening_auction_sell(
+        ticker="005930", quantity=3, strategy_id="limit_up_v1:overnight_exit"
+    )
+
+    order_call = next(call for call in http.calls if call["url"].endswith("/order-cash"))
+    assert order_call["headers"]["tr_id"] == "VTTC0801U"
+    assert order_call["json"]["ORD_DVSN"] == "01"
+    assert order_call["json"]["ORD_QTY"] == "3"
+    assert result.side is OrderSide.SELL
 
 
 def test_place_order_missing_time_uses_kst_date(
