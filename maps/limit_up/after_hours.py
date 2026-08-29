@@ -25,6 +25,7 @@ from maps.execution.broker_adapter import (
     Order,
     OrderSide,
     OrderType,
+    raw_broker_order_id,
 )
 from maps.execution.order_manager import OrderManager
 from maps.limit_up.domain import AFTER_HOURS_FLOOR_RATIO, LimitUpState
@@ -196,8 +197,12 @@ def _submit_after_hours_exit(
         return False
     submitted = {item for item in (session.exit_order_ids or "").split(",") if item}
     if session.state == LimitUpState.AFTER_HOURS_EXIT.value and submitted:
-        open_ids = {order.order_id for order in broker.get_open_orders()}
-        if not submitted & open_ids:
+        # 감사 ID(kis:...)와 브로커 원주문 ID 를 정규화 없이 비교하면 KIS 에서는 절대
+        # 겹치지 않아 매 회차 오경보가 난다. worker.cancel_open_exits 와 같은 규칙을 쓴다.
+        open_ids = {
+            raw_broker_order_id(order.order_id) for order in broker.get_open_orders()
+        }
+        if not {raw_broker_order_id(item) for item in submitted} & open_ids:
             logger.error(
                 "시간외 탈출 주문이 사라졌는데 보유가 남아 있다 [%s] qty=%s — "
                 "회차 이월이 안 되는 것일 수 있다. 수동 확인 필요.",

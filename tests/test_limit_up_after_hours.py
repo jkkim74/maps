@@ -239,3 +239,63 @@ def test_a_vanished_exit_is_reported_loudly_instead_of_resubmitted(db, caplog) -
 
     assert len(submitted) == 1
     assert "시간외 탈출 주문이 사라졌는데" in caplog.text
+
+
+def test_kis_style_audit_ids_are_normalized_before_the_open_order_check(db) -> None:
+    """Audit IDs (kis:...) never equal raw broker IDs, so every round would misfire.
+
+    MockBroker returns identical IDs for both, which is why the earlier tests
+    could not catch this.
+    """
+    broker, session, manager, submitted = _carried_session(db)
+    _pin_position(broker, "005930", 20)
+    broker.set_price("005930", 97_000)
+    broker.set_after_hours_volume("005930", 5_000)
+    run_after_hours_watch(
+        db, broker, manager, ref_date=dt.date(2026, 8, 28), drop_pct=0.02
+    )
+    assert len(submitted) == 1
+    raw_id = session.exit_order_ids.split(",")[-1]
+    # store the audit-ID form the KIS adapter would produce
+    session.exit_order_ids = f"kis:abc123:20260828:{raw_id}"
+    db.commit()
+    broker.get_open_orders = lambda: [  # type: ignore[method-assign]
+        PendingOrder(
+            order_id=raw_id,
+            ticker="005930",
+            side=OrderSide.SELL,
+            quantity=20,
+            remaining_quantity=20,
+            order_price=90_000,
+        )
+    ]
+    broker.set_after_hours_volume("005930", 6_000)
+
+    with caplog_error() as text:
+        run_after_hours_watch(
+            db, broker, manager, ref_date=dt.date(2026, 8, 28), drop_pct=0.02
+        )
+
+    assert len(submitted) == 1
+    assert "사라졌는데" not in text()
+
+
+import contextlib
+
+
+@contextlib.contextmanager
+def caplog_error():
+    """Capture ERROR records without a pytest fixture dependency."""
+    records: list[str] = []
+
+    class _Sink(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record.getMessage())
+
+    handler = _Sink(level=logging.ERROR)
+    logger = logging.getLogger("maps.limit_up.after_hours")
+    logger.addHandler(handler)
+    try:
+        yield lambda: "\n".join(records)
+    finally:
+        logger.removeHandler(handler)

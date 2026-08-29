@@ -330,6 +330,10 @@ class KISIntradayRuntime:
                     ping_interval=None,
                     close_timeout=2,
                 ) as socket:
+                    # 구독은 연결에 매인다. 프로세스 단위로 기억하면 재연결 후
+                    # "이미 구독함" 으로 건너뛰어 시세가 영영 안 들어오는데
+                    # _feed_connected=True 라 REST 폴백까지 멈춘다.
+                    self._subscribed.clear()
                     self._feed_connected = True
                     backoff = 1.0
                     for ticker in self.service.watched_tickers():

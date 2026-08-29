@@ -161,24 +161,33 @@ V1 주문은 스케줄러 `order_cycle` 을 거치지 않는데, `MAPS_LIVE_TRAD
 기동만 막으면 API 한 번으로 우회된다. 차단 시 `recommend_only` 로 조용히 낮추지 않고
 거부한다(기동 중단 / API 409).
 
-**🔴 미해결 9건 — 이걸 풀기 전에는 `automatic` 으로 바꾸지 말 것.**
+**✅ 2~7번 수정 완료(8/29). 🔴 8·9·10 미해결 — 이걸 풀기 전에는 `automatic` 으로 바꾸지 말 것.**
 
-| # | 결함 | 결과 |
+| # | 결함 | 조치 |
 |---|---|---|
-| 2 | `service.py` CANCEL_BUYS 가 `cancel_pending_buys()` 의 실제 보유수량을 버린다 | 취소 직전 부분체결이 CLOSED 로 묻혀 손절·EOD 대상에서 누락 |
-| 3 | 15:18~15:20 창을 놓치면 `LOCKED` 세션이 `carried_tickers()` 에 없어 15:25·15:28 어디에도 안 걸린다 | 상한 미적용 포지션이 익일로 넘어감 |
-| 4 | `recover()` 가 기동일 세션만 복구한다 | 익일 아침 재시작 시 전일 OVERNIGHT 이 unknown_position, 30초 청산 창에서 제외 |
-| 5 | `_subscribed` 가 연결 단위가 아니라 프로세스 단위 | 재연결 후 재구독 누락 + `_feed_connected=True` 로 REST 폴백까지 중단 |
-| 6 | `after_hours` 가 감사 ID 와 브로커 raw ID 를 정규화 없이 비교 | KIS 에서 항상 불일치 → 매 회차 오경보. `AFTER_HOURS_EXIT` 는 `overnight_tickers()` 에도 없어 익일 청산 누락 |
-| 7 | `sell_actual_position()` 결과를 서비스가 반영 안 해 `RECONCILING` 잔류 | 슬롯 점유 + 늦은 체결 손익이 NULL → 일일 중단선에 안 잡힘 |
-| 8 | 손익을 진입일 `ref_date` 로 합산, `worker` 가 기존 손익을 덮어씀 | 오버나이트 손실이 전일에 귀속, 전일 트림 + 익일 청산 손익 동시 보존 불가 |
-| 9 | `DailyGuard` 가 날짜 변경에도 재시작에도 안전하지 않다 | 전일 halt 잔존 / 장중 재시작 시 attempts·고점이 0 으로 초기화되어 제한 우회 |
-| 10 | 매도 우선 직렬 큐(`enqueue_*`/`run_next`)에 호출자가 없다 | 브로커 호출이 이벤트 루프에서 동기 실행 — KIS 지연이 웹소켓·손절·EOD 훅을 함께 멈춤 |
+| 2 | CANCEL_BUYS 가 `cancel_pending_buys()` 의 실제 보유수량을 버린다 | ✅ `machine.adopt_late_fill()` — 취소와 경합한 체결을 `FILLED_WAIT_LOCK` 으로 되살린다 |
+| 3 | 15:18 창을 놓치면 `LOCKED` 이 15:25·15:28 어디에도 안 걸린다 | ✅ 15:28 이 `LOCKED` 도 청산(`eod_review_missed`). 심사받지 않은 포지션은 오버나이트 자격이 없다 |
+| 4 | `recover()` 가 기동일 세션만 복구한다 | ✅ `ref_date <= 오늘` 의 모든 미종료 세션을 복구 |
+| 5 | `_subscribed` 가 프로세스 단위 | ✅ 연결 성공 시 `clear()`. 소스 가드 테스트로 고정 |
+| 6 | 감사 ID 와 브로커 raw ID 를 정규화 없이 비교 | ✅ `raw_broker_order_id()` 양쪽 적용 + `AFTER_HOURS_EXIT` 를 `overnight_tickers()` 에 포함 |
+| 7 | `sell_actual_position()` 결과 미반영 → `RECONCILING` 잔류 | ✅ 반환 반영 + **`tick()` 이 `RECONCILING` 도 계속 확인**해 보유 0 이면 닫는다 |
+| 8 | 손익을 진입일 `ref_date` 로 합산, `worker` 가 기존 손익을 덮어씀 | 🔴 미해결 — 오버나이트 손실이 전일에 귀속, 전일 트림 + 익일 청산 손익 동시 보존 불가 |
+| 9 | `DailyGuard` 가 날짜 변경에도 재시작에도 안전하지 않다 | 🔴 미해결 — 전일 halt 잔존 / 장중 재시작 시 attempts·고점 초기화로 제한 우회 |
+| 10 | 매도 우선 직렬 큐에 호출자가 없다 | 🔴 미해결 — 브로커 호출이 이벤트 루프에서 동기 실행, KIS 지연이 웹소켓·손절·EOD 훅을 함께 멈춤 |
 
-6번은 이번 세션에서 새로 쓴 코드의 버그다. MockBroker 는 감사 ID 와 raw ID 가 같아
-테스트가 구조적으로 잡을 수 없었다.
+**7번 수정 중 발견**: 첫 수정(`sell_actual_position` 반환 확인)은 **불완전했다.** 제출 즉시
+체결된 경우만 닫히고 늦게 체결되면 여전히 `RECONCILING` 에 남았다. `tick()` 의 주기적
+reconcile 대상에 `RECONCILING` 을 넣어야 완결된다 — 지적의 후반부가 정확했다.
+새로 붙인 실패 시나리오 테스트가 이 미완성을 잡았다.
 
-> **현재 운영은 `recommend_only` 라 위 9건이 실현되지 않는다**(주문 경로가 전부 막혀 있다).
+**6번 교훈**: MockBroker 는 감사 ID 와 raw ID 가 같아 이 불일치를 **테스트가 구조적으로 못
+잡는다.** KIS 형식 복합 ID 를 명시적으로 넣는 테스트를 추가했다. 같은 함정이 다른 경로에도
+있을 수 있다.
+
+검증: 전체 **1,089 passed**. 2~7 각각에 실패 시나리오 테스트를 붙였다 — 취소·체결 경합,
+청산 지연 체결, 15:18 창 유실, 익일 재시작 복구, 재연결 재구독(+소스 가드), KIS 형식 ID.
+
+> **현재 운영은 `recommend_only` 라 남은 3건도 실현되지 않는다**(주문 경로가 전부 막혀 있다).
 > 서버도 `KIS_REAL_TRADING=false` 모의계좌다.
 
 ### 🟡 `automatic` 전환 전 미완 3건 (배선과 무관하게 유효)

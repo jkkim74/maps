@@ -106,6 +106,8 @@ class LimitUpService:
         self._last_reconcile_at: dict[str, float] = {}
         self.manual_lock = False
         self.unknown_positions: list[str] = []
+        # 마지막으로 관측한 단조 시각. 늦은 체결을 되살릴 때 시간 원점으로 쓴다.
+        self.monotonic_hint = 0.0
 
     def watch_candidate(self, candidate: Candidate, *, now_kst: dt.datetime) -> bool:
         """Start watching an eligible +25% common-share candidate in entry hours."""
@@ -200,6 +202,7 @@ class LimitUpService:
     def tick(self, *, now_monotonic: float, now_kst: dt.datetime | None = None) -> None:
         """Apply all session timers and reconcile automatic broker fills."""
         wall = now_kst or dt.datetime.now(dt.timezone(dt.timedelta(hours=9)))
+        self.monotonic_hint = now_monotonic
         for ticker, machine in list(self._machines.items()):
             last_reconcile = self._last_reconcile_at.get(ticker, float("-inf"))
             if (
@@ -212,6 +215,18 @@ class LimitUpService:
                     result = self.worker.reconcile(self._sessions[ticker])
                     if result.position_quantity > machine.filled_quantity:
                         self._record_fill(ticker, result.position_quantity, now_monotonic, wall)
+                elif machine.state is LimitUpState.RECONCILING:
+                    # 청산은 제출 시점에 체결되지 않는 일이 흔하다. 여기서 계속 확인하지
+                    # 않으면 세션이 RECONCILING 에 영원히 남아 슬롯을 잡고, 늦게 잡힌
+                    # 청산 손익이 NULL 로 남아 일일 중단선에 반영되지 않는다.
+                    self._last_reconcile_at[ticker] = now_monotonic
+                    session = self._sessions[ticker]
+                    result = self.worker.reconcile(session)
+                    if result.position_quantity == 0:
+                        machine.state = LimitUpState.CLOSED
+                        machine.filled_quantity = 0
+                        session.state = LimitUpState.CLOSED.value
+                        self.repository.db.commit()
             commands = machine.on_timer(now_monotonic)
             self._handle_commands(ticker, commands, now_kst=wall)
 
@@ -418,24 +433,37 @@ class LimitUpService:
         """
         del ref_date
         liquidated: list[str] = []
-        for ticker in self.carried_tickers():
+        # EOD_TRIM(캡 미체결)뿐 아니라 LOCKED 도 대상이다. 장애·재시작으로 15:18 창을
+        # 놓치면 심사 자체를 못 받은 LOCKED 세션이 상한 적용 없이 익일로 넘어간다.
+        # 심사받지 않은 포지션은 오버나이트 자격이 없다 — fail-closed.
+        stranded = {LimitUpState.EOD_TRIM, LimitUpState.LOCKED}
+        candidates = sorted(
+            ticker
+            for ticker, machine in self._machines.items()
+            if machine.state in stranded and machine.filled_quantity > 0
+        )
+        for ticker in candidates:
             machine = self._machines[ticker]
-            if machine.state is not LimitUpState.EOD_TRIM:
-                continue
+            reason = (
+                "overnight_cap_unfilled"
+                if machine.state is LimitUpState.EOD_TRIM
+                else "eod_review_missed"
+            )
             session = self._sessions[ticker]
             machine.state = LimitUpState.RECONCILING
             self.repository.transition(
-                session,
-                state=LimitUpState.RECONCILING,
-                action="overnight_cap_unfilled",
+                session, state=LimitUpState.RECONCILING, action=reason
             )
             if self.mode is LimitUpMode.AUTOMATIC and self.worker is not None:
                 self.worker.cancel_open_exits(session)
-                self.worker.sell_actual_position(session, reason="overnight_cap_unfilled")
+                result = self.worker.sell_actual_position(session, reason=reason)
+                if result.position_quantity == 0:
+                    machine.state = LimitUpState.CLOSED
+                    machine.filled_quantity = 0
             else:
                 machine.state = LimitUpState.CLOSED
-                session.state = LimitUpState.CLOSED.value
-            session.end_reason = "overnight_cap_unfilled"
+            session.state = machine.state.value
+            session.end_reason = reason
             liquidated.append(ticker)
         self.repository.db.commit()
         return liquidated
@@ -451,10 +479,14 @@ class LimitUpService:
         if self.worker is None:
             return
         wall = now_kst or dt.datetime.now(dt.timezone(dt.timedelta(hours=9)))
+        # 기동일 세션만 복구하면, 익일 아침에 재시작했을 때 전일 오버나이트 보유가
+        # unknown_position 으로 밀려 08:59:30 청산 창(30초)에서도 빠진다. 미종료 세션은
+        # 날짜와 무관하게 전부 되살린다 — 방치된 포지션을 찾는 것이 이 함수의 목적이다.
         rows = (
             self.repository.db.query(LimitUpSession)
-            .filter(LimitUpSession.ref_date == ref_date)
+            .filter(LimitUpSession.ref_date <= ref_date)
             .filter(LimitUpSession.state != LimitUpState.CLOSED.value)
+            .order_by(LimitUpSession.ref_date)
             .all()
         )
         known = {row.ticker for row in rows}
@@ -553,11 +585,16 @@ class LimitUpService:
         )
 
     def overnight_tickers(self) -> list[str]:
-        """Return sessions that must submit the next opening-auction exit."""
+        """Return sessions that must submit the next opening-auction exit.
+
+        ``AFTER_HOURS_EXIT`` is included: an after-hours escape that never filled
+        still holds shares, and leaving it out would strand the position for
+        another whole day — the exact risk the escape existed to avoid.
+        """
         return sorted(
             ticker
             for ticker, machine in self._machines.items()
-            if machine.state is LimitUpState.OVERNIGHT
+            if machine.state in {LimitUpState.OVERNIGHT, LimitUpState.AFTER_HOURS_EXIT}
         )
 
     def sell_next_open(self, ticker: str) -> None:
@@ -690,7 +727,24 @@ class LimitUpService:
 
             if command.kind is CommandKind.CANCEL_BUYS:
                 if self.mode is LimitUpMode.AUTOMATIC and self.worker is not None:
-                    self.worker.cancel_pending_buys(session)
+                    result = self.worker.cancel_pending_buys(session)
+                    # 취소가 체결과 경합하면 "미체결" 로 닫은 세션에 실제 주식이 남는다.
+                    # 브로커가 정본이므로 그 수량을 보고 세션을 되살린다.
+                    if result.position_quantity > 0:
+                        machine.adopt_late_fill(
+                            at=self.monotonic_hint,
+                            cumulative_quantity=result.position_quantity,
+                        )
+                        if machine.state is LimitUpState.FILLED_WAIT_LOCK:
+                            session.state = machine.state.value
+                            self.repository.transition(
+                                session,
+                                state=LimitUpState.FILLED_WAIT_LOCK,
+                                action="late_fill_adopted",
+                                payload={"quantity": result.position_quantity},
+                            )
+                            self.repository.db.commit()
+                            continue
                 if machine.state is LimitUpState.LOCKED:
                     self.repository.transition(
                         session, state=LimitUpState.LOCKED, action="locked"
@@ -716,7 +770,15 @@ class LimitUpService:
                 transition = "HARD_STOP" if command.reason == "hard_stop" else "TIME_STOP"
                 self._dump_tape(ticker, transition)
                 if self.mode is LimitUpMode.AUTOMATIC and self.worker is not None:
-                    self.worker.sell_actual_position(session, reason=command.reason)
+                    result = self.worker.sell_actual_position(
+                        session, reason=command.reason
+                    )
+                    # 결과를 버리면 세션이 RECONCILING 에 영원히 남아 슬롯을 잡고,
+                    # 늦게 체결된 청산 손익이 NULL 로 남아 일일 중단선에 안 잡힌다.
+                    if result.position_quantity == 0:
+                        machine.state = LimitUpState.CLOSED
+                        machine.filled_quantity = 0
+                        session.end_reason = command.reason
                 else:
                     machine.state = LimitUpState.CLOSED
                     session.end_reason = command.reason

@@ -101,6 +101,28 @@ overnight_budget = (1,000,000 − max(0, 당일 실현손실)) / 0.30
 실패 유형이다 — CLAUDE.md 제약 8번 참고. 재연결은 지수 백오프(1초 → 최대 60초)이고
 연결에 성공하면 리셋한다.
 
+## 브로커가 정본이다 — 반환값을 버리지 말 것
+
+취소·청산 호출은 `ReconcileResult` 를 돌려주고 그 안의 `position_quantity` 가 **실제 보유**다.
+이걸 버리면 상태기계의 짐작이 현실과 어긋난다.
+
+| 지점 | 버렸을 때 |
+|---|---|
+| `CANCEL_BUYS` → `cancel_pending_buys()` | 취소와 경합한 부분체결이 `CLOSED` 뒤에 묻혀 **손절·폴백·EOD 어디에도 안 잡힌다**. `machine.adopt_late_fill()` 로 되살린다 |
+| `MARKET_SELL` → `sell_actual_position()` | 세션이 `RECONCILING` 에 영원히 남아 슬롯을 잡고, 늦은 청산 손익이 `NULL` 로 남아 **일일 중단선에 안 잡힌다** |
+
+청산은 제출 시점에 체결되지 않는 일이 흔하므로 `tick()` 이 `RECONCILING` 세션도 계속
+확인해 보유가 0 이 되면 `CLOSED` 로 닫는다.
+
+## 상태를 놓치면 포지션이 보호 밖으로 나간다
+
+| 경로 | 규칙 |
+|---|---|
+| 15:18 창 유실 | 15:28 `force_overnight_cap()` 이 `EOD_TRIM` 뿐 아니라 **`LOCKED` 도** 청산한다(`eod_review_missed`). 심사받지 않은 포지션은 오버나이트 자격이 없다 |
+| 익일 재시작 | `recover()` 는 `ref_date <= 오늘` 의 **모든 미종료 세션**을 되살린다. 기동일만 보면 전일 오버나이트가 `unknown_position` 으로 밀려 08:59:30 청산 창(30초)에서 빠진다 |
+| 시간외 탈출 미체결 | `AFTER_HOURS_EXIT` 도 `overnight_tickers()` 에 포함된다. 빼면 보유분이 하루 더 방치된다 |
+| 웹소켓 재연결 | `_subscribed` 는 **연결 단위**다. 연결 성공 시 `clear()` 하지 않으면 재구독을 건너뛰는데 `_feed_connected=True` 라 REST 폴백까지 멈춘다 — 연결은 정상처럼 보이면서 시세 보호가 완전히 없어진다 |
+
 ## 청산 원장 — `exit_order_ids`
 
 세션은 청산을 **한 번 이상** 한다(EOD 트림 → 잔여 청산). 브로커의 당일 주문 결과에는
@@ -113,6 +135,9 @@ overnight_budget = (1,000,000 − max(0, 당일 실현손실)) / 0.30
   일일 한도에서 조용히 사라진다.
 - 정산은 `reconcile()` 이 이미 부르는 `get_daily_order_results()` 스냅샷을 재사용한다 —
   브로커 호출이 늘지 않는다.
+- **비교 전에 `raw_broker_order_id()` 로 정규화한다.** 감사 ID(`kis:...`)와 브로커 원주문
+  ID 는 KIS 에서 절대 같지 않다. MockBroker 는 둘이 같아 **테스트가 이 불일치를 구조적으로
+  못 잡는다** — 실제로 이 자리에서 버그가 났다.
 
 ## 멱등 — 같은 이름을 두 번 쓰지 말 것
 

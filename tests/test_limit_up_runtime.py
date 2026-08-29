@@ -109,3 +109,49 @@ def test_engine_hours_cover_both_daily_action_windows() -> None:
     assert engine_active_at(dt.datetime(2026, 8, 28, 8, 59, 30, tzinfo=KST))
     assert engine_active_at(dt.datetime(2026, 8, 28, 15, 18, tzinfo=KST))
     assert engine_active_at(dt.datetime(2026, 8, 28, 15, 28, tzinfo=KST))
+
+
+async def test_reconnect_clears_subscriptions_so_tickers_resubscribe() -> None:
+    """Per-process subscription memory silently kills the feed after a reconnect.
+
+    Worse than a plain outage: _feed_connected goes True, so the REST fallback
+    stops too and the position is left with no price protection at all.
+    """
+    from maps.limit_up.runtime import KISIntradayRuntime
+
+    runtime = object.__new__(KISIntradayRuntime)
+    runtime._subscribed = {"005930"}
+    sent: list[str] = []
+
+    class _Socket:
+        async def send(self, payload: str) -> None:
+            sent.append(payload)
+
+    socket = _Socket()
+
+    # already-subscribed ticker is skipped while the connection lives
+    await runtime._subscribe(socket, "key", "005930")
+    assert sent == []
+
+    # a new connection must forget what the old one had subscribed
+    runtime._subscribed.clear()
+    await runtime._subscribe(socket, "key", "005930")
+
+    assert len(sent) == 2  # trade + quote streams
+    assert "005930" in runtime._subscribed
+
+
+def test_websocket_loop_actually_clears_subscriptions_on_connect() -> None:
+    """The resubscribe fix is only real if the connect path clears the set.
+
+    Same guard style as the liquidity cap's shared-implementation test: the
+    behaviour above can pass while the loop never calls clear().
+    """
+    import inspect
+
+    from maps.limit_up.runtime import KISIntradayRuntime
+
+    source = inspect.getsource(KISIntradayRuntime._websocket_loop)
+    assert "self._subscribed.clear()" in source
+    # and it must happen before the socket is served, not after
+    assert source.index("self._subscribed.clear()") < source.index("_serve_socket")

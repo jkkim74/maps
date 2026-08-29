@@ -433,3 +433,110 @@ def test_unfilled_trim_gives_up_the_carry_instead_of_breaching_the_cap(db) -> No
     _, final = broker.orders[-1]
     assert (final.side, final.quantity) == (OrderSide.SELL, 40)
     assert service._sessions["005930"].end_reason == "overnight_cap_unfilled"
+
+
+def test_fill_racing_a_cancel_keeps_the_session_protected(db) -> None:
+    """Closing as unfilled while shares exist drops them out of every guard.
+
+    A cancel racing a fill leaves real stock behind a CLOSED session — no hard
+    stop, no REST fallback, no EOD review would ever look at it again.
+    """
+    broker = ServiceBroker()
+    service = _service(db, LimitUpMode.AUTOMATIC, broker)
+    now = dt.datetime(2026, 8, 28, 10, 0, tzinfo=KST)
+    service.watch_candidate(_candidate(), now_kst=now)
+    service.on_trade(_trade(1.0, 99_600), now_kst=now)
+    service.on_trade(_trade(2.0, 99_700), now_kst=now)
+    service.on_trade(_trade(3.0, 99_800), now_kst=now)
+    machine = service.machine("005930")
+    assert machine.state is LimitUpState.NET_OPEN
+
+    # the broker reports a position that landed just before the cancel
+    broker.positions["005930"] = Position("005930", 12, 98_800.0)
+    service.tick(now_monotonic=200.0, now_kst=now)  # no_fill_timeout -> CANCEL_BUYS
+
+    assert machine.state is LimitUpState.FILLED_WAIT_LOCK
+    assert machine.filled_quantity == 12
+    assert "005930" in service.held_tickers()
+
+
+def test_completed_exit_leaves_reconciling(db) -> None:
+    """A session stuck in RECONCILING holds a slot and never books its P/L."""
+    broker = ServiceBroker()
+    service = _service(db, LimitUpMode.AUTOMATIC, broker)
+    now = dt.datetime(2026, 8, 28, 10, 0, tzinfo=KST)
+    service.watch_candidate(_candidate(), now_kst=now)
+    machine = service.machine("005930")
+    machine.fire_net(at=1.0)
+    machine.on_fill(at=2.0, cumulative_quantity=20)
+    broker.positions["005930"] = Position("005930", 20, 98_000.0)
+
+    # hard stop submits the exit, but the broker has not filled it yet
+    service.on_trade(_trade(3.0, 90_000), now_kst=now)
+    assert machine.state is LimitUpState.RECONCILING
+
+    # the fill lands later; the periodic reconcile must notice and close out
+    broker.positions.pop("005930")
+    service.tick(now_monotonic=100.0, now_kst=now)
+
+    assert machine.state is LimitUpState.CLOSED
+    assert service._active_count() == 0
+
+
+def test_missed_eod_review_liquidates_instead_of_carrying_overnight(db) -> None:
+    """Restarting through 15:18-15:20 must not hand an unreviewed position to tomorrow."""
+    broker = ServiceBroker()
+    service = _service(db, LimitUpMode.AUTOMATIC, broker)
+    now = dt.datetime(2026, 8, 28, 10, 0, tzinfo=KST)
+    service.watch_candidate(_candidate(), now_kst=now)
+    broker.positions["005930"] = Position("005930", 40, 98_000.0)
+    machine = service.machine("005930")
+    machine.fire_net(at=1.0)
+    machine.on_fill(at=2.0, cumulative_quantity=40)
+    machine.state = LimitUpState.LOCKED  # 15:18 review never ran
+
+    # 15:25 sees nothing to confirm, because the cap never trimmed anything
+    assert service.confirm_overnight_cap(ref_date=dt.date(2026, 8, 28)) == []
+    liquidated = service.force_overnight_cap(ref_date=dt.date(2026, 8, 28))
+
+    assert liquidated == ["005930"]
+    assert service._sessions["005930"].end_reason == "eod_review_missed"
+    _, sell = broker.orders[-1]
+    assert (sell.side, sell.quantity) == (OrderSide.SELL, 40)
+
+
+def test_recovery_reaches_yesterdays_overnight_position(db) -> None:
+    """A morning restart must not orphan the carry before the 30s exit window."""
+    broker = ServiceBroker()
+    broker.positions["005930"] = Position("005930", 20, 98_000.0)
+    service = _service(db, LimitUpMode.AUTOMATIC, broker)
+    carried = service.repository.create_or_get_session(
+        ref_date=dt.date(2026, 8, 28),
+        ticker="005930",
+        market="KOSPI",
+        upper_limit_price=100_000,
+        trigger_price=99_700,
+        total_listed_shares=10_000_000,
+    )
+    carried.state = LimitUpState.OVERNIGHT.value
+    db.commit()
+
+    # restarted the next morning
+    service.recover(ref_date=dt.date(2026, 8, 31), now_monotonic=100.0)
+
+    assert service.unknown_positions == []
+    assert service.status()["manual_lock"] is False
+    assert service.overnight_tickers() == ["005930"]
+
+
+def test_failed_after_hours_escape_still_exits_at_the_next_open(db) -> None:
+    """An unfilled after-hours order holds shares; leaving it out strands them a day."""
+    broker = ServiceBroker()
+    service = _service(db, LimitUpMode.AUTOMATIC, broker)
+    now = dt.datetime(2026, 8, 28, 10, 0, tzinfo=KST)
+    service.watch_candidate(_candidate(), now_kst=now)
+    machine = service.machine("005930")
+    machine.on_fill(at=1.0, cumulative_quantity=20)
+    machine.state = LimitUpState.AFTER_HOURS_EXIT
+
+    assert service.overnight_tickers() == ["005930"]
