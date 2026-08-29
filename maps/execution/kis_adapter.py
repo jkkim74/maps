@@ -123,6 +123,29 @@ _BALANCE_CACHE: dict[tuple[str, str, str, bool], tuple[float, dict[str, Any]]] =
 _BALANCE_CACHE_LOCK = threading.Lock()
 
 
+def _quote_is_halted(quote: dict[str, Any]) -> bool:
+    """Return whether an inquire-price payload reports a halted or flagged stock.
+
+    KIS spells this differently across endpoints, so every known spelling is
+    checked. An unknown payload reads as "not halted", which is the behaviour
+    that already exists — this only ever tightens the gate.
+
+    Args:
+        quote: ``output`` object from inquire-price.
+
+    Returns:
+        ``True`` when the stock is suspended or under a volatility interruption.
+    """
+    for key in ("temp_stop_yn", "tr_stop_yn", "trht_yn"):
+        if str(quote.get(key) or "").strip().upper() == "Y":
+            return True
+    # 종목상태구분코드: 정상(00) 외에는 관리·경고·정지 등 비정상이다.
+    status = str(
+        quote.get("iscd_stat_cls_code") or quote.get("iscd_stat_cls_cd") or ""
+    ).strip()
+    return bool(status) and status not in {"00", "55"}
+
+
 class KISAdapter(BrokerAdapter):
     """KIS domestic-stock REST broker adapter."""
 
@@ -373,6 +396,9 @@ class KISAdapter(BrokerAdapter):
                     ),
                     "upper_limit_price": upper,
                     "total_listed_shares": listed,
+                    # 거래정지·VI 여부는 이미 이 inquire-price 응답에 들어 있다.
+                    # 담지 않으면 스캐너의 정지 게이트가 늘 False 를 읽는 죽은 코드가 된다.
+                    "trading_halted": _quote_is_halted(quote),
                 }
             )
         return candidates

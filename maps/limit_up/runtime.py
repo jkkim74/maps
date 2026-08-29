@@ -56,7 +56,7 @@ def subscription_payload(approval_key: str, tr_id: str, ticker: str) -> str:
 # 엔진이 실제로 일하는 시간대. 08:59:30 익일 시가 청산과 15:18~15:28 오버나이트 심사를
 # 모두 감싼다. 이 밖에서는 브로커를 부르지 않는다 — 24시간 도는 폴링은 그 자체로 사고다.
 _ENGINE_OPEN = dt.time(8, 50)
-_ENGINE_CLOSE = dt.time(15, 35)
+_ENGINE_CLOSE = dt.time(15, 40)
 _IDLE_SLEEP_SECONDS = 30.0
 # 보호 작업(타이머·지수 래치·피드 상실·EOD 청산)이 진입 작업보다 먼저 실행된다.
 _PRIORITY_HIGH = 0
@@ -648,10 +648,7 @@ class KISIntradayRuntime:
 
     def _apply_settings(self, mode: str, min_turnover_krw: int) -> None:
         """Apply settings on the serialized worker, never a FastAPI thread."""
-        self.service.mode = LimitUpMode(mode)
-        if self.service.mode is LimitUpMode.AUTOMATIC and self.service.worker:
-            # 관리자가 automatic 으로 올리면 청산 실행 능력도 함께 열린다.
-            self.service._orders_enabled = True
+        self.service.set_mode(LimitUpMode(mode))
         self.service.config = LimitUpConfig(
             min_turnover_krw=min_turnover_krw,
             min_execution_strength=self.service.config.min_execution_strength,
@@ -665,8 +662,14 @@ class KISIntradayRuntime:
         """Run the 15:18-15:28 overnight review and next-day 08:59:30 exits."""
         clock = wall.time().replace(tzinfo=None)
         stage = eod_stage(clock)
-        if stage == "cap":
-            for ticker in self.service.locked_tickers():
+        # 하한선이므로 늦은 단계로 들어와도 **앞 단계를 먼저 치른다**. 등가 비교로 두면
+        # 15:26 재시작이 트림을 아예 건너뛰고, confirm 은 EOD_TRIM 만 보므로 조용히
+        # 0건을 보고한다 — "늦더라도 실행" 계약이 깨진다.
+        if stage in {"cap", "confirm", "force"}:
+            locked = await self._call_service(
+                self.service.locked_tickers, priority=_PRIORITY_HIGH
+            )
+            for ticker in locked:
                 key = (wall.date(), ticker)
                 if key in self._eod_reviewed:
                     continue
@@ -682,14 +685,15 @@ class KISIntradayRuntime:
                     priority=_PRIORITY_HIGH,
                 )
                 self._eod_reviewed.add(key)
-            if wall.date() not in self._overnight_capped:
-                await self._call_service(
+            # 날짜 단위로 래치하면 15:18 이후에 LOCKED→OVERNIGHT 로 넘어온 세션이
+            # 사이징 상한을 한 번도 못 받고 익일로 간다. 캡은 멱등하므로 매 회차 돌린다.
+            await self._call_service(
                 self.service.apply_overnight_cap,
                 ref_date=wall.date(),
                 priority=_PRIORITY_HIGH,
             )
-                self._overnight_capped.add(wall.date())
-        if stage == "confirm" and wall.date() not in self._overnight_confirmed:
+            self._overnight_capped.add(wall.date())
+        if stage in {"confirm", "force"} and wall.date() not in self._overnight_confirmed:
             await self._call_service(
                 self.service.confirm_overnight_cap,
                 ref_date=wall.date(),
@@ -707,7 +711,12 @@ class KISIntradayRuntime:
         # 전일 오버나이트 보유를 그대로 들고 하루를 보낸다.
         # before= 가 없으면 15:18 에 막 넘긴 당일 세션을 같은 패스가 곧바로 팔아버린다.
         if clock >= dt.time(8, 59, 30):
-            for ticker in self.service.overnight_tickers(before=wall.date()):
+            due = await self._call_service(
+                self.service.overnight_tickers,
+                before=wall.date(),
+                priority=_PRIORITY_HIGH,
+            )
+            for ticker in due:
                 key = (wall.date(), ticker)
                 if key in self._opening_submitted:
                     continue

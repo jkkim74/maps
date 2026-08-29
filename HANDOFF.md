@@ -47,14 +47,29 @@ P0 3건은 **`MockBroker` 가 감사 ID 와 브로커 원주문 ID 를 동일하
 
 검증: 전체 **1,124 passed** (신규 24건).
 
-### 🔴 이번 범위 밖 — 다음 회차 필수
+### ✅ P1 9건도 이어서 수정 (8/30)
 
-P1 10건 + 제약 위반 4건이 남았다. 상세 설계는 계획 파일
-`~/.claude/plans/graceful-percolating-micali.md` 에 있다.
-특히: `open_order_ids` 계좌 전체 오염, EOD 단계 `stage == "cap"` 등가 비교,
-`trading_halted` 죽은 코드, `_settle_realized_pnl` 의 `avg_price=0` 전액손실 기록,
-**하드스톱이 `effective_stop_price()` 를 안 쓰는 루트 CLAUDE.md 제약 7 위반**,
-`trigger_price` 호가단위 3배 오차.
+| 원인 | 결함 | 조치 |
+|---|---|---|
+| C | `open_order_ids` 가 계좌 전체 → 무관한 주문 하나로 정체청산 재제출이 영영 억제 | ✅ 세션 티커로 필터 |
+| G | `stage == "cap"` 등가 비교 → 15:26 재시작이 트림을 **아예 미실행** | ✅ `stage in {cap, confirm, force}` 로 앞 단계를 먼저 치른다 |
+| G | `engine_active_at` 15:35 종료 → 15:36 재시작이면 강제청산 자체가 안 돎 | ✅ 15:40 으로 확대 |
+| G | `apply_overnight_cap` 하루 1회 래치 → 래치 후 OVERNIGHT 도달 세션이 **상한 미적용** | ✅ 멱등이므로 매 회차 실행 |
+| G | `trading_halted` 를 아무도 생산 안 함 → VI·거래정지 게이트가 **죽은 코드** | ✅ `_quote_is_halted()` 로 inquire-price 응답에서 생산 |
+| H | `overnight_tickers`·`locked_tickers` 를 이벤트 루프에서 직접 호출 | ✅ 펌프 경유 |
+| H | `avg_price=0` 체결을 **전액 손실**로 장부에 기록 | ✅ 건너뛰고 경고 — 계약대로 "모르는 것은 손실이 아니다" |
+| H | `_orders_enabled` 를 runtime 이 외부에서 대입 | ✅ `service.set_mode()` 로 캡슐화 |
+| H | 시간외 한 종목 실패가 그 회차 전체를 중단 + 첫 회차 거래량 가드 무력 | ✅ 종목별 예외 격리, 첫 회차는 기준선만 잡는다 |
+| H | API `emergency_off()` 가 하드코딩 응답 → 이후 status 와 불일치 | ✅ 실제 상태 반환 |
+
+검증: 전체 **1,129 passed**.
+
+### 🔴 남은 것 — 제약 위반 4건
+
+`trigger_price` 호가단위 3배 오차, **하드스톱이 `effective_stop_price()` 를 안 쓰는
+루트 CLAUDE.md 제약 7 위반**, `fire_grid(daily_pnl_ratio=0.0)` 고정,
+문서 드리프트 4건. 상세는 계획 파일
+`~/.claude/plans/graceful-percolating-micali.md` Phase 3.
 
 **`automatic` 전환은 이것들 + 재검토 이후로 미룬다.**
 

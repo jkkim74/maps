@@ -49,9 +49,12 @@ def emergency_off() -> LimitUpStatusResponse:
     kill switch never strands a holding without a way out.
     """
     runtime = bootstrap.get_runtime()
-    if runtime is not None:
-        runtime.emergency_off()
-    return LimitUpStatusResponse(**_STOPPED)
+    if runtime is None:
+        return LimitUpStatusResponse(**_STOPPED)
+    runtime.emergency_off()
+    # 하드코딩된 _STOPPED 를 돌려주면 곧이어 GET /status 를 본 운영자가 값이 달라진 것을
+    # 보고 "비상정지가 풀렸다" 고 읽는다. 실제 상태를 그대로 준다.
+    return LimitUpStatusResponse(**{**_STOPPED, **runtime.service.status()})
 
 
 @router.put("/settings", response_model=LimitUpStatusResponse)

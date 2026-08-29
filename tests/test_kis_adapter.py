@@ -278,6 +278,7 @@ def test_limit_up_candidate_scan_uses_rank_then_broker_quote(
             "execution_strength": 151.5,
             "upper_limit_price": 100_000,
             "total_listed_shares": 10_000_000,
+            "trading_halted": False,
         }
     ]
     assert calls == [
@@ -660,3 +661,15 @@ def test_kis_error_is_mapped(settings: MapsSettings) -> None:
 
     assert "APBK0919" in str(exc_info.value)
     assert "Insufficient" in str(exc_info.value)
+
+
+def test_halted_and_flagged_stocks_are_marked_for_the_scanner() -> None:
+    """The suspension gate reads this key; without it the gate is dead code."""
+    from maps.execution.kis_adapter import _quote_is_halted
+
+    assert _quote_is_halted({"temp_stop_yn": "Y"})
+    assert _quote_is_halted({"trht_yn": "Y"})
+    assert _quote_is_halted({"iscd_stat_cls_code": "51"})  # 관리종목
+    assert not _quote_is_halted({"temp_stop_yn": "N", "iscd_stat_cls_code": "00"})
+    # 알 수 없는 응답은 기존 동작(정지 아님)을 유지한다 — 게이트를 조이기만 한다
+    assert not _quote_is_halted({})

@@ -347,3 +347,47 @@ def test_a_failed_cancel_is_reported_so_no_sell_is_stacked_on_it(db) -> None:
 
     assert result.stranded == 1
     assert not result.is_clear
+
+
+def test_reconcile_reports_only_this_tickers_open_orders(db) -> None:
+    """Account-wide ids made tick()'s "no open order" retry condition unreachable."""
+    broker = ScriptedBroker()
+    worker, session = _worker(db, broker)
+    broker.open_orders = [
+        PendingOrder(
+            order_id="5001", ticker="000660", side=OrderSide.SELL,
+            quantity=5, remaining_quantity=5, order_price=50_000,
+        ),
+        PendingOrder(
+            order_id="5002", ticker="005930", side=OrderSide.BUY,
+            quantity=5, remaining_quantity=5, order_price=98_800,
+        ),
+    ]
+
+    result = worker.reconcile(session)
+
+    assert result.open_order_ids == ("5002",)
+
+
+def test_a_fill_without_an_average_price_is_not_booked_as_a_total_loss(db) -> None:
+    """avg_price=0 x quantity booked the whole entry as loss, latching the day stop."""
+    broker = ScriptedBroker()
+    worker, session = _filled_grid(db, broker)
+    broker.daily_results.append(
+        OrderResult(
+            order_id="1003",
+            strategy_id="limit_up_v1:exit:stop",
+            ticker="005930",
+            side=OrderSide.SELL,
+            status=OrderStatus.FILLED,
+            filled_quantity=20,
+            avg_price=0.0,  # KIS 가 평균가를 아직 안 채웠다
+        )
+    )
+    session.exit_order_ids = "1003"
+    db.commit()
+
+    worker.reconcile(session)
+
+    assert session.realized_pnl is None
+    assert not (session.realized_pnl_by_date or {})

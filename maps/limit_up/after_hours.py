@@ -83,9 +83,11 @@ def after_hours_verdict(
     """
     if close_price <= 0 or quote.price <= 0 or quote.cumulative_volume < 0:
         return AfterHoursVerdict.BAD_DATA
-    if previous_volume is not None and quote.cumulative_volume <= previous_volume:
+    if previous_volume is None:
+        # 첫 회차에는 비교 기준이 없다. KIS acml_vol 은 당일 전체 누적이라 항상 양수라서
+        # "0 이면 스킵" 만으로는 거래량 가드가 성립하지 않는다 — 기준선만 잡고 판정은 미룬다.
         return AfterHoursVerdict.NO_NEW_TRADE
-    if quote.cumulative_volume <= 0:
+    if quote.cumulative_volume <= previous_volume:
         return AfterHoursVerdict.NO_NEW_TRADE
     if quote.price <= close_price * (1.0 - drop_pct):
         return AfterHoursVerdict.EXIT
@@ -169,8 +171,12 @@ def run_after_hours_watch(
                 )
             continue
 
-        if _submit_after_hours_exit(session, broker, order_manager, repository):
-            counters["exited"] += 1
+        try:
+            if _submit_after_hours_exit(session, broker, order_manager, repository):
+                counters["exited"] += 1
+        except Exception:  # noqa: BLE001 - 한 종목 실패가 남은 캐리를 막으면 안 된다
+            counters["errors"] += 1
+            logger.exception("시간외 탈출 제출 실패 [%s]", session.ticker)
 
     db.commit()
     return counters

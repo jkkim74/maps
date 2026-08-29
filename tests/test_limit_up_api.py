@@ -19,7 +19,7 @@ class FakeRuntime:
     def status(self) -> dict:
         """Return a service-compatible status payload."""
         return {
-            "mode": "automatic",
+            "mode": self.mode,
             "attempts": 1,
             "pattern_failures": 0,
             "entry_halted": False,
@@ -30,8 +30,11 @@ class FakeRuntime:
         }
 
     def emergency_off(self) -> None:
-        """Record one immediate entry shutdown."""
+        """Record one immediate entry shutdown and reflect it in status."""
         self.off_calls += 1
+        self.mode = "off"
+
+    mode = "automatic"
 
 
 def test_limit_up_status_and_emergency_off_are_admin_controls(monkeypatch) -> None:

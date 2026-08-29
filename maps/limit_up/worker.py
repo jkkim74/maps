@@ -217,7 +217,13 @@ class LimitUpCommandWorker:
         self.repository.db.commit()
         return ReconcileResult(
             position_quantity=position.quantity if position else 0,
-            open_order_ids=tuple(sorted(open_by_id)),
+            # 이 세션의 티커로 좁힌다. 계좌 전체를 담으면 무관한 주문 하나 때문에
+            # tick() 의 "열린 주문이 없다" 재제출 조건이 영영 성립하지 않는다.
+            open_order_ids=tuple(sorted(
+                raw_id
+                for raw_id, order in open_by_id.items()
+                if order.ticker == session.ticker
+            )),
             filled_quantity=sum(leg.filled_quantity for leg in self.legs(session)),
         )
 
@@ -320,6 +326,15 @@ class LimitUpCommandWorker:
                 continue
             result = result_by_id.get(raw_broker_order_id(order_id))
             if result is None or result.filled_quantity <= 0:
+                continue
+            if result.avg_price <= 0:
+                # 방금 보고된 체결은 평균가가 비어 올 수 있다. 0 으로 곱하면 진입금액
+                # 전액이 손실로 기록돼 일일 중단선이 걸리고 오버나이트 예산이 0 이 된다.
+                # 이 함수의 계약대로 "가격을 모르는 체결" 은 장부에 올리지 않는다.
+                logger.warning(
+                    "체결 평균가 미확정 [%s] id=%s qty=%s — 손익 반영을 미룬다",
+                    session.ticker, order_id, result.filled_quantity,
+                )
                 continue
             day = (result.filled_at or result.submitted_at).date().isoformat()
             quantity, amount = by_day.get(day, (0, 0.0))

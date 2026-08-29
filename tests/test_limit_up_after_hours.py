@@ -40,6 +40,10 @@ def test_no_new_trade_never_reaches_the_price_comparison() -> None:
     assert _verdict(price=0, volume=0) is AfterHoursVerdict.BAD_DATA
     assert _verdict(price=100_000, volume=0) is AfterHoursVerdict.NO_NEW_TRADE
 
+    # 첫 회차는 비교 기준이 없다 — KIS acml_vol 은 당일 누적이라 항상 양수라서
+    # "0 이면 스킵" 으로는 가드가 성립하지 않는다. 기준선만 잡고 판정은 미룬다.
+    assert _verdict(price=50_000, volume=9_999, previous=None) is AfterHoursVerdict.NO_NEW_TRADE
+
     # a counter that did not advance means nothing traded this round
     assert _verdict(price=50_000, volume=1_000, previous=1_000) is AfterHoursVerdict.NO_NEW_TRADE
     assert _verdict(price=50_000, volume=1_000, previous=1_200) is AfterHoursVerdict.NO_NEW_TRADE
@@ -106,9 +110,18 @@ def _carried_session(db, *, held: int = 20, close: int = 100_000):
     return broker, session, manager, submitted
 
 
+def _baseline_round(db, broker, manager) -> None:
+    """Run the first poll, which only records the volume high-water mark."""
+    broker.set_after_hours_volume("005930", 1_000)
+    run_after_hours_watch(
+        db, broker, manager, ref_date=dt.date(2026, 8, 28), drop_pct=0.02
+    )
+
+
 def test_collapse_submits_one_full_floor_priced_exit(db) -> None:
     """A break in after-hours makes the next-day gap-down near certain."""
     broker, session, manager, submitted = _carried_session(db)
+    _baseline_round(db, broker, manager)
     broker.set_price("005930", 97_000)
     broker.set_after_hours_volume("005930", 5_000)
 
@@ -188,6 +201,7 @@ def _pin_position(broker: MockBroker, ticker: str, quantity: int) -> None:
 def test_a_still_open_exit_is_not_submitted_twice(db) -> None:
     """The order carries across rounds; re-sending it would double the sell."""
     broker, session, manager, submitted = _carried_session(db)
+    _baseline_round(db, broker, manager)
     _pin_position(broker, "005930", 20)
     broker.set_price("005930", 97_000)
     broker.set_after_hours_volume("005930", 5_000)
@@ -222,6 +236,7 @@ def test_a_vanished_exit_is_reported_loudly_instead_of_resubmitted(db, caplog) -
     venue behaviour is confirmed this stays a loud alert rather than a guess.
     """
     broker, session, manager, submitted = _carried_session(db)
+    _baseline_round(db, broker, manager)
     _pin_position(broker, "005930", 20)
     broker.set_price("005930", 97_000)
     broker.set_after_hours_volume("005930", 5_000)
@@ -248,6 +263,7 @@ def test_kis_style_audit_ids_are_normalized_before_the_open_order_check(db) -> N
     could not catch this.
     """
     broker, session, manager, submitted = _carried_session(db)
+    _baseline_round(db, broker, manager)
     _pin_position(broker, "005930", 20)
     broker.set_price("005930", 97_000)
     broker.set_after_hours_volume("005930", 5_000)

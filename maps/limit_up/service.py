@@ -401,6 +401,21 @@ class LimitUpService:
         )
         return True
 
+    def set_mode(self, mode: LimitUpMode) -> None:
+        """Change the entry policy, opening order capability when it rises.
+
+        The rule lives here, not in the runtime: splitting it across two modules
+        is how the two halves drift apart. Capability is never lowered — an
+        existing position must stay sellable after a downgrade, for the same
+        reason ``emergency_off()`` leaves it alone.
+
+        Args:
+            mode: New execution mode.
+        """
+        self.mode = mode
+        if mode is LimitUpMode.AUTOMATIC and self.worker is not None:
+            self._orders_enabled = True
+
     def exits_are_live(self) -> bool:
         """Return whether protective orders can still reach the broker.
 

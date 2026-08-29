@@ -109,7 +109,9 @@ def test_engine_is_idle_outside_trading_hours_and_days() -> None:
 
     # weekday, but outside engine hours
     assert not engine_active_at(dt.datetime(2026, 8, 28, 8, 49, 59, tzinfo=KST))
-    assert not engine_active_at(dt.datetime(2026, 8, 28, 15, 35, 1, tzinfo=KST))
+    assert engine_active_at(dt.datetime(2026, 8, 28, 15, 35, tzinfo=KST))
+    # 15:28 강제청산이 늦게 들어와도 처리할 여유를 둔다
+    assert not engine_active_at(dt.datetime(2026, 8, 28, 15, 40, 1, tzinfo=KST))
     assert not engine_active_at(dt.datetime(2026, 8, 28, 22, 0, tzinfo=KST))
 
 
@@ -326,3 +328,34 @@ async def test_reading_the_next_frame_does_not_wait_for_the_previous_one() -> No
     pump.cancel()
 
     assert len(applied) == 2
+
+
+def test_late_arrival_still_runs_the_earlier_eod_stages() -> None:
+    """Stages are deadlines: entering at 15:26 must not skip the trim entirely.
+
+    ``confirm`` only looks at EOD_TRIM sessions, so a skipped cap reports zero
+    and the carry goes overnight with no sizing applied.
+    """
+    import inspect
+
+    from maps.limit_up.runtime import KISIntradayRuntime
+
+    source = inspect.getsource(KISIntradayRuntime._run_daily_actions)
+    assert 'if stage in {"cap", "confirm", "force"}:' in source
+    assert 'if stage in {"confirm", "force"}' in source
+
+
+def test_overnight_cap_is_not_latched_to_one_pass() -> None:
+    """A session reaching OVERNIGHT after 15:18 must still get sized.
+
+    ``force_overnight_cap`` excludes OVERNIGHT from its stranded set, so a
+    once-per-day cap leaves that carry with no limit at all.
+    """
+    import inspect
+
+    from maps.limit_up.runtime import KISIntradayRuntime
+
+    source = inspect.getsource(KISIntradayRuntime._run_daily_actions)
+    cap_call = source[source.index("apply_overnight_cap")::]
+    assert "if wall.date() not in self._overnight_capped" not in source[:source.index("apply_overnight_cap")][-300:]
+    assert cap_call  # 캡은 매 회차 멱등하게 돈다
