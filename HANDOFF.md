@@ -1,14 +1,14 @@
 # HANDOFF
 
-## 8/29 상한가 V1 위험 통제 완성·엔진 배선 — ✅ master 병합, 🟡 실검증 3건 미완
+## 8/29 상한가 V1 위험 통제 완성·배포·기동 — ✅ 운영 `recommend_only` 가동 중, 🟡 실검증 3건 미완
 
 8/28 절이 "설계까지"로 남겨 둔 오버나이트 위험 통제를 구현하고, 확정 요구인데 **죽어
 있던 −30만원 일일 중단선을 배선**했다. 시간외 감시·관리자 API·엔진 기동까지 붙여
 `master` 에 병합했다. 정본 설계서는 `docs/superpowers/specs/2026-08-28-limit-up-overnight-risk-design.md`
 이고 구현 상태를 절마다 반영해 뒀다. 패키지 계약은 새로 쓴 `maps/limit_up/CLAUDE.md` 가 정본이다.
 
-> **운영 동작 변화 0.** `MAPS_LIMIT_UP_ENABLED` 가 서버 `.env` 에 없으므로 기본 `false` —
-> 엔진이 뜨지 않는다. 다만 **배포 시 `alembic upgrade head` 필수**(운영 `0028` → `0029`).
+> ✅ **운영 배포·기동 완료** — 아래 ⑤절 참고. 운영 HEAD `957fee2`, alembic `0029`,
+> 엔진은 `recommend_only` 로 가동 중이다(주문 없음).
 
 ### ① −30만원 일일 중단선 — 호출부가 아예 없었다
 
@@ -105,6 +105,47 @@ alembic head `0029_limit_up_v1`(운영 미적용), `compileall` OK.
 > 원래 추적되지 않는다(커밋 이력 0건). 새 변수 5개 설명은 로컬 파일과
 > `docs/OPERATIONS_CONFIG.md`(추적됨)에 있다. CLAUDE.md 가 `Copy-Item .env.example .env` 를
 > 안내하는데 저장소엔 없다는 기존 불일치가 남아 있다.
+
+### ⑤ 운영 배포·기동 — `recommend_only` 로 켰다
+
+| 항목 | 값 |
+|---|---|
+| 운영 HEAD | `957fee2` (`5abe150` 에서 올라옴) |
+| alembic | `0029_limit_up_v1` 적용 완료 (Postgres 실물 확인) |
+| 엔진 | `MAPS_LIMIT_UP_ENABLED=true`, `MAPS_LIMIT_UP_MODE=recommend_only` |
+| `.env` 백업 | `/opt/maps/.env.bak.20260829_134504` |
+
+`limit_up_session/order_leg/event/tape` 4개 테이블과 신규 컬럼
+(`realized_pnl`, `exit_order_ids`, `after_hours_volume`) 생성을 실물 조회로 확인했다.
+기동 로그: `=== 상한가 V1 기동: mode=recommend_only ===`.
+
+**주문은 나가지 않는다.** 주문 경로 12곳이 전부 `mode is AUTOMATIC` 에 막혀 있고,
+세션·신호만 `limit_up_*` 테이블에 쌓인다.
+
+### 🔴 켜기 직전에 막은 결함 — 두 루프에 시간 게이트가 없었다
+
+`_control_loop` 과 `_websocket_loop` 어디에도 거래일·장중 판정이 없었다. 그대로 켰다면
+주말 내내 **초당 코스닥 지수 조회 + 5초마다 후보 스캔** 을 돌리고, 웹소켓 실패 시
+**1초 간격으로 인증 API 를 무한 재시도**했을 것이다. CLAUDE.md 제약 8번에 기록된
+2026-07-27 사고(재로그인 누적으로 KRX 계정 잠금, 하루 158회)와 **같은 실패 유형**이다.
+
+`runtime.engine_active_at()`(KRX 거래일 && 08:50~15:35) + 지수 백오프(1초 → 최대 60초,
+연결 성공 시 리셋)로 고쳐 배포했다(`957fee2`). 두 일일 작업 창(08:59:30 익일 시가 청산,
+15:18~15:28 오버나이트 심사)은 모두 이 시간대 안에 있다.
+
+**기동 후 3분 실측(토요일)**: CPU 8.1% → **1.3%**, WebSocket·지수 호출 로그 **0건**,
+에러 **0건**. 게이트가 실제로 작동한다. **월요일 08:50 에 자동으로 깨어난다.**
+
+> 📌 **월요일 08:50 이후 확인할 것**
+> - `sudo journalctl -u maps -f | grep -i limit` — 웹소켓 연결·스캔 시작 여부
+> - `GET /api/v1/limit-up/status` — 세션 상태와 가드 래치
+> - 이상 시 `POST /api/v1/limit-up/emergency-off` 또는 `.env` 에서
+>   `MAPS_LIMIT_UP_ENABLED=false` 후 재시작
+
+> 🟡 **미해결로 남긴 것: `DailyGuard` 에 일일 리셋이 없다.** 서비스 생성 시 한 번 만들어지고
+> 날짜가 바뀌어도 `halted_reasons` 가 그대로 남는다. 장 마감으로 웹소켓이 끊기면
+> `feed_disconnected` 래치가 붙고 다음 거래일까지 이어질 수 있다. `recommend_only` 에서는
+> 주문이 없어 무해하지만, `automatic` 전환 전에는 반드시 봐야 한다.
 
 ### 🟡 `automatic` 전환 전 미완 3건 (배선과 무관하게 유효)
 
