@@ -222,8 +222,34 @@ class OrderManager:
             raise
 
     def cancel(self, order_id: str) -> bool:
-        """주문을 취소한다."""
-        return self._broker.cancel_order(order_id)
+        """주문을 취소하고 감사 로그의 상태도 함께 내린다.
+
+        브로커만 취소하고 order_log 를 pending 으로 남기면, 그 종목을 다시 팔려는
+        정상 주문이 `_raise_if_duplicate_active_order` 에 막힌다. 취소된 주문이
+        살아 있는 것으로 기록되는 것 자체가 감사 오류이기도 하다.
+
+        Args:
+            order_id: 취소할 주문의 감사 ID.
+
+        Returns:
+            브로커 취소 성공 여부.
+        """
+        cancelled = self._broker.cancel_order(order_id)
+        if not cancelled:
+            return cancelled
+        log = (
+            self._db.query(OrderLog)
+            .filter(OrderLog.order_id == order_id)
+            .filter(OrderLog.status.in_([
+                OrderStatus.PENDING.value,
+                OrderStatus.PARTIALLY_FILLED.value,
+            ]))
+            .first()
+        )
+        if isinstance(log, OrderLog):
+            log.status = OrderStatus.CANCELLED.value
+            self._db.commit()
+        return cancelled
 
     def eod_cleanup(self) -> None:
         """장 마감 정리 (중복 탐지 초기화, 미체결 취소)."""

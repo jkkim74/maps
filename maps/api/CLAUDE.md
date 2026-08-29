@@ -19,6 +19,7 @@ api/
 ├── daily_digest.py        # 일일 다이제스트 (블로그 입력·검증 창구)
 ├── dashboard.py           # SCR-01 대시보드
 ├── data_quality.py        # SCR-14 유니버스 품질 로그
+├── limit_up.py            # 상한가 V1 상태 조회·비상정지·설정 (관리자)
 ├── live_monitor.py        # SCR-13 계좌·포지션·주문 상태
 ├── market.py              # SCR-03 장세/팩터 분석
 ├── mobile.py              # 모바일 앱 축약 응답

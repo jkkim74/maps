@@ -95,3 +95,31 @@ AI가 시장 국면, 진입 신호, 유동성, 신선도 또는 주문 안전 �
 장세 근거는 `source=candidate_generation`인 장마감 관측만 사용합니다. `order_cycle` 행,
 미체결·expired BUY, 수동·외부 주문, 진입 컨텍스트가 깨진 주문은 강제 판단에 쓰지 않습니다.
 설정을 `off`로 바꾼 뒤 프로세스를 재시작하면 새 감사 기록만 중단되며 기존 청산은 계속됩니다.
+
+## 상한가 당일매매 V1 (limit-up intraday)
+
+장중 실시간 상한가 단기매매 엔진입니다. 일봉 파이프라인과 **별개 경로**이며 KIS 실시간
+웹소켓을 씁니다. 계약 상세는 [maps/limit_up/CLAUDE.md](../maps/limit_up/CLAUDE.md).
+
+| 변수 | 기본값 | 설명 |
+|---|---:|---|
+| `MAPS_LIMIT_UP_ENABLED` | `false` | 엔진 기동 스위치. `false`면 배선돼 있어도 스캔·웹소켓이 뜨지 않습니다. |
+| `MAPS_LIMIT_UP_MODE` | `recommend_only` | `off` / `recommend_only` / `automatic`. **`automatic` 만 실제 주문을 냅니다.** |
+| `MAPS_LIMIT_UP_MIN_TURNOVER_KRW` | `50000000000` | 유동성 하한. 500억 미만은 설정 검증에서 거부됩니다. |
+| `MAPS_LIMIT_UP_AFTER_HOURS_DROP_PCT` | `0.02` | 시간외 붕괴 판정 기준(`0 < x ≤ 0.02`). |
+| `MAPS_LIMIT_UP_HEALTHCHECKS_PING_URL` | (빈값) | 데드맨 핑 URL. 비우면 no-op. |
+
+**기동 조건은 두 개가 모두 참이어야 합니다** — `MAPS_LIMIT_UP_ENABLED=true` 이고
+`MAPS_BROKER_MODE=kis`. 후자가 아니면 기동을 거부하고 ERROR 로그를 남깁니다. 실시간 시세가
+없는 브로커로 띄우면 트리거가 영영 걸리지 않는 좀비 엔진이 되기 때문입니다.
+
+손실 한도(일일 −30만원, 비상 절대상한 −100만원, 익일 하한가 30%)는 **설정이 아니라
+코드 상수**입니다. 설정으로 열면 위험 한도가 조용히 느슨해집니다.
+
+모드는 `PUT /api/v1/limit-up/settings` 로 재시작 없이 바꿀 수 있지만 **영속되지 않습니다** —
+재시작하면 `.env` 값으로 돌아갑니다. 실수로 켠 `automatic` 이 재부팅으로 부활하지 않게 하는
+의도된 동작이며, 영구 전환은 `.env` 를 고쳐야 합니다.
+`POST /api/v1/limit-up/emergency-off` 는 즉시 신규 진입을 막고, 이때도 청산 경로는 열려 있습니다.
+
+> 🟡 **`automatic` 전환 전 미완 3건**: ① 시간외 `ORD_DVSN=21` 실검증 ② 시간외 미체결 주문의
+> 회차 이월 확인 ③ 상한가 V1 전용 승격 기준(기존 WFA·MC·Plateau를 그대로 태울 수 없음).

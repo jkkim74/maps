@@ -62,6 +62,9 @@ class OrderSide(str, Enum):
 class OrderType(str, Enum):
     MARKET = "market"
     LIMIT = "limit"
+    # 시간외 단일가(16:00~18:00, 10분 단위 일괄 체결). 지정가는 체결 *우선순위*만 정하고
+    # 체결가는 그 회차 단일가로 결정된다.
+    AFTER_HOURS_SINGLE = "after_hours_single"
 
 
 class OrderStatus(str, Enum):
@@ -106,6 +109,19 @@ class OrderResult:
     commission: float = 0.0
     submitted_at: datetime.datetime = field(default_factory=datetime.datetime.now)
     filled_at: datetime.datetime | None = None
+
+
+@dataclass(frozen=True)
+class AfterHoursQuote:
+    """One after-hours single-price poll.
+
+    Attributes:
+        price: Last traded price, or ``0`` when the venue reports none.
+        cumulative_volume: Cumulative traded volume as reported by the broker.
+    """
+
+    price: int
+    cumulative_volume: int
 
 
 @dataclass
@@ -241,6 +257,15 @@ class BrokerAdapter(abc.ABC):
 
     def get_daily_order_results(self) -> list[OrderResult]:
         """Return same-day broker order/fill states when supported."""
+        raise NotImplementedError
+
+    def get_after_hours_quote(self, ticker: str) -> AfterHoursQuote:
+        """Return the after-hours single-price quote when the broker supports it.
+
+        Price and cumulative volume must come from **one** call: fetching them
+        separately would compare values sampled at different rounds, and the
+        volume gate exists precisely to qualify the price.
+        """
         raise NotImplementedError
 
     def get_same_day_buys(self) -> dict[str, SameDayBuy]:

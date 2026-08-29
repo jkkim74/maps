@@ -70,6 +70,7 @@ from maps.execution.broker_adapter import (
     get_broker,
 )
 from maps.execution.order_manager import OrderManager
+from maps.limit_up.after_hours import run_after_hours_watch
 from maps.market.breadth import classify_breadth, compute_pct_above_ma
 from maps.market.regime import RegimeResult, WeeklyTrendLabel, create_regime_analyzer
 from maps.market.regime_history import apply_hysteresis, latest_applied_regime
@@ -887,6 +888,51 @@ class OperationalPipeline:
             }
 
         return self._job("eod_cleanup", _run)
+
+    def run_limit_up_after_hours(
+        self, ref_date: dt.date | None = None, *, final_round: bool = False
+    ) -> JobRun:
+        """Poll after-hours prices for overnight upper-limit carries.
+
+        Off unless the V1 engine is in ``automatic``: recommendation mode holds
+        no real position, so there is nothing to escape from.
+
+        Args:
+            ref_date: KST trading date to sweep; defaults to today.
+            final_round: 18:00 sweep — records state without judging or selling.
+
+        Returns:
+            The recorded job run.
+        """
+        ref_date = ref_date or dt.date.today()
+
+        def _run(db: Session) -> dict:
+            if self._settings.maps_limit_up_mode != "automatic":
+                return {"ref_date": ref_date.isoformat(), "skipped": "limit_up_mode"}
+            broker = get_broker(self._settings.maps_broker_mode)
+            manager = OrderManager(
+                broker=broker, risk=self._make_risk_manager(broker, db), db=db
+            )
+            counters = run_after_hours_watch(
+                db,
+                broker,
+                manager,
+                ref_date=ref_date,
+                drop_pct=self._settings.maps_limit_up_after_hours_drop_pct,
+                final_round=final_round,
+            )
+            if counters["exited"]:
+                self._write_log(
+                    db,
+                    ref_date=ref_date,
+                    source="scheduler.limit_up_after_hours",
+                    status="success",
+                    items=counters["exited"],
+                    note="After-hours break detected; submitted full exits.",
+                )
+            return {"ref_date": ref_date.isoformat(), "final_round": final_round, **counters}
+
+        return self._job("limit_up_after_hours", _run)
 
     def _job(self, name: str, fn: Callable[[Session], dict]) -> JobRun:
         started = dt.datetime.now(dt.timezone.utc)
@@ -3914,6 +3960,10 @@ class MapsOperationalScheduler:
             "order_cycle": self._pipeline.run_order_cycle,
             "broker_sync": self._pipeline.sync_broker_state,
             "eod_cleanup": self._pipeline.run_eod_cleanup,
+            "limit_up_after_hours": self._pipeline.run_limit_up_after_hours,
+            "limit_up_after_hours_final": lambda: (
+                self._pipeline.run_limit_up_after_hours(final_round=True)
+            ),
         }
         if job_name not in mapping:
             raise ValueError(f"Unknown scheduler job: {job_name}")
@@ -3959,6 +4009,30 @@ class MapsOperationalScheduler:
             misfire_grace_time=self._settings.maps_broker_sync_interval_seconds * 2,
         )
         self._add_weekday_job("eod_cleanup", self._settings.maps_eod_time)
+        # 시간외 단일가는 16:00~18:00 사이 10분 단위로 체결된다. 17:50 회차가 마지막
+        # 실효 회차다 — 거기서 낸 주문이 18:00 최종 체결에 걸린다. second=5 는
+        # KRX 매칭 → KIS 반영 지연 버퍼로, 정각에 폴링하면 10분 전 값으로 판정할 수 있다.
+        self._scheduler.add_job(
+            self._make_krx_job("limit_up_after_hours"),
+            CronTrigger(
+                day_of_week="mon-fri", hour="16-17",
+                minute="0,10,20,30,40,50", second=5,
+            ),
+            id="limit_up_after_hours",
+            name="limit_up_after_hours",
+            replace_existing=True,
+            coalesce=True,
+            max_instances=1,
+        )
+        self._scheduler.add_job(
+            self._make_krx_job("limit_up_after_hours_final"),
+            CronTrigger(day_of_week="mon-fri", hour=18, minute=0, second=5),
+            id="limit_up_after_hours_final",
+            name="limit_up_after_hours_final",
+            replace_existing=True,
+            coalesce=True,
+            max_instances=1,
+        )
         hour, minute = _parse_hhmm(self._settings.maps_stock_report_time)
         self._scheduler.add_job(
             self._run_stock_report,

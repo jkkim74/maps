@@ -38,6 +38,7 @@ from maps.api.wfa import router as wfa_router
 from maps.api.cost_sensitivity import router as cost_sensitivity_router
 from maps.api.live_monitor import router as live_monitor_router
 from maps.api.data_quality import router as data_quality_router
+from maps.api.limit_up import router as limit_up_router
 from maps.api.ops_config import router as ops_config_router
 from maps.api.scheduler import router as scheduler_router
 from maps.api.stock_report import router as stock_report_router
@@ -63,6 +64,10 @@ async def _lifespan(app: FastAPI):
         get_settings,
         real_trading_unconfirmed,
     )
+    from maps.limit_up.bootstrap import (
+        shutdown_limit_up,
+        start_limit_up_if_enabled,
+    )
     from maps.ops.scheduler import (
         shutdown_operational_scheduler,
         start_operational_scheduler_if_enabled,
@@ -84,10 +89,12 @@ async def _lifespan(app: FastAPI):
     # 계정이 하나도 없을 때만 .env 자격증명으로 관리자를 시드한다(최초 1회).
     ensure_bootstrap_admin(settings)
     start_operational_scheduler_if_enabled()
+    await start_limit_up_if_enabled(settings)
     logger.info("MAPS 서버 시작 완료")
     try:
         yield
     finally:
+        await shutdown_limit_up()
         shutdown_operational_scheduler()
 
 
@@ -140,6 +147,7 @@ app.include_router(wfa_router)
 app.include_router(cost_sensitivity_router)
 app.include_router(live_monitor_router)
 app.include_router(data_quality_router)
+app.include_router(limit_up_router)
 app.include_router(ops_config_router)
 app.include_router(scheduler_router)
 app.include_router(stock_report_router)
