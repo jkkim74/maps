@@ -7,6 +7,7 @@ import datetime as dt
 import pytest
 
 from maps.common.exceptions import BrokerAdapterError
+from maps.common.models import OrderLog
 from maps.execution.broker_adapter import (
     AccountBalance,
     BrokerAdapter,
@@ -269,9 +270,10 @@ def test_recovery_cancels_an_exit_whose_id_was_never_recorded(db) -> None:
     ]
     assert not session.exit_order_ids
 
-    cancelled = worker.cancel_open_exits(session)
+    result = worker.cancel_open_exits(session)
 
-    assert cancelled == 1
+    assert (result.cancelled, result.stranded) == (1, 0)
+    assert result.is_clear
     assert broker.cancelled == ["9001"]
     assert "9001" in (session.exit_order_ids or "")
 
@@ -292,5 +294,56 @@ def test_cancel_open_exits_ignores_other_tickers_and_buys(db) -> None:
         ),
     ]
 
-    assert worker.cancel_open_exits(session) == 0
+    result = worker.cancel_open_exits(session)
+    assert (result.cancelled, result.stranded) == (0, 0)
     assert broker.cancelled == []
+
+
+def test_another_strategys_sell_is_left_alone(db) -> None:
+    """Shared account: cancelling someone else's working sell breaks their logic."""
+    broker = ScriptedBroker()
+    worker, session = _worker(db, broker)
+    broker.position = Position("005930", quantity=20, avg_price=98_800)
+    db.add(
+        OrderLog(
+            order_id="8001",
+            strategy_id="pullback_v3",
+            ticker="005930",
+            side="sell",
+            qty=20,
+            status="pending",
+            broker="mock",
+            mode="mock",
+        )
+    )
+    db.commit()
+    broker.open_orders = [
+        PendingOrder(
+            order_id="8001", ticker="005930", side=OrderSide.SELL,
+            quantity=20, remaining_quantity=20, order_price=90_000,
+        )
+    ]
+
+    result = worker.cancel_open_exits(session)
+
+    assert (result.cancelled, result.stranded) == (0, 0)
+    assert broker.cancelled == []
+
+
+def test_a_failed_cancel_is_reported_so_no_sell_is_stacked_on_it(db) -> None:
+    """Stacking a full-size sell on a live one oversells or gets rejected."""
+    broker = ScriptedBroker()
+    worker, session = _worker(db, broker)
+    broker.position = Position("005930", quantity=20, avg_price=98_800)
+    broker.cancel_error = True
+    broker.open_orders = [
+        PendingOrder(
+            order_id="9002", ticker="005930", side=OrderSide.SELL,
+            quantity=20, remaining_quantity=20, order_price=90_000,
+        )
+    ]
+
+    result = worker.cancel_open_exits(session)
+
+    assert result.stranded == 1
+    assert not result.is_clear

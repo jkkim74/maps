@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import logging
 from dataclasses import dataclass
 from enum import Enum
 
@@ -28,6 +29,7 @@ from maps.limit_up.repository import LimitUpRepository
 from maps.limit_up.worker import LimitUpCommandWorker
 
 
+logger = logging.getLogger(__name__)
 _UTC = dt.timezone.utc
 
 
@@ -106,6 +108,10 @@ class LimitUpService:
         self._last_reconcile_at: dict[str, float] = {}
         self.manual_lock = False
         self.unknown_positions: list[str] = []
+        # 주문을 **낼 수 있는가**(실행 능력)와 새로 **진입할 것인가**(정책)는 다른 질문이다.
+        # 이 둘을 mode 하나로 판단하면 비상정지가 청산까지 막아, 실제 주식은 남은 채
+        # 시스템만 청산 완료로 판단하는 최악의 상태가 된다.
+        self._orders_enabled = mode is LimitUpMode.AUTOMATIC and worker is not None
         # 마지막으로 관측한 단조 시각. 늦은 체결을 되살릴 때 시간 원점으로 쓴다.
         self.monotonic_hint = 0.0
 
@@ -227,6 +233,11 @@ class LimitUpService:
                         machine.filled_quantity = 0
                         session.state = LimitUpState.CLOSED.value
                         self.repository.db.commit()
+                    elif not result.open_order_ids:
+                        # 손절 제출이 예외로 실패하면 상태만 RECONCILING 이 되고 이후
+                        # 손절 이벤트는 중복 방지로 무시된다. 열린 주문이 하나도 없는데
+                        # 보유가 남아 있다는 건 매도가 나가지 않았다는 뜻이다.
+                        self._retry_stuck_exit(ticker, result.position_quantity)
             commands = machine.on_timer(now_monotonic)
             self._handle_commands(ticker, commands, now_kst=wall)
 
@@ -320,7 +331,7 @@ class LimitUpService:
             session, state=LimitUpState.RECONCILING, action="eod_sell"
         )
         self._dump_tape(ticker, "EOD_DECISION")
-        if self.mode is LimitUpMode.AUTOMATIC and self.worker is not None:
+        if self.exits_are_live():
             self.worker.sell_actual_position(session, reason="eod_review_fail")
         else:
             machine.state = LimitUpState.CLOSED
@@ -332,8 +343,10 @@ class LimitUpService:
     def emergency_off(self) -> None:
         """Latch every entry path off immediately.
 
-        Entries only. Exits stay available — a kill switch that also blocks
-        selling would strand whatever is already held.
+        Entries only. ``_orders_enabled`` is deliberately left alone: a kill
+        switch that also blocked selling would strand whatever is already held
+        and — worse — let the system mark those sessions closed without an order
+        ever reaching the broker.
         """
         self.mode = LimitUpMode.OFF
         self._ensure_guard_for(
@@ -341,6 +354,14 @@ class LimitUpService:
         )
         self.guard.halted_reasons.add("emergency_off")
         self._persist_guard()
+
+    def exits_are_live(self) -> bool:
+        """Return whether protective orders can still reach the broker.
+
+        Not ``mode``: entry policy may be off (emergency stop, KOSDAQ latch)
+        while a real position still has to be sold.
+        """
+        return self._orders_enabled and self.worker is not None
 
     def carried_tickers(self) -> list[str]:
         """Return sessions still competing for the shared overnight budget."""
@@ -383,7 +404,7 @@ class LimitUpService:
         for ticker, allowed in self.overnight_allowances(ref_date).items():
             machine = self._machines[ticker]
             session = self._sessions[ticker]
-            if self.mode is LimitUpMode.AUTOMATIC and self.worker is not None:
+            if self.exits_are_live():
                 # tick() only reconciles NET_OPEN/FILLED_WAIT_LOCK, so a locked
                 # session's cached quantity can lag the actual holding. Sizing the
                 # trim off a stale number would under-trim and breach the cap.
@@ -399,7 +420,7 @@ class LimitUpService:
                 payload={"allowed": allowed, "excess": excess},
             )
             self.repository.db.commit()
-            if self.mode is LimitUpMode.AUTOMATIC and self.worker is not None:
+            if self.exits_are_live():
                 self.worker.sell_overnight_excess(
                     session, quantity=excess, price=machine.upper_limit_price
                 )
@@ -425,7 +446,7 @@ class LimitUpService:
             if machine.state is not LimitUpState.EOD_TRIM:
                 continue
             session = self._sessions[ticker]
-            if self.mode is LimitUpMode.AUTOMATIC and self.worker is not None:
+            if self.exits_are_live():
                 machine.filled_quantity = self.worker.reconcile(session).position_quantity
             if machine.filled_quantity > allowed:
                 continue
@@ -472,8 +493,12 @@ class LimitUpService:
             self.repository.transition(
                 session, state=LimitUpState.RECONCILING, action=reason
             )
-            if self.mode is LimitUpMode.AUTOMATIC and self.worker is not None:
-                self.worker.cancel_open_exits(session)
+            if self.exits_are_live():
+                if not self.worker.cancel_open_exits(session).is_clear:
+                    logger.error(
+                        "강제 청산 보류 [%s] — 취소되지 않은 매도가 남아 있다", ticker
+                    )
+                    continue
                 result = self.worker.sell_actual_position(session, reason=reason)
                 if result.position_quantity == 0:
                     machine.state = LimitUpState.CLOSED
@@ -552,6 +577,35 @@ class LimitUpService:
         self.repository.db.commit()
         self._resubmit_interrupted_exits(wall)
 
+    def _retry_stuck_exit(self, ticker: str, position_quantity: int) -> None:
+        """Re-send an exit for a position whose sell never reached the broker.
+
+        A broker error during the protective exit leaves the machine in
+        RECONCILING, and the state machine suppresses repeat exits from there —
+        so without this the position sits outside every guard until someone
+        notices. Only fires when the broker reports no open order at all.
+
+        Args:
+            ticker: Session ticker.
+            position_quantity: Broker-authoritative held quantity.
+        """
+        session = self._sessions[ticker]
+        machine = self._machines[ticker]
+        logger.error(
+            "청산이 나가지 않은 보유 발견 [%s] qty=%s — 재제출한다",
+            ticker, position_quantity,
+        )
+        if not self.worker.cancel_open_exits(session).is_clear:
+            return
+        result = self.worker.sell_actual_position(
+            session, reason=session.end_reason or "stuck_exit_retry"
+        )
+        if result.position_quantity == 0:
+            machine.state = LimitUpState.CLOSED
+            machine.filled_quantity = 0
+            session.state = LimitUpState.CLOSED.value
+        self.repository.db.commit()
+
     def _resubmit_interrupted_exits(self, now_kst: dt.datetime) -> None:
         """Re-issue exits for positions left in RECONCILING by a crash.
 
@@ -571,7 +625,13 @@ class LimitUpService:
             if machine.filled_quantity <= 0:
                 continue
             session = self._sessions[ticker]
-            self.worker.cancel_open_exits(session)
+            if not self.worker.cancel_open_exits(session).is_clear:
+                # 취소하지 못한 매도가 살아 있다. 그 위에 전량매도를 얹으면 보유보다
+                # 많이 팔거나 잔량 부족으로 거절된다 — 사람이 볼 수 있게 두고 멈춘다.
+                logger.error(
+                    "청산 재제출 보류 [%s] — 취소되지 않은 매도가 남아 있다", ticker
+                )
+                continue
             result = self.worker.sell_actual_position(
                 session, reason=session.end_reason or "recovered_exit"
             )
@@ -674,7 +734,7 @@ class LimitUpService:
             state=LimitUpState.RECONCILING,
             action="next_open_sell",
         )
-        if self.mode is LimitUpMode.AUTOMATIC and self.worker is not None:
+        if self.exits_are_live():
             self.worker.sell_actual_position(session, reason="next_open")
         else:
             machine.state = LimitUpState.CLOSED
@@ -794,7 +854,7 @@ class LimitUpService:
                 continue
 
             if command.kind is CommandKind.CANCEL_BUYS:
-                if self.mode is LimitUpMode.AUTOMATIC and self.worker is not None:
+                if self.exits_are_live():
                     result = self.worker.cancel_pending_buys(session)
                     # 취소가 체결과 경합하면 "미체결" 로 닫은 세션에 실제 주식이 남는다.
                     # 브로커가 정본이므로 그 수량을 보고 세션을 되살린다.
@@ -839,7 +899,7 @@ class LimitUpService:
                     self._persist_guard()
                 transition = "HARD_STOP" if command.reason == "hard_stop" else "TIME_STOP"
                 self._dump_tape(ticker, transition)
-                if self.mode is LimitUpMode.AUTOMATIC and self.worker is not None:
+                if self.exits_are_live():
                     result = self.worker.sell_actual_position(
                         session, reason=command.reason
                     )

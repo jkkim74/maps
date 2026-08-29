@@ -6,7 +6,7 @@ import logging
 from dataclasses import dataclass
 
 from maps.common.exceptions import BrokerAdapterError
-from maps.common.models import LimitUpOrderLeg, LimitUpSession
+from maps.common.models import LimitUpOrderLeg, LimitUpSession, OrderLog
 from maps.execution.broker_adapter import (
     BrokerAdapter,
     Order,
@@ -21,6 +21,19 @@ from maps.limit_up.repository import LimitUpRepository
 
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class CancelExitsResult:
+    """Outcome of pulling a session's open exit orders."""
+
+    cancelled: int
+    stranded: int
+
+    @property
+    def is_clear(self) -> bool:
+        """Return whether no open exit is left to collide with a new order."""
+        return self.stranded == 0
 
 
 @dataclass(frozen=True)
@@ -296,12 +309,19 @@ class LimitUpCommandWorker:
         # 총합은 원장에서 파생된다 — 두 곳에서 따로 계산하면 조용히 어긋난다.
         session.realized_pnl = sum(ledger.values())
 
-    def cancel_open_exits(self, session: LimitUpSession) -> int:
-        """Cancel every still-open exit order and return how many were pulled.
+    def cancel_open_exits(self, session: LimitUpSession) -> "CancelExitsResult":
+        """Cancel our still-open exits and report anything left standing.
 
-        Must run before any follow-up sell: an unfilled trim limit order still
-        reserves shares, so selling the whole position on top of it would submit
-        more shares than are held.
+        Must run before any follow-up sell: an unfilled exit still reserves
+        shares, so selling the whole position on top of it would submit more
+        shares than are held. When a cancel fails the caller must **not** send
+        that follow-up — ``stranded`` is what tells it so.
+
+        Args:
+            session: Session whose exits should be pulled.
+
+        Returns:
+            Counts of orders cancelled and orders still open.
         """
         recorded = {
             raw_broker_order_id(item)
@@ -309,26 +329,50 @@ class LimitUpCommandWorker:
             if item
         }
         cancelled = 0
+        stranded = 0
         for order in self.broker.get_open_orders():
             if order.ticker != session.ticker or order.side is not OrderSide.SELL:
                 continue
             raw_id = raw_broker_order_id(order.order_id)
-            # 브로커에는 접수됐는데 주문 ID 를 저장하기 전에 죽으면 exit_order_ids 에
-            # 없다. 원장만 믿고 취소하면 그 매도가 살아 있는 채로 전량매도를 덧대어
-            # 보유보다 많이 팔게 된다. 티커의 열린 매도는 전부 취소 대상이다.
+            owner = self._order_owner(order.order_id)
+            if raw_id not in recorded and owner is not None and not owner.startswith(
+                "limit_up_v1"
+            ):
+                # 공유 계좌다. 다른 전략이나 사람이 낸 매도를 취소하면 그쪽 로직이 깨진다.
+                continue
             if raw_id not in recorded:
+                # 브로커는 접수했는데 주문 ID 를 저장하기 전에 죽은 우리 매도이거나,
+                # 출처를 모르는 주문이다. 살아 있는 채로 전량매도를 덧대면 보유보다
+                # 많이 팔게 되므로 취소를 시도하되, 실패하면 새 매도를 내지 않는다.
                 logger.warning(
-                    "기록되지 않은 매도 주문 발견 [%s] id=%s — 중복 매도를 막기 위해 취소",
-                    session.ticker, order.order_id,
+                    "출처가 확인되지 않은 열린 매도 [%s] id=%s owner=%s",
+                    session.ticker, order.order_id, owner,
                 )
             try:
-                self.order_manager.cancel(order.order_id)
+                if not self.order_manager.cancel(order.order_id):
+                    stranded += 1
+                    continue
             except BrokerAdapterError:
+                logger.exception("매도 취소 실패 [%s] id=%s", session.ticker, order.order_id)
+                stranded += 1
                 continue
             self._record_exit_order(session, order.order_id)
             cancelled += 1
         self.repository.db.commit()
-        return cancelled
+        return CancelExitsResult(cancelled=cancelled, stranded=stranded)
+
+    def _order_owner(self, order_id: str) -> str | None:
+        """Return the strategy that placed one order, per the audit log.
+
+        The broker's open-order view carries no strategy id, so ``order_log`` is
+        the only way to tell our sells from a shared account's other traffic.
+        """
+        row = (
+            self.repository.db.query(OrderLog.strategy_id)
+            .filter(OrderLog.order_id == order_id)
+            .first()
+        )
+        return str(row[0]) if row else None
 
     def sell_overnight_excess(
         self, session: LimitUpSession, *, quantity: int, price: int

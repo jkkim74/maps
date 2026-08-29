@@ -890,18 +890,22 @@ class OperationalPipeline:
 
         return self._job("eod_cleanup", _run)
 
-    def _effective_limit_up_mode(self) -> str:
-        """Return the mode actually in force — the live runtime wins over settings.
+    def _limit_up_exits_active(self) -> bool:
+        """Return whether the evening watch should protect a live position.
+
+        Asks the running engine whether *exits* can still be placed, not what its
+        entry mode is. After an emergency stop the mode is ``off`` while real
+        shares are still held — exactly when the after-hours escape matters most.
 
         Returns:
-            ``off``, ``recommend_only``, or ``automatic``.
+            ``True`` when protective sells can reach the broker.
         """
         from maps.limit_up import bootstrap
 
         runtime = bootstrap.get_runtime()
         if runtime is not None:
-            return str(runtime.service.mode.value)
-        return str(self._settings.maps_limit_up_mode)
+            return bool(runtime.service.exits_are_live())
+        return self._settings.maps_limit_up_mode == "automatic"
 
     def run_limit_up_after_hours(
         self, ref_date: dt.date | None = None, *, final_round: bool = False
@@ -921,11 +925,10 @@ class OperationalPipeline:
         ref_date = ref_date or dt.date.today()
 
         def _run(db: Session) -> dict:
-            # 런타임이 살아 있으면 그 모드가 정본이다. 설정값만 보면 관리자 API 로
-            # automatic 으로 바꾼 뒤 보유가 생겨도, .env 가 recommend_only 라는 이유로
-            # 저녁 보호 작업이 통째로 건너뛰어진다.
-            mode = self._effective_limit_up_mode()
-            if mode != "automatic":
+            # 런타임이 살아 있으면 그 상태가 정본이다. 설정값만 보면 관리자 API 로
+            # automatic 으로 바꾼 뒤 보유가 생겨도 .env 가 recommend_only 라는 이유로
+            # 저녁 보호가 건너뛰어지고, 비상정지 뒤에는 보유가 남았는데도 멈춘다.
+            if not self._limit_up_exits_active():
                 return {"ref_date": ref_date.isoformat(), "skipped": "limit_up_mode"}
             # 시간외 탈출도 실주문이다. 장중 엔진과 같은 안전 스위치를 통과해야 한다 —
             # 이 잡만 빠지면 장중 자동매매가 막혀 있어도 16시 스케줄러가 실계좌에

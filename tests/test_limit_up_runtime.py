@@ -293,6 +293,7 @@ async def test_reading_the_next_frame_does_not_wait_for_the_previous_one() -> No
     runtime.monotonic = lambda: 1.0
     runtime.wall_now = lambda: dt.datetime(2026, 8, 28, 10, 0, tzinfo=KST)
     runtime._quotes = {}
+    runtime._feed_tasks = set()
     applied: list[str] = []
     release = threading.Event()
 

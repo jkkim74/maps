@@ -18,6 +18,7 @@ from maps.execution.order_manager import OrderManager
 from maps.limit_up.domain import LimitUpConfig, LimitUpState
 from maps.limit_up.feed import FeedQuote, FeedTrade
 from maps.limit_up.repository import LimitUpRepository
+from maps.common.exceptions import BrokerAdapterError
 from maps.common.models import LimitUpSession
 from maps.limit_up.service import Candidate, LimitUpMode, LimitUpService
 from maps.limit_up.worker import LimitUpCommandWorker
@@ -713,3 +714,77 @@ def test_a_carry_confirmed_today_is_not_sold_at_todays_open(db) -> None:
     assert service.overnight_tickers(before=dt.date(2026, 8, 31)) == ["005930"]
     # unfiltered still reports it, for status displays
     assert service.overnight_tickers() == ["005930"]
+
+
+def test_emergency_off_blocks_entries_but_still_sells_what_is_held(db) -> None:
+    """The worst failure is a kill switch that makes the system *think* it exited.
+
+    Regression: emergency_off set mode=OFF, and every protective path checked
+    mode, so a held position was marked CLOSED without an order ever reaching
+    the broker.
+    """
+    broker = ServiceBroker()
+    service = _service(db, LimitUpMode.AUTOMATIC, broker)
+    now = dt.datetime(2026, 8, 28, 10, 0, tzinfo=KST)
+    service.watch_candidate(_candidate(), now_kst=now)
+    machine = service.machine("005930")
+    machine.fire_net(at=1.0)
+    machine.on_fill(at=2.0, cumulative_quantity=20)
+    broker.positions["005930"] = Position("005930", 20, 98_000.0)
+
+    service.emergency_off()
+
+    assert service.mode is LimitUpMode.OFF
+    assert not service.guard.can_enter(active_sessions=0)
+    assert service.exits_are_live()  # selling must still work
+
+    # a hard stop after the kill switch must place a real order
+    service.on_trade(_trade(3.0, 90_000), now_kst=now)
+
+    sells = [order for _, order in broker.orders if order.side is OrderSide.SELL]
+    assert len(sells) == 1
+    assert sells[0].quantity == 20
+
+
+def test_recommend_only_never_places_exits_even_though_the_gate_is_shared(db) -> None:
+    """exits_are_live must not accidentally open orders in signals-only mode."""
+    service = _service(db, LimitUpMode.RECOMMEND_ONLY)
+
+    assert not service.exits_are_live()
+
+
+def test_a_failed_stop_loss_order_does_not_strand_the_position(db) -> None:
+    """One broker error used to leave real shares outside every guard.
+
+    The machine latches RECONCILING before the order goes out and suppresses
+    repeat exits from there, so nothing retried it.
+    """
+    broker = ServiceBroker()
+    service = _service(db, LimitUpMode.AUTOMATIC, broker)
+    now = dt.datetime(2026, 8, 28, 10, 0, tzinfo=KST)
+    service.watch_candidate(_candidate(), now_kst=now)
+    machine = service.machine("005930")
+    machine.fire_net(at=1.0)
+    machine.on_fill(at=2.0, cumulative_quantity=20)
+    broker.positions["005930"] = Position("005930", 20, 98_000.0)
+
+    # the protective sell blows up mid-flight
+    def _explode(order):
+        raise BrokerAdapterError("broker rejected the exit")
+
+    original = broker.place_order
+    broker.place_order = _explode
+    try:
+        service.on_trade(_trade(3.0, 90_000), now_kst=now)
+    except BrokerAdapterError:
+        pass
+    broker.place_order = original
+    assert machine.state is LimitUpState.RECONCILING
+    assert broker.orders == []
+
+    # the periodic tick must notice the position has no order behind it
+    service.tick(now_monotonic=500.0, now_kst=now)
+
+    sells = [order for _, order in broker.orders if order.side is OrderSide.SELL]
+    assert len(sells) == 1
+    assert sells[0].quantity == 20

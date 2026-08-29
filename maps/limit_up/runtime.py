@@ -67,6 +67,10 @@ _RECONNECT_BACKOFF_MAX = 60.0
 _FEED_SILENCE_TIMEOUT_SECONDS = 60.0
 # 종료 시 진행 중인 브로커 작업을 기다리는 상한.
 _SHUTDOWN_DRAIN_SECONDS = 30.0
+# 시세 처리 적체 경고 임계. 넘으면 브로커 응답이 느리다는 신호다.
+_FEED_BACKLOG_ALERT = 50
+# 관리자 API 가 엔진 응답을 기다리는 상한.
+_ADMIN_CALL_TIMEOUT_SECONDS = 10.0
 
 
 def engine_active_at(wall: dt.datetime) -> bool:
@@ -222,6 +226,8 @@ class KISIntradayRuntime:
         self._opening_submitted: set[tuple[dt.date, str]] = set()
         self._fallback_limiter = RestFallbackLimiter(min_interval_seconds=0.5)
         self._last_frame_at = 0.0
+        self._feed_tasks: set[asyncio.Future] = set()
+        self._loop: asyncio.AbstractEventLoop | None = None
         self._service_queue: asyncio.PriorityQueue = asyncio.PriorityQueue()
         self._service_sequence = itertools.count()
 
@@ -297,6 +303,7 @@ class KISIntradayRuntime:
             now_monotonic=self.monotonic(),
             now_kst=now,
         )
+        self._loop = asyncio.get_running_loop()
         self._tasks = [
             asyncio.create_task(self._service_pump(), name="limit-up-service"),
             asyncio.create_task(self._control_loop(), name="limit-up-control"),
@@ -317,6 +324,9 @@ class KISIntradayRuntime:
             task.cancel()
         if producers:
             await asyncio.gather(*producers, return_exceptions=True)
+        # 아직 큐에 들어가지 못한 시세 작업이 있으면 드레인이 그것들을 못 본다.
+        if self._feed_tasks:
+            await asyncio.gather(*list(self._feed_tasks), return_exceptions=True)
         try:
             await asyncio.wait_for(
                 self._service_queue.join(), timeout=_SHUTDOWN_DRAIN_SECONDS
@@ -401,7 +411,15 @@ class KISIntradayRuntime:
             task = asyncio.ensure_future(
                 self._call_service(self._apply_feed_event, event, now)
             )
+            # 추적하지 않으면 종료 시 아직 큐에 들어가지도 않은 작업이 남은 채
+            # queue.join() 이 먼저 끝나고 DB 세션이 닫힌다.
+            self._feed_tasks.add(task)
+            task.add_done_callback(self._feed_tasks.discard)
             task.add_done_callback(_log_feed_task_error)
+        if len(self._feed_tasks) >= _FEED_BACKLOG_ALERT:
+            logger.warning(
+                "상한가 시세 처리 적체 %d건 — 브로커 응답이 느리다", len(self._feed_tasks)
+            )
         return len(events)
 
     def _apply_feed_event(self, event: Any, now: dt.datetime) -> None:
@@ -573,9 +591,35 @@ class KISIntradayRuntime:
         await socket.send(subscription_payload(approval, _QUOTE_TR_ID, ticker))
         self._subscribed.add(ticker)
 
+    def call_threadsafe(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+        """Run one service call from a non-loop thread (FastAPI) safely.
+
+        The admin endpoints run on FastAPI's worker threads. Touching the service
+        there would mutate state and commit on the same ORM session the pump is
+        using. Everything goes through the same queue instead.
+
+        Args:
+            fn: Synchronous service method.
+            *args: Positional arguments.
+            **kwargs: Keyword arguments.
+
+        Returns:
+            Whatever ``fn`` returned.
+
+        Raises:
+            RuntimeError: The engine loop is not running.
+        """
+        loop = self._loop
+        if loop is None or not loop.is_running():
+            raise RuntimeError("upper-limit runtime loop is not running")
+        future = asyncio.run_coroutine_threadsafe(
+            self._call_service(fn, *args, priority=_PRIORITY_HIGH, **kwargs), loop
+        )
+        return future.result(timeout=_ADMIN_CALL_TIMEOUT_SECONDS)
+
     def emergency_off(self) -> None:
         """Latch the engine off without tearing down exit handling."""
-        self.service.emergency_off()
+        self.call_threadsafe(self.service.emergency_off)
         logger.warning("Upper-limit V1 emergency OFF — 신규 진입 차단")
 
     def apply_settings(self, *, mode: str, min_turnover_krw: int) -> None:
@@ -597,7 +641,14 @@ class KISIntradayRuntime:
             blocked = automatic_mode_blocked_reason(self.settings)
             if blocked is not None:
                 raise ValueError(f"automatic mode blocked: {blocked}")
+        self.call_threadsafe(self._apply_settings, mode, min_turnover_krw)
+
+    def _apply_settings(self, mode: str, min_turnover_krw: int) -> None:
+        """Apply settings on the serialized worker, never a FastAPI thread."""
         self.service.mode = LimitUpMode(mode)
+        if self.service.mode is LimitUpMode.AUTOMATIC and self.service.worker:
+            # 관리자가 automatic 으로 올리면 청산 실행 능력도 함께 열린다.
+            self.service._orders_enabled = True
         self.service.config = LimitUpConfig(
             min_turnover_krw=min_turnover_krw,
             min_execution_strength=self.service.config.min_execution_strength,
