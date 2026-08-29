@@ -123,6 +123,31 @@ overnight_budget = (1,000,000 − max(0, 당일 실현손실)) / 0.30
 | 시간외 탈출 미체결 | `AFTER_HOURS_EXIT` 도 `overnight_tickers()` 에 포함된다. 빼면 보유분이 하루 더 방치된다 |
 | 웹소켓 재연결 | `_subscribed` 는 **연결 단위**다. 연결 성공 시 `clear()` 하지 않으면 재구독을 건너뛰는데 `_feed_connected=True` 라 REST 폴백까지 멈춘다 — 연결은 정상처럼 보이면서 시세 보호가 완전히 없어진다 |
 
+## 🔴 청산 전략 ID 는 사유마다 다르다
+
+`OrderManager._raise_if_duplicate_active_order` 는 같은 날 같은
+`strategy_id+ticker+side` 가 `pending/partially_filled/**filled**` 로 있으면 거부한다.
+청산이 전부 한 ID 를 쓰면 **15:18 트림이 체결된 순간 15:28 강제청산·하드스톱·시간외 탈출이
+전부 막힌다** — 오버나이트 절대상한 보증이 조용히 깨진다(실행으로 재현됨).
+
+`domain.exit_strategy_id(reason)` 이 사유를 레인으로 매핑한다
+(`:exit:trim` / `:stop` / `:eod` / `:next_open` / `:after_hours`).
+매수 레그가 `:S`/`:A` 로 나뉜 것과 같은 이유다.
+
+## 🔴 계좌 전체 보유 ≠ 이 세션의 주식
+
+`broker.get_position(ticker)` 는 **계좌 전체**를 준다. 공유 계좌에서 그 수량으로 팔면
+같은 종목을 든 다른 전략의 포지션까지 청산된다. `sell_actual_position(owned_quantity=)`
+은 세션 소유분으로 상한을 두며, 호출부가 `machine.filled_quantity` 를 넘긴다.
+`sell_overnight_excess` 가 처음부터 `min(...)` 을 쓴 것과 같은 규칙이다.
+
+## 🔴 팔 수 없으면 닫지도 않는다
+
+`exits_are_live()` 가 거짓인데 실보유가 있으면 `_strand_unprotected()` 가 세션을
+`CLOSED` 로 보내지 않고 **수동 잠금 + ERROR** 로 남긴다. `CLOSED` 로 표시하면
+`recover()`(`state != CLOSED` 필터)·시간외 감시·강제청산에서 **동시에** 사라져 그 주식을
+아무도 다시 보지 않는다.
+
 ## 청산 원장 — `exit_order_ids`
 
 세션은 청산을 **한 번 이상** 한다(EOD 트림 → 잔여 청산). 브로커의 당일 주문 결과에는
@@ -136,8 +161,11 @@ overnight_budget = (1,000,000 − max(0, 당일 실현손실)) / 0.30
 - 정산은 `reconcile()` 이 이미 부르는 `get_daily_order_results()` 스냅샷을 재사용한다 —
   브로커 호출이 늘지 않는다.
 - **비교 전에 `raw_broker_order_id()` 로 정규화한다.** 감사 ID(`kis:...`)와 브로커 원주문
-  ID 는 KIS 에서 절대 같지 않다. MockBroker 는 둘이 같아 **테스트가 이 불일치를 구조적으로
-  못 잡는다** — 실제로 이 자리에서 버그가 났다.
+  ID 는 KIS 에서 절대 같지 않다. `order_log` 는 **언제나 감사 ID** 로 저장되고 브로커의
+  열린 주문·당일 체결 목록은 **원주문 ID** 만 준다.
+  이 함정은 세 번 반복됐다(시간외 ID 비교 → `_order_owner` → `cancel()` 의 order_log 조회).
+  **`MockBroker` 는 두 ID 가 같아 이 부류를 영원히 못 잡는다** — V1 테스트는
+  `tests/kis_like_broker.KISLikeBroker`(`kis_like_broker` 픽스처)를 쓴다.
 
 ## 🔴 "주문을 낼 수 있는가" 와 "진입할 것인가" 는 다른 질문이다
 
@@ -211,6 +239,8 @@ overnight_budget = (1,000,000 − max(0, 당일 실현손실)) / 0.30
 | 미체결 매수 타임아웃 | `recover()` 가 `net_fired_at` 을 복원한다. 안 하면 `on_timer` 가 180초 타임아웃을 영영 못 만난다 |
 | 중단된 청산 | `RECONCILING` + 보유 > 0 이면 **재제출**한다. "팔기로 했다" 와 "주문을 보냈다" 사이에서 죽으면 확인만 반복하고 영영 안 판다 |
 | 일일 가드 | `limit_up_daily_guard` 테이블에 **직접 저장**한다. 세션 부작용에서 역산하면, 취소할 주문이 없던 코스닥 래치는 흔적이 없어 재시작 때 조용히 풀린다 |
+| 마지막 가격 | `recover()` 가 `_last_prices` 를 복원한다. 안 하면 재연결 후 첫 호가가 **0 원**으로 평가돼 `0 < 상한가×0.95` 가 참이 되고, 멀쩡한 캐리가 가짜 하드스톱으로 전량 청산된다. `on_quote` 도 `price <= 0` 이면 판정을 건너뛴다 |
+| 피드 래치 | `on_feed_reconnect()` 가 `feed_disconnected` 를 **해제**한다. 이 래치는 `_TRANSIENT_LATCHES` 라 DB 에 남기지 않는다 — 저장하면 1초짜리 끊김이 재시작을 넘어 그날 전체를 막는다 |
 | 코스닥 고점 | 관측할 때마다 저장한다. 재시작 후 다시 쌓으면 이미 떨어진 가격에서 시작해 드로다운이 영영 안 걸린다 |
 
 ## 죽은 연결은 끊긴 연결보다 나쁘다

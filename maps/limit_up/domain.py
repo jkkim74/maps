@@ -26,6 +26,42 @@ LIMIT_DOWN_RATIO = 0.30
 # *우선순위*만 정하고 체결가는 그 회차 단일가로 난다.
 AFTER_HOURS_FLOOR_RATIO = 0.90
 
+# 청산 주문의 전략 ID. **사유마다 달라야 한다.**
+# OrderManager._raise_if_duplicate_active_order 는 같은 날 같은 strategy_id+ticker+side 가
+# pending/partially_filled/**filled** 로 있으면 거부한다. 청산 전부가 한 ID 를 쓰면
+# 15:18 트림이 체결된 순간 15:28 강제청산·하드스톱·시간외 탈출이 전부 막힌다
+# (매수 레그가 :S/:A 로 나뉜 것과 같은 이유다).
+EXIT_STRATEGY_IDS: dict[str, str] = {
+    "trim": "limit_up_v1:exit:trim",
+    "stop": "limit_up_v1:exit:stop",
+    "eod": "limit_up_v1:exit:eod",
+    "next_open": "limit_up_v1:exit:next_open",
+    "after_hours": "limit_up_v1:exit:after_hours",
+}
+_EXIT_REASON_KINDS: dict[str, str] = {
+    "hard_stop": "stop",
+    "time_stop": "stop",
+    "stuck_exit_retry": "stop",
+    "recovered_exit": "stop",
+    "eod_review_fail": "eod",
+    "overnight_cap_unfilled": "eod",
+    "eod_review_missed": "eod",
+    "next_open": "next_open",
+    "after_hours_break_exit": "after_hours",
+}
+
+
+def exit_strategy_id(reason: str) -> str:
+    """Return the order strategy id for one exit reason.
+
+    Args:
+        reason: Exit reason recorded on the session.
+
+    Returns:
+        A reason-scoped strategy id; unknown reasons fall back to the stop lane.
+    """
+    return EXIT_STRATEGY_IDS[_EXIT_REASON_KINDS.get(reason, "stop")]
+
 
 class LimitUpState(str, Enum):
     """Persisted lifecycle states for one ticker and trading day."""

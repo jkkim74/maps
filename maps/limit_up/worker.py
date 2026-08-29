@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
+from sqlalchemy import or_
+
 from maps.common.exceptions import BrokerAdapterError
 from maps.common.models import LimitUpOrderLeg, LimitUpSession, OrderLog
 from maps.execution.broker_adapter import (
@@ -16,7 +18,7 @@ from maps.execution.broker_adapter import (
     raw_broker_order_id,
 )
 from maps.execution.order_manager import OrderManager
-from maps.limit_up.domain import GridLeg, realized_pnl
+from maps.limit_up.domain import EXIT_STRATEGY_IDS, GridLeg, exit_strategy_id, realized_pnl
 from maps.limit_up.repository import LimitUpRepository
 
 
@@ -63,6 +65,10 @@ class LimitUpCommandWorker:
         self.order_manager = order_manager
         self.broker = broker
         self.repository = repository
+
+    def filled_quantity(self, session: LimitUpSession) -> int:
+        """Return shares this session actually bought, per its own order legs."""
+        return sum(leg.filled_quantity for leg in self.legs(session))
 
     def legs(self, session: LimitUpSession) -> list[LimitUpOrderLeg]:
         """Return fixed legs in deterministic A/S order for audit displays."""
@@ -216,25 +222,52 @@ class LimitUpCommandWorker:
         )
 
     def sell_actual_position(
-        self, session: LimitUpSession, *, reason: str
+        self, session: LimitUpSession, *, reason: str, owned_quantity: int | None = None
     ) -> ReconcileResult:
-        """Reconcile actual quantity and submit one market exit for that remainder."""
+        """Submit one market exit for **this session's** remaining shares.
+
+        ``get_position()`` reports the whole account. On a shared account that
+        includes other strategies' holdings in the same ticker, and selling that
+        number liquidates them too. ``sell_overnight_excess`` already caps with
+        ``min(...)``; this path must do the same.
+
+        Args:
+            session: Session being exited.
+            reason: Exit reason — also selects the order's strategy id.
+            owned_quantity: Shares this session holds. ``None`` falls back to the
+                session's filled buy legs, never to the account total.
+
+        Returns:
+            Broker-authoritative state after the submission.
+        """
+        if owned_quantity is None:
+            # legs 가 아직 브로커 체결을 반영하지 않았을 수 있다. 소유 수량을 legs 에서
+            # 유추할 거라면 먼저 정본을 당겨와야 한다.
+            self.reconcile(session)
         position = self.broker.get_position(session.ticker)
         if position is None or position.quantity <= 0:
+            return self.reconcile(session)
+        owned = owned_quantity if owned_quantity is not None else self.filled_quantity(session)
+        quantity = min(position.quantity, owned) if owned > 0 else 0
+        if quantity <= 0:
+            logger.warning(
+                "청산 건너뜀 [%s] — 세션 소유분 0 (계좌 보유 %s 주는 다른 전략 것이다)",
+                session.ticker, position.quantity,
+            )
             return self.reconcile(session)
         self.repository.append_event(
             session,
             action="market_sell",
             state_version=session.state_version,
-            payload={"quantity": position.quantity, "reason": reason},
+            payload={"quantity": quantity, "reason": reason},
         )
         self.repository.db.commit()
         order = Order(
-            strategy_id="limit_up_v1:exit",
+            strategy_id=exit_strategy_id(reason),
             ticker=session.ticker,
             side=OrderSide.SELL,
             order_type=OrderType.MARKET,
-            quantity=position.quantity,
+            quantity=quantity,
             current_price=position.current_price or position.avg_price,
             decision_context={"limit_up_session_id": session.id, "reason": reason},
         )
@@ -367,9 +400,16 @@ class LimitUpCommandWorker:
         The broker's open-order view carries no strategy id, so ``order_log`` is
         the only way to tell our sells from a shared account's other traffic.
         """
+        # order_log 는 감사 ID(kis:...)로 저장되고 브로커의 열린 주문 목록은 원주문 ID 만
+        # 준다. 정규화하지 않으면 KIS 에서 **항상 None** 이 되어 소유권 가드가 구조적으로
+        # 죽는다 — 공유 계좌에서 남의 매도를 취소하게 된다.
+        raw_id = raw_broker_order_id(order_id)
         row = (
             self.repository.db.query(OrderLog.strategy_id)
-            .filter(OrderLog.order_id == order_id)
+            .filter(or_(
+                OrderLog.order_id == order_id,
+                OrderLog.order_id.like(f"%:{raw_id}"),
+            ))
             .first()
         )
         return str(row[0]) if row else None
@@ -401,7 +441,7 @@ class LimitUpCommandWorker:
         )
         self.repository.db.commit()
         order = Order(
-            strategy_id="limit_up_v1:exit",
+            strategy_id=EXIT_STRATEGY_IDS["trim"],
             ticker=session.ticker,
             side=OrderSide.SELL,
             order_type=OrderType.LIMIT,

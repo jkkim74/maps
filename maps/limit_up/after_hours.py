@@ -28,7 +28,11 @@ from maps.execution.broker_adapter import (
     raw_broker_order_id,
 )
 from maps.execution.order_manager import OrderManager
-from maps.limit_up.domain import AFTER_HOURS_FLOOR_RATIO, LimitUpState
+from maps.limit_up.domain import (
+    AFTER_HOURS_FLOOR_RATIO,
+    EXIT_STRATEGY_IDS,
+    LimitUpState,
+)
 from maps.limit_up.repository import LimitUpRepository
 from maps.market.trading_rules import round_down_krx_price
 
@@ -219,7 +223,7 @@ def _submit_after_hours_exit(
     )
     repository.db.commit()
     order = Order(
-        strategy_id="limit_up_v1:exit",
+        strategy_id=EXIT_STRATEGY_IDS["after_hours"],
         ticker=session.ticker,
         side=OrderSide.SELL,
         order_type=OrderType.AFTER_HOURS_SINGLE,

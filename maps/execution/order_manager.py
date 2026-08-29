@@ -8,6 +8,7 @@ import zoneinfo
 from dataclasses import replace
 from datetime import date, datetime, time as dt_time, timedelta
 
+from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -21,6 +22,7 @@ from maps.execution.broker_adapter import (
     OrderSide,
     OrderStatus,
     order_log_id,
+    raw_broker_order_id,
 )
 from maps.ops.notifications import SlackNotifier
 from maps.risk.manager import RiskManager
@@ -237,9 +239,17 @@ class OrderManager:
         cancelled = self._broker.cancel_order(order_id)
         if not cancelled:
             return cancelled
+        # order_log 는 언제나 **감사 ID** 로 저장되는데 호출자는 브로커 원주문 ID 를 넘길
+        # 수 있다(브로커의 열린 주문 목록에는 원주문 ID 만 있다). 정규화 없이 조회하면
+        # KIS 에서만 0건이 매치돼 행이 pending 으로 남고, 그 종목의 다음 정상 주문이
+        # _raise_if_duplicate_active_order 에 막힌다.
+        raw_id = raw_broker_order_id(order_id)
         log = (
             self._db.query(OrderLog)
-            .filter(OrderLog.order_id == order_id)
+            .filter(or_(
+                OrderLog.order_id == order_id,
+                OrderLog.order_id.like(f"%:{raw_id}"),
+            ))
             .filter(OrderLog.status.in_([
                 OrderStatus.PENDING.value,
                 OrderStatus.PARTIALLY_FILLED.value,

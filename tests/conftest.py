@@ -49,6 +49,28 @@ def _auth_disabled_by_default(monkeypatch):
     reload_settings()
 
 
+@pytest.fixture
+def kis_like_broker(monkeypatch):
+    """Broker double whose order ids behave the way KIS's actually do.
+
+    Puts settings in ``kis`` mode so ``OrderManager`` wraps broker ids into audit
+    ids — without that the two forms stay identical and the whole point of the
+    double is lost.
+    """
+    from maps.common.settings import reload_settings
+
+    from tests.kis_like_broker import KISLikeBroker
+
+    monkeypatch.setenv("MAPS_BROKER_MODE", "kis")
+    monkeypatch.setenv("KIS_ACCOUNT_NO", "50200591-01")
+    reload_settings()
+    try:
+        yield KISLikeBroker()
+    finally:
+        monkeypatch.setenv("MAPS_BROKER_MODE", "mock")
+        reload_settings()
+
+
 @pytest.fixture(scope="function")
 def db() -> Session:
     """인메모리 SQLite 세션. 테스트마다 새 DB를 생성·삭제한다."""

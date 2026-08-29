@@ -1,5 +1,63 @@
 # HANDOFF
 
+## 8/30 5차 검토 — P0 7건 수정 + **테스트 인프라 교체**, 엔진 정지 중
+
+`/code-review max` 가 P0 7건 포함 22건을 냈고 **두 건은 실행으로 재현**됐다.
+전체 테스트 1,109건이 통과하는 상태에서 나온 결함들이다.
+
+> 🔴 **운영 엔진을 껐다.** `MAPS_LIMIT_UP_ENABLED=false`(백업 `.env.bak.20260830_*`).
+> 원인 E 의 가짜 하드스톱이 재시작마다 세션을 망치고 `pattern_failure` 를 카운트하므로,
+> **그전까지 쌓인 신호 데이터는 오염된 것으로 간주한다.**
+
+### 왜 테스트가 못 잡았나 — 이것이 5차의 핵심
+
+P0 3건은 **`MockBroker` 가 감사 ID 와 브로커 원주문 ID 를 동일하게 취급**해서 구조적으로
+재현 불가능했다. 같은 함정이 3·4·5차에 걸쳐 **세 번** 나왔다.
+
+→ `tests/kis_like_broker.KISLikeBroker` 를 만들었다. `place_order` 는 맨 ODNO 를 주고
+`OrderManager` 가 감사 ID 로 감싼다. 공유 계좌(`seed_foreign_position/order`)도 모델링한다.
+**이 더블로 먼저 5건을 실패시킨 뒤 고쳤다.**
+
+### 수정한 P0 7건
+
+| # | 결함 | 조치 |
+|---|---|---|
+| 1 | 청산 전부가 `limit_up_v1:exit` 하나 → 같은 날 두 번째 청산이 **항상 중복 가드에 막힘**(재현: 트림 40주 체결 후 60주 잔류) | ✅ `exit_strategy_id(reason)` 로 사유별 레인 분리 |
+| 2 | `recover()` 가 `_last_prices` 미복원 → 재연결 첫 호가가 0원 → **가짜 하드스톱으로 캐리 전량 청산**(재현) | ✅ 복원 + `on_quote` 의 `price <= 0` 가드 |
+| 3 | `sell_actual_position` 이 **계좌 전체** 수량으로 매도 → 다른 전략 포지션까지 청산 | ✅ `owned_quantity` 상한, 호출부가 `machine.filled_quantity` 전달 |
+| 4 | `_order_owner`·`cancel()` 이 원주문 ID 로 `order_log` 조회 → KIS 에서 **항상 미매치** | ✅ 양방향 정규화 |
+| 5 | 팔 수 없는데 세션을 `CLOSED` 로 표시 → `recover()`·시간외·강제청산에서 **동시에 사라짐** | ✅ `_strand_unprotected()` — 수동 잠금 + ERROR |
+| 6 | `feed_disconnected` 해제 코드 없음 + 영속화 → 1초 끊김이 **그날 전체** 차단 | ✅ `on_feed_reconnect()` 해제, `_TRANSIENT_LATCHES` 는 영속 제외 |
+| 7 | `tick()`·`_resubmit_interrupted_exits` 가 아직 `mode` 검사 → 비상정지 후 **4차의 재제출 수정이 무력화** | ✅ `exits_are_live()` 로 전환 |
+
+### 소스 가드 6종 — 이 세션의 반복 패턴을 봉쇄한다
+
+`tests/test_limit_up_invariants.py`. 4회 연속 "안전 장치를 고치며 인접 경로를 끊는" 실패가
+났으므로, 개별 수정이 아니라 **패턴 자체**를 고정했다.
+
+1. 청산 경로는 `mode` 를 보지 않는다 (진입은 `FIRE_NET` 한 곳뿐)
+2. `order_log` 를 조회하는 함수는 ID 정규화를 거친다 (AST 검사)
+3. 청산 사유마다 전략 ID 가 다르다
+4. 시장가 청산은 세션 소유 수량으로 상한을 둔다
+5. 보유가 있는 세션은 주문 없이 닫히지 않는다
+6. 일시적 래치는 영속되지 않는다
+
+> 작성 중 가드 2번이 **오탐 1건**(`_reconcile_same_day_buys` — 감사 ID 끼리만 비교)을
+> 잡아서 AST 로 쿼리 필터만 보도록 좁혔다. 가드도 정확해야 신뢰된다.
+
+검증: 전체 **1,124 passed** (신규 24건).
+
+### 🔴 이번 범위 밖 — 다음 회차 필수
+
+P1 10건 + 제약 위반 4건이 남았다. 상세 설계는 계획 파일
+`~/.claude/plans/graceful-percolating-micali.md` 에 있다.
+특히: `open_order_ids` 계좌 전체 오염, EOD 단계 `stage == "cap"` 등가 비교,
+`trading_halted` 죽은 코드, `_settle_realized_pnl` 의 `avg_price=0` 전액손실 기록,
+**하드스톱이 `effective_stop_price()` 를 안 쓰는 루트 CLAUDE.md 제약 7 위반**,
+`trigger_price` 호가단위 3배 오차.
+
+**`automatic` 전환은 이것들 + 재검토 이후로 미룬다.**
+
 ## 8/29 4차 코드 검토 — ✅ 6건 전부 수정 (P0 2건)
 
 | # | 결함 | 조치 |

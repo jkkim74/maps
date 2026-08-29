@@ -31,6 +31,8 @@ from maps.limit_up.worker import LimitUpCommandWorker
 
 logger = logging.getLogger(__name__)
 _UTC = dt.timezone.utc
+# 연결이 살아나면 풀려야 하는 래치 — DB 에 남기면 재시작이 되살린다.
+_TRANSIENT_LATCHES = frozenset({"feed_disconnected"})
 
 
 def automatic_mode_blocked_reason(settings: "MapsSettings") -> str | None:
@@ -195,6 +197,11 @@ class LimitUpService:
         if quote.best_ask_qty == 0 and quote.best_ask_price > 0:
             price = quote.best_ask_price
             self._last_prices[quote.ticker] = price
+        if price <= 0:
+            # 가격을 모르는 상태다. 0 을 그대로 흘리면 `0 < 상한가×0.95` 가 참이 되어
+            # 멀쩡한 보유가 가짜 하드스톱으로 전량 청산된다. REST 경로가 `if price > 0`
+            # 가드를 두는 것과 같은 이유다 — 모르는 것은 폭락이 아니다.
+            return
         commands = machine.on_quote(
             QuoteEvent(
                 at=quote.received_at,
@@ -211,11 +218,7 @@ class LimitUpService:
         self.monotonic_hint = now_monotonic
         for ticker, machine in list(self._machines.items()):
             last_reconcile = self._last_reconcile_at.get(ticker, float("-inf"))
-            if (
-                self.mode is LimitUpMode.AUTOMATIC
-                and self.worker is not None
-                and now_monotonic - last_reconcile >= 1.0
-            ):
+            if self.exits_are_live() and now_monotonic - last_reconcile >= 1.0:
                 if machine.state in {LimitUpState.NET_OPEN, LimitUpState.FILLED_WAIT_LOCK}:
                     self._last_reconcile_at[ticker] = now_monotonic
                     result = self.worker.reconcile(self._sessions[ticker])
@@ -261,6 +264,19 @@ class LimitUpService:
         for ticker, machine in list(self._machines.items()):
             commands = machine.on_market_halt(at=at)
             self._handle_commands(ticker, commands, now_kst=now)
+
+    def on_feed_reconnect(self) -> None:
+        """Clear the feed-loss latch once real-time data is flowing again.
+
+        Nothing released this latch, and 4차에서 영속화까지 해서 1초짜리 끊김이
+        재시작을 넘어 그날 전체 진입을 막았다. The engine would run all day,
+        scanning and subscribing, placing nothing.
+        """
+        if "feed_disconnected" not in self.guard.halted_reasons:
+            return
+        self.guard.halted_reasons.discard("feed_disconnected")
+        self._persist_guard()
+        logger.warning("상한가 피드 복구 — feed_disconnected 래치 해제")
 
     def on_feed_disconnect(self, *, at: float, now_kst: dt.datetime) -> None:
         """Fail-close new entries and pull only unfilled nets on feed loss."""
@@ -332,8 +348,10 @@ class LimitUpService:
         )
         self._dump_tape(ticker, "EOD_DECISION")
         if self.exits_are_live():
-            self.worker.sell_actual_position(session, reason="eod_review_fail")
-        else:
+            self.worker.sell_actual_position(
+                session, reason="eod_review_fail", owned_quantity=machine.filled_quantity
+            )
+        elif not self._strand_unprotected(ticker, "eod_review_fail"):
             machine.state = LimitUpState.CLOSED
             session.state = LimitUpState.CLOSED.value
             session.end_reason = "eod_review_fail"
@@ -354,6 +372,34 @@ class LimitUpService:
         )
         self.guard.halted_reasons.add("emergency_off")
         self._persist_guard()
+
+    def _strand_unprotected(self, ticker: str, reason: str) -> bool:
+        """Refuse to close a session that still holds shares we cannot sell.
+
+        Marking it CLOSED without an order is the worst outcome available: the
+        row drops out of ``recover()``, the after-hours watch and the forced
+        liquidation all at once, so nothing ever looks at those shares again.
+        Lock the engine and shout instead.
+
+        Args:
+            ticker: Session ticker.
+            reason: What tried to close it.
+
+        Returns:
+            ``True`` when the session was stranded and must not be closed.
+        """
+        machine = self._machines[ticker]
+        if machine.filled_quantity <= 0:
+            return False
+        self.manual_lock = True
+        if ticker not in self.unknown_positions:
+            self.unknown_positions = sorted({*self.unknown_positions, ticker})
+        logger.error(
+            "주문을 낼 수 없는데 실보유가 있다 [%s] qty=%s reason=%s — "
+            "세션을 닫지 않고 수동 잠금한다",
+            ticker, machine.filled_quantity, reason,
+        )
+        return True
 
     def exits_are_live(self) -> bool:
         """Return whether protective orders can still reach the broker.
@@ -499,11 +545,13 @@ class LimitUpService:
                         "강제 청산 보류 [%s] — 취소되지 않은 매도가 남아 있다", ticker
                     )
                     continue
-                result = self.worker.sell_actual_position(session, reason=reason)
+                result = self.worker.sell_actual_position(
+                    session, reason=reason, owned_quantity=machine.filled_quantity
+                )
                 if result.position_quantity == 0:
                     machine.state = LimitUpState.CLOSED
                     machine.filled_quantity = 0
-            else:
+            elif not self._strand_unprotected(ticker, reason):
                 machine.state = LimitUpState.CLOSED
             session.state = machine.state.value
             session.end_reason = reason
@@ -558,6 +606,12 @@ class LimitUpService:
                 fired = row.net_fired_at.replace(tzinfo=_UTC)
                 elapsed = max(0.0, (wall.astimezone(_UTC) - fired).total_seconds())
                 machine.net_fired_at = now_monotonic - elapsed
+            # 가격을 복원하지 않으면 재연결 후 첫 호가가 0 원으로 평가된다.
+            # 호가창 스냅샷은 보통 체결보다 먼저 도착하므로 거의 매번 그렇게 된다.
+            held = self.worker.broker.get_position(row.ticker)
+            self._last_prices[row.ticker] = int(
+                (held.current_price or held.avg_price) if held else row.upper_limit_price
+            )
             self._sessions[row.ticker] = row
             self._machines[row.ticker] = machine
             self._candidates[row.ticker] = Candidate(
@@ -598,7 +652,9 @@ class LimitUpService:
         if not self.worker.cancel_open_exits(session).is_clear:
             return
         result = self.worker.sell_actual_position(
-            session, reason=session.end_reason or "stuck_exit_retry"
+            session,
+            reason=session.end_reason or "stuck_exit_retry",
+            owned_quantity=machine.filled_quantity or position_quantity,
         )
         if result.position_quantity == 0:
             machine.state = LimitUpState.CLOSED
@@ -617,7 +673,7 @@ class LimitUpService:
             now_kst: Wall-clock time used for the transition record.
         """
         del now_kst
-        if self.mode is not LimitUpMode.AUTOMATIC or self.worker is None:
+        if not self.exits_are_live():
             return
         for ticker, machine in list(self._machines.items()):
             if machine.state is not LimitUpState.RECONCILING:
@@ -633,7 +689,9 @@ class LimitUpService:
                 )
                 continue
             result = self.worker.sell_actual_position(
-                session, reason=session.end_reason or "recovered_exit"
+                session,
+                reason=session.end_reason or "recovered_exit",
+                owned_quantity=machine.filled_quantity,
             )
             if result.position_quantity == 0:
                 machine.state = LimitUpState.CLOSED
@@ -735,8 +793,10 @@ class LimitUpService:
             action="next_open_sell",
         )
         if self.exits_are_live():
-            self.worker.sell_actual_position(session, reason="next_open")
-        else:
+            self.worker.sell_actual_position(
+                session, reason="next_open", owned_quantity=machine.filled_quantity
+            )
+        elif not self._strand_unprotected(ticker, "next_open"):
             machine.state = LimitUpState.CLOSED
             session.state = LimitUpState.CLOSED.value
             session.end_reason = "next_open"
@@ -901,7 +961,9 @@ class LimitUpService:
                 self._dump_tape(ticker, transition)
                 if self.exits_are_live():
                     result = self.worker.sell_actual_position(
-                        session, reason=command.reason
+                        session,
+                        reason=command.reason,
+                        owned_quantity=machine.filled_quantity,
                     )
                     # 결과를 버리면 세션이 RECONCILING 에 영원히 남아 슬롯을 잡고,
                     # 늦게 체결된 청산 손익이 NULL 로 남아 일일 중단선에 안 잡힌다.
@@ -909,7 +971,7 @@ class LimitUpService:
                         machine.state = LimitUpState.CLOSED
                         machine.filled_quantity = 0
                         session.end_reason = command.reason
-                else:
+                elif not self._strand_unprotected(ticker, command.reason):
                     machine.state = LimitUpState.CLOSED
                     session.end_reason = command.reason
                 session.state = machine.state.value
@@ -953,12 +1015,14 @@ class LimitUpService:
         """Write the live guard back so a restart cannot release its latches."""
         if self.guard.ref_date is None:
             return
+        # 일시적 래치는 영속하지 않는다. feed_disconnected 는 연결이 살아나면 풀려야
+        # 하는데, 저장해 두면 재시작이 그것을 되살려 그날을 통째로 막는다.
         self.repository.save_guard(
             self.guard.ref_date,
             attempts=self.guard.attempts,
             pattern_failures=self.guard.pattern_failures,
             kosdaq_high=self.guard.kosdaq_high,
-            halted_reasons=self.guard.halted_reasons,
+            halted_reasons=self.guard.halted_reasons - _TRANSIENT_LATCHES,
         )
         self.repository.db.commit()
 

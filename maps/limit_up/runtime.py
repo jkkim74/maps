@@ -529,6 +529,9 @@ class KISIntradayRuntime:
                     self._subscribed.clear()
                     self._feed_connected = True
                     backoff = 1.0
+                    await self._call_service(
+                        self.service.on_feed_reconnect, priority=_PRIORITY_HIGH
+                    )
                     for ticker in self.service.watched_tickers():
                         await self._subscribe(socket, approval, ticker)
                     await self._serve_socket(socket, approval)
