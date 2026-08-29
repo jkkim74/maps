@@ -124,11 +124,13 @@ def test_another_strategys_sell_survives_our_cancel(db, kis_like_broker) -> None
     # 다른 전략도 감사 ID 로 기록된다 — order_log 는 언제나 감사 ID 다
     db.add(
         OrderLog(
+            # 오늘 낸 주문이어야 소유자로 인식된다 — ODNO 는 거래일마다 재사용되므로
+            # 조회가 계좌·날짜까지 맞춘다
             order_id=order_log_id(
                 foreign_id,
                 broker="kis",
                 account_no="50200591-01",
-                submitted_at=dt.datetime(2026, 8, 28, 10, 0),
+                submitted_at=dt.datetime.now(),
             ),
             strategy_id="pullback_v3",
             ticker="005930",
@@ -305,3 +307,80 @@ def test_a_feed_blip_does_not_block_the_rest_of_the_day(db, kis_like_broker) -> 
     restarted = _service(db, kis_like_broker)
     restarted._refresh_daily_pnl(now.date())
     assert "feed_disconnected" not in restarted.guard.halted_reasons
+
+
+def test_repeating_the_eod_cap_does_not_resubmit_the_same_trim(db, kis_like_broker) -> None:
+    """The cap now runs every pass, so it must be idempotent for real.
+
+    Re-transitioning an EOD_TRIM session bumps state_version, which mints a fresh
+    idempotency key and sends the trim again — the duplicate then blocks the
+    15:28 fail-closed liquidation that the whole cap exists to guarantee.
+    """
+    broker = kis_like_broker
+    service = _service(db, broker)
+    now = dt.datetime(2026, 8, 28, 10, 0, tzinfo=KST)
+    service.watch_candidate(
+        Candidate(
+            ticker="005930", market="KOSPI", upper_limit_price=100_000,
+            total_listed_shares=10_000_000, current_price=96_000, change_rate=25.0,
+        ),
+        now_kst=now,
+    )
+    machine = service.machine("005930")
+    machine.on_fill(at=1.0, cumulative_quantity=100)
+    machine.state = LimitUpState.OVERNIGHT
+    broker.seed_position("005930", 100, 98_000.0)
+    session = service._sessions["005930"]
+    for name, qty in (("S", 60), ("A", 40)):
+        leg = service.repository.upsert_leg(session, name=name, price=98_800, quantity=qty)
+        leg.filled_quantity = qty
+        leg.avg_fill_price = 98_800.0
+    db.commit()
+
+    first = service.apply_overnight_cap(ref_date=dt.date(2026, 8, 28))
+    assert first  # 초과분이 있어 트림이 나갔다
+    sells_after_first = len([o for o in broker.submitted if o.side is OrderSide.SELL])
+
+    # 같은 회차 루프가 다시 돈다
+    second = service.apply_overnight_cap(ref_date=dt.date(2026, 8, 28))
+
+    assert second == {}, "같은 트림을 다시 제출했다"
+    assert len([o for o in broker.submitted if o.side is OrderSide.SELL]) == sells_after_first
+
+
+def test_a_downgraded_engine_does_not_sell_paper_positions(db, kis_like_broker) -> None:
+    """recommend_only fills are imaginary; selling them hits real account shares."""
+    broker = kis_like_broker
+    broker.seed_foreign_position("005930", 12, 70_000.0)  # 다른 전략의 실보유
+    service = _service(db, broker, mode=LimitUpMode.RECOMMEND_ONLY)
+    now = dt.datetime(2026, 8, 28, 10, 0, tzinfo=KST)
+    service.watch_candidate(
+        Candidate(
+            ticker="005930", market="KOSPI", upper_limit_price=100_000,
+            total_listed_shares=10_000_000, current_price=96_000, change_rate=25.0,
+        ),
+        now_kst=now,
+    )
+    # 추천 모드에서 가상 체결이 일어난다
+    service.on_trade(_trade_at(1.0, 99_600), now_kst=now)
+    service.on_trade(_trade_at(2.0, 99_700), now_kst=now)
+    service.on_trade(_trade_at(3.0, 98_800), now_kst=now)
+    service.set_mode(LimitUpMode.AUTOMATIC)  # 능력이 열려도 가상분은 팔면 안 된다
+
+    service.on_trade(_trade_at(4.0, 90_000), now_kst=now)  # 하드스톱
+
+    assert [o for o in broker.submitted if o.side is OrderSide.SELL] == []
+    assert broker.get_position("005930").quantity == 12
+
+
+def _trade_at(at: float, price: int):
+    from maps.limit_up.feed import FeedTrade
+
+    return FeedTrade(
+        ticker="005930",
+        price=price,
+        cumulative_turnover_krw=50_000_000_000,
+        execution_strength=151.0,
+        buy_initiated=True,
+        received_at=at,
+    )

@@ -116,6 +116,22 @@ def _service(db, mode: LimitUpMode, broker: ServiceBroker | None = None) -> Limi
     )
 
 
+def _seed_owned(service, ticker: str, quantity: int, price: int = 98_800) -> None:
+    """Record filled buy legs so the session actually owns what it claims to.
+
+    Session ownership comes from its own order legs, not from the account
+    position — the account can hold another strategy's shares in the same ticker.
+    """
+    session = service._sessions[ticker]
+    for name, qty in (("S", quantity - quantity // 3), ("A", quantity // 3)):
+        leg = service.repository.upsert_leg(
+            session, name=name, price=price, quantity=qty
+        )
+        leg.filled_quantity = qty
+        leg.avg_fill_price = float(price)
+    service.repository.db.commit()
+
+
 def _trade(at: float, price: int) -> FeedTrade:
     return FeedTrade(
         ticker="005930",
@@ -351,6 +367,7 @@ def _overnight_service(db, held: int) -> tuple[ServiceBroker, LimitUpService]:
     machine = service.machine("005930")
     machine.fire_net(at=1.0)
     machine.on_fill(at=2.0, cumulative_quantity=held)
+    _seed_owned(service, "005930", held)
     machine.on_quote(
         event=service.quote_event("005930", price=100_000, ask_qty=0, at=3.0)
     )
@@ -471,6 +488,7 @@ def test_completed_exit_leaves_reconciling(db) -> None:
     machine = service.machine("005930")
     machine.fire_net(at=1.0)
     machine.on_fill(at=2.0, cumulative_quantity=20)
+    _seed_owned(service, "005930", 20)
     broker.positions["005930"] = Position("005930", 20, 98_000.0)
 
     # hard stop submits the exit, but the broker has not filled it yet
@@ -683,6 +701,11 @@ def test_recovery_resubmits_an_exit_interrupted_before_it_was_sent(db) -> None:
     )
     row.state = LimitUpState.RECONCILING.value
     row.end_reason = "hard_stop"
+    # 세션 소유분은 자기 레그 체결에서 나온다 — 계좌 보유가 아니다
+    for name, qty in (("S", 12), ("A", 8)):
+        leg = service.repository.upsert_leg(row, name=name, price=98_800, quantity=qty)
+        leg.filled_quantity = qty
+        leg.avg_fill_price = 98_800.0
     db.commit()
 
     service.recover(ref_date=dt.date(2026, 8, 28), now_monotonic=100.0)
@@ -730,6 +753,7 @@ def test_emergency_off_blocks_entries_but_still_sells_what_is_held(db) -> None:
     machine = service.machine("005930")
     machine.fire_net(at=1.0)
     machine.on_fill(at=2.0, cumulative_quantity=20)
+    _seed_owned(service, "005930", 20)
     broker.positions["005930"] = Position("005930", 20, 98_000.0)
 
     service.emergency_off()
@@ -766,6 +790,7 @@ def test_a_failed_stop_loss_order_does_not_strand_the_position(db) -> None:
     machine = service.machine("005930")
     machine.fire_net(at=1.0)
     machine.on_fill(at=2.0, cumulative_quantity=20)
+    _seed_owned(service, "005930", 20)
     broker.positions["005930"] = Position("005930", 20, 98_000.0)
 
     # the protective sell blows up mid-flight

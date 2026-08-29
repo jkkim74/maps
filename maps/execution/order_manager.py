@@ -243,12 +243,21 @@ class OrderManager:
         # 수 있다(브로커의 열린 주문 목록에는 원주문 ID 만 있다). 정규화 없이 조회하면
         # KIS 에서만 0건이 매치돼 행이 pending 으로 남고, 그 종목의 다음 정상 주문이
         # _raise_if_duplicate_active_order 에 막힌다.
+        settings = get_settings()
         raw_id = raw_broker_order_id(order_id)
+        # ODNO 는 거래일마다 재사용된다. 접미사만 맞추면 과거 주문이나 다른 계좌 행을
+        # 집을 수 있으므로, 계좌·날짜까지 포함한 감사 ID 로 정확히 맞춘다.
+        same_day_audit_id = order_log_id(
+            raw_id,
+            broker=settings.maps_broker_mode,
+            account_no=settings.kis_account_no,
+            submitted_at=datetime.now(_KST),
+        )
         log = (
             self._db.query(OrderLog)
             .filter(or_(
                 OrderLog.order_id == order_id,
-                OrderLog.order_id.like(f"%:{raw_id}"),
+                OrderLog.order_id == same_day_audit_id,
             ))
             .filter(OrderLog.status.in_([
                 OrderStatus.PENDING.value,

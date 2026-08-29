@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
 from dataclasses import dataclass
 
@@ -9,12 +10,14 @@ from sqlalchemy import or_
 
 from maps.common.exceptions import BrokerAdapterError
 from maps.common.models import LimitUpOrderLeg, LimitUpSession, OrderLog
+from maps.common.settings import get_settings
 from maps.execution.broker_adapter import (
     BrokerAdapter,
     Order,
     OrderSide,
     OrderStatus,
     OrderType,
+    order_log_id,
     raw_broker_order_id,
 )
 from maps.execution.order_manager import OrderManager
@@ -23,6 +26,7 @@ from maps.limit_up.repository import LimitUpRepository
 
 
 logger = logging.getLogger(__name__)
+_KST = dt.timezone(dt.timedelta(hours=9))
 
 
 @dataclass(frozen=True)
@@ -40,11 +44,28 @@ class CancelExitsResult:
 
 @dataclass(frozen=True)
 class ReconcileResult:
-    """Broker-authoritative session facts after reconciliation."""
+    """Broker-authoritative session facts after reconciliation.
+
+    Attributes:
+        position_quantity: **Account-wide** holding for the ticker. On a shared
+            account this includes other strategies' shares — never treat it as
+            this session's position.
+        open_order_ids: This session's still-open order ids.
+        filled_quantity: Shares filled on this session's own legs.
+    """
 
     position_quantity: int
     open_order_ids: tuple[str, ...]
     filled_quantity: int
+
+    @property
+    def owned_quantity(self) -> int:
+        """Return shares this session actually holds.
+
+        The account can hold more (another strategy) or fewer (someone sold
+        outside the engine); both directions matter, so take the smaller.
+        """
+        return max(0, min(self.position_quantity, self.filled_quantity))
 
 
 class LimitUpCommandWorker:
@@ -65,10 +86,7 @@ class LimitUpCommandWorker:
         self.order_manager = order_manager
         self.broker = broker
         self.repository = repository
-
-    def filled_quantity(self, session: LimitUpSession) -> int:
-        """Return shares this session actually bought, per its own order legs."""
-        return sum(leg.filled_quantity for leg in self.legs(session))
+        self._stranded_buys: dict[int, bool] = {}
 
     def legs(self, session: LimitUpSession) -> list[LimitUpOrderLeg]:
         """Return fixed legs in deterministic A/S order for audit displays."""
@@ -179,10 +197,20 @@ class LimitUpCommandWorker:
             else:
                 leg.status = "cancelled"
             self.repository.db.commit()
+        # reconcile 이 leg.status 를 브로커 기준으로 되돌리므로 ambiguous 를 여기서
+        # 잃으면 흔적이 사라진다. 매도 경로가 CancelExitsResult 를 돌려주는 것과 같은
+        # 이유로, 취소하지 못한 매수가 남았다는 사실을 호출부가 알아야 한다.
         result = self.reconcile(session)
-        if ambiguous:
-            return result
+        self._stranded_buys[session.id] = ambiguous
         return result
+
+    def has_stranded_buy(self, session: LimitUpSession) -> bool:
+        """Return whether a buy order stayed live after a failed cancel.
+
+        A resting buy can still fill *after* the protective sell, recreating the
+        position the sell was meant to remove.
+        """
+        return self._stranded_buys.get(session.id, False)
 
     def reconcile(self, session: LimitUpSession) -> ReconcileResult:
         """Apply daily fills, then open orders, then the actual broker holding."""
@@ -214,6 +242,17 @@ class LimitUpCommandWorker:
                 )
         self._settle_realized_pnl(session, result_by_id)
         position = self.broker.get_position(session.ticker)
+        # 이 세션이 낸 주문만 열린 주문으로 센다. 같은 종목의 다른 전략 주문이나 우리
+        # 매수 주문까지 세면 정체된 손절의 재제출이 영영 막힌다.
+        session_order_ids = {
+            raw_broker_order_id(leg.broker_order_id)
+            for leg in self.legs(session)
+            if leg.broker_order_id
+        } | {
+            raw_broker_order_id(item)
+            for item in (session.exit_order_ids or "").split(",")
+            if item
+        }
         self.repository.db.commit()
         return ReconcileResult(
             position_quantity=position.quantity if position else 0,
@@ -222,7 +261,7 @@ class LimitUpCommandWorker:
             open_order_ids=tuple(sorted(
                 raw_id
                 for raw_id, order in open_by_id.items()
-                if order.ticker == session.ticker
+                if raw_id in session_order_ids
             )),
             filled_quantity=sum(leg.filled_quantity for leg in self.legs(session)),
         )
@@ -253,7 +292,7 @@ class LimitUpCommandWorker:
         position = self.broker.get_position(session.ticker)
         if position is None or position.quantity <= 0:
             return self.reconcile(session)
-        owned = owned_quantity if owned_quantity is not None else self.filled_quantity(session)
+        owned = owned_quantity if owned_quantity is not None else self.repository.filled_quantity(session)
         quantity = min(position.quantity, owned) if owned > 0 else 0
         if quantity <= 0:
             logger.warning(
@@ -418,12 +457,20 @@ class LimitUpCommandWorker:
         # order_log 는 감사 ID(kis:...)로 저장되고 브로커의 열린 주문 목록은 원주문 ID 만
         # 준다. 정규화하지 않으면 KIS 에서 **항상 None** 이 되어 소유권 가드가 구조적으로
         # 죽는다 — 공유 계좌에서 남의 매도를 취소하게 된다.
+        settings = get_settings()
         raw_id = raw_broker_order_id(order_id)
+        # ODNO 재사용 때문에 접미사 매칭은 과거 주문을 집을 수 있다 — 계좌·날짜까지 맞춘다.
+        same_day_audit_id = order_log_id(
+            raw_id,
+            broker=settings.maps_broker_mode,
+            account_no=settings.kis_account_no,
+            submitted_at=dt.datetime.now(_KST),
+        )
         row = (
             self.repository.db.query(OrderLog.strategy_id)
             .filter(or_(
                 OrderLog.order_id == order_id,
-                OrderLog.order_id.like(f"%:{raw_id}"),
+                OrderLog.order_id == same_day_audit_id,
             ))
             .first()
         )

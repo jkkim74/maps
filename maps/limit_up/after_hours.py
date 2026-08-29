@@ -172,7 +172,7 @@ def run_after_hours_watch(
             continue
 
         try:
-            if _submit_after_hours_exit(session, broker, order_manager, repository):
+            if _submit_after_hours_exit(db, session, broker, order_manager, repository):
                 counters["exited"] += 1
         except Exception:  # noqa: BLE001 - 한 종목 실패가 남은 캐리를 막으면 안 된다
             counters["errors"] += 1
@@ -183,6 +183,7 @@ def run_after_hours_watch(
 
 
 def _submit_after_hours_exit(
+    db: Session,
     session: LimitUpSession,
     broker: BrokerAdapter,
     order_manager: OrderManager,
@@ -205,6 +206,15 @@ def _submit_after_hours_exit(
     position = broker.get_position(session.ticker)
     if position is None or position.quantity <= 0:
         return False
+    # 계좌 전체가 아니라 이 세션이 산 만큼만 판다 — 공유 계좌에서 남의 보유까지
+    # 시간외 하한가로 던지면 그쪽 전략이 통째로 무너진다.
+    owned = min(position.quantity, repository.filled_quantity(session))
+    if owned <= 0:
+        logger.warning(
+            "시간외 탈출 건너뜀 [%s] — 세션 소유분 0 (계좌 보유 %s)",
+            session.ticker, position.quantity,
+        )
+        return False
     submitted = {item for item in (session.exit_order_ids or "").split(",") if item}
     if session.state == LimitUpState.AFTER_HOURS_EXIT.value and submitted:
         # 감사 ID(kis:...)와 브로커 원주문 ID 를 정규화 없이 비교하면 KIS 에서는 절대
@@ -221,13 +231,6 @@ def _submit_after_hours_exit(
         return False
 
     price = after_hours_exit_price(session.upper_limit_price)
-    repository.transition(
-        session,
-        state=LimitUpState.AFTER_HOURS_EXIT,
-        action="after_hours_exit",
-        payload={"quantity": position.quantity, "price": price},
-    )
-    repository.db.commit()
     order = Order(
         strategy_id=EXIT_STRATEGY_IDS["after_hours"],
         ticker=session.ticker,
@@ -241,7 +244,16 @@ def _submit_after_hours_exit(
             "reason": "after_hours_break_exit",
         },
     )
+    # 제출이 성공한 **뒤** 상태를 확정한다. 먼저 커밋하면 한 번의 제출 실패가
+    # 그 종목의 시간외 방어를 그날 내내 비활성화하고(이후 회차는 "주문이 사라졌다"고
+    # 오인한다), 로그가 보내지도 않은 주문을 두고 거래소를 탓하게 된다.
     result = order_manager.submit_exit(order, exit_reason="after_hours_break_exit")
+    repository.transition(
+        session,
+        state=LimitUpState.AFTER_HOURS_EXIT,
+        action="after_hours_exit",
+        payload={"quantity": owned, "price": price},
+    )
     ledger = [item for item in (session.exit_order_ids or "").split(",") if item]
     if result.order_id not in ledger:
         ledger.append(result.order_id)

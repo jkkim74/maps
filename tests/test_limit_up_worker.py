@@ -349,24 +349,38 @@ def test_a_failed_cancel_is_reported_so_no_sell_is_stacked_on_it(db) -> None:
     assert not result.is_clear
 
 
-def test_reconcile_reports_only_this_tickers_open_orders(db) -> None:
-    """Account-wide ids made tick()'s "no open order" retry condition unreachable."""
+def test_reconcile_reports_only_this_sessions_own_orders(db) -> None:
+    """Ticker-scoped ids still block the stuck-exit retry on a shared account.
+
+    Another strategy's working order in the same ticker — or even our own buy
+    leg — would keep ``open_order_ids`` non-empty forever, so the retry that
+    rescues a failed stop never fires.
+    """
     broker = ScriptedBroker()
     worker, session = _worker(db, broker)
+    worker.fire_grid(session, build_grid(upper_limit_price=100_000, budget_krw=2_000_000))
+    ours = {leg.broker_order_id for leg in worker.legs(session)}
     broker.open_orders = [
         PendingOrder(
             order_id="5001", ticker="000660", side=OrderSide.SELL,
             quantity=5, remaining_quantity=5, order_price=50_000,
         ),
         PendingOrder(
-            order_id="5002", ticker="005930", side=OrderSide.BUY,
+            order_id="5002", ticker="005930", side=OrderSide.SELL,
             quantity=5, remaining_quantity=5, order_price=98_800,
         ),
+    ] + [
+        PendingOrder(
+            order_id=str(order_id), ticker="005930", side=OrderSide.BUY,
+            quantity=5, remaining_quantity=5, order_price=98_800,
+        )
+        for order_id in ours
     ]
 
     result = worker.reconcile(session)
 
-    assert result.open_order_ids == ("5002",)
+    # 다른 종목(5001)도, 같은 종목의 남의 매도(5002)도 아니다
+    assert set(result.open_order_ids) == ours
 
 
 def test_a_fill_without_an_average_price_is_not_booked_as_a_total_loss(db) -> None:

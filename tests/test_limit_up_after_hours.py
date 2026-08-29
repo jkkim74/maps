@@ -105,6 +105,11 @@ def _carried_session(db, *, held: int = 20, close: int = 100_000):
         trigger_price=close - 300,
     )
     session.state = LimitUpState.OVERNIGHT.value
+    # 세션 소유분은 자기 레그 체결에서 나온다 — 계좌 보유가 아니다
+    for name, qty in (("S", held - held // 3), ("A", held // 3)):
+        leg = repo.upsert_leg(session, name=name, price=close, quantity=qty)
+        leg.filled_quantity = qty
+        leg.avg_fill_price = float(close)
     db.commit()
     manager = OrderManager(broker, RiskManager(broker, db), db)
     return broker, session, manager, submitted

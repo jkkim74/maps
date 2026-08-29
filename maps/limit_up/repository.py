@@ -127,6 +127,19 @@ class LimitUpRepository:
         row.halted_reasons = sorted(halted_reasons)
         self.db.flush()
 
+    def filled_quantity(self, session: LimitUpSession) -> int:
+        """Return shares bought on this session's own legs.
+
+        Session ownership never comes from the account position: a shared
+        account can hold another strategy's shares in the same ticker.
+        """
+        rows = (
+            self.db.query(LimitUpOrderLeg.filled_quantity)
+            .filter(LimitUpOrderLeg.session_id == session.id)
+            .all()
+        )
+        return sum(int(row[0] or 0) for row in rows)
+
     def event_exists(
         self,
         session: LimitUpSession,

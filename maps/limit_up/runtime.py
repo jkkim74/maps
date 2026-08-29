@@ -331,16 +331,22 @@ class KISIntradayRuntime:
             await asyncio.wait_for(
                 self._service_queue.join(), timeout=_SHUTDOWN_DRAIN_SECONDS
             )
+            drained = True
         except (asyncio.TimeoutError, TimeoutError):
-            logger.warning(
-                "상한가 V1 종료 — 진행 중 브로커 작업이 %.0f초 안에 안 끝났다",
+            drained = False
+            logger.error(
+                "상한가 V1 종료 — 진행 중 브로커 작업이 %.0f초 안에 안 끝났다. "
+                "세션을 닫지 않고 둔다(닫으면 실행 중인 주문의 DB 쓰기가 반토막 난다)",
                 _SHUTDOWN_DRAIN_SECONDS,
             )
         for task in self._tasks:
             task.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
-        self.db.close()
+        # to_thread 는 취소되지 않는다. 드레인이 끝나지 않았다면 그 스레드가 아직
+        # 이 세션으로 쓰고 있다 — 프로세스 종료가 정리하도록 두는 편이 낫다.
+        if drained:
+            self.db.close()
 
     def _load_security(self, ticker: str) -> SecurityMetadata | None:
         """Read one security row on the serialized worker, never the event loop."""
@@ -405,7 +411,14 @@ class KISIntradayRuntime:
         loop does not need to wait; it only needs to hand work over.
         """
         at = self.monotonic() if received_at is None else received_at
-        events = parse_kis_ws_message(raw, received_at=at)
+        try:
+            events = parse_kis_ws_message(raw, received_at=at)
+        except ValueError:
+            # 형식이 바뀐 프레임 하나와 죽은 소켓은 다른 사건이다. 같은 핸들러로 보내면
+            # 파싱 실패가 피드 끊김으로 오인돼 진입이 래치되고, 재연결→같은 프레임→
+            # 다시 실패의 무한 루프가 된다.
+            logger.exception("상한가 실시간 프레임 파싱 실패 — 이 프레임만 버린다")
+            return 0
         now = self.wall_now()
         for event in events:
             task = asyncio.ensure_future(
@@ -518,6 +531,11 @@ class KISIntradayRuntime:
                 approval = await asyncio.to_thread(
                     self.adapter.issue_websocket_approval_key
                 )
+                # ping_interval=None 은 websockets 의 keepalive·heartbeat 를 **통째로**
+                # 끈다(공식 문서: 기본 20초 Ping / 20초 Pong 대기). KIS 는 표준 Ping 대신
+                # 자체 PINGPONG 프레임을 쓰므로 라이브러리 하트비트를 켜면 응답이 없어
+                # 20초마다 끊긴다. 대신 애플리케이션 레벨로 무음을 감지한다
+                # (feed_is_silent) — 이 둘은 같은 역할이므로 하나만 켠다.
                 async with websockets.connect(
                     self.settings.kis_websocket_url,
                     ping_interval=None,

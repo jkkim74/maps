@@ -118,6 +118,10 @@ class KISLikeBroker(BrokerAdapter):
         self._open.pop(raw_order_id, None)
         held = self._positions.get(order.ticker)
         current = held.quantity if held else 0
+        if order.side is OrderSide.SELL and quantity > current:
+            raise AssertionError(
+                f"체결이 보유를 초과한다: {quantity} > {current} — 실제 브로커에서 불가능하다"
+            )
         remaining = current - quantity if order.side is OrderSide.SELL else current + quantity
         if remaining <= 0:
             self._positions.pop(order.ticker, None)
@@ -136,10 +140,28 @@ class KISLikeBroker(BrokerAdapter):
     # ---- BrokerAdapter --------------------------------------------------
 
     def place_order(self, order: Order) -> OrderResult:
-        """Accept an order and return a **bare ODNO**, as KIS does."""
+        """Accept an order and return a **bare ODNO**, as KIS does.
+
+        Rejects a sell larger than the sellable quantity, the way KIS does
+        (주문가능수량 초과). Without that the double books an oversell as a clean
+        exit, and every guard that exists to prevent overselling becomes
+        untestable — which is how several quantity defects shipped green.
+        """
         if self.reject_next is not None:
             error, self.reject_next = self.reject_next, None
             raise error
+        if order.side is OrderSide.SELL:
+            held = self._positions.get(order.ticker)
+            reserved = sum(
+                pending.remaining_quantity
+                for pending in self._open.values()
+                if pending.ticker == order.ticker and pending.side is OrderSide.SELL
+            )
+            sellable = (held.quantity if held else 0) - reserved
+            if order.quantity > sellable:
+                raise BrokerAdapterError(
+                    f"주문가능수량 초과: {order.quantity} > {sellable} ({order.ticker})"
+                )
         self._sequence += 1
         raw_id = f"{self._sequence:010d}"
         self._orders[raw_id] = order
