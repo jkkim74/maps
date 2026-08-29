@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 from maps.common.exceptions import BrokerAdapterError
@@ -17,6 +18,9 @@ from maps.execution.broker_adapter import (
 from maps.execution.order_manager import OrderManager
 from maps.limit_up.domain import GridLeg, realized_pnl
 from maps.limit_up.repository import LimitUpRepository
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -299,18 +303,31 @@ class LimitUpCommandWorker:
         reserves shares, so selling the whole position on top of it would submit
         more shares than are held.
         """
-        open_ids = {
-            raw_broker_order_id(order.order_id) for order in self.broker.get_open_orders()
+        recorded = {
+            raw_broker_order_id(item)
+            for item in (session.exit_order_ids or "").split(",")
+            if item
         }
         cancelled = 0
-        for order_id in (session.exit_order_ids or "").split(","):
-            if not order_id or raw_broker_order_id(order_id) not in open_ids:
+        for order in self.broker.get_open_orders():
+            if order.ticker != session.ticker or order.side is not OrderSide.SELL:
                 continue
+            raw_id = raw_broker_order_id(order.order_id)
+            # 브로커에는 접수됐는데 주문 ID 를 저장하기 전에 죽으면 exit_order_ids 에
+            # 없다. 원장만 믿고 취소하면 그 매도가 살아 있는 채로 전량매도를 덧대어
+            # 보유보다 많이 팔게 된다. 티커의 열린 매도는 전부 취소 대상이다.
+            if raw_id not in recorded:
+                logger.warning(
+                    "기록되지 않은 매도 주문 발견 [%s] id=%s — 중복 매도를 막기 위해 취소",
+                    session.ticker, order.order_id,
+                )
             try:
-                self.order_manager.cancel(order_id)
+                self.order_manager.cancel(order.order_id)
             except BrokerAdapterError:
                 continue
+            self._record_exit_order(session, order.order_id)
             cancelled += 1
+        self.repository.db.commit()
         return cancelled
 
     def sell_overnight_excess(

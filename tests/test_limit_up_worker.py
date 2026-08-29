@@ -246,3 +246,51 @@ def test_unfilled_exit_leaves_realized_pnl_unknown_rather_than_zero(db) -> None:
 
     assert session.exit_order_ids is not None
     assert session.realized_pnl is None
+
+
+def test_recovery_cancels_an_exit_whose_id_was_never_recorded(db) -> None:
+    """Crashing after the broker accepted a sell but before the id was stored.
+
+    Trusting only the ledger left that sell live, so the recovery exit stacked a
+    second full-size order on top of it and sold more than was held.
+    """
+    broker = ScriptedBroker()
+    worker, session = _worker(db, broker)
+    broker.position = Position("005930", quantity=20, avg_price=98_800)
+    broker.open_orders = [
+        PendingOrder(
+            order_id="9001",  # accepted by the broker, never written to the session
+            ticker="005930",
+            side=OrderSide.SELL,
+            quantity=20,
+            remaining_quantity=20,
+            order_price=90_000,
+        )
+    ]
+    assert not session.exit_order_ids
+
+    cancelled = worker.cancel_open_exits(session)
+
+    assert cancelled == 1
+    assert broker.cancelled == ["9001"]
+    assert "9001" in (session.exit_order_ids or "")
+
+
+def test_cancel_open_exits_ignores_other_tickers_and_buys(db) -> None:
+    """Cancelling indiscriminately would pull another strategy's working orders."""
+    broker = ScriptedBroker()
+    worker, session = _worker(db, broker)
+    broker.position = Position("005930", quantity=20, avg_price=98_800)
+    broker.open_orders = [
+        PendingOrder(
+            order_id="7001", ticker="000660", side=OrderSide.SELL,
+            quantity=5, remaining_quantity=5, order_price=50_000,
+        ),
+        PendingOrder(
+            order_id="7002", ticker="005930", side=OrderSide.BUY,
+            quantity=5, remaining_quantity=5, order_price=98_800,
+        ),
+    ]
+
+    assert worker.cancel_open_exits(session) == 0
+    assert broker.cancelled == []

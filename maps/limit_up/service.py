@@ -230,27 +230,33 @@ class LimitUpService:
             commands = machine.on_timer(now_monotonic)
             self._handle_commands(ticker, commands, now_kst=wall)
 
-    def on_kosdaq(self, *, value: float, at: float) -> None:
+    def on_kosdaq(
+        self, *, value: float, at: float, now_kst: dt.datetime | None = None
+    ) -> None:
         """Latch panic drawdown and cancel every still-pending V1 buy grid.
 
         The high is persisted on every observation, not just on a latch: a
         restart that rebuilds it from the post-restart tape would start from an
         already-depressed price and never latch at all.
         """
+        now = now_kst or dt.datetime.now(dt.timezone(dt.timedelta(hours=9)))
+        # 날짜를 먼저 맞추지 않으면 기동 직후 관측이 ref_date=None 가드에 쌓이고,
+        # 첫 진입 심사가 가드를 교체하는 순간 방금 걸린 래치가 사라진다.
+        self._ensure_guard_for(now.date())
         latched = self.guard.observe_kosdaq(value)
         self._persist_guard()
         if not latched:
             return
-        now = dt.datetime.now(dt.timezone(dt.timedelta(hours=9)))
-        for ticker, machine in self._machines.items():
+        for ticker, machine in list(self._machines.items()):
             commands = machine.on_market_halt(at=at)
             self._handle_commands(ticker, commands, now_kst=now)
 
     def on_feed_disconnect(self, *, at: float, now_kst: dt.datetime) -> None:
         """Fail-close new entries and pull only unfilled nets on feed loss."""
+        self._ensure_guard_for(now_kst.date())
         self.guard.halted_reasons.add("feed_disconnected")
         self._persist_guard()
-        for ticker, machine in self._machines.items():
+        for ticker, machine in list(self._machines.items()):
             commands = machine.on_market_halt(at=at)
             self._handle_commands(ticker, commands, now_kst=now_kst)
 
@@ -330,6 +336,9 @@ class LimitUpService:
         selling would strand whatever is already held.
         """
         self.mode = LimitUpMode.OFF
+        self._ensure_guard_for(
+            dt.datetime.now(dt.timezone(dt.timedelta(hours=9))).date()
+        )
         self.guard.halted_reasons.add("emergency_off")
         self._persist_guard()
 
@@ -337,7 +346,7 @@ class LimitUpService:
         """Return sessions still competing for the shared overnight budget."""
         return sorted(
             ticker
-            for ticker, machine in self._machines.items()
+            for ticker, machine in list(self._machines.items())
             if machine.state in {LimitUpState.OVERNIGHT, LimitUpState.EOD_TRIM}
         )
 
@@ -448,7 +457,7 @@ class LimitUpService:
         stranded = {LimitUpState.EOD_TRIM, LimitUpState.LOCKED}
         candidates = sorted(
             ticker
-            for ticker, machine in self._machines.items()
+            for ticker, machine in list(self._machines.items())
             if machine.state in stranded and machine.filled_quantity > 0
         )
         for ticker in candidates:
@@ -556,7 +565,7 @@ class LimitUpService:
         del now_kst
         if self.mode is not LimitUpMode.AUTOMATIC or self.worker is None:
             return
-        for ticker, machine in self._machines.items():
+        for ticker, machine in list(self._machines.items()):
             if machine.state is not LimitUpState.RECONCILING:
                 continue
             if machine.filled_quantity <= 0:
@@ -597,13 +606,13 @@ class LimitUpService:
                     "state": machine.state.value,
                     "filled_quantity": machine.filled_quantity,
                 }
-                for ticker, machine in self._machines.items()
+                for ticker, machine in list(self._machines.items())
             },
         }
 
     def watched_tickers(self) -> tuple[str, ...]:
         """Return every persisted live ticker in deterministic order."""
-        return tuple(sorted(self._machines))
+        return tuple(sorted(list(self._machines)))
 
     def held_tickers(self) -> list[str]:
         """Return tickers whose broker position still needs protection."""
@@ -617,7 +626,7 @@ class LimitUpService:
         }
         return sorted(
             ticker
-            for ticker, machine in self._machines.items()
+            for ticker, machine in list(self._machines.items())
             if machine.filled_quantity > 0 and machine.state in held_states
         )
 
@@ -625,21 +634,34 @@ class LimitUpService:
         """Return sessions eligible for the strict 15:18 review."""
         return sorted(
             ticker
-            for ticker, machine in self._machines.items()
+            for ticker, machine in list(self._machines.items())
             if machine.state is LimitUpState.LOCKED
         )
 
-    def overnight_tickers(self) -> list[str]:
-        """Return sessions that must submit the next opening-auction exit.
+    def overnight_tickers(self, *, before: dt.date | None = None) -> list[str]:
+        """Return carries due for the next opening-auction exit.
+
+        ``before`` excludes sessions entered on that date, which is what makes
+        this the *next* open rather than this one: 15:18 turns a session into
+        ``OVERNIGHT`` while the market is still open, and without the date guard
+        the same daily-actions pass would sell it minutes later.
 
         ``AFTER_HOURS_EXIT`` is included: an after-hours escape that never filled
         still holds shares, and leaving it out would strand the position for
         another whole day — the exact risk the escape existed to avoid.
+
+        Args:
+            before: Only return sessions whose ``ref_date`` precedes this date.
+
+        Returns:
+            Tickers to exit at the opening auction.
         """
+        carried = {LimitUpState.OVERNIGHT, LimitUpState.AFTER_HOURS_EXIT}
         return sorted(
             ticker
-            for ticker, machine in self._machines.items()
-            if machine.state in {LimitUpState.OVERNIGHT, LimitUpState.AFTER_HOURS_EXIT}
+            for ticker, machine in list(self._machines.items())
+            if machine.state in carried
+            and (before is None or self._sessions[ticker].ref_date < before)
         )
 
     def sell_next_open(self, ticker: str) -> None:
@@ -811,6 +833,7 @@ class LimitUpService:
 
             if command.kind is CommandKind.MARKET_SELL:
                 if machine.pattern_failure_pending and not session.pattern_failure_counted:
+                    self._ensure_guard_for(now_kst.date())
                     self.guard.register_pattern_failure()
                     session.pattern_failure_counted = True
                     self._persist_guard()
@@ -898,7 +921,7 @@ class LimitUpService:
         }
         return sum(
             ticker != exclude and machine.state in states
-            for ticker, machine in self._machines.items()
+            for ticker, machine in list(self._machines.items())
         )
 
 

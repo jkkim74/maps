@@ -543,78 +543,6 @@ def test_failed_after_hours_escape_still_exits_at_the_next_open(db) -> None:
     assert service.overnight_tickers() == ["005930"]
 
 
-def test_overnight_loss_lands_on_the_day_the_account_took_it(db) -> None:
-    """Charging an overnight exit to the entry day hides it from the stop that matters."""
-    broker = ServiceBroker()
-    service = _service(db, LimitUpMode.AUTOMATIC, broker)
-    carried = service.repository.create_or_get_session(
-        ref_date=dt.date(2026, 8, 28),
-        ticker="000660",
-        market="KOSPI",
-        upper_limit_price=50_000,
-        trigger_price=49_850,
-    )
-    # trimmed on the entry day, the rest sold at the next open
-    carried.realized_pnl_by_date = {
-        "2026-08-28": -50_000.0,
-        "2026-08-31": -400_000.0,
-    }
-    db.commit()
-
-    assert service.repository.realized_pnl_total(dt.date(2026, 8, 28)) == -50_000.0
-    assert service.repository.realized_pnl_total(dt.date(2026, 8, 31)) == -400_000.0
-
-
-def test_guard_rolls_over_at_the_date_boundary(db) -> None:
-    """Yesterday's latch must not keep today's engine from trading."""
-    broker = ServiceBroker()
-    service = _service(db, LimitUpMode.AUTOMATIC, broker)
-    service._refresh_daily_pnl(dt.date(2026, 8, 28))
-    service.guard.halted_reasons.add("feed_disconnected")
-    assert not service.guard.can_enter(active_sessions=0)
-
-    service._refresh_daily_pnl(dt.date(2026, 8, 31))
-
-    assert service.guard.ref_date == dt.date(2026, 8, 31)
-    assert service.guard.can_enter(active_sessions=0)
-
-
-def test_overnight_loss_lands_on_the_day_the_account_took_it(db) -> None:
-    """Charging an overnight exit to the entry day hides it from the stop that matters."""
-    broker = ServiceBroker()
-    service = _service(db, LimitUpMode.AUTOMATIC, broker)
-    carried = service.repository.create_or_get_session(
-        ref_date=dt.date(2026, 8, 28),
-        ticker="000660",
-        market="KOSPI",
-        upper_limit_price=50_000,
-        trigger_price=49_850,
-    )
-    # trimmed on the entry day, the rest sold at the next open
-    carried.realized_pnl_by_date = {
-        "2026-08-28": -50_000.0,
-        "2026-08-31": -400_000.0,
-    }
-    db.commit()
-
-    assert service.repository.realized_pnl_total(dt.date(2026, 8, 28)) == -50_000.0
-    assert service.repository.realized_pnl_total(dt.date(2026, 8, 31)) == -400_000.0
-
-
-def test_guard_rolls_over_at_the_date_boundary(db) -> None:
-    """Yesterday's latch must not keep today's engine from trading."""
-    broker = ServiceBroker()
-    service = _service(db, LimitUpMode.AUTOMATIC, broker)
-    service._refresh_daily_pnl(dt.date(2026, 8, 28))
-    service.guard.halted_reasons.add("feed_disconnected")
-    assert not service.guard.can_enter(active_sessions=0)
-
-    service._refresh_daily_pnl(dt.date(2026, 8, 31))
-
-    assert service.guard.ref_date == dt.date(2026, 8, 31)
-    assert service.guard.can_enter(active_sessions=0)
-
-
 def test_restart_does_not_hand_back_attempts_the_day_already_spent(db) -> None:
     """Starting counters at zero mid-session lets the engine trade past its limits."""
     broker = ServiceBroker()
@@ -646,9 +574,10 @@ def test_kosdaq_latch_survives_a_restart_with_no_session_to_infer_it_from(db) ->
     broker = ServiceBroker()
     service = _service(db, LimitUpMode.AUTOMATIC, broker)
     ref_date = dt.date(2026, 8, 28)
-    service._refresh_daily_pnl(ref_date)
-    service.on_kosdaq(value=1_000.0, at=1.0)
-    service.on_kosdaq(value=980.0, at=2.0)  # -2% latches
+    at_kst = dt.datetime(2026, 8, 28, 10, 0, tzinfo=KST)
+    # 실제 기동 순서: 지수 관측이 첫 진입 심사보다 먼저 온다
+    service.on_kosdaq(value=1_000.0, at=1.0, now_kst=at_kst)
+    service.on_kosdaq(value=980.0, at=2.0, now_kst=at_kst)  # -2% latches
     assert "kosdaq_drawdown" in service.guard.halted_reasons
     assert service.repository.db.query(LimitUpSession).count() == 0
 
@@ -664,13 +593,13 @@ def test_restart_keeps_the_kosdaq_high_it_had_already_seen(db) -> None:
     broker = ServiceBroker()
     service = _service(db, LimitUpMode.AUTOMATIC, broker)
     ref_date = dt.date(2026, 8, 28)
-    service._refresh_daily_pnl(ref_date)
-    service.on_kosdaq(value=1_000.0, at=1.0)
+    at_kst = dt.datetime(2026, 8, 28, 10, 0, tzinfo=KST)
+    service.on_kosdaq(value=1_000.0, at=1.0, now_kst=at_kst)
 
     restarted = _service(db, LimitUpMode.AUTOMATIC, broker)
-    restarted._refresh_daily_pnl(ref_date)
-    # one tick, already 1.6% below the pre-restart high
-    restarted.on_kosdaq(value=984.0, at=3.0)
+    # one tick, already 1.6% below the pre-restart high — no _refresh_daily_pnl
+    # first, because a real restart observes the index before any entry verdict
+    restarted.on_kosdaq(value=984.0, at=3.0, now_kst=at_kst)
 
     assert restarted.guard.kosdaq_high == 1_000.0
     assert "kosdaq_drawdown" in restarted.guard.halted_reasons
@@ -760,3 +689,27 @@ def test_recovery_resubmits_an_exit_interrupted_before_it_was_sent(db) -> None:
     assert len(broker.orders) == 1
     _, sell = broker.orders[0]
     assert (sell.side, sell.quantity) == (OrderSide.SELL, 20)
+
+
+def test_a_carry_confirmed_today_is_not_sold_at_todays_open(db) -> None:
+    """15:18 turns a session OVERNIGHT while the market is still open.
+
+    Regression: once the next-open exit became a deadline instead of a window,
+    the same daily-actions pass sold the carry minutes after confirming it,
+    destroying the strategy's entire reason for holding overnight.
+    """
+    broker = ServiceBroker()
+    service = _service(db, LimitUpMode.AUTOMATIC, broker)
+    today = dt.date(2026, 8, 28)
+    now = dt.datetime(2026, 8, 28, 10, 0, tzinfo=KST)
+    service.watch_candidate(_candidate(), now_kst=now)
+    machine = service.machine("005930")
+    machine.on_fill(at=1.0, cumulative_quantity=20)
+    machine.state = LimitUpState.OVERNIGHT
+
+    # during the 15:18-15:35 tail of the entry day
+    assert service.overnight_tickers(before=today) == []
+    # the next trading day it is due
+    assert service.overnight_tickers(before=dt.date(2026, 8, 31)) == ["005930"]
+    # unfiltered still reports it, for status displays
+    assert service.overnight_tickers() == ["005930"]

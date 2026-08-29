@@ -94,6 +94,15 @@ _EOD_STAGES: tuple[tuple[str, dt.time], ...] = (
 )
 
 
+def _log_feed_task_error(task: "asyncio.Future") -> None:
+    """Surface a failed fire-and-forget feed task instead of losing it."""
+    if task.cancelled():
+        return
+    error = task.exception()
+    if error is not None:
+        logger.error("Upper-limit feed event failed", exc_info=error)
+
+
 def feed_is_silent(*, last_frame_at: float, now: float) -> bool:
     """Return whether the socket has gone quiet long enough to be considered dead.
 
@@ -252,8 +261,14 @@ class KISIntradayRuntime:
         return await future
 
     async def _service_pump(self) -> None:
-        """Run queued service calls one at a time, protective work first."""
-        while not self._stop.is_set():
+        """Run queued service calls one at a time, protective work first.
+
+        Deliberately does **not** watch ``_stop``: shutdown sets that flag first,
+        so a pump that exited on it would leave the queue unserved and every
+        drain would sit out its timeout. ``stop()`` cancels this task once the
+        queue is empty.
+        """
+        while True:
             priority, _, fn, args, kwargs, future = await self._service_queue.get()
             del priority
             try:
@@ -372,12 +387,21 @@ class KISIntradayRuntime:
     async def dispatch_message_async(
         self, raw: str, *, received_at: float | None = None
     ) -> int:
-        """Normalize one frame and apply it without blocking the event loop."""
+        """Queue one frame's effects and return without waiting for them.
+
+        Awaiting the service work here made the socket read the *next* frame only
+        after the previous one finished — so a slow buy response held back every
+        stop-loss tick behind it. The queue already preserves order, so the read
+        loop does not need to wait; it only needs to hand work over.
+        """
         at = self.monotonic() if received_at is None else received_at
         events = parse_kis_ws_message(raw, received_at=at)
         now = self.wall_now()
         for event in events:
-            await self._call_service(self._apply_feed_event, event, now)
+            task = asyncio.ensure_future(
+                self._call_service(self._apply_feed_event, event, now)
+            )
+            task.add_done_callback(_log_feed_task_error)
         return len(events)
 
     def _apply_feed_event(self, event: Any, now: dt.datetime) -> None:
@@ -447,6 +471,7 @@ class KISIntradayRuntime:
                         self.service.on_kosdaq,
                         value=value,
                         at=now_mono,
+                        now_kst=wall,
                         priority=_PRIORITY_HIGH,
                     )
                 await self._run_daily_actions(wall)
@@ -626,8 +651,9 @@ class KISIntradayRuntime:
             self._overnight_forced.add(wall.date())
         # 08:59:30 은 하한선이다. 30초짜리 창으로 두면 09:00 직후 재시작한 프로세스가
         # 전일 오버나이트 보유를 그대로 들고 하루를 보낸다.
+        # before= 가 없으면 15:18 에 막 넘긴 당일 세션을 같은 패스가 곧바로 팔아버린다.
         if clock >= dt.time(8, 59, 30):
-            for ticker in self.service.overnight_tickers():
+            for ticker in self.service.overnight_tickers(before=wall.date()):
                 key = (wall.date(), ticker)
                 if key in self._opening_submitted:
                     continue

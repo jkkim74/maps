@@ -281,3 +281,47 @@ def test_silent_feed_is_treated_as_dead() -> None:
     assert feed_is_silent(
         last_frame_at=100.0, now=100.0 + _FEED_SILENCE_TIMEOUT_SECONDS
     )
+
+
+async def test_reading_the_next_frame_does_not_wait_for_the_previous_one() -> None:
+    """A slow buy used to hold back every stop-loss tick queued behind it.
+
+    The read loop must hand work to the queue and come straight back, since the
+    queue already preserves order.
+    """
+    runtime = _pump_runtime()
+    runtime.monotonic = lambda: 1.0
+    runtime.wall_now = lambda: dt.datetime(2026, 8, 28, 10, 0, tzinfo=KST)
+    runtime._quotes = {}
+    applied: list[str] = []
+    release = threading.Event()
+
+    def _slow_apply(event, now) -> None:
+        applied.append("first")
+        release.wait(timeout=5)
+
+    runtime._apply_feed_event = _slow_apply
+    pump = asyncio.create_task(runtime._service_pump())
+
+    import maps.limit_up.runtime as runtime_module
+
+    original = runtime_module.parse_kis_ws_message
+    runtime_module.parse_kis_ws_message = lambda raw, received_at: [object()]
+    try:
+        # the dispatch returns immediately even though the work is still running
+        assert await asyncio.wait_for(runtime.dispatch_message_async("x"), timeout=1) == 1
+        assert await asyncio.wait_for(runtime.dispatch_message_async("y"), timeout=1) == 1
+    finally:
+        runtime_module.parse_kis_ws_message = original
+
+    # let the fire-and-forget tasks reach the queue
+    for _ in range(10):
+        await asyncio.sleep(0.01)
+    assert applied == ["first"]  # second is queued behind the slow one, in order
+
+    release.set()
+    await asyncio.wait_for(runtime._service_queue.join(), timeout=5)
+    runtime._stop.set()
+    pump.cancel()
+
+    assert len(applied) == 2
