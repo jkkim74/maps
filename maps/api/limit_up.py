@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 from maps.api.schemas import (
     LimitUpSettingsUpdate,
     LimitUpStatusResponse,
 )
+from maps.common.settings import get_settings
 from maps.limit_up import bootstrap
+from maps.limit_up.service import LimitUpMode, automatic_mode_blocked_reason
 
 
 router = APIRouter(prefix="/api/v1/limit-up", tags=["Limit Up V1"])
@@ -59,7 +61,21 @@ def update_limit_up_settings(payload: LimitUpSettingsUpdate) -> LimitUpStatusRes
     The schema rejects anything that would weaken the hard liquidity floor, so no
     admin action can loosen it. Mode changes take effect on the running engine
     when one exists; persisting them is the operator's ``.env`` job.
+
+    Switching to ``automatic`` is refused unless the account-wide live-trading
+    switches allow real orders — this endpoint must not become a way around
+    ``MAPS_LIVE_TRADING_ENABLED``.
+
+    Raises:
+        HTTPException: 409 when automatic is blocked by a safety switch.
     """
+    if payload.mode == LimitUpMode.AUTOMATIC.value:
+        blocked = automatic_mode_blocked_reason(get_settings())
+        if blocked is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=f"automatic mode blocked by safety switch: {blocked}",
+            )
     runtime = bootstrap.get_runtime()
     if runtime is None:
         return LimitUpStatusResponse(**{**_STOPPED, "mode": payload.mode})

@@ -147,6 +147,40 @@ alembic head `0029_limit_up_v1`(운영 미적용), `compileall` OK.
 > `feed_disconnected` 래치가 붙고 다음 거래일까지 이어질 수 있다. `recommend_only` 에서는
 > 주문이 없어 무해하지만, `automatic` 전환 전에는 반드시 봐야 한다.
 
+### 🔴 8/29 코드 검토 — `automatic` 전환 차단 결함 10건 (1번만 수정, 9건 미해결)
+
+사용자 검토로 장애·재시작·지연체결·재연결 경로의 결함 10건이 나왔다. **기존 테스트
+76 passed 는 정상 흐름만 고정하고 있어 전부 놓쳤다.** 4건을 코드로 직접 검증했고 모두 사실이었다.
+
+**✅ 1번만 수정했다 — 실주문 마스터 스위치 우회.**
+V1 주문은 스케줄러 `order_cycle` 을 거치지 않는데, `MAPS_LIVE_TRADING_ENABLED` 를 강제하는
+곳은 거기 하나뿐이었다(`scheduler.py:653`). 즉 계좌 전역 스위치가 꺼져 있어도 V1 automatic
+주문이 실계좌로 나갈 수 있었고, `_order_log_mode()` 가 같은 스위치를 읽어 **실거래가 `mock`
+으로 기록**된다. CLAUDE.md 제약 6번을 정면으로 우회한다.
+→ `service.automatic_mode_blocked_reason()` 단일 판정을 **기동·API 모드변경 양쪽**에 걸었다.
+기동만 막으면 API 한 번으로 우회된다. 차단 시 `recommend_only` 로 조용히 낮추지 않고
+거부한다(기동 중단 / API 409).
+
+**🔴 미해결 9건 — 이걸 풀기 전에는 `automatic` 으로 바꾸지 말 것.**
+
+| # | 결함 | 결과 |
+|---|---|---|
+| 2 | `service.py` CANCEL_BUYS 가 `cancel_pending_buys()` 의 실제 보유수량을 버린다 | 취소 직전 부분체결이 CLOSED 로 묻혀 손절·EOD 대상에서 누락 |
+| 3 | 15:18~15:20 창을 놓치면 `LOCKED` 세션이 `carried_tickers()` 에 없어 15:25·15:28 어디에도 안 걸린다 | 상한 미적용 포지션이 익일로 넘어감 |
+| 4 | `recover()` 가 기동일 세션만 복구한다 | 익일 아침 재시작 시 전일 OVERNIGHT 이 unknown_position, 30초 청산 창에서 제외 |
+| 5 | `_subscribed` 가 연결 단위가 아니라 프로세스 단위 | 재연결 후 재구독 누락 + `_feed_connected=True` 로 REST 폴백까지 중단 |
+| 6 | `after_hours` 가 감사 ID 와 브로커 raw ID 를 정규화 없이 비교 | KIS 에서 항상 불일치 → 매 회차 오경보. `AFTER_HOURS_EXIT` 는 `overnight_tickers()` 에도 없어 익일 청산 누락 |
+| 7 | `sell_actual_position()` 결과를 서비스가 반영 안 해 `RECONCILING` 잔류 | 슬롯 점유 + 늦은 체결 손익이 NULL → 일일 중단선에 안 잡힘 |
+| 8 | 손익을 진입일 `ref_date` 로 합산, `worker` 가 기존 손익을 덮어씀 | 오버나이트 손실이 전일에 귀속, 전일 트림 + 익일 청산 손익 동시 보존 불가 |
+| 9 | `DailyGuard` 가 날짜 변경에도 재시작에도 안전하지 않다 | 전일 halt 잔존 / 장중 재시작 시 attempts·고점이 0 으로 초기화되어 제한 우회 |
+| 10 | 매도 우선 직렬 큐(`enqueue_*`/`run_next`)에 호출자가 없다 | 브로커 호출이 이벤트 루프에서 동기 실행 — KIS 지연이 웹소켓·손절·EOD 훅을 함께 멈춤 |
+
+6번은 이번 세션에서 새로 쓴 코드의 버그다. MockBroker 는 감사 ID 와 raw ID 가 같아
+테스트가 구조적으로 잡을 수 없었다.
+
+> **현재 운영은 `recommend_only` 라 위 9건이 실현되지 않는다**(주문 경로가 전부 막혀 있다).
+> 서버도 `KIS_REAL_TRADING=false` 모의계좌다.
+
 ### 🟡 `automatic` 전환 전 미완 3건 (배선과 무관하게 유효)
 
 1. **시간외 `ORD_DVSN=21` 실검증** — `kis_adapter._AFTER_HOURS_ORD_DVSN` 은 아직 가정값이다.

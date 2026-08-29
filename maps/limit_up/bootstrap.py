@@ -18,7 +18,11 @@ from maps.execution.order_manager import OrderManager
 from maps.limit_up.domain import LimitUpConfig
 from maps.limit_up.repository import LimitUpRepository
 from maps.limit_up.runtime import KISIntradayRuntime
-from maps.limit_up.service import LimitUpMode, LimitUpService
+from maps.limit_up.service import (
+    LimitUpMode,
+    LimitUpService,
+    automatic_mode_blocked_reason,
+)
 from maps.limit_up.worker import LimitUpCommandWorker
 from maps.risk.manager import RiskConfig, RiskManager
 
@@ -103,6 +107,16 @@ async def start_limit_up_if_enabled(settings: MapsSettings) -> None:
             settings.maps_broker_mode,
         )
         return
+    if settings.maps_limit_up_mode == LimitUpMode.AUTOMATIC.value:
+        blocked = automatic_mode_blocked_reason(settings)
+        if blocked is not None:
+            logger.error(
+                "상한가 V1 기동 거부 — automatic 요청이 실주문 안전 스위치를 통과하지 "
+                "못했다(%s). recommend_only 로 조용히 낮추지 않는다. "
+                "MAPS_LIMIT_UP_MODE 를 직접 고칠 것.",
+                blocked,
+            )
+            return
     try:
         runtime = build_runtime(settings)
         await runtime.start()

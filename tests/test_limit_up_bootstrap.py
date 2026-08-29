@@ -8,7 +8,7 @@ import pytest
 
 from maps.common.settings import MapsSettings
 from maps.limit_up import bootstrap
-from maps.limit_up.service import LimitUpMode
+from maps.limit_up.service import LimitUpMode, automatic_mode_blocked_reason
 
 
 @pytest.fixture(autouse=True)
@@ -83,3 +83,72 @@ class _StubBroker:
     def get_positions(self) -> dict[str, int]:
         """Return no holdings."""
         return {}
+
+
+async def test_automatic_is_refused_when_live_trading_is_off(caplog) -> None:
+    """V1 orders never pass through order_cycle, the only place LIVE was enforced.
+
+    Without this gate the engine would place real orders while the account-wide
+    switch says off — and order_log would label them 'mock', since _order_log_mode
+    reads that same switch.
+    """
+    settings = MapsSettings(
+        maps_limit_up_enabled=True,
+        maps_broker_mode="kis",
+        maps_limit_up_mode="automatic",
+        maps_live_trading_enabled=False,
+    )
+
+    with caplog.at_level(logging.ERROR):
+        await bootstrap.start_limit_up_if_enabled(settings)
+
+    assert bootstrap.get_runtime() is None
+    assert "live_trading_disabled" in caplog.text
+
+
+async def test_automatic_is_refused_on_unconfirmed_real_account(caplog) -> None:
+    """Real money needs the explicit confirmation flag, same as server startup."""
+    settings = MapsSettings(
+        maps_limit_up_enabled=True,
+        maps_broker_mode="kis",
+        maps_limit_up_mode="automatic",
+        maps_live_trading_enabled=True,
+        kis_real_trading=True,
+        maps_confirm_real_trading=False,
+    )
+
+    with caplog.at_level(logging.ERROR):
+        await bootstrap.start_limit_up_if_enabled(settings)
+
+    assert bootstrap.get_runtime() is None
+    assert "real_trading_unconfirmed" in caplog.text
+
+
+def test_blocked_automatic_is_refused_not_silently_downgraded() -> None:
+    """Quietly running as recommend_only would hide that automatic never took."""
+    blocked = MapsSettings(
+        maps_broker_mode="kis",
+        maps_limit_up_mode="automatic",
+        maps_live_trading_enabled=False,
+    )
+    allowed = MapsSettings(
+        maps_broker_mode="kis",
+        maps_limit_up_mode="automatic",
+        maps_live_trading_enabled=True,
+    )
+
+    assert automatic_mode_blocked_reason(blocked) == "live_trading_disabled"
+    assert automatic_mode_blocked_reason(allowed) is None
+
+
+def test_recommend_only_is_unaffected_by_the_live_switch() -> None:
+    """The gate must not block the signals-only mode, which places no orders."""
+    settings = MapsSettings(
+        maps_broker_mode="kis",
+        maps_limit_up_mode="recommend_only",
+        maps_live_trading_enabled=False,
+    )
+
+    assert settings.maps_limit_up_mode == "recommend_only"
+    # the gate is only consulted for automatic; recommend_only never reaches it
+    assert automatic_mode_blocked_reason(settings) == "live_trading_disabled"

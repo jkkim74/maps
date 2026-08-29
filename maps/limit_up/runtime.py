@@ -19,7 +19,12 @@ from maps.common.settings import MapsSettings
 from maps.execution.kis_adapter import KISAdapter
 from maps.limit_up.domain import LimitUpConfig, LimitUpState
 from maps.limit_up.feed import FeedQuote, FeedTrade, RestFallbackLimiter, parse_kis_ws_message
-from maps.limit_up.service import Candidate, LimitUpMode, LimitUpService
+from maps.limit_up.service import (
+    Candidate,
+    LimitUpMode,
+    LimitUpService,
+    automatic_mode_blocked_reason,
+)
 from maps.market.trading_rules import is_krx_closed_date
 
 
@@ -379,10 +384,22 @@ class KISIntradayRuntime:
     def apply_settings(self, *, mode: str, min_turnover_krw: int) -> None:
         """Apply admin-changed runtime settings to the live service.
 
+        Switching to ``automatic`` re-checks the account-wide live-trading
+        switches. Without this an admin API call would place real orders while
+        MAPS_LIVE_TRADING_ENABLED says off — the startup gate alone is not
+        enough, because mode can change after startup.
+
         Args:
             mode: New execution mode.
             min_turnover_krw: Liquidity floor; the config rejects anything lower.
+
+        Raises:
+            ValueError: Automatic was requested but the safety switches say no.
         """
+        if mode == LimitUpMode.AUTOMATIC.value:
+            blocked = automatic_mode_blocked_reason(self.settings)
+            if blocked is not None:
+                raise ValueError(f"automatic mode blocked: {blocked}")
         self.service.mode = LimitUpMode(mode)
         self.service.config = LimitUpConfig(
             min_turnover_krw=min_turnover_krw,

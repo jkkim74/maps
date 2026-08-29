@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from maps.common.models import LimitUpSession
+from maps.common.settings import MapsSettings
 from maps.limit_up.domain import (
     CommandKind,
     DailyGuard,
@@ -28,6 +29,31 @@ from maps.limit_up.worker import LimitUpCommandWorker
 
 
 _UTC = dt.timezone.utc
+
+
+def automatic_mode_blocked_reason(settings: "MapsSettings") -> str | None:
+    """Return why automatic order placement is not allowed, or ``None`` if it is.
+
+    V1 orders never went through the scheduler's ``order_cycle``, which is the
+    only place ``MAPS_LIVE_TRADING_ENABLED`` was ever enforced (scheduler.py's
+    ``if live_enabled and not dry_run``). Without this check the engine would
+    place real orders while the account-wide live-trading switch says off — and
+    ``_order_log_mode()`` would even record them as ``mock``, because it reads
+    that same switch.
+
+    Args:
+        settings: Resolved application settings.
+
+    Returns:
+        A short machine-readable reason, or ``None`` when automatic is allowed.
+    """
+    if not settings.maps_live_trading_enabled:
+        return "live_trading_disabled"
+    if settings.maps_broker_mode != "kis":
+        return "broker_not_kis"
+    if settings.kis_real_trading and not settings.maps_confirm_real_trading:
+        return "real_trading_unconfirmed"
+    return None
 
 
 class LimitUpMode(str, Enum):

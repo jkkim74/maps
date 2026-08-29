@@ -138,6 +138,26 @@ worker 가 **같은 action 이름**으로 `event_exists()` 를 검사하면 항�
 무관하게 worker 를 만드는 이유다. worker 가 있어도 `recommend_only` 에서는 앞쪽 조건이
 거짓이라 주문은 절대 나가지 않는다.
 
+### 🔴 `automatic` 은 계좌 전역 실주문 스위치를 다시 통과해야 한다
+
+V1 주문은 스케줄러 `order_cycle` 을 거치지 않는다. 그런데 `MAPS_LIVE_TRADING_ENABLED` 를
+강제하는 곳은 **거기 하나뿐**이었다(`scheduler.py` 의 `if live_enabled and not dry_run`).
+게이트가 없으면 계좌 전역 스위치가 꺼져 있는데도 V1 이 실주문을 내고,
+`_order_log_mode()` 가 같은 스위치를 읽기 때문에 **실거래가 `mock` 으로 기록된다.**
+
+`service.automatic_mode_blocked_reason(settings)` 가 단일 판정이고, 두 경로가 모두 쓴다 —
+기동(`bootstrap`)과 **런타임 모드 변경**(`runtime.apply_settings`, API). 기동 시점만 막으면
+API 호출 한 번으로 우회된다.
+
+| 차단 사유 | 조건 |
+|---|---|
+| `live_trading_disabled` | `MAPS_LIVE_TRADING_ENABLED=false` |
+| `broker_not_kis` | `MAPS_BROKER_MODE != kis` |
+| `real_trading_unconfirmed` | 실계좌인데 `MAPS_CONFIRM_REAL_TRADING` 미설정 |
+
+> **차단 시 `recommend_only` 로 조용히 낮추지 않는다.** 기동을 거부하고(로그) API 는 409 를
+> 준다. 요청한 모드로 안 도는데 도는 것처럼 보이는 게 더 나쁘다.
+
 ### 모드 전환
 
 | 방법 | 재시작 | 영속 |

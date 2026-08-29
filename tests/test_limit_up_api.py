@@ -58,3 +58,35 @@ def test_limit_up_settings_reject_turnover_below_absolute_floor() -> None:
     )
 
     assert response.status_code == 422
+
+
+def test_admin_api_cannot_switch_to_automatic_past_the_live_switch(monkeypatch) -> None:
+    """The startup gate alone is not enough — mode can change after startup."""
+    runtime = FakeRuntime()
+    monkeypatch.setattr(bootstrap, "_runtime", runtime)
+    monkeypatch.setattr(
+        "maps.api.limit_up.automatic_mode_blocked_reason",
+        lambda settings: "live_trading_disabled",
+    )
+
+    response = TestClient(main.app).put(
+        "/api/v1/limit-up/settings",
+        json={"mode": "automatic", "min_turnover_krw": 50_000_000_000},
+    )
+
+    assert response.status_code == 409
+    assert "live_trading_disabled" in response.json()["detail"]
+
+
+def test_admin_api_still_allows_recommend_only(monkeypatch) -> None:
+    """The gate must only stand in front of automatic."""
+    runtime = FakeRuntime()
+    runtime.apply_settings = lambda **kwargs: None
+    monkeypatch.setattr(bootstrap, "_runtime", runtime)
+
+    response = TestClient(main.app).put(
+        "/api/v1/limit-up/settings",
+        json={"mode": "recommend_only", "min_turnover_krw": 50_000_000_000},
+    )
+
+    assert response.status_code == 200
