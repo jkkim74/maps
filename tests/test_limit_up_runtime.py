@@ -5,9 +5,12 @@ from __future__ import annotations
 import datetime as dt
 import json
 
+KST = dt.timezone(dt.timedelta(hours=9))
+
 from maps.common.models import SecurityMetadata
 from maps.limit_up.runtime import (
     DeadmanMonitor,
+    engine_active_at,
     eod_stage,
     is_v1_eligible_security,
     subscription_payload,
@@ -85,3 +88,24 @@ def test_eod_stage_windows_cover_every_overnight_checkpoint() -> None:
     assert eod_stage(dt.time(15, 28)) == "force"
     assert eod_stage(dt.time(15, 29, 59)) == "force"
     assert eod_stage(dt.time(15, 30)) is None
+
+
+def test_engine_is_idle_outside_trading_hours_and_days() -> None:
+    """A 24/7 poll loop hammers the broker API; that is how accounts get locked.
+
+    2026-07-27: pykrx re-login retries locked the KRX account 158 times in a day.
+    """
+    # 2026-08-29 is a Saturday
+    assert not engine_active_at(dt.datetime(2026, 8, 29, 10, 0, tzinfo=KST))
+
+    # weekday, but outside engine hours
+    assert not engine_active_at(dt.datetime(2026, 8, 28, 8, 49, 59, tzinfo=KST))
+    assert not engine_active_at(dt.datetime(2026, 8, 28, 15, 35, 1, tzinfo=KST))
+    assert not engine_active_at(dt.datetime(2026, 8, 28, 22, 0, tzinfo=KST))
+
+
+def test_engine_hours_cover_both_daily_action_windows() -> None:
+    """08:59:30 next-open exits and the 15:18-15:28 overnight review must fit."""
+    assert engine_active_at(dt.datetime(2026, 8, 28, 8, 59, 30, tzinfo=KST))
+    assert engine_active_at(dt.datetime(2026, 8, 28, 15, 18, tzinfo=KST))
+    assert engine_active_at(dt.datetime(2026, 8, 28, 15, 28, tzinfo=KST))

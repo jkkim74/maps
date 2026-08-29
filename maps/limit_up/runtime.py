@@ -20,6 +20,7 @@ from maps.execution.kis_adapter import KISAdapter
 from maps.limit_up.domain import LimitUpConfig, LimitUpState
 from maps.limit_up.feed import FeedQuote, FeedTrade, RestFallbackLimiter, parse_kis_ws_message
 from maps.limit_up.service import Candidate, LimitUpMode, LimitUpService
+from maps.market.trading_rules import is_krx_closed_date
 
 
 logger = logging.getLogger(__name__)
@@ -44,6 +45,28 @@ def subscription_payload(approval_key: str, tr_id: str, ticker: str) -> str:
         },
         separators=(",", ":"),
     )
+
+
+# 엔진이 실제로 일하는 시간대. 08:59:30 익일 시가 청산과 15:18~15:28 오버나이트 심사를
+# 모두 감싼다. 이 밖에서는 브로커를 부르지 않는다 — 24시간 도는 폴링은 그 자체로 사고다.
+_ENGINE_OPEN = dt.time(8, 50)
+_ENGINE_CLOSE = dt.time(15, 35)
+_IDLE_SLEEP_SECONDS = 30.0
+_RECONNECT_BACKOFF_MAX = 60.0
+
+
+def engine_active_at(wall: dt.datetime) -> bool:
+    """Return whether the intraday engine should be doing live broker work.
+
+    Args:
+        wall: KST wall-clock time.
+
+    Returns:
+        ``True`` only on a KRX trading day inside the engine's hours.
+    """
+    if is_krx_closed_date(wall.date()):
+        return False
+    return _ENGINE_OPEN <= wall.time().replace(tzinfo=None) <= _ENGINE_CLOSE
 
 
 # 15:18 심사·트림 → 15:25 재확인 → 15:28 포기. 창을 벗어나면 그 회차는 영영 없다.
@@ -256,6 +279,12 @@ class KISIntradayRuntime:
         while not self._stop.is_set():
             now_mono = self.monotonic()
             wall = self.wall_now()
+            if not engine_active_at(wall):
+                if now_mono - self._last_deadman_at >= 60.0:
+                    self._last_deadman_at = now_mono
+                    await asyncio.to_thread(self.deadman.ping, healthy=True)
+                await asyncio.sleep(_IDLE_SLEEP_SECONDS)
+                continue
             try:
                 self.service.tick(now_monotonic=now_mono, now_kst=wall)
                 if now_mono - self._last_scan_at >= 5.0:
@@ -282,7 +311,11 @@ class KISIntradayRuntime:
 
     async def _websocket_loop(self) -> None:
         """Reconnect real-time protection while preserving the entry-loss latch."""
+        backoff = 1.0
         while not self._stop.is_set():
+            if not engine_active_at(self.wall_now()):
+                await asyncio.sleep(_IDLE_SLEEP_SECONDS)
+                continue
             try:
                 approval = await asyncio.to_thread(
                     self.adapter.issue_websocket_approval_key
@@ -293,6 +326,7 @@ class KISIntradayRuntime:
                     close_timeout=2,
                 ) as socket:
                     self._feed_connected = True
+                    backoff = 1.0
                     for ticker in self.service.watched_tickers():
                         await self._subscribe(socket, approval, ticker)
                     await self._serve_socket(socket, approval)
@@ -305,7 +339,10 @@ class KISIntradayRuntime:
                     )
                 self._feed_connected = False
                 logger.exception("Upper-limit WebSocket disconnected")
-                await asyncio.sleep(1.0)
+                # 고정 1초 재시도는 자격증명이 만료되면 인증 API 를 초당 한 번씩 때린다.
+                # 2026-07-27 KRX 계정 잠금(하루 158회 재로그인)과 같은 실패 유형이다.
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2.0, _RECONNECT_BACKOFF_MAX)
 
     async def _serve_socket(self, socket: Any, approval: str) -> None:
         """Multiplex feed reads and new ticker subscriptions on one connection."""
