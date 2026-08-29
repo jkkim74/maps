@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import datetime as dt
 
+import pytest
+
 from maps.common.exceptions import BrokerAdapterError
 from maps.execution.broker_adapter import (
     AccountBalance,
@@ -197,3 +199,66 @@ def test_restart_never_resubmits_ambiguous_persisted_buy_intent(db) -> None:
     assert result.position_quantity == 0
     assert broker.orders == []
     assert worker._leg(session, "S").status == "reconciling"
+
+
+def _filled_grid(db, broker: ScriptedBroker):
+    """Fire the fixed grid and mark both legs fully filled at their limit prices."""
+    worker, session = _worker(db, broker)
+    worker.fire_grid(session, build_grid(upper_limit_price=100_000, budget_krw=2_000_000))
+    broker.daily_results = [
+        OrderResult(
+            order_id="1001",
+            strategy_id="limit_up_v1:S",
+            ticker="005930",
+            side=OrderSide.BUY,
+            status=OrderStatus.FILLED,
+            filled_quantity=12,
+            avg_price=98_800.0,
+        ),
+        OrderResult(
+            order_id="1002",
+            strategy_id="limit_up_v1:A",
+            ticker="005930",
+            side=OrderSide.BUY,
+            status=OrderStatus.FILLED,
+            filled_quantity=8,
+            avg_price=97_500.0,
+        ),
+    ]
+    broker.position = Position(
+        ticker="005930", quantity=20, avg_price=98_280.0, current_price=92_000.0
+    )
+    return worker, session
+
+
+def test_exit_fill_settles_session_realized_pnl(db) -> None:
+    """The daily loss latch is rebuilt from this column; an unpriced exit disarms it."""
+    broker = ScriptedBroker()
+    worker, session = _filled_grid(db, broker)
+    broker.daily_results.append(
+        OrderResult(
+            order_id="1003",
+            strategy_id="limit_up_v1:exit",
+            ticker="005930",
+            side=OrderSide.SELL,
+            status=OrderStatus.FILLED,
+            filled_quantity=20,
+            avg_price=92_000.0,
+        )
+    )
+
+    worker.sell_actual_position(session, reason="hard_stop")
+
+    # buy 1,965,600 / sell 1,840,000 / fee 570.84 / sell tax 3,312
+    assert session.realized_pnl == pytest.approx(-129_482.84)
+
+
+def test_unfilled_exit_leaves_realized_pnl_unknown_rather_than_zero(db) -> None:
+    """Booking an unfilled exit as 0 would silently loosen the daily loss limit."""
+    broker = ScriptedBroker()
+    worker, session = _filled_grid(db, broker)
+
+    worker.sell_actual_position(session, reason="hard_stop")
+
+    assert session.exit_order_ids is not None
+    assert session.realized_pnl is None

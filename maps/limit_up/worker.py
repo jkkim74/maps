@@ -18,7 +18,7 @@ from maps.execution.broker_adapter import (
     raw_broker_order_id,
 )
 from maps.execution.order_manager import OrderManager
-from maps.limit_up.domain import GridLeg
+from maps.limit_up.domain import GridLeg, realized_pnl
 from maps.limit_up.repository import LimitUpRepository
 
 
@@ -250,6 +250,7 @@ class LimitUpCommandWorker:
                     if leg.filled_quantity
                     else OrderStatus.PENDING.value
                 )
+        self._settle_realized_pnl(session, result_by_id)
         position = self.broker.get_position(session.ticker)
         self.repository.db.commit()
         return ReconcileResult(
@@ -281,7 +282,118 @@ class LimitUpCommandWorker:
             current_price=position.current_price or position.avg_price,
             decision_context={"limit_up_session_id": session.id, "reason": reason},
         )
-        self.order_manager.submit_exit(order, exit_reason=reason)
+        result = self.order_manager.submit_exit(order, exit_reason=reason)
+        self._record_exit_order(session, result.order_id)
+        self.repository.db.commit()
+        return self.reconcile(session)
+
+    def _record_exit_order(self, session: LimitUpSession, order_id: str) -> None:
+        """Append one exit order id to the session ledger.
+
+        A session can exit more than once — an EOD trim, then the remainder — and
+        the broker's daily results carry no strategy id (KIS returns an empty
+        one), so order ids are the only way back to our own sells.
+        """
+        existing = [item for item in (session.exit_order_ids or "").split(",") if item]
+        if order_id in existing:
+            return
+        existing.append(order_id)
+        session.exit_order_ids = ",".join(existing)
+
+    def _settle_realized_pnl(
+        self, session: LimitUpSession, result_by_id: dict[str, OrderResult]
+    ) -> None:
+        """Price every filled exit against the filled buy legs.
+
+        Reuses the caller's daily-results snapshot so settlement costs no extra
+        broker call. Leaves ``realized_pnl`` untouched while no exit has filled —
+        an unpriced exit is unknown, not a zero.
+        """
+        sell_quantity = 0
+        sell_amount = 0.0
+        for order_id in (session.exit_order_ids or "").split(","):
+            if not order_id:
+                continue
+            result = result_by_id.get(raw_broker_order_id(order_id))
+            if result is None or result.filled_quantity <= 0:
+                continue
+            sell_quantity += result.filled_quantity
+            sell_amount += result.filled_quantity * result.avg_price
+        if sell_quantity <= 0:
+            return
+        legs = self.legs(session)
+        session.realized_pnl = realized_pnl(
+            buy_amount=sum(
+                leg.filled_quantity * (leg.avg_fill_price or leg.price) for leg in legs
+            ),
+            buy_quantity=sum(leg.filled_quantity for leg in legs),
+            sell_amount=sell_amount,
+            sell_quantity=sell_quantity,
+        )
+
+    def cancel_open_exits(self, session: LimitUpSession) -> int:
+        """Cancel every still-open exit order and return how many were pulled.
+
+        Must run before any follow-up sell: an unfilled trim limit order still
+        reserves shares, so selling the whole position on top of it would submit
+        more shares than are held.
+        """
+        open_ids = {
+            raw_broker_order_id(order.order_id) for order in self.broker.get_open_orders()
+        }
+        cancelled = 0
+        for order_id in (session.exit_order_ids or "").split(","):
+            if not order_id or raw_broker_order_id(order_id) not in open_ids:
+                continue
+            try:
+                self.order_manager.cancel(order_id)
+            except BrokerAdapterError:
+                continue
+            cancelled += 1
+        return cancelled
+
+    def sell_overnight_excess(
+        self, session: LimitUpSession, *, quantity: int, price: int
+    ) -> ReconcileResult:
+        """Submit one limit sell for shares that exceed the overnight budget.
+
+        Priced at the upper limit because the overnight test itself requires a
+        bid wall of >=1% of listed shares, so a limit sell into it fills. A market
+        sell would instead walk the book down and give up the locked close.
+        """
+        position = self.broker.get_position(session.ticker)
+        if quantity <= 0 or position is None or position.quantity <= 0:
+            return self.reconcile(session)
+        quantity = min(quantity, position.quantity)
+        # The caller's state transition already owns the "overnight_trim" key at
+        # this state_version, so the submit intent needs its own action name.
+        if self.repository.event_exists(
+            session, action="overnight_trim_sell", state_version=session.state_version
+        ):
+            return self.reconcile(session)
+        self.repository.append_event(
+            session,
+            action="overnight_trim_sell",
+            state_version=session.state_version,
+            payload={"quantity": quantity, "price": price},
+        )
+        self.repository.db.commit()
+        order = Order(
+            strategy_id="limit_up_v1:exit",
+            ticker=session.ticker,
+            side=OrderSide.SELL,
+            order_type=OrderType.LIMIT,
+            quantity=quantity,
+            limit_price=price,
+            current_price=position.current_price or position.avg_price,
+            decision_context={
+                "limit_up_session_id": session.id,
+                "reason": "overnight_cap",
+            },
+        )
+        result = self.order_manager.submit_exit(order, exit_reason="overnight_cap")
+        self._record_exit_order(session, result.order_id)
+        self.repository.db.commit()
         return self.reconcile(session)
 
     def _push(

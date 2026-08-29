@@ -55,6 +55,7 @@
 | `maps/data_quality` | as-of-date 유니버스 생성 (미래 정보 금지) | [maps/data_quality/CLAUDE.md](maps/data_quality/CLAUDE.md) |
 | `maps/execution` | 브로커 어댑터와 주문 관리 | [maps/execution/CLAUDE.md](maps/execution/CLAUDE.md) |
 | `maps/indicator` | TrendStrength 0-100 점수와 S1~S5 버킷 | [maps/indicator/CLAUDE.md](maps/indicator/CLAUDE.md) |
+| `maps/limit_up` | 상한가 당일매매 V1 (장중 실시간·오버나이트 위험 통제) | [maps/limit_up/CLAUDE.md](maps/limit_up/CLAUDE.md) |
 | `maps/market` | 장세·시장폭·업종·실측 피드·KRX 규칙 | [maps/market/CLAUDE.md](maps/market/CLAUDE.md) |
 | `maps/ops` | 스케줄러·알림·주문 상태·**게이트** | [maps/ops/CLAUDE.md](maps/ops/CLAUDE.md) |
 | `maps/promotion` | 승격 게이트와 감사 로그 | [maps/promotion/CLAUDE.md](maps/promotion/CLAUDE.md) |

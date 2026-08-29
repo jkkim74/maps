@@ -51,6 +51,21 @@ class LimitUpRepository:
         self.db.flush()
         return row
 
+    def realized_pnl_total(self, ref_date: dt.date) -> float:
+        """Return the summed realized P/L of every session on one trading day.
+
+        The daily guard is rebuilt from this sum instead of an in-memory tally so
+        it survives a process restart. ``ref_date`` is a KST trading date, never
+        derived from the UTC-naive ``created_at``.
+        """
+        rows = (
+            self.db.query(LimitUpSession.realized_pnl)
+            .filter(LimitUpSession.ref_date == ref_date)
+            .filter(LimitUpSession.realized_pnl.isnot(None))
+            .all()
+        )
+        return float(sum(row[0] for row in rows))
+
     def event_exists(
         self,
         session: LimitUpSession,

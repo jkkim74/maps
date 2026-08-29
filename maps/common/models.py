@@ -1015,6 +1015,9 @@ class LimitUpSession(Base):
     locked_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)
     eod_decision: Mapped[str | None] = mapped_column(String(16), nullable=True)
     end_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    exit_order_ids: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    realized_pnl: Mapped[float | None] = mapped_column(Float, nullable=True)
+    after_hours_volume: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     pattern_failure_counted: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False
     )

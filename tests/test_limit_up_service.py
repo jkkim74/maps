@@ -282,3 +282,154 @@ def test_rest_fallback_price_can_fire_hard_stop_but_never_entry(db) -> None:
 
     assert broker.orders[-1][1].side is OrderSide.SELL
     assert service.status()["pattern_failures"] == 1
+
+
+def test_realized_daily_loss_limit_blocks_new_entries(db) -> None:
+    """The confirmed -300,000 KRW stop must latch from persisted P/L, not memory.
+
+    Regression: DailyGuard.update_daily_pnl had no caller, so the only
+    money-based guard was dead while the count-based ones ran.
+    """
+    broker = ServiceBroker()
+    service = _service(db, LimitUpMode.AUTOMATIC, broker)
+    now = dt.datetime(2026, 8, 28, 10, 0, tzinfo=KST)
+    closed = service.repository.create_or_get_session(
+        ref_date=now.date(),
+        ticker="000660",
+        market="KOSPI",
+        upper_limit_price=50_000,
+        trigger_price=49_850,
+    )
+    closed.realized_pnl = -300_000.0
+    db.commit()
+
+    service.watch_candidate(_candidate(), now_kst=now)
+    service.on_trade(_trade(1.0, 99_600), now_kst=now)
+    service.on_trade(_trade(2.0, 99_700), now_kst=now)
+    service.on_trade(_trade(3.0, 99_800), now_kst=now)
+
+    assert broker.orders == []
+    assert service.machine("005930").state is LimitUpState.CLOSED
+    status = service.status()
+    assert status["daily_pnl"] == -300_000.0
+    assert "daily_loss" in status["halted_reasons"]
+
+
+def test_profitable_day_does_not_latch_the_daily_loss_stop(db) -> None:
+    """Only realized losses close the gate; a green day must still trade."""
+    broker = ServiceBroker()
+    service = _service(db, LimitUpMode.AUTOMATIC, broker)
+    now = dt.datetime(2026, 8, 28, 10, 0, tzinfo=KST)
+    won = service.repository.create_or_get_session(
+        ref_date=now.date(),
+        ticker="000660",
+        market="KOSPI",
+        upper_limit_price=50_000,
+        trigger_price=49_850,
+    )
+    won.realized_pnl = 400_000.0
+    db.commit()
+
+    service.watch_candidate(_candidate(), now_kst=now)
+    service.on_trade(_trade(1.0, 99_600), now_kst=now)
+    service.on_trade(_trade(2.0, 99_700), now_kst=now)
+    service.on_trade(_trade(3.0, 99_800), now_kst=now)
+
+    assert len(broker.orders) == 2
+    assert service.status()["daily_pnl"] == 400_000.0
+
+
+def _overnight_service(db, held: int) -> tuple[ServiceBroker, LimitUpService]:
+    """Drive one session to a locked overnight hold with `held` shares."""
+    broker = ServiceBroker()
+    service = _service(db, LimitUpMode.AUTOMATIC, broker)
+    now = dt.datetime(2026, 8, 28, 10, 0, tzinfo=KST)
+    service.watch_candidate(_candidate(), now_kst=now)
+    broker.positions["005930"] = Position("005930", held, 98_000.0)
+    machine = service.machine("005930")
+    machine.fire_net(at=1.0)
+    machine.on_fill(at=2.0, cumulative_quantity=held)
+    machine.on_quote(
+        event=service.quote_event("005930", price=100_000, ask_qty=0, at=3.0)
+    )
+    machine.on_timer(13.0)
+    service.review_eod(
+        "005930",
+        best_bid_price=100_000,
+        best_bid_qty=100_000,
+        quote_fresh=True,
+        shares_fresh=True,
+    )
+    assert machine.state is LimitUpState.OVERNIGHT
+    return broker, service
+
+
+def test_overnight_cap_trims_the_excess_at_the_upper_limit_price(db) -> None:
+    """40 shares x 100,000 = 4,000,000 exposure would breach the -1,000,000 cap."""
+    broker, service = _overnight_service(db, held=40)
+
+    submitted = service.apply_overnight_cap(ref_date=dt.date(2026, 8, 28))
+
+    # budget 3,333,333 / 100,000 = 33 shares allowed, 7 must go
+    assert submitted == {"005930": 7}
+    assert service.machine("005930").state is LimitUpState.EOD_TRIM
+    _, sell = broker.orders[-1]
+    assert (sell.side, sell.quantity, sell.limit_price) == (OrderSide.SELL, 7, 100_000)
+    assert 33 * 100_000 * 0.30 <= 1_000_000
+
+
+def test_position_inside_the_budget_is_never_trimmed(db) -> None:
+    """The cap must not touch a carry that is already small enough."""
+    broker, service = _overnight_service(db, held=30)
+
+    assert service.apply_overnight_cap(ref_date=dt.date(2026, 8, 28)) == {}
+    assert service.machine("005930").state is LimitUpState.OVERNIGHT
+    assert all(order.side is OrderSide.BUY for _, order in broker.orders)
+
+
+def test_realized_loss_shrinks_the_overnight_carry(db) -> None:
+    """A -300,000 KRW day leaves only 2,333,333 KRW of overnight room."""
+    broker, service = _overnight_service(db, held=40)
+    spent = service.repository.create_or_get_session(
+        ref_date=dt.date(2026, 8, 28),
+        ticker="000660",
+        market="KOSPI",
+        upper_limit_price=50_000,
+        trigger_price=49_850,
+    )
+    spent.realized_pnl = -300_000.0
+    db.commit()
+
+    submitted = service.apply_overnight_cap(ref_date=dt.date(2026, 8, 28))
+
+    # 2,333,333 / 100,000 = 23 shares; the loss already spent 300,000 of the cap
+    assert submitted == {"005930": 17}
+    assert 300_000 + 23 * 100_000 * 0.30 <= 1_000_000
+
+
+def test_filled_trim_returns_the_session_to_overnight(db) -> None:
+    """Once the excess is gone the session may cross the night as planned."""
+    broker, service = _overnight_service(db, held=40)
+    service.apply_overnight_cap(ref_date=dt.date(2026, 8, 28))
+    broker.positions["005930"] = Position("005930", 33, 98_000.0)
+
+    restored = service.confirm_overnight_cap(ref_date=dt.date(2026, 8, 28))
+
+    assert restored == ["005930"]
+    assert service.machine("005930").state is LimitUpState.OVERNIGHT
+
+
+def test_unfilled_trim_gives_up_the_carry_instead_of_breaching_the_cap(db) -> None:
+    """Fail closed: an untrimmable position must not go overnight at all."""
+    broker, service = _overnight_service(db, held=40)
+    service.apply_overnight_cap(ref_date=dt.date(2026, 8, 28))
+    trim_order_id = broker.orders[-1][0]
+
+    assert service.confirm_overnight_cap(ref_date=dt.date(2026, 8, 28)) == []
+    liquidated = service.force_overnight_cap(ref_date=dt.date(2026, 8, 28))
+
+    assert liquidated == ["005930"]
+    assert trim_order_id in broker.cancelled
+    _, final = broker.orders[-1]
+    assert (final.side, final.quantity) == (OrderSide.SELL, 40)
+    assert service._sessions["005930"].end_reason == "overnight_cap_unfilled"

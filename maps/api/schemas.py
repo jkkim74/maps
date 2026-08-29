@@ -7,6 +7,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from maps.common.settings import LimitUpModeSetting
+from maps.limit_up.domain import MIN_TURNOVER_FLOOR_KRW
 from maps.ops.strategy_trade_plan import (
     CalculatedTradeLimits,
     StrategyTradeLimitInput,
@@ -1260,3 +1262,30 @@ class PasswordResetResponse(BaseModel):
 
     username: str
     temporary_password: str
+
+
+class LimitUpStatusResponse(BaseModel):
+    """상한가 V1 상태기계 운영 스냅샷."""
+
+    mode: str
+    attempts: int
+    pattern_failures: int
+    daily_pnl: float = 0.0
+    entry_halted: bool
+    halted_reasons: list[str]
+    manual_lock: bool
+    unknown_positions: list[str]
+    sessions: dict[str, dict]
+
+
+class LimitUpSettingsUpdate(BaseModel):
+    """관리자가 바꿀 수 있는 V1 설정.
+
+    유동성 하한은 **올릴 수만 있다.** 확정된 안전 바닥이라 어떤 관리자 조작으로도
+    낮출 수 없어야 한다 — `LimitUpConfig.__post_init__` 과 같은 방침이다.
+    """
+
+    mode: LimitUpModeSetting
+    min_turnover_krw: int = Field(
+        default=MIN_TURNOVER_FLOOR_KRW, ge=MIN_TURNOVER_FLOOR_KRW
+    )

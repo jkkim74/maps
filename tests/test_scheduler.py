@@ -2276,3 +2276,40 @@ def test_exit_orders_are_not_capped_by_liquidity() -> None:
         db.close()
         Base.metadata.drop_all(engine)
         engine.dispose()
+
+
+def test_after_hours_watch_is_off_unless_the_engine_is_automatic() -> None:
+    """Recommendation mode holds no real position, so there is nothing to escape."""
+    engine, factory = _session_factory()
+    settings = MapsSettings(
+        maps_broker_mode="mock",
+        maps_data_provider="mock",
+        maps_live_trading_enabled=False,
+        maps_limit_up_mode="recommend_only",
+    )
+    pipeline = OperationalPipeline(settings=settings, session_factory=factory)
+
+    run = pipeline.run_limit_up_after_hours(ref_date=dt.date(2026, 8, 28))
+
+    assert run.status == "success"
+    assert run.details["skipped"] == "limit_up_mode"
+    engine.dispose()
+
+
+def test_after_hours_watch_runs_with_no_carried_sessions() -> None:
+    """A quiet evening must cost one DB read, not an error."""
+    engine, factory = _session_factory()
+    settings = MapsSettings(
+        maps_broker_mode="mock",
+        maps_data_provider="mock",
+        maps_live_trading_enabled=False,
+        maps_limit_up_mode="automatic",
+    )
+    pipeline = OperationalPipeline(settings=settings, session_factory=factory)
+
+    run = pipeline.run_limit_up_after_hours(ref_date=dt.date(2026, 8, 28))
+
+    assert run.status == "success"
+    assert run.details["watched"] == 0
+    assert run.details["exited"] == 0
+    engine.dispose()

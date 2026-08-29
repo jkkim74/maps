@@ -17,6 +17,7 @@ from maps.common.exceptions import (
 )
 from maps.execution.broker_adapter import (
     AccountBalance,
+    AfterHoursQuote,
     BrokerAdapter,
     Order,
     OrderResult,
@@ -72,6 +73,7 @@ class MockBroker(BrokerAdapter):
         """
         self._cash = float(initial_cash)
         self._price_feed: dict[str, float] = price_feed or {}
+        self._after_hours_volume: dict[str, int] = {}
         self._positions: dict[str, _PositionState] = {}
         self._filled: list[OrderResult] = []
         self._pending: dict[str, Order] = {}
@@ -233,6 +235,17 @@ class MockBroker(BrokerAdapter):
     def set_price(self, ticker: str, price: float) -> None:
         """단일 종목 가격을 설정한다."""
         self._price_feed[ticker] = price
+
+    def set_after_hours_volume(self, ticker: str, volume: int) -> None:
+        """시간외 누적거래량을 설정한다(시간외 감시 시나리오 재현용)."""
+        self._after_hours_volume[ticker] = int(volume)
+
+    def get_after_hours_quote(self, ticker: str) -> AfterHoursQuote:
+        """price_feed 가격과 설정된 시간외 누적거래량을 한 번에 반환한다."""
+        return AfterHoursQuote(
+            price=int(self._price_feed.get(ticker, 0) or 0),
+            cumulative_volume=self._after_hours_volume.get(ticker, 0),
+        )
 
     def get_current_prices(self, tickers: list[str]) -> dict[str, float]:
         """price_feed에 있는 종목의 현재가를 반환한다(미보유 포함)."""

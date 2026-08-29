@@ -18,6 +18,8 @@ from maps.limit_up.domain import (
     TradeEvent,
     build_grid,
     eod_hold_allowed,
+    overnight_allowance,
+    overnight_budget,
     trigger_price,
 )
 from maps.limit_up.feed import FeedQuote, FeedTrade, TapeBuffer
@@ -272,6 +274,146 @@ class LimitUpService:
         self.repository.db.commit()
         return "sell"
 
+    def emergency_off(self) -> None:
+        """Latch every entry path off immediately.
+
+        Entries only. Exits stay available — a kill switch that also blocks
+        selling would strand whatever is already held.
+        """
+        self.mode = LimitUpMode.OFF
+        self.guard.halted_reasons.add("emergency_off")
+
+    def carried_tickers(self) -> list[str]:
+        """Return sessions still competing for the shared overnight budget."""
+        return sorted(
+            ticker
+            for ticker, machine in self._machines.items()
+            if machine.state in {LimitUpState.OVERNIGHT, LimitUpState.EOD_TRIM}
+        )
+
+    def overnight_allowances(self, ref_date: dt.date) -> dict[str, int]:
+        """Return each carried session's share cap under today's risk budget.
+
+        Recomputed at every checkpoint rather than frozen at 15:18, so a session
+        closing in between re-splits the budget across whoever is left.
+        """
+        tickers = self.carried_tickers()
+        budget = overnight_budget(self.repository.realized_pnl_total(ref_date))
+        return {
+            ticker: overnight_allowance(
+                budget_krw=budget,
+                session_count=len(tickers),
+                upper_limit_price=self._machines[ticker].upper_limit_price,
+            )
+            for ticker in tickers
+        }
+
+    def apply_overnight_cap(self, *, ref_date: dt.date) -> dict[str, int]:
+        """15:18 — sell the excess over each carried session's budget share.
+
+        Trimming here rather than at entry keeps intraday sizing intact: most
+        sessions close the same day and never need the overnight cap at all.
+
+        Args:
+            ref_date: KST trading date whose realized P/L funds the budget.
+
+        Returns:
+            Excess share count submitted per ticker, empty when nothing is over.
+        """
+        submitted: dict[str, int] = {}
+        for ticker, allowed in self.overnight_allowances(ref_date).items():
+            machine = self._machines[ticker]
+            session = self._sessions[ticker]
+            if self.mode is LimitUpMode.AUTOMATIC and self.worker is not None:
+                # tick() only reconciles NET_OPEN/FILLED_WAIT_LOCK, so a locked
+                # session's cached quantity can lag the actual holding. Sizing the
+                # trim off a stale number would under-trim and breach the cap.
+                machine.filled_quantity = self.worker.reconcile(session).position_quantity
+            excess = machine.filled_quantity - allowed
+            if excess <= 0:
+                continue
+            machine.state = LimitUpState.EOD_TRIM
+            self.repository.transition(
+                session,
+                state=LimitUpState.EOD_TRIM,
+                action="overnight_trim",
+                payload={"allowed": allowed, "excess": excess},
+            )
+            self.repository.db.commit()
+            if self.mode is LimitUpMode.AUTOMATIC and self.worker is not None:
+                self.worker.sell_overnight_excess(
+                    session, quantity=excess, price=machine.upper_limit_price
+                )
+            else:
+                machine.filled_quantity = allowed
+            submitted[ticker] = excess
+        self.repository.db.commit()
+        return submitted
+
+    def confirm_overnight_cap(self, *, ref_date: dt.date) -> list[str]:
+        """15:25 — return sessions whose trim filled to the overnight carry.
+
+        Args:
+            ref_date: KST trading date used to re-split the budget.
+
+        Returns:
+            Tickers restored to ``OVERNIGHT``.
+        """
+        allowances = self.overnight_allowances(ref_date)
+        restored: list[str] = []
+        for ticker, allowed in allowances.items():
+            machine = self._machines[ticker]
+            if machine.state is not LimitUpState.EOD_TRIM:
+                continue
+            session = self._sessions[ticker]
+            if self.mode is LimitUpMode.AUTOMATIC and self.worker is not None:
+                machine.filled_quantity = self.worker.reconcile(session).position_quantity
+            if machine.filled_quantity > allowed:
+                continue
+            machine.state = LimitUpState.OVERNIGHT
+            self.repository.transition(
+                session, state=LimitUpState.OVERNIGHT, action="overnight_trim_filled"
+            )
+            restored.append(ticker)
+        self.repository.db.commit()
+        return restored
+
+    def force_overnight_cap(self, *, ref_date: dt.date) -> list[str]:
+        """15:28 — give up the carry for any session still over its budget.
+
+        Failing closed here is what makes the absolute cap a guarantee rather
+        than a hope: if the trim cannot fill, nothing goes overnight.
+
+        Args:
+            ref_date: KST trading date used to re-split the budget.
+
+        Returns:
+            Tickers liquidated in full.
+        """
+        del ref_date
+        liquidated: list[str] = []
+        for ticker in self.carried_tickers():
+            machine = self._machines[ticker]
+            if machine.state is not LimitUpState.EOD_TRIM:
+                continue
+            session = self._sessions[ticker]
+            machine.state = LimitUpState.RECONCILING
+            self.repository.transition(
+                session,
+                state=LimitUpState.RECONCILING,
+                action="overnight_cap_unfilled",
+            )
+            if self.mode is LimitUpMode.AUTOMATIC and self.worker is not None:
+                self.worker.cancel_open_exits(session)
+                self.worker.sell_actual_position(session, reason="overnight_cap_unfilled")
+            else:
+                machine.state = LimitUpState.CLOSED
+                session.state = LimitUpState.CLOSED.value
+            session.end_reason = "overnight_cap_unfilled"
+            liquidated.append(ticker)
+        self.repository.db.commit()
+        return liquidated
+
     def recover(
         self,
         *,
@@ -341,6 +483,7 @@ class LimitUpService:
         return {
             "mode": self.mode.value,
             "attempts": self.guard.attempts,
+            "daily_pnl": self.guard.daily_pnl,
             "pattern_failures": self.guard.pattern_failures,
             "entry_halted": bool(self.guard.halted_reasons) or self.manual_lock,
             "halted_reasons": sorted(self.guard.halted_reasons),
@@ -365,6 +508,7 @@ class LimitUpService:
             LimitUpState.FILLED_WAIT_LOCK,
             LimitUpState.LOCKED,
             LimitUpState.EOD_REVIEW,
+            LimitUpState.EOD_TRIM,
             LimitUpState.OVERNIGHT,
             LimitUpState.RECONCILING,
         }
@@ -461,6 +605,7 @@ class LimitUpService:
             session = self._sessions[ticker]
             machine = self._machines[ticker]
             if command.kind is CommandKind.FIRE_NET:
+                self._refresh_daily_pnl(now_kst.date())
                 if not self.guard.can_enter(active_sessions=self._active_count(exclude=ticker)):
                     machine.state = LimitUpState.CLOSED
                     session.state = LimitUpState.CLOSED.value
@@ -552,6 +697,15 @@ class LimitUpService:
                 session.state = machine.state.value
                 self.repository.db.commit()
 
+    def _refresh_daily_pnl(self, ref_date: dt.date) -> None:
+        """Rebuild the daily loss latch from persisted session P/L.
+
+        Called at the entry verdict rather than accumulated in memory, so a
+        restarted process latches on the same realized loss the account took.
+        Recommendation mode books no fills, so its sum stays 0.
+        """
+        self.guard.update_daily_pnl(self.repository.realized_pnl_total(ref_date))
+
     def _dump_tape(self, ticker: str, transition: str) -> None:
         """Copy and persist one critical transition snapshot outside feed parsing."""
         self.repository.persist_tape(
@@ -565,6 +719,7 @@ class LimitUpService:
             LimitUpState.FILLED_WAIT_LOCK,
             LimitUpState.LOCKED,
             LimitUpState.EOD_REVIEW,
+            LimitUpState.EOD_TRIM,
             LimitUpState.OVERNIGHT,
             LimitUpState.RECONCILING,
         }

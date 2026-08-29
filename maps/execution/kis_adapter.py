@@ -25,6 +25,7 @@ from maps.common.settings import MapsSettings, get_settings
 from maps.market.trading_rules import is_krx_closed_date, krx_tick_size
 from maps.execution.broker_adapter import (
     AccountBalance,
+    AfterHoursQuote,
     BrokerAdapter,
     Order,
     OrderResult,
@@ -60,6 +61,10 @@ def _kst_now_naive() -> dt.datetime:
     return dt.datetime.now(_KST).replace(tzinfo=None)
 # 시세 조회 TR_ID는 모의/실거래 공통 (FHKST01010100).
 _PRICE_TR_ID = "FHKST01010100"
+# 🟡 시간외 단일가 주문구분. KIS 문서 대조 + 모의계좌 실주문으로 확정하기 전까지는
+# **가정값**이다. 틀리면 주문이 거부되거나 정규장 주문으로 나가므로, 확정 전에는
+# AUTOMATIC 모드로 시간외 탈출을 신뢰하지 말 것.
+_AFTER_HOURS_ORD_DVSN = "21"
 _VOLUME_RANK_TR_ID = "FHPST01710000"
 _INDEX_TIME_PRICE_TR_ID = "FHPUP02110200"
 
@@ -232,6 +237,26 @@ class KISAdapter(BrokerAdapter):
                 order_type=OrderType.MARKET,
                 quantity=quantity,
             )
+        )
+
+    def get_after_hours_quote(self, ticker: str) -> AfterHoursQuote:
+        """Return the after-hours single-price quote for one ticker.
+
+        Uses the already-proven inquire-price call rather than guessing at a
+        separate after-hours TR id, and returns price and cumulative volume from
+        that single response so the volume gate qualifies the same sample.
+
+        🟡 Whether ``stck_prpr``/``acml_vol`` reflect the after-hours session
+        during 16:00-18:00 is unverified against the live venue. The caller's
+        volume gate compares against the *previous* round rather than testing
+        for zero, so a whole-day counter still behaves correctly.
+        """
+        params = {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": ticker}
+        data = self._request("GET", _PRICE_PATH, tr_id=_PRICE_TR_ID, params=params)
+        output = data.get("output") or {}
+        return AfterHoursQuote(
+            price=self._to_int(output.get("stck_prpr")),
+            cumulative_volume=self._to_int(output.get("acml_vol")),
         )
 
     def issue_websocket_approval_key(self) -> str:
@@ -878,6 +903,8 @@ class KISAdapter(BrokerAdapter):
             return "01"
         if order.order_type == OrderType.LIMIT:
             return "00"
+        if order.order_type == OrderType.AFTER_HOURS_SINGLE:
+            return _AFTER_HOURS_ORD_DVSN
         raise BrokerAdapterError(f"Unsupported KIS order type: {order.order_type}")
 
     @staticmethod

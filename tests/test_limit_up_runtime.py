@@ -8,6 +8,7 @@ import json
 from maps.common.models import SecurityMetadata
 from maps.limit_up.runtime import (
     DeadmanMonitor,
+    eod_stage,
     is_v1_eligible_security,
     subscription_payload,
 )
@@ -71,3 +72,16 @@ def test_empty_deadman_url_is_a_safe_noop() -> None:
     monitor = DeadmanMonitor("")
 
     assert monitor.ping(healthy=True) is False
+
+
+def test_eod_stage_windows_cover_every_overnight_checkpoint() -> None:
+    """A missed window is silent: the carry crosses the night untrimmed."""
+    assert eod_stage(dt.time(15, 17, 59)) is None
+    assert eod_stage(dt.time(15, 18)) == "cap"
+    assert eod_stage(dt.time(15, 19, 59)) == "cap"
+    assert eod_stage(dt.time(15, 20)) is None
+    assert eod_stage(dt.time(15, 25)) == "confirm"
+    assert eod_stage(dt.time(15, 27, 59)) == "confirm"
+    assert eod_stage(dt.time(15, 28)) == "force"
+    assert eod_stage(dt.time(15, 29, 59)) == "force"
+    assert eod_stage(dt.time(15, 30)) is None

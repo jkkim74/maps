@@ -6,10 +6,23 @@ import math
 from dataclasses import dataclass
 from enum import Enum
 
+from maps.backtest.cost_model import BROKER_FEE_PER_SIDE, TRANSACTION_TAX_SELL
 from maps.market.trading_rules import krx_tick_size, round_up_krx_price
 
 
 MIN_TURNOVER_FLOOR_KRW = 50_000_000_000
+
+# 확정 요구값이라 설정으로 열지 않는다. 유동성 하한과 같은 방침이다 —
+# 설정으로 열어 두면 위험 한도가 조용히 느슨해진다.
+DAILY_LOSS_LIMIT_KRW = -300_000
+
+# 비상 절대상한과 익일 하한가. 오버나이트 노출의 수학적 보증이라 설정으로 열지 않는다.
+ABSOLUTE_CAP_KRW = 1_000_000
+LIMIT_DOWN_RATIO = 0.30
+
+# 시간외 탈출 지정가 = 종가 × 0.90 (시간외 하한). 단일가 매매라 지정가는 체결
+# *우선순위*만 정하고 체결가는 그 회차 단일가로 난다.
+AFTER_HOURS_FLOOR_RATIO = 0.90
 
 
 class LimitUpState(str, Enum):
@@ -20,6 +33,8 @@ class LimitUpState(str, Enum):
     FILLED_WAIT_LOCK = "filled_wait_lock"
     LOCKED = "locked"
     EOD_REVIEW = "eod_review"
+    EOD_TRIM = "eod_trim"
+    AFTER_HOURS_EXIT = "after_hours_exit"
     OVERNIGHT = "overnight"
     CLOSED = "closed"
     RECONCILING = "reconciling"
@@ -118,6 +133,71 @@ def build_grid(*, upper_limit_price: int, budget_krw: int) -> tuple[GridLeg, Gri
     return legs[0], legs[1]
 
 
+def realized_pnl(
+    *,
+    buy_amount: float,
+    buy_quantity: int,
+    sell_amount: float,
+    sell_quantity: int,
+) -> float:
+    """Return net proceeds for the sold portion after fees and the KRX sell tax.
+
+    Only the matched quantity is realized. An unsold remainder stays unrealized,
+    so a partial exit must not be charged the full entry cost.
+
+    Args:
+        buy_amount: Filled buy value in KRW.
+        buy_quantity: Filled buy quantity.
+        sell_amount: Filled sell value in KRW.
+        sell_quantity: Filled sell quantity.
+
+    Returns:
+        Net realized profit or loss in KRW; ``0.0`` when nothing is matched.
+    """
+    matched = min(buy_quantity, sell_quantity)
+    if matched <= 0 or buy_quantity <= 0 or sell_quantity <= 0:
+        return 0.0
+    entry = (buy_amount / buy_quantity) * matched
+    exit_value = (sell_amount / sell_quantity) * matched
+    fees = (entry + exit_value) * BROKER_FEE_PER_SIDE
+    tax = exit_value * TRANSACTION_TAX_SELL
+    return exit_value - entry - fees - tax
+
+
+def overnight_budget(realized_pnl_today: float) -> float:
+    """Return the KRW exposure that keeps a next-day limit-down inside the cap.
+
+    Realized *profit* never widens the budget. Letting a good morning fund a
+    bigger overnight bet makes the absolute cap depend on the day's luck.
+
+    Args:
+        realized_pnl_today: Net realized P/L booked so far today, in KRW.
+
+    Returns:
+        Maximum total overnight exposure in KRW, measured at today's close.
+    """
+    spent = max(0.0, -realized_pnl_today)
+    return max(0.0, ABSOLUTE_CAP_KRW - spent) / LIMIT_DOWN_RATIO
+
+
+def overnight_allowance(
+    *, budget_krw: float, session_count: int, upper_limit_price: int
+) -> int:
+    """Return how many shares one of N equally-funded sessions may carry over.
+
+    Args:
+        budget_krw: Total overnight budget shared by every held session.
+        session_count: Number of sessions splitting that budget.
+        upper_limit_price: Today's close, which is the upper limit price.
+
+    Returns:
+        Allowed share count, floored; ``0`` when the budget buys nothing.
+    """
+    if session_count <= 0 or upper_limit_price <= 0 or budget_krw <= 0:
+        return 0
+    return int((budget_krw / session_count) // upper_limit_price)
+
+
 def eod_hold_allowed(
     *,
     upper_limit_price: int,
@@ -163,7 +243,7 @@ class DailyGuard:
     def update_daily_pnl(self, value: float) -> None:
         """Latch new entries at the account's normal daily loss limit."""
         self.daily_pnl = value
-        if value <= -300_000:
+        if value <= DAILY_LOSS_LIMIT_KRW:
             self.halted_reasons.add("daily_loss")
 
     def observe_kosdaq(self, value: float) -> bool:

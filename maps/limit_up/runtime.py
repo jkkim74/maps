@@ -17,9 +17,9 @@ from sqlalchemy.orm import Session
 from maps.common.models import SecurityMetadata
 from maps.common.settings import MapsSettings
 from maps.execution.kis_adapter import KISAdapter
-from maps.limit_up.domain import LimitUpState
+from maps.limit_up.domain import LimitUpConfig, LimitUpState
 from maps.limit_up.feed import FeedQuote, FeedTrade, RestFallbackLimiter, parse_kis_ws_message
-from maps.limit_up.service import Candidate, LimitUpService
+from maps.limit_up.service import Candidate, LimitUpMode, LimitUpService
 
 
 logger = logging.getLogger(__name__)
@@ -44,6 +44,29 @@ def subscription_payload(approval_key: str, tr_id: str, ticker: str) -> str:
         },
         separators=(",", ":"),
     )
+
+
+# 15:18 심사·트림 → 15:25 재확인 → 15:28 포기. 창을 벗어나면 그 회차는 영영 없다.
+_EOD_STAGES: tuple[tuple[str, dt.time, dt.time], ...] = (
+    ("cap", dt.time(15, 18), dt.time(15, 20)),
+    ("confirm", dt.time(15, 25), dt.time(15, 28)),
+    ("force", dt.time(15, 28), dt.time(15, 30)),
+)
+
+
+def eod_stage(clock: dt.time) -> str | None:
+    """Return which overnight checkpoint a wall-clock time falls into.
+
+    Args:
+        clock: Naive KST wall time.
+
+    Returns:
+        ``cap``, ``confirm``, ``force``, or ``None`` outside every window.
+    """
+    for name, start, end in _EOD_STAGES:
+        if start <= clock < end:
+            return name
+    return None
 
 
 def is_v1_eligible_security(
@@ -128,6 +151,9 @@ class KISIntradayRuntime:
         self._last_index_at = 0.0
         self._last_deadman_at = 0.0
         self._eod_reviewed: set[tuple[dt.date, str]] = set()
+        self._overnight_capped: set[dt.date] = set()
+        self._overnight_confirmed: set[dt.date] = set()
+        self._overnight_forced: set[dt.date] = set()
         self._opening_submitted: set[tuple[dt.date, str]] = set()
         self._fallback_limiter = RestFallbackLimiter(min_interval_seconds=0.5)
 
@@ -308,10 +334,33 @@ class KISIntradayRuntime:
         await socket.send(subscription_payload(approval, _QUOTE_TR_ID, ticker))
         self._subscribed.add(ticker)
 
+    def emergency_off(self) -> None:
+        """Latch the engine off without tearing down exit handling."""
+        self.service.emergency_off()
+        logger.warning("Upper-limit V1 emergency OFF — 신규 진입 차단")
+
+    def apply_settings(self, *, mode: str, min_turnover_krw: int) -> None:
+        """Apply admin-changed runtime settings to the live service.
+
+        Args:
+            mode: New execution mode.
+            min_turnover_krw: Liquidity floor; the config rejects anything lower.
+        """
+        self.service.mode = LimitUpMode(mode)
+        self.service.config = LimitUpConfig(
+            min_turnover_krw=min_turnover_krw,
+            min_execution_strength=self.service.config.min_execution_strength,
+            no_fill_timeout_seconds=self.service.config.no_fill_timeout_seconds,
+            fill_timeout_seconds=self.service.config.fill_timeout_seconds,
+            lock_seconds=self.service.config.lock_seconds,
+            hard_stop_drawdown=self.service.config.hard_stop_drawdown,
+        )
+
     async def _run_daily_actions(self, wall: dt.datetime) -> None:
-        """Run strict 15:18 review and next-day 08:59:30 auction exits."""
+        """Run the 15:18-15:28 overnight review and next-day 08:59:30 exits."""
         clock = wall.time().replace(tzinfo=None)
-        if dt.time(15, 18) <= clock < dt.time(15, 20):
+        stage = eod_stage(clock)
+        if stage == "cap":
             for ticker in self.service.locked_tickers():
                 key = (wall.date(), ticker)
                 if key in self._eod_reviewed:
@@ -326,6 +375,15 @@ class KISIntradayRuntime:
                     shares_fresh=True,
                 )
                 self._eod_reviewed.add(key)
+            if wall.date() not in self._overnight_capped:
+                self.service.apply_overnight_cap(ref_date=wall.date())
+                self._overnight_capped.add(wall.date())
+        if stage == "confirm" and wall.date() not in self._overnight_confirmed:
+            self.service.confirm_overnight_cap(ref_date=wall.date())
+            self._overnight_confirmed.add(wall.date())
+        if stage == "force" and wall.date() not in self._overnight_forced:
+            self.service.force_overnight_cap(ref_date=wall.date())
+            self._overnight_forced.add(wall.date())
         if dt.time(8, 59, 30) <= clock < dt.time(9, 0):
             for ticker in self.service.overnight_tickers():
                 key = (wall.date(), ticker)
