@@ -231,8 +231,15 @@ class LimitUpService:
             self._handle_commands(ticker, commands, now_kst=wall)
 
     def on_kosdaq(self, *, value: float, at: float) -> None:
-        """Latch panic drawdown and cancel every still-pending V1 buy grid."""
-        if not self.guard.observe_kosdaq(value):
+        """Latch panic drawdown and cancel every still-pending V1 buy grid.
+
+        The high is persisted on every observation, not just on a latch: a
+        restart that rebuilds it from the post-restart tape would start from an
+        already-depressed price and never latch at all.
+        """
+        latched = self.guard.observe_kosdaq(value)
+        self._persist_guard()
+        if not latched:
             return
         now = dt.datetime.now(dt.timezone(dt.timedelta(hours=9)))
         for ticker, machine in self._machines.items():
@@ -242,6 +249,7 @@ class LimitUpService:
     def on_feed_disconnect(self, *, at: float, now_kst: dt.datetime) -> None:
         """Fail-close new entries and pull only unfilled nets on feed loss."""
         self.guard.halted_reasons.add("feed_disconnected")
+        self._persist_guard()
         for ticker, machine in self._machines.items():
             commands = machine.on_market_halt(at=at)
             self._handle_commands(ticker, commands, now_kst=now_kst)
@@ -323,6 +331,7 @@ class LimitUpService:
         """
         self.mode = LimitUpMode.OFF
         self.guard.halted_reasons.add("emergency_off")
+        self._persist_guard()
 
     def carried_tickers(self) -> list[str]:
         """Return sessions still competing for the shared overnight budget."""
@@ -509,6 +518,12 @@ class LimitUpService:
                 first_fill = row.first_fill_at.replace(tzinfo=_UTC)
                 elapsed = max(0.0, (wall.astimezone(_UTC) - first_fill).total_seconds())
                 machine.first_fill_at = now_monotonic - elapsed
+            if row.net_fired_at is not None:
+                # 이걸 복원하지 않으면 재시작 후 미체결 매수가 180초 타임아웃을 영영
+                # 못 만나고 살아남는다(on_timer 가 net_fired_at 을 요구한다).
+                fired = row.net_fired_at.replace(tzinfo=_UTC)
+                elapsed = max(0.0, (wall.astimezone(_UTC) - fired).total_seconds())
+                machine.net_fired_at = now_monotonic - elapsed
             self._sessions[row.ticker] = row
             self._machines[row.ticker] = machine
             self._candidates[row.ticker] = Candidate(
@@ -525,6 +540,36 @@ class LimitUpService:
                 LimitUpState.OVERNIGHT.value,
             }:
                 row.state = LimitUpState.RECONCILING.value
+        self.repository.db.commit()
+        self._resubmit_interrupted_exits(wall)
+
+    def _resubmit_interrupted_exits(self, now_kst: dt.datetime) -> None:
+        """Re-issue exits for positions left in RECONCILING by a crash.
+
+        Dying between "decided to sell" and "sent the order" leaves a real
+        position whose session says it is exiting. Reconciling alone would just
+        keep confirming the holding forever, so the order has to go out again.
+
+        Args:
+            now_kst: Wall-clock time used for the transition record.
+        """
+        del now_kst
+        if self.mode is not LimitUpMode.AUTOMATIC or self.worker is None:
+            return
+        for ticker, machine in self._machines.items():
+            if machine.state is not LimitUpState.RECONCILING:
+                continue
+            if machine.filled_quantity <= 0:
+                continue
+            session = self._sessions[ticker]
+            self.worker.cancel_open_exits(session)
+            result = self.worker.sell_actual_position(
+                session, reason=session.end_reason or "recovered_exit"
+            )
+            if result.position_quantity == 0:
+                machine.state = LimitUpState.CLOSED
+                machine.filled_quantity = 0
+                session.state = LimitUpState.CLOSED.value
         self.repository.db.commit()
 
     def machine(self, ticker: str) -> LimitUpMachine:
@@ -676,6 +721,7 @@ class LimitUpService:
                     self.repository.db.commit()
                     continue
                 self.guard.register_attempt()
+                self._persist_guard()
                 budget = 2_000_000
                 if self.worker is not None:
                     budget = min(budget, int(self.worker.broker.get_account_balance().cash))
@@ -767,6 +813,7 @@ class LimitUpService:
                 if machine.pattern_failure_pending and not session.pattern_failure_counted:
                     self.guard.register_pattern_failure()
                     session.pattern_failure_counted = True
+                    self._persist_guard()
                 transition = "HARD_STOP" if command.reason == "hard_stop" else "TIME_STOP"
                 self._dump_tape(ticker, transition)
                 if self.mode is LimitUpMode.AUTOMATIC and self.worker is not None:
@@ -810,10 +857,27 @@ class LimitUpService:
         if self.guard.ref_date == ref_date:
             return
         self.guard = DailyGuard(ref_date)
-        attempts, failures, halted = self.repository.guard_state(ref_date)
+        row = self.repository.load_guard(ref_date)
         self.guard.restore(
-            attempts=attempts, pattern_failures=failures, market_halted=halted
+            attempts=row.attempts,
+            pattern_failures=row.pattern_failures,
+            kosdaq_high=row.kosdaq_high,
+            halted_reasons=row.halted_reasons or (),
         )
+        self.repository.db.commit()
+
+    def _persist_guard(self) -> None:
+        """Write the live guard back so a restart cannot release its latches."""
+        if self.guard.ref_date is None:
+            return
+        self.repository.save_guard(
+            self.guard.ref_date,
+            attempts=self.guard.attempts,
+            pattern_failures=self.guard.pattern_failures,
+            kosdaq_high=self.guard.kosdaq_high,
+            halted_reasons=self.guard.halted_reasons,
+        )
+        self.repository.db.commit()
 
     def _dump_tape(self, ticker: str, transition: str) -> None:
         """Copy and persist one critical transition snapshot outside feed parsing."""

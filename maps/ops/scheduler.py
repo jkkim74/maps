@@ -71,6 +71,7 @@ from maps.execution.broker_adapter import (
 )
 from maps.execution.order_manager import OrderManager
 from maps.limit_up.after_hours import run_after_hours_watch
+from maps.limit_up.service import automatic_mode_blocked_reason
 from maps.market.breadth import classify_breadth, compute_pct_above_ma
 from maps.market.regime import RegimeResult, WeeklyTrendLabel, create_regime_analyzer
 from maps.market.regime_history import apply_hysteresis, latest_applied_regime
@@ -909,6 +910,13 @@ class OperationalPipeline:
         def _run(db: Session) -> dict:
             if self._settings.maps_limit_up_mode != "automatic":
                 return {"ref_date": ref_date.isoformat(), "skipped": "limit_up_mode"}
+            # 시간외 탈출도 실주문이다. 장중 엔진과 같은 안전 스위치를 통과해야 한다 —
+            # 이 잡만 빠지면 장중 자동매매가 막혀 있어도 16시 스케줄러가 실계좌에
+            # 매도를 낼 수 있다.
+            blocked = automatic_mode_blocked_reason(self._settings)
+            if blocked is not None:
+                logger.error("상한가 시간외 감시 차단 — 실주문 안전 스위치(%s)", blocked)
+                return {"ref_date": ref_date.isoformat(), "skipped": blocked}
             broker = get_broker(self._settings.maps_broker_mode)
             manager = OrderManager(
                 broker=broker, risk=self._make_risk_manager(broker, db), db=db

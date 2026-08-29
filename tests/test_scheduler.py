@@ -2296,13 +2296,35 @@ def test_after_hours_watch_is_off_unless_the_engine_is_automatic() -> None:
     engine.dispose()
 
 
-def test_after_hours_watch_runs_with_no_carried_sessions() -> None:
-    """A quiet evening must cost one DB read, not an error."""
+def test_after_hours_watch_is_blocked_by_the_live_trading_switch() -> None:
+    """The evening job places real sells; it needs the same gate as the engine.
+
+    Without it, intraday automation could be off while the 16:00 scheduler still
+    submitted exits to a real account.
+    """
     engine, factory = _session_factory()
     settings = MapsSettings(
         maps_broker_mode="mock",
         maps_data_provider="mock",
         maps_live_trading_enabled=False,
+        maps_limit_up_mode="automatic",
+    )
+    pipeline = OperationalPipeline(settings=settings, session_factory=factory)
+
+    run = pipeline.run_limit_up_after_hours(ref_date=dt.date(2026, 8, 28))
+
+    assert run.status == "success"
+    assert run.details["skipped"] == "live_trading_disabled"
+    engine.dispose()
+
+
+def test_after_hours_watch_runs_with_no_carried_sessions() -> None:
+    """A quiet evening must cost one DB read, not an error."""
+    engine, factory = _session_factory()
+    settings = MapsSettings(
+        maps_broker_mode="kis",
+        maps_data_provider="mock",
+        maps_live_trading_enabled=True,
         maps_limit_up_mode="automatic",
     )
     pipeline = OperationalPipeline(settings=settings, session_factory=factory)

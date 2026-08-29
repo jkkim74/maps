@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import math
+from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import Enum
 
@@ -240,26 +241,35 @@ class DailyGuard:
         self.halted_reasons: set[str] = set()
 
     def restore(
-        self, *, attempts: int, pattern_failures: int, market_halted: bool
+        self,
+        *,
+        attempts: int,
+        pattern_failures: int,
+        kosdaq_high: float | None = None,
+        halted_reasons: "Iterable[str] | None" = None,
     ) -> None:
-        """Re-apply counts that already fired before a restart.
+        """Re-apply everything that already fired before a restart.
 
-        Starting from zero mid-session would silently hand back attempts the
-        day had already spent, letting the engine trade past its own limits.
+        Starting from zero mid-session would silently hand back attempts the day
+        had already spent. The index high matters too: rebuilding it from the
+        post-restart tape starts from an already-depressed price, so a drawdown
+        that should have latched never does.
 
         Args:
             attempts: Net attempts already made today.
             pattern_failures: Hard/time exits already counted today.
-            market_halted: Whether the KOSDAQ drawdown latch already fired.
+            kosdaq_high: Intraday index high seen before the restart.
+            halted_reasons: Latches that were already set.
         """
         self.attempts = max(self.attempts, attempts)
         self.pattern_failures = max(self.pattern_failures, pattern_failures)
+        if kosdaq_high is not None and kosdaq_high > 0:
+            self.kosdaq_high = max(self.kosdaq_high or 0.0, kosdaq_high)
+        self.halted_reasons.update(halted_reasons or ())
         if self.attempts >= 5:
             self.halted_reasons.add("max_attempts")
         if self.pattern_failures >= 2:
             self.halted_reasons.add("pattern_failures")
-        if market_halted:
-            self.halted_reasons.add("kosdaq_drawdown")
 
     def register_attempt(self) -> None:
         """Count a durable net command and latch at the fifth attempt."""

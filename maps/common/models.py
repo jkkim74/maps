@@ -1033,6 +1033,29 @@ class LimitUpSession(Base):
     )
 
 
+class LimitUpDailyGuard(Base):
+    """Durable per-trading-day entry guard for the upper-limit engine.
+
+    Stored directly rather than inferred from session side effects: a KOSDAQ
+    drawdown latch that fired while nothing was open leaves no session trace, so
+    reconstructing it would silently release the halt on the next restart.
+    """
+
+    __tablename__ = "limit_up_daily_guard"
+
+    ref_date: Mapped[datetime.date] = mapped_column(Date, primary_key=True)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    pattern_failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    kosdaq_high: Mapped[float | None] = mapped_column(Float, nullable=True)
+    halted_reasons: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+        default=lambda: datetime.datetime.now(datetime.timezone.utc),
+        onupdate=lambda: datetime.datetime.now(datetime.timezone.utc),
+    )
+
+
 class LimitUpOrderLeg(Base):
     """Broker state for one fixed S or A upper-limit buy leg."""
 

@@ -6,7 +6,13 @@ import datetime as dt
 
 from sqlalchemy.orm import Session
 
-from maps.common.models import LimitUpEvent, LimitUpOrderLeg, LimitUpSession, LimitUpTape
+from maps.common.models import (
+    LimitUpDailyGuard,
+    LimitUpEvent,
+    LimitUpOrderLeg,
+    LimitUpSession,
+    LimitUpTape,
+)
 from maps.limit_up.domain import LimitUpState
 from maps.limit_up.feed import TapeSnapshot
 
@@ -71,31 +77,55 @@ class LimitUpRepository:
         )
         return float(sum((row[0] or {}).get(key, 0.0) for row in rows))
 
-    def guard_state(self, ref_date: dt.date) -> tuple[int, int, bool]:
-        """Return today's persisted attempt count, pattern failures, and halt flag.
+    def load_guard(self, ref_date: dt.date) -> LimitUpDailyGuard:
+        """Return today's durable guard record, creating it on first use.
 
-        A restart that starts these at zero hands back limits the day already
-        spent. Sessions are the durable record of both.
+        Stored directly rather than inferred from session side effects. A KOSDAQ
+        drawdown latch that fires while nothing is open leaves no session trace,
+        so reconstruction would quietly release the halt on the next restart.
 
         Args:
             ref_date: KST trading date.
 
         Returns:
-            ``(attempts, pattern_failures, market_halted)``.
+            The persisted guard row for that day.
         """
-        rows = (
-            self.db.query(
-                LimitUpSession.net_fired_at,
-                LimitUpSession.pattern_failure_counted,
-                LimitUpSession.end_reason,
-            )
-            .filter(LimitUpSession.ref_date == ref_date)
-            .all()
+        row = (
+            self.db.query(LimitUpDailyGuard)
+            .filter(LimitUpDailyGuard.ref_date == ref_date)
+            .one_or_none()
         )
-        attempts = sum(1 for fired, _, _ in rows if fired is not None)
-        failures = sum(1 for _, counted, _ in rows if counted)
-        halted = any(reason == "market_halt" for _, _, reason in rows)
-        return attempts, failures, halted
+        if row is None:
+            row = LimitUpDailyGuard(ref_date=ref_date)
+            self.db.add(row)
+            self.db.flush()
+        return row
+
+    def save_guard(
+        self,
+        ref_date: dt.date,
+        *,
+        attempts: int,
+        pattern_failures: int,
+        kosdaq_high: float | None,
+        halted_reasons: set[str],
+    ) -> None:
+        """Persist the live guard so a restart cannot hand its limits back.
+
+        Args:
+            ref_date: KST trading date.
+            attempts: Net attempts made today.
+            pattern_failures: Hard/time exits counted today.
+            kosdaq_high: Intraday index high seen so far.
+            halted_reasons: Latches currently blocking new entries.
+        """
+        row = self.load_guard(ref_date)
+        row.attempts = attempts
+        row.pattern_failures = pattern_failures
+        if kosdaq_high is not None:
+            row.kosdaq_high = kosdaq_high
+        row.halted_reasons = sorted(halted_reasons)
+        self.db.flush()
 
     def event_exists(
         self,

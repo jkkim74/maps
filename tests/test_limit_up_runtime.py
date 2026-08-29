@@ -81,17 +81,22 @@ def test_empty_deadman_url_is_a_safe_noop() -> None:
     assert monitor.ping(healthy=True) is False
 
 
-def test_eod_stage_windows_cover_every_overnight_checkpoint() -> None:
-    """A missed window is silent: the carry crosses the night untrimmed."""
+def test_eod_stages_are_deadlines_not_windows() -> None:
+    """Narrow windows made the absolute cap depend on process uptime.
+
+    A restart during 15:18-15:20 used to skip the trim entirely, handing an
+    unreviewed position to the next morning.
+    """
     assert eod_stage(dt.time(15, 17, 59)) is None
     assert eod_stage(dt.time(15, 18)) == "cap"
-    assert eod_stage(dt.time(15, 19, 59)) == "cap"
-    assert eod_stage(dt.time(15, 20)) is None
+    assert eod_stage(dt.time(15, 24, 59)) == "cap"
     assert eod_stage(dt.time(15, 25)) == "confirm"
     assert eod_stage(dt.time(15, 27, 59)) == "confirm"
     assert eod_stage(dt.time(15, 28)) == "force"
-    assert eod_stage(dt.time(15, 29, 59)) == "force"
-    assert eod_stage(dt.time(15, 30)) is None
+
+    # a process starting late must go straight to force, not replay a dead trim
+    assert eod_stage(dt.time(15, 34)) == "force"
+    assert eod_stage(dt.time(15, 30)) == "force"
 
 
 def test_engine_is_idle_outside_trading_hours_and_days() -> None:
@@ -260,3 +265,19 @@ async def test_service_errors_reach_the_caller_instead_of_killing_the_pump() -> 
     assert await asyncio.wait_for(runtime._call_service(lambda: 42), timeout=5) == 42
     runtime._stop.set()
     pump.cancel()
+
+
+def test_silent_feed_is_treated_as_dead() -> None:
+    """A half-open socket keeps _feed_connected true, which suppresses REST fallback.
+
+    Price protection then stops while the connection still looks healthy.
+    """
+    from maps.limit_up.runtime import _FEED_SILENCE_TIMEOUT_SECONDS, feed_is_silent
+
+    assert not feed_is_silent(last_frame_at=100.0, now=100.0)
+    assert not feed_is_silent(
+        last_frame_at=100.0, now=100.0 + _FEED_SILENCE_TIMEOUT_SECONDS - 0.1
+    )
+    assert feed_is_silent(
+        last_frame_at=100.0, now=100.0 + _FEED_SILENCE_TIMEOUT_SECONDS
+    )

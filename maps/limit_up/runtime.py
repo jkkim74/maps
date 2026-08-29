@@ -62,6 +62,11 @@ _IDLE_SLEEP_SECONDS = 30.0
 _PRIORITY_HIGH = 0
 _PRIORITY_NORMAL = 10
 _RECONNECT_BACKOFF_MAX = 60.0
+# 이 시간 동안 어떤 프레임도 안 오면 죽은 연결로 본다. KIS 는 장중 체결이 없어도
+# PINGPONG 을 보내므로 완전한 무음은 정상이 아니다.
+_FEED_SILENCE_TIMEOUT_SECONDS = 60.0
+# 종료 시 진행 중인 브로커 작업을 기다리는 상한.
+_SHUTDOWN_DRAIN_SECONDS = 30.0
 
 
 def engine_active_at(wall: dt.datetime) -> bool:
@@ -78,25 +83,44 @@ def engine_active_at(wall: dt.datetime) -> bool:
     return _ENGINE_OPEN <= wall.time().replace(tzinfo=None) <= _ENGINE_CLOSE
 
 
-# 15:18 심사·트림 → 15:25 재확인 → 15:28 포기. 창을 벗어나면 그 회차는 영영 없다.
-_EOD_STAGES: tuple[tuple[str, dt.time, dt.time], ...] = (
-    ("cap", dt.time(15, 18), dt.time(15, 20)),
-    ("confirm", dt.time(15, 25), dt.time(15, 28)),
-    ("force", dt.time(15, 28), dt.time(15, 30)),
+# 15:18 심사·트림 → 15:25 재확인 → 15:28 포기.
+# **창이 아니라 하한선이다.** 좁은 창으로 두면 그 몇 분 사이 재시작·장애가 나는 것만으로
+# 상한 미적용 포지션이 익일로 넘어간다 — "절대 상한" 이 프로세스 가동 여부에 의존하게 된다.
+# 하루 한 번 래치가 중복 실행을 막으므로, 지났는데 아직 안 했으면 늦게라도 실행한다.
+_EOD_STAGES: tuple[tuple[str, dt.time], ...] = (
+    ("force", dt.time(15, 28)),
+    ("confirm", dt.time(15, 25)),
+    ("cap", dt.time(15, 18)),
 )
 
 
+def feed_is_silent(*, last_frame_at: float, now: float) -> bool:
+    """Return whether the socket has gone quiet long enough to be considered dead.
+
+    Args:
+        last_frame_at: Monotonic time of the last frame received.
+        now: Current monotonic time.
+
+    Returns:
+        ``True`` once the silence exceeds the timeout.
+    """
+    return now - last_frame_at >= _FEED_SILENCE_TIMEOUT_SECONDS
+
+
 def eod_stage(clock: dt.time) -> str | None:
-    """Return which overnight checkpoint a wall-clock time falls into.
+    """Return the latest overnight checkpoint that is due at ``clock``.
+
+    Later stages win: a process starting at 15:29 must go straight to ``force``
+    rather than replay a trim that can no longer fill.
 
     Args:
         clock: Naive KST wall time.
 
     Returns:
-        ``cap``, ``confirm``, ``force``, or ``None`` outside every window.
+        ``cap``, ``confirm``, ``force``, or ``None`` before 15:18.
     """
-    for name, start, end in _EOD_STAGES:
-        if start <= clock < end:
+    for name, start in _EOD_STAGES:
+        if clock >= start:
             return name
     return None
 
@@ -188,6 +212,7 @@ class KISIntradayRuntime:
         self._overnight_forced: set[dt.date] = set()
         self._opening_submitted: set[tuple[dt.date, str]] = set()
         self._fallback_limiter = RestFallbackLimiter(min_interval_seconds=0.5)
+        self._last_frame_at = 0.0
         self._service_queue: asyncio.PriorityQueue = asyncio.PriorityQueue()
         self._service_sequence = itertools.count()
 
@@ -264,14 +289,41 @@ class KISIntradayRuntime:
         ]
 
     async def stop(self) -> None:
-        """Stop runtime loops while leaving persisted broker state recoverable."""
+        """Stop runtime loops while leaving persisted broker state recoverable.
+
+        Producers are cancelled first, then the queue is drained before the pump
+        goes and the session closes. ``asyncio.to_thread`` work is **not**
+        cancellable: closing the session under a running order would abort a
+        broker call mid-flight and leave the database write half-done.
+        """
         self._stop.set()
+        producers = [t for t in self._tasks if t.get_name() != "limit-up-service"]
+        for task in producers:
+            task.cancel()
+        if producers:
+            await asyncio.gather(*producers, return_exceptions=True)
+        try:
+            await asyncio.wait_for(
+                self._service_queue.join(), timeout=_SHUTDOWN_DRAIN_SECONDS
+            )
+        except (asyncio.TimeoutError, TimeoutError):
+            logger.warning(
+                "상한가 V1 종료 — 진행 중 브로커 작업이 %.0f초 안에 안 끝났다",
+                _SHUTDOWN_DRAIN_SECONDS,
+            )
         for task in self._tasks:
             task.cancel()
-        if self._tasks:
-            await asyncio.gather(*self._tasks, return_exceptions=True)
+        await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
         self.db.close()
+
+    def _load_security(self, ticker: str) -> SecurityMetadata | None:
+        """Read one security row on the serialized worker, never the event loop."""
+        return (
+            self.db.query(SecurityMetadata)
+            .filter(SecurityMetadata.ticker == ticker)
+            .one_or_none()
+        )
 
     async def scan_once(self) -> int:
         """Discover broker candidates and subscribe newly accepted common shares."""
@@ -282,11 +334,9 @@ class KISIntradayRuntime:
         accepted = 0
         for row in rows:
             ticker = str(row["ticker"])
-            security = (
-                self.db.query(SecurityMetadata)
-                .filter(SecurityMetadata.ticker == ticker)
-                .one_or_none()
-            )
+            # 같은 ORM 세션을 펌프 스레드가 쓰고 있다. 이벤트 루프에서 직접 조회하면
+            # 스캔과 주문 처리가 겹치는 순간 동시 사용이 된다.
+            security = await self._call_service(self._load_security, ticker)
             eligible = is_v1_eligible_security(security, as_of=now.date()) and not bool(
                 row.get("trading_halted", False)
             )
@@ -457,16 +507,31 @@ class KISIntradayRuntime:
                 backoff = min(backoff * 2.0, _RECONNECT_BACKOFF_MAX)
 
     async def _serve_socket(self, socket: Any, approval: str) -> None:
-        """Multiplex feed reads and new ticker subscriptions on one connection."""
+        """Multiplex feed reads and subscriptions, dropping a silent connection.
+
+        A half-open socket is worse than a closed one: it keeps
+        ``_feed_connected`` true, which suppresses the REST fallback, so price
+        protection stops while everything still looks healthy.
+        """
+        self._last_frame_at = self.monotonic()
         while not self._stop.is_set():
             receive = asyncio.create_task(socket.recv())
             subscribe = asyncio.create_task(self._subscription_queue.get())
             done, pending = await asyncio.wait(
-                {receive, subscribe}, return_when=asyncio.FIRST_COMPLETED
+                {receive, subscribe},
+                timeout=_FEED_SILENCE_TIMEOUT_SECONDS,
+                return_when=asyncio.FIRST_COMPLETED,
             )
             for task in pending:
                 task.cancel()
+            if feed_is_silent(
+                last_frame_at=self._last_frame_at, now=self.monotonic()
+            ):
+                raise ConnectionError("upper-limit feed silent past timeout")
+            if not done:
+                continue
             if receive in done:
+                self._last_frame_at = self.monotonic()
                 raw = str(receive.result())
                 if "PINGPONG" in raw and raw.startswith("{"):
                     await socket.send(raw)
@@ -559,7 +624,9 @@ class KISIntradayRuntime:
                 priority=_PRIORITY_HIGH,
             )
             self._overnight_forced.add(wall.date())
-        if dt.time(8, 59, 30) <= clock < dt.time(9, 0):
+        # 08:59:30 은 하한선이다. 30초짜리 창으로 두면 09:00 직후 재시작한 프로세스가
+        # 전일 오버나이트 보유를 그대로 들고 하루를 보낸다.
+        if clock >= dt.time(8, 59, 30):
             for ticker in self.service.overnight_tickers():
                 key = (wall.date(), ticker)
                 if key in self._opening_submitted:
