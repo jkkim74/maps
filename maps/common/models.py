@@ -1017,6 +1017,7 @@ class LimitUpSession(Base):
     end_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
     exit_order_ids: Mapped[str | None] = mapped_column(String(512), nullable=True)
     realized_pnl: Mapped[float | None] = mapped_column(Float, nullable=True)
+    realized_pnl_by_date: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     after_hours_volume: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     pattern_failure_counted: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False

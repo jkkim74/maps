@@ -52,19 +52,50 @@ class LimitUpRepository:
         return row
 
     def realized_pnl_total(self, ref_date: dt.date) -> float:
-        """Return the summed realized P/L of every session on one trading day.
+        """Return P/L **booked on** ``ref_date``, across sessions of any entry day.
+
+        Not the sum of sessions that *started* that day: an overnight carry exits
+        the next morning, and that loss belongs to the day the account took it —
+        the day whose stop must react to it.
 
         The daily guard is rebuilt from this sum instead of an in-memory tally so
         it survives a process restart. ``ref_date`` is a KST trading date, never
         derived from the UTC-naive ``created_at``.
         """
+        key = ref_date.isoformat()
         rows = (
-            self.db.query(LimitUpSession.realized_pnl)
-            .filter(LimitUpSession.ref_date == ref_date)
-            .filter(LimitUpSession.realized_pnl.isnot(None))
+            self.db.query(LimitUpSession.realized_pnl_by_date)
+            .filter(LimitUpSession.ref_date <= ref_date)
+            .filter(LimitUpSession.realized_pnl_by_date.isnot(None))
             .all()
         )
-        return float(sum(row[0] for row in rows))
+        return float(sum((row[0] or {}).get(key, 0.0) for row in rows))
+
+    def guard_state(self, ref_date: dt.date) -> tuple[int, int, bool]:
+        """Return today's persisted attempt count, pattern failures, and halt flag.
+
+        A restart that starts these at zero hands back limits the day already
+        spent. Sessions are the durable record of both.
+
+        Args:
+            ref_date: KST trading date.
+
+        Returns:
+            ``(attempts, pattern_failures, market_halted)``.
+        """
+        rows = (
+            self.db.query(
+                LimitUpSession.net_fired_at,
+                LimitUpSession.pattern_failure_counted,
+                LimitUpSession.end_reason,
+            )
+            .filter(LimitUpSession.ref_date == ref_date)
+            .all()
+        )
+        attempts = sum(1 for fired, _, _ in rows if fired is not None)
+        failures = sum(1 for _, counted, _ in rows if counted)
+        halted = any(reason == "market_halt" for _, _, reason in rows)
+        return attempts, failures, halted
 
     def event_exists(
         self,

@@ -786,13 +786,34 @@ class LimitUpService:
                 self.repository.db.commit()
 
     def _refresh_daily_pnl(self, ref_date: dt.date) -> None:
-        """Rebuild the daily loss latch from persisted session P/L.
+        """Roll the guard to ``ref_date`` if needed, then rebuild its loss latch.
 
         Called at the entry verdict rather than accumulated in memory, so a
         restarted process latches on the same realized loss the account took.
         Recommendation mode books no fills, so its sum stays 0.
         """
+        self._ensure_guard_for(ref_date)
         self.guard.update_daily_pnl(self.repository.realized_pnl_total(ref_date))
+
+    def _ensure_guard_for(self, ref_date: dt.date) -> None:
+        """Keep exactly one guard per trading day, restored from persisted state.
+
+        Two failure modes meet here. A process running across midnight would keep
+        yesterday's latches and refuse to trade; a process restarted mid-session
+        would start from zero and hand back attempts the day already spent. The
+        guard is therefore rebuilt whenever the date changes — including the very
+        first time — from what the database says already happened.
+
+        Args:
+            ref_date: KST trading date the engine is currently acting on.
+        """
+        if self.guard.ref_date == ref_date:
+            return
+        self.guard = DailyGuard(ref_date)
+        attempts, failures, halted = self.repository.guard_state(ref_date)
+        self.guard.restore(
+            attempts=attempts, pattern_failures=failures, market_halted=halted
+        )
 
     def _dump_tape(self, ticker: str, transition: str) -> None:
         """Copy and persist one critical transition snapshot outside feed parsing."""

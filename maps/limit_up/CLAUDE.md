@@ -139,6 +139,29 @@ overnight_budget = (1,000,000 − max(0, 당일 실현손실)) / 0.30
   ID 는 KIS 에서 절대 같지 않다. MockBroker 는 둘이 같아 **테스트가 이 불일치를 구조적으로
   못 잡는다** — 실제로 이 자리에서 버그가 났다.
 
+## 거래일 경계 — 손익도 가드도 날짜에 매인다
+
+**손익은 발생일에 귀속한다** (`realized_pnl_by_date`, JSON 원장). 오버나이트 보유는 익일
+아침에 청산되므로 그 손실은 **익일** 계좌에서 난다 — 진입일에 달면 정작 반응해야 할 날의
+중단선이 못 본다. `realized_pnl_total(ref_date)` 는 "그날 장부에 오른" 금액을 합산하며,
+세션의 진입일과 무관하다.
+
+> 스냅샷에 있는 날짜만 다시 쓴다. 브로커는 **당일 주문만** 돌려주므로, 전량 덮어쓰면 오늘
+> 청산이 체결되는 순간 어제 트림 손익이 원장에서 사라진다.
+> `realized_pnl`(총합)은 원장에서 파생한다 — 두 곳에서 따로 계산하면 조용히 어긋난다.
+
+**`DailyGuard` 는 하루짜리다.** `ref_date` 를 들고 있고 날짜가 바뀌면 새로 만든다
+(`service._ensure_guard_for`). 두 실패가 여기서 만난다:
+
+| 상황 | 게이트 없으면 |
+|---|---|
+| 자정을 넘겨 계속 돈 프로세스 | 전일 래치(`feed_disconnected` 등)를 그대로 들고 있어 오늘 거래를 막는다 |
+| 장중 재시작 | `attempts`·`pattern_failures`·코스닥 래치가 0 으로 초기화되어 **이미 소진한 제한을 되돌려준다** |
+
+그래서 새 가드는 항상 DB 에서 복원한다(`repository.guard_state`) — 시도 횟수는
+`net_fired_at`, 패턴 실패는 `pattern_failure_counted`, 코스닥 래치는
+`end_reason == "market_halt"` 가 근거다. 세션 테이블이 이 사실들의 정본이다.
+
 ## 멱등 — 같은 이름을 두 번 쓰지 말 것
 
 `repository.transition(action=X)` 은 그 `state_version` 에 이미 이벤트를 남긴다.

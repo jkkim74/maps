@@ -303,33 +303,55 @@ class LimitUpCommandWorker:
     def _settle_realized_pnl(
         self, session: LimitUpSession, result_by_id: dict[str, OrderResult]
     ) -> None:
-        """Price every filled exit against the filled buy legs.
+        """Book each filled exit against the day it actually settled on.
 
-        Reuses the caller's daily-results snapshot so settlement costs no extra
-        broker call. Leaves ``realized_pnl`` untouched while no exit has filled —
-        an unpriced exit is unknown, not a zero.
+        An overnight carry exits the *next* morning, so charging that loss to the
+        entry day would hide it from the day the account really lost the money —
+        the day whose stop is supposed to react.
+
+        Only days present in this snapshot are rewritten. The broker returns
+        same-day orders only, so yesterday's trim would otherwise vanish from the
+        ledger the moment today's exit fills.
+
+        Reuses the caller's daily-results snapshot, so settlement costs no extra
+        broker call. A day with no filled exit is left absent, not zeroed — an
+        unpriced exit is unknown.
         """
-        sell_quantity = 0
-        sell_amount = 0.0
+        legs = self.legs(session)
+        buy_quantity = sum(leg.filled_quantity for leg in legs)
+        buy_amount = sum(
+            leg.filled_quantity * (leg.avg_fill_price or leg.price) for leg in legs
+        )
+        if buy_quantity <= 0:
+            return
+
+        by_day: dict[str, tuple[int, float]] = {}
         for order_id in (session.exit_order_ids or "").split(","):
             if not order_id:
                 continue
             result = result_by_id.get(raw_broker_order_id(order_id))
             if result is None or result.filled_quantity <= 0:
                 continue
-            sell_quantity += result.filled_quantity
-            sell_amount += result.filled_quantity * result.avg_price
-        if sell_quantity <= 0:
+            day = (result.filled_at or result.submitted_at).date().isoformat()
+            quantity, amount = by_day.get(day, (0, 0.0))
+            by_day[day] = (
+                quantity + result.filled_quantity,
+                amount + result.filled_quantity * result.avg_price,
+            )
+        if not by_day:
             return
-        legs = self.legs(session)
-        session.realized_pnl = realized_pnl(
-            buy_amount=sum(
-                leg.filled_quantity * (leg.avg_fill_price or leg.price) for leg in legs
-            ),
-            buy_quantity=sum(leg.filled_quantity for leg in legs),
-            sell_amount=sell_amount,
-            sell_quantity=sell_quantity,
-        )
+
+        ledger = dict(session.realized_pnl_by_date or {})
+        for day, (quantity, amount) in by_day.items():
+            ledger[day] = realized_pnl(
+                buy_amount=buy_amount,
+                buy_quantity=buy_quantity,
+                sell_amount=amount,
+                sell_quantity=quantity,
+            )
+        session.realized_pnl_by_date = ledger
+        # 총합은 원장에서 파생된다 — 두 곳에서 따로 계산하면 조용히 어긋난다.
+        session.realized_pnl = sum(ledger.values())
 
     def cancel_open_exits(self, session: LimitUpSession) -> int:
         """Cancel every still-open exit order and return how many were pulled.

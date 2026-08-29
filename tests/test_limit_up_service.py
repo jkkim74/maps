@@ -300,7 +300,7 @@ def test_realized_daily_loss_limit_blocks_new_entries(db) -> None:
         upper_limit_price=50_000,
         trigger_price=49_850,
     )
-    closed.realized_pnl = -300_000.0
+    closed.realized_pnl_by_date = {"2026-08-28": -300_000.0}
     db.commit()
 
     service.watch_candidate(_candidate(), now_kst=now)
@@ -327,7 +327,7 @@ def test_profitable_day_does_not_latch_the_daily_loss_stop(db) -> None:
         upper_limit_price=50_000,
         trigger_price=49_850,
     )
-    won.realized_pnl = 400_000.0
+    won.realized_pnl_by_date = {"2026-08-28": 400_000.0}
     db.commit()
 
     service.watch_candidate(_candidate(), now_kst=now)
@@ -397,7 +397,7 @@ def test_realized_loss_shrinks_the_overnight_carry(db) -> None:
         upper_limit_price=50_000,
         trigger_price=49_850,
     )
-    spent.realized_pnl = -300_000.0
+    spent.realized_pnl_by_date = {"2026-08-28": -300_000.0}
     db.commit()
 
     submitted = service.apply_overnight_cap(ref_date=dt.date(2026, 8, 28))
@@ -540,3 +540,85 @@ def test_failed_after_hours_escape_still_exits_at_the_next_open(db) -> None:
     machine.state = LimitUpState.AFTER_HOURS_EXIT
 
     assert service.overnight_tickers() == ["005930"]
+
+
+def test_overnight_loss_lands_on_the_day_the_account_took_it(db) -> None:
+    """Charging an overnight exit to the entry day hides it from the stop that matters."""
+    broker = ServiceBroker()
+    service = _service(db, LimitUpMode.AUTOMATIC, broker)
+    carried = service.repository.create_or_get_session(
+        ref_date=dt.date(2026, 8, 28),
+        ticker="000660",
+        market="KOSPI",
+        upper_limit_price=50_000,
+        trigger_price=49_850,
+    )
+    # trimmed on the entry day, the rest sold at the next open
+    carried.realized_pnl_by_date = {
+        "2026-08-28": -50_000.0,
+        "2026-08-31": -400_000.0,
+    }
+    db.commit()
+
+    assert service.repository.realized_pnl_total(dt.date(2026, 8, 28)) == -50_000.0
+    assert service.repository.realized_pnl_total(dt.date(2026, 8, 31)) == -400_000.0
+
+
+def test_guard_rolls_over_at_the_date_boundary(db) -> None:
+    """Yesterday's latch must not keep today's engine from trading."""
+    broker = ServiceBroker()
+    service = _service(db, LimitUpMode.AUTOMATIC, broker)
+    service._refresh_daily_pnl(dt.date(2026, 8, 28))
+    service.guard.halted_reasons.add("feed_disconnected")
+    assert not service.guard.can_enter(active_sessions=0)
+
+    service._refresh_daily_pnl(dt.date(2026, 8, 31))
+
+    assert service.guard.ref_date == dt.date(2026, 8, 31)
+    assert service.guard.can_enter(active_sessions=0)
+
+
+def test_restart_does_not_hand_back_attempts_the_day_already_spent(db) -> None:
+    """Starting counters at zero mid-session lets the engine trade past its limits."""
+    broker = ServiceBroker()
+    service = _service(db, LimitUpMode.AUTOMATIC, broker)
+    ref_date = dt.date(2026, 8, 28)
+    for index in range(5):
+        row = service.repository.create_or_get_session(
+            ref_date=ref_date,
+            ticker=f"00066{index}",
+            market="KOSPI",
+            upper_limit_price=50_000,
+            trigger_price=49_850,
+        )
+        row.net_fired_at = dt.datetime(2026, 8, 28, 10, index)
+    db.commit()
+
+    # a freshly constructed service, as after a restart
+    restarted = _service(db, LimitUpMode.AUTOMATIC, broker)
+    restarted._refresh_daily_pnl(ref_date)
+
+    assert restarted.guard.attempts == 5
+    assert "max_attempts" in restarted.guard.halted_reasons
+    assert not restarted.guard.can_enter(active_sessions=0)
+
+
+def test_restart_restores_the_kosdaq_drawdown_latch(db) -> None:
+    """The index latch is a day-level decision; a restart must not undo it."""
+    broker = ServiceBroker()
+    service = _service(db, LimitUpMode.AUTOMATIC, broker)
+    ref_date = dt.date(2026, 8, 28)
+    row = service.repository.create_or_get_session(
+        ref_date=ref_date,
+        ticker="000660",
+        market="KOSPI",
+        upper_limit_price=50_000,
+        trigger_price=49_850,
+    )
+    row.end_reason = "market_halt"
+    db.commit()
+
+    restarted = _service(db, LimitUpMode.AUTOMATIC, broker)
+    restarted._refresh_daily_pnl(ref_date)
+
+    assert "kosdaq_drawdown" in restarted.guard.halted_reasons

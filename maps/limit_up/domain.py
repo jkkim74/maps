@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import math
 from dataclasses import dataclass
 from enum import Enum
@@ -218,15 +219,47 @@ def eod_hold_allowed(
 
 
 class DailyGuard:
-    """Latched per-day entry guard shared by all V1 ticker sessions."""
+    """Latched per-day entry guard shared by all V1 ticker sessions.
 
-    def __init__(self) -> None:
-        """Create a fresh trading-day guard."""
+    Carries its trading day so a process running across midnight cannot keep
+    yesterday's latches, and exposes ``restore`` so a mid-session restart cannot
+    wipe limits that have already fired.
+    """
+
+    def __init__(self, ref_date: "dt.date | None" = None) -> None:
+        """Create a fresh guard for one trading day.
+
+        Args:
+            ref_date: KST trading date this guard belongs to.
+        """
+        self.ref_date = ref_date
         self.attempts = 0
         self.pattern_failures = 0
         self.daily_pnl = 0.0
         self.kosdaq_high: float | None = None
         self.halted_reasons: set[str] = set()
+
+    def restore(
+        self, *, attempts: int, pattern_failures: int, market_halted: bool
+    ) -> None:
+        """Re-apply counts that already fired before a restart.
+
+        Starting from zero mid-session would silently hand back attempts the
+        day had already spent, letting the engine trade past its own limits.
+
+        Args:
+            attempts: Net attempts already made today.
+            pattern_failures: Hard/time exits already counted today.
+            market_halted: Whether the KOSDAQ drawdown latch already fired.
+        """
+        self.attempts = max(self.attempts, attempts)
+        self.pattern_failures = max(self.pattern_failures, pattern_failures)
+        if self.attempts >= 5:
+            self.halted_reasons.add("max_attempts")
+        if self.pattern_failures >= 2:
+            self.halted_reasons.add("pattern_failures")
+        if market_halted:
+            self.halted_reasons.add("kosdaq_drawdown")
 
     def register_attempt(self) -> None:
         """Count a durable net command and latch at the fifth attempt."""
