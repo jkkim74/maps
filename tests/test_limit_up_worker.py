@@ -20,7 +20,7 @@ from maps.execution.broker_adapter import (
 from maps.execution.order_manager import OrderManager
 from maps.limit_up.domain import build_grid
 from maps.limit_up.repository import LimitUpRepository
-from maps.limit_up.worker import LimitUpCommandWorker, WorkerTaskKind
+from maps.limit_up.worker import LimitUpCommandWorker
 from maps.risk.manager import RiskManager
 
 
@@ -158,22 +158,6 @@ def test_cancel_error_uses_fills_then_open_orders_then_position(db) -> None:
         ("A", 0, "pending"),
         ("S", 12, "filled"),
     ]
-
-
-def test_exit_task_is_dequeued_before_an_earlier_grid_task(db) -> None:
-    """Protective exits must jump ahead of queued entry work."""
-    broker = ScriptedBroker()
-    broker.position = Position("005930", quantity=5, avg_price=98_800)
-    worker, session = _worker(db, broker)
-    worker.enqueue_grid(session, build_grid(upper_limit_price=100_000, budget_krw=2_000_000))
-    worker.enqueue_sell(session, reason="hard_stop")
-
-    executed = worker.run_next()
-
-    assert executed is WorkerTaskKind.SELL_POSITION
-    assert len(broker.orders) == 1
-    assert broker.orders[0].side is OrderSide.SELL
-    assert broker.orders[0].quantity == 5
 
 
 def test_restart_never_resubmits_ambiguous_persisted_buy_intent(db) -> None:

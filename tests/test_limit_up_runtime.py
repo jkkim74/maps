@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import json
+import threading
+
+import pytest
 
 KST = dt.timezone(dt.timedelta(hours=9))
 
@@ -155,3 +159,104 @@ def test_websocket_loop_actually_clears_subscriptions_on_connect() -> None:
     assert "self._subscribed.clear()" in source
     # and it must happen before the socket is served, not after
     assert source.index("self._subscribed.clear()") < source.index("_serve_socket")
+
+
+def _pump_runtime():
+    """Build a runtime with only the pump's own state initialised."""
+    import asyncio as _asyncio
+    import itertools as _itertools
+
+    from maps.limit_up.runtime import KISIntradayRuntime
+
+    runtime = object.__new__(KISIntradayRuntime)
+    runtime._stop = _asyncio.Event()
+    runtime._service_queue = _asyncio.PriorityQueue()
+    runtime._service_sequence = _itertools.count()
+    return runtime
+
+
+async def test_protective_work_runs_before_a_slow_entry_that_queued_first() -> None:
+    """A slow buy must not delay a sell — that is the whole point of the ordering."""
+    from maps.limit_up.runtime import _PRIORITY_HIGH, _PRIORITY_NORMAL
+
+    runtime = _pump_runtime()
+    order: list[str] = []
+    started = asyncio.Event()
+    release = threading.Event()
+
+    def _slow_entry() -> str:
+        order.append("entry")
+        started.set()
+        release.wait(timeout=5)
+        return "entry"
+
+    def _protective() -> str:
+        order.append("protective")
+        return "protective"
+
+    pump = asyncio.create_task(runtime._service_pump())
+    entry = asyncio.create_task(
+        runtime._call_service(_slow_entry, priority=_PRIORITY_NORMAL)
+    )
+    await asyncio.wait_for(started.wait(), timeout=5)
+
+    # queued while the entry is still in flight
+    queued_first = asyncio.create_task(
+        runtime._call_service(lambda: order.append("second_entry"),
+                              priority=_PRIORITY_NORMAL)
+    )
+    await asyncio.sleep(0)
+    protective = asyncio.create_task(
+        runtime._call_service(_protective, priority=_PRIORITY_HIGH)
+    )
+    await asyncio.sleep(0)
+    release.set()
+
+    assert await asyncio.wait_for(entry, timeout=5) == "entry"
+    assert await asyncio.wait_for(protective, timeout=5) == "protective"
+    await asyncio.wait_for(queued_first, timeout=5)
+    runtime._stop.set()
+    pump.cancel()
+
+    assert order == ["entry", "protective", "second_entry"]
+
+
+async def test_a_blocking_service_call_never_freezes_the_event_loop() -> None:
+    """Inline broker calls froze WebSocket reads; the loop must stay responsive."""
+    runtime = _pump_runtime()
+    release = threading.Event()
+    ticks = 0
+
+    def _blocking() -> str:
+        release.wait(timeout=5)
+        return "done"
+
+    pump = asyncio.create_task(runtime._service_pump())
+    call = asyncio.create_task(runtime._call_service(_blocking))
+    for _ in range(5):
+        await asyncio.sleep(0.01)
+        ticks += 1  # the loop keeps running while the call blocks a worker thread
+
+    release.set()
+    assert await asyncio.wait_for(call, timeout=5) == "done"
+    runtime._stop.set()
+    pump.cancel()
+
+    assert ticks == 5
+
+
+async def test_service_errors_reach_the_caller_instead_of_killing_the_pump() -> None:
+    """A swallowed exception would leave later calls hanging forever."""
+    runtime = _pump_runtime()
+
+    def _boom() -> None:
+        raise ValueError("broker exploded")
+
+    pump = asyncio.create_task(runtime._service_pump())
+    with pytest.raises(ValueError, match="broker exploded"):
+        await asyncio.wait_for(runtime._call_service(_boom), timeout=5)
+
+    # the pump survives and still serves the next call
+    assert await asyncio.wait_for(runtime._call_service(lambda: 42), timeout=5) == 42
+    runtime._stop.set()
+    pump.cancel()

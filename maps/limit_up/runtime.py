@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import itertools
 import json
 import logging
 import time
@@ -57,6 +58,9 @@ def subscription_payload(approval_key: str, tr_id: str, ticker: str) -> str:
 _ENGINE_OPEN = dt.time(8, 50)
 _ENGINE_CLOSE = dt.time(15, 35)
 _IDLE_SLEEP_SECONDS = 30.0
+# 보호 작업(타이머·지수 래치·피드 상실·EOD 청산)이 진입 작업보다 먼저 실행된다.
+_PRIORITY_HIGH = 0
+_PRIORITY_NORMAL = 10
 _RECONNECT_BACKOFF_MAX = 60.0
 
 
@@ -184,14 +188,77 @@ class KISIntradayRuntime:
         self._overnight_forced: set[dt.date] = set()
         self._opening_submitted: set[tuple[dt.date, str]] = set()
         self._fallback_limiter = RestFallbackLimiter(min_interval_seconds=0.5)
+        self._service_queue: asyncio.PriorityQueue = asyncio.PriorityQueue()
+        self._service_sequence = itertools.count()
+
+    async def _call_service(
+        self,
+        fn: Callable[..., Any],
+        *args: Any,
+        priority: int = _PRIORITY_NORMAL,
+        **kwargs: Any,
+    ) -> Any:
+        """Queue one service call for the serialized worker and await its result.
+
+        Every service call can reach the broker over HTTP. Running that inline
+        froze the event loop: a slow KIS order response stopped WebSocket reads,
+        so a *different* ticker's stop-loss tick simply never arrived — the tape
+        kept flowing but nothing was listening.
+
+        Protective work (timers, index halt, feed loss, every EOD exit) is queued
+        ahead of entry work, so a slow buy cannot delay a sell. Equal priorities
+        keep submission order, which the state machine requires, and only one
+        thread ever touches the ORM session — SQLAlchemy sessions tolerate
+        sequential cross-thread use but never concurrent use.
+
+        Args:
+            fn: Synchronous service method to run.
+            *args: Positional arguments for ``fn``.
+            priority: Lower runs first; protective work uses ``_PRIORITY_HIGH``.
+            **kwargs: Keyword arguments for ``fn``.
+
+        Returns:
+            Whatever ``fn`` returned.
+        """
+        future: asyncio.Future = asyncio.get_running_loop().create_future()
+        await self._service_queue.put(
+            (priority, next(self._service_sequence), fn, args, kwargs, future)
+        )
+        return await future
+
+    async def _service_pump(self) -> None:
+        """Run queued service calls one at a time, protective work first."""
+        while not self._stop.is_set():
+            priority, _, fn, args, kwargs, future = await self._service_queue.get()
+            del priority
+            try:
+                result = await asyncio.to_thread(fn, *args, **kwargs)
+            except asyncio.CancelledError:
+                if not future.done():
+                    future.cancel()
+                raise
+            except Exception as exc:  # noqa: BLE001 - surfaced to the caller
+                if not future.done():
+                    future.set_exception(exc)
+            else:
+                if not future.done():
+                    future.set_result(result)
+            finally:
+                self._service_queue.task_done()
 
     async def start(self) -> None:
         """Recover broker truth before starting all background loops."""
         now = self.wall_now()
-        self.service.recover(
-            ref_date=now.date(), now_monotonic=self.monotonic(), now_kst=now
+        # 펌프가 아직 없으므로 큐에 넣으면 영원히 대기한다. 이 시점에는 경합할 상대도
+        # 없으니 직접 스레드로 돌린다.
+        await asyncio.to_thread(
+            self.service.recover,
+            ref_date=now.date(),
+            now_monotonic=self.monotonic(),
+            now_kst=now,
         )
         self._tasks = [
+            asyncio.create_task(self._service_pump(), name="limit-up-service"),
             asyncio.create_task(self._control_loop(), name="limit-up-control"),
             asyncio.create_task(self._websocket_loop(), name="limit-up-websocket"),
         ]
@@ -232,23 +299,44 @@ class KISIntradayRuntime:
                 change_rate=float(row["change_rate"]),
                 eligible=eligible,
             )
-            if self.service.watch_candidate(candidate, now_kst=now):
+            if await self._call_service(
+                self.service.watch_candidate, candidate, now_kst=now
+            ):
                 accepted += 1
                 await self._subscription_queue.put(ticker)
         return accepted
 
     def dispatch_message(self, raw: str, *, received_at: float | None = None) -> int:
-        """Normalize one WebSocket frame and dispatch it to the shared FSM."""
+        """Normalize one WebSocket frame and dispatch it to the shared FSM.
+
+        Synchronous path, used by tests and any caller already off the loop.
+        The live socket uses :meth:`dispatch_message_async` so a broker call
+        inside the FSM cannot stall WebSocket reads.
+        """
+        at = self.monotonic() if received_at is None else received_at
+        now = self.wall_now()
+        for event in parse_kis_ws_message(raw, received_at=at):
+            self._apply_feed_event(event, now)
+        return 1 if raw else 0
+
+    async def dispatch_message_async(
+        self, raw: str, *, received_at: float | None = None
+    ) -> int:
+        """Normalize one frame and apply it without blocking the event loop."""
         at = self.monotonic() if received_at is None else received_at
         events = parse_kis_ws_message(raw, received_at=at)
         now = self.wall_now()
         for event in events:
-            if isinstance(event, FeedTrade):
-                self.service.on_trade(event, now_kst=now)
-            else:
-                self._quotes[event.ticker] = event
-                self.service.on_quote(event, now_kst=now)
+            await self._call_service(self._apply_feed_event, event, now)
         return len(events)
+
+    def _apply_feed_event(self, event: Any, now: dt.datetime) -> None:
+        """Apply one normalized feed event to the state machine."""
+        if isinstance(event, FeedTrade):
+            self.service.on_trade(event, now_kst=now)
+        else:
+            self._quotes[event.ticker] = event
+            self.service.on_quote(event, now_kst=now)
 
     async def fallback_once(self) -> None:
         """Poll held prices only after feed loss and apply protection-only events."""
@@ -272,11 +360,13 @@ class KISIntradayRuntime:
         self._fallback_limiter.record_success()
         wall = self.wall_now()
         for ticker, price in prices.items():
-            self.service.on_fallback_price(
+            await self._call_service(
+                self.service.on_fallback_price,
                 ticker,
                 price=int(price),
                 at=self.monotonic(),
                 now_kst=wall,
+                priority=_PRIORITY_HIGH,
             )
 
     async def _control_loop(self) -> None:
@@ -291,14 +381,24 @@ class KISIntradayRuntime:
                 await asyncio.sleep(_IDLE_SLEEP_SECONDS)
                 continue
             try:
-                self.service.tick(now_monotonic=now_mono, now_kst=wall)
+                await self._call_service(
+                    self.service.tick,
+                    now_monotonic=now_mono,
+                    now_kst=wall,
+                    priority=_PRIORITY_HIGH,
+                )
                 if now_mono - self._last_scan_at >= 5.0:
                     self._last_scan_at = now_mono
                     await self.scan_once()
                 if now_mono - self._last_index_at >= 1.0:
                     self._last_index_at = now_mono
                     value = await asyncio.to_thread(self.adapter.get_kosdaq_index)
-                    self.service.on_kosdaq(value=value, at=now_mono)
+                    await self._call_service(
+                        self.service.on_kosdaq,
+                        value=value,
+                        at=now_mono,
+                        priority=_PRIORITY_HIGH,
+                    )
                 await self._run_daily_actions(wall)
                 await self.fallback_once()
                 if now_mono - self._last_deadman_at >= 60.0:
@@ -343,8 +443,11 @@ class KISIntradayRuntime:
                 raise
             except Exception:  # noqa: BLE001 - disconnect is a strategy event
                 if self._feed_connected:
-                    self.service.on_feed_disconnect(
-                        at=self.monotonic(), now_kst=self.wall_now()
+                    await self._call_service(
+                        self.service.on_feed_disconnect,
+                        at=self.monotonic(),
+                        now_kst=self.wall_now(),
+                        priority=_PRIORITY_HIGH,
                     )
                 self._feed_connected = False
                 logger.exception("Upper-limit WebSocket disconnected")
@@ -368,7 +471,7 @@ class KISIntradayRuntime:
                 if "PINGPONG" in raw and raw.startswith("{"):
                     await socket.send(raw)
                 else:
-                    self.dispatch_message(raw)
+                    await self.dispatch_message_async(raw)
             if subscribe in done:
                 await self._subscribe(socket, approval, str(subscribe.result()))
 
@@ -425,27 +528,43 @@ class KISIntradayRuntime:
                     continue
                 quote = self._quotes.get(ticker)
                 fresh = quote is not None and self.monotonic() - quote.received_at <= 2.0
-                self.service.review_eod(
+                await self._call_service(
+                    self.service.review_eod,
                     ticker,
                     best_bid_price=quote.best_bid_price if quote else 0,
                     best_bid_qty=quote.best_bid_qty if quote else 0,
                     quote_fresh=fresh,
                     shares_fresh=True,
+                    priority=_PRIORITY_HIGH,
                 )
                 self._eod_reviewed.add(key)
             if wall.date() not in self._overnight_capped:
-                self.service.apply_overnight_cap(ref_date=wall.date())
+                await self._call_service(
+                self.service.apply_overnight_cap,
+                ref_date=wall.date(),
+                priority=_PRIORITY_HIGH,
+            )
                 self._overnight_capped.add(wall.date())
         if stage == "confirm" and wall.date() not in self._overnight_confirmed:
-            self.service.confirm_overnight_cap(ref_date=wall.date())
+            await self._call_service(
+                self.service.confirm_overnight_cap,
+                ref_date=wall.date(),
+                priority=_PRIORITY_HIGH,
+            )
             self._overnight_confirmed.add(wall.date())
         if stage == "force" and wall.date() not in self._overnight_forced:
-            self.service.force_overnight_cap(ref_date=wall.date())
+            await self._call_service(
+                self.service.force_overnight_cap,
+                ref_date=wall.date(),
+                priority=_PRIORITY_HIGH,
+            )
             self._overnight_forced.add(wall.date())
         if dt.time(8, 59, 30) <= clock < dt.time(9, 0):
             for ticker in self.service.overnight_tickers():
                 key = (wall.date(), ticker)
                 if key in self._opening_submitted:
                     continue
-                self.service.sell_next_open(ticker)
+                await self._call_service(
+                    self.service.sell_next_open, ticker, priority=_PRIORITY_HIGH
+                )
                 self._opening_submitted.add(key)

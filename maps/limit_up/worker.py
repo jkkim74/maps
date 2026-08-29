@@ -1,11 +1,8 @@
-"""Serialized broker command worker for the upper-limit V1 engine."""
+"""Broker command operations for the upper-limit V1 engine."""
 
 from __future__ import annotations
 
-import heapq
-import itertools
-from dataclasses import dataclass, field
-from enum import Enum
+from dataclasses import dataclass
 
 from maps.common.exceptions import BrokerAdapterError
 from maps.common.models import LimitUpOrderLeg, LimitUpSession
@@ -22,23 +19,6 @@ from maps.limit_up.domain import GridLeg, realized_pnl
 from maps.limit_up.repository import LimitUpRepository
 
 
-class WorkerTaskKind(str, Enum):
-    """Serialized worker operations ordered by safety priority."""
-
-    SELL_POSITION = "sell_position"
-    CANCEL_BUYS = "cancel_buys"
-    RECONCILE = "reconcile"
-    FIRE_GRID = "fire_grid"
-
-
-_PRIORITY = {
-    WorkerTaskKind.SELL_POSITION: 0,
-    WorkerTaskKind.CANCEL_BUYS: 10,
-    WorkerTaskKind.RECONCILE: 20,
-    WorkerTaskKind.FIRE_GRID: 30,
-}
-
-
 @dataclass(frozen=True)
 class ReconcileResult:
     """Broker-authoritative session facts after reconciliation."""
@@ -48,19 +28,8 @@ class ReconcileResult:
     filled_quantity: int
 
 
-@dataclass(order=True)
-class _QueuedTask:
-    """Heap entry whose payload is excluded from ordering."""
-
-    priority: int
-    sequence: int
-    kind: WorkerTaskKind = field(compare=False)
-    session: LimitUpSession = field(compare=False)
-    payload: object = field(compare=False, default=None)
-
-
 class LimitUpCommandWorker:
-    """One serialized queue for entry, cancellation, reconciliation, and exit."""
+    """Broker-facing entry, cancellation, reconciliation, and exit operations."""
 
     def __init__(
         self,
@@ -68,12 +37,15 @@ class LimitUpCommandWorker:
         broker: BrokerAdapter,
         repository: LimitUpRepository,
     ) -> None:
-        """Bind existing execution and persistence boundaries."""
+        """Bind existing execution and persistence boundaries.
+
+        Ordering is not this class's job. Serialization and sell-before-buy
+        priority live in ``KISIntradayRuntime._service_pump``, which is the only
+        thing that actually owns the event loop.
+        """
         self.order_manager = order_manager
         self.broker = broker
         self.repository = repository
-        self._queue: list[_QueuedTask] = []
-        self._sequence = itertools.count()
 
     def legs(self, session: LimitUpSession) -> list[LimitUpOrderLeg]:
         """Return fixed legs in deterministic A/S order for audit displays."""
@@ -83,39 +55,6 @@ class LimitUpCommandWorker:
             .order_by(LimitUpOrderLeg.name)
             .all()
         )
-
-    def enqueue_grid(
-        self, session: LimitUpSession, grid: tuple[GridLeg, GridLeg]
-    ) -> None:
-        """Queue the two-leg entry behind all protective work."""
-        self._push(WorkerTaskKind.FIRE_GRID, session, grid)
-
-    def enqueue_sell(self, session: LimitUpSession, *, reason: str) -> None:
-        """Queue a protective sell at the highest priority."""
-        self._push(WorkerTaskKind.SELL_POSITION, session, reason)
-
-    def enqueue_cancel(self, session: LimitUpSession) -> None:
-        """Queue pending-buy cancellation ahead of entry work."""
-        self._push(WorkerTaskKind.CANCEL_BUYS, session)
-
-    def enqueue_reconcile(self, session: LimitUpSession) -> None:
-        """Queue broker reconciliation."""
-        self._push(WorkerTaskKind.RECONCILE, session)
-
-    def run_next(self) -> WorkerTaskKind | None:
-        """Execute one highest-priority task and return its kind."""
-        if not self._queue:
-            return None
-        task = heapq.heappop(self._queue)
-        if task.kind is WorkerTaskKind.SELL_POSITION:
-            self.sell_actual_position(task.session, reason=str(task.payload))
-        elif task.kind is WorkerTaskKind.CANCEL_BUYS:
-            self.cancel_pending_buys(task.session)
-        elif task.kind is WorkerTaskKind.RECONCILE:
-            self.reconcile(task.session)
-        else:
-            self.fire_grid(task.session, task.payload)  # type: ignore[arg-type]
-        return task.kind
 
     def fire_grid(
         self,
@@ -417,18 +356,6 @@ class LimitUpCommandWorker:
         self._record_exit_order(session, result.order_id)
         self.repository.db.commit()
         return self.reconcile(session)
-
-    def _push(
-        self,
-        kind: WorkerTaskKind,
-        session: LimitUpSession,
-        payload: object = None,
-    ) -> None:
-        """Push one task using a stable FIFO sequence within each priority."""
-        heapq.heappush(
-            self._queue,
-            _QueuedTask(_PRIORITY[kind], next(self._sequence), kind, session, payload),
-        )
 
     def _leg(self, session: LimitUpSession, name: str) -> LimitUpOrderLeg:
         """Return one required persisted leg."""
