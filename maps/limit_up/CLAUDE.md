@@ -103,7 +103,7 @@ overnight_budget = (1,000,000 − max(0, 당일 실현손실)) / 0.30
 
 ## 브로커가 정본이다 — 반환값을 버리지 말 것
 
-취소·청산 호출은 `ReconcileResult` 를 돌려주고 그 안의 `position_quantity` 가 **실제 보유**다.
+취소는 `CancelBuysResult`, 청산은 `ReconcileResult` 를 돌려준다. `position_quantity` 는 **계좌 전체**이고 세션 소유분은 `owned_quantity`(= min(계좌, bought − exited)) 다.
 이걸 버리면 상태기계의 짐작이 현실과 어긋난다.
 
 | 지점 | 버렸을 때 |
@@ -175,7 +175,7 @@ overnight_budget = (1,000,000 − max(0, 당일 실현손실)) / 0.30
 
 | 질문 | 판정 | 쓰는 곳 |
 |---|---|---|
-| 새로 **진입**할 것인가 | `mode is AUTOMATIC` + `guard.can_enter()` | `FIRE_NET` 한 곳뿐 |
+| 새로 **진입**할 것인가 | `session.execution_mode == automatic` + `guard.can_enter()` | `FIRE_NET` 한 곳뿐 |
 | 주문을 **낼 수 있는가** | `service.exits_are_live()` | 손절·취소·EOD·익일청산·시간외 전부 |
 
 `emergency_off()` 는 `mode` 만 끄고 `_orders_enabled` 는 건드리지 않는다. 시간외 잡도
@@ -239,7 +239,7 @@ overnight_budget = (1,000,000 − max(0, 당일 실현손실)) / 0.30
 | 미체결 매수 타임아웃 | `recover()` 가 `net_fired_at` 을 복원한다. 안 하면 `on_timer` 가 180초 타임아웃을 영영 못 만난다 |
 | 중단된 청산 | `RECONCILING` + 보유 > 0 이면 **재제출**한다. "팔기로 했다" 와 "주문을 보냈다" 사이에서 죽으면 확인만 반복하고 영영 안 판다 |
 | 일일 가드 | `limit_up_daily_guard` 테이블에 **직접 저장**한다. 세션 부작용에서 역산하면, 취소할 주문이 없던 코스닥 래치는 흔적이 없어 재시작 때 조용히 풀린다 |
-| 마지막 가격 | `recover()` 가 `_last_prices` 를 복원한다. 안 하면 재연결 후 첫 호가가 **0 원**으로 평가돼 `0 < 상한가×0.95` 가 참이 되고, 멀쩡한 캐리가 가짜 하드스톱으로 전량 청산된다. `on_quote` 도 `price <= 0` 이면 판정을 건너뛴다 |
+| 마지막 가격 | `recover()` 가 `_last_prices` 를 복원한다. 안 하면 재연결 후 첫 호가가 **0 원**으로 평가돼 `0 < hard_stop_price` 가 참이 되고, 멀쩡한 캐리가 가짜 하드스톱으로 전량 청산된다. `on_quote` 도 `price <= 0` 이면 판정을 건너뛴다 |
 | 피드 래치 | `on_feed_reconnect()` 가 `feed_disconnected` 를 **해제**한다. 이 래치는 `_TRANSIENT_LATCHES` 라 DB 에 남기지 않는다 — 저장하면 1초짜리 끊김이 재시작을 넘어 그날 전체를 막는다 |
 | 코스닥 고점 | 관측할 때마다 저장한다. 재시작 후 다시 쌓으면 이미 떨어진 가격에서 시작해 드로다운이 영영 안 걸린다 |
 
@@ -294,7 +294,7 @@ worker 가 **같은 action 이름**으로 `event_exists()` 를 검사하면 항�
 
 ### 🔴 모드와 무관하게 **command worker 를 항상 만든다**
 
-주문 경로는 전부 `mode is AUTOMATIC and worker is not None` 로 막혀 있다(12곳).
+주문 경로는 전부 `can_place_exit_for()`(세션의 `execution_mode` 기준)로 막혀 있다.
 `recommend_only` 라고 worker 를 `None` 으로 두면, 나중에 `automatic` 으로 바꿔도
 **else 분기(가상 처리)로 빠져 주문이 한 건도 안 나간다** — 예외도 로그도 없이
 "켜졌는데 아무것도 안 하는" 상태가 된다. `bootstrap.build_runtime()` 이 모드와

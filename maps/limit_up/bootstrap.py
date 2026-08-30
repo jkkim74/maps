@@ -51,7 +51,7 @@ def build_runtime(settings: MapsSettings) -> KISIntradayRuntime:
     """Assemble the V1 runtime and every collaborator it needs.
 
     The command worker is built **regardless of mode**. In ``recommend_only``
-    every order path is guarded by ``mode is AUTOMATIC and worker is not None``,
+    every order path is guarded by ``can_place_exit_for()`` (the session's ``execution_mode``),
     so a present worker submits nothing — but a *missing* one would make a later
     switch to ``automatic`` fall through to the simulation branch and place no
     orders at all, with no error. The engine would look on and do nothing.

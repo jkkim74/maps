@@ -6,7 +6,7 @@
 (`LimitUpState.OVERNIGHT` → `service.sell_next_open()`). 그런데 **오버나이트 구간에는 손실
 통제 수단이 하나도 없다.**
 
-- 하드손절 −5%(`LimitUpConfig.hard_stop_drawdown`)는 장중에만 작동한다.
+- 하드손절 −5%(`live_rules` 의 `limit_up_v1`, 진입가 기준 `effective_stop_price`)는 장중에만 작동한다.
 - 익일 청산은 시가 단일가 시장가 매도라 가격을 지정하지 않는다.
 - 즉 정규장이 닫힌 뒤 악재가 나오면, 다음 날 하한가로 시작하더라도 그대로 맞는다.
 

@@ -202,7 +202,7 @@ class LimitUpService:
             self._last_prices[quote.ticker] = price
         if price <= 0:
             # 가격을 모르는 상태다. 0 을 그대로 흘리면 `0 < 상한가×0.95` 가 참이 되어
-            # 멀쩡한 보유가 가짜 하드스톱으로 전량 청산된다. REST 경로가 `if price > 0`
+            # 멀쩡한 보유가 가짜 하드스톱(`hard_stop_price` 비교)으로 전량 청산된다. REST 경로가 `if price > 0`
             # 가드를 두는 것과 같은 이유다 — 모르는 것은 폭락이 아니다.
             return
         commands = machine.on_quote(
@@ -677,9 +677,12 @@ class LimitUpService:
                 machine.filled_quantity = reconciled.owned_quantity
             else:
                 machine.filled_quantity = self.repository.remaining_quantity(row)
-            if row.execution_mode == "unknown" or (
+            exposed = row.state != LimitUpState.WATCHING.value or self.repository.bought_quantity(row) > 0
+            if (row.execution_mode == "unknown" and exposed) or (
                 row.execution_mode == LimitUpMode.AUTOMATIC.value and self.worker is None
             ):
+                # 출처를 모르는 **보유**만 잠근다. 감시만 하다 끝난 행까지 잠그면
+                # 재시작마다 영구 수동잠금이 걸린다.
                 self.manual_lock = True
                 self.unknown_positions = sorted({*self.unknown_positions, row.ticker})
             if row.first_fill_at is not None:

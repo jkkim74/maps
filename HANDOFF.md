@@ -22,7 +22,17 @@ Codex 가 남은 제약 위반(하드스톱 `effective_stop_price` 미사용, `t
 | 4 | `after_hours` 가 `exit_reason="after_hours"` 하드코딩 — 방금 만든 `exit_audit_code()` 우회 | 함수 경유 |
 | 5 | (미수정, 별도 설계) `_pace_request` 가 **락 잡은 채 sleep**, 프로세스 전역 단일 레인 — RECONCILING 4티커면 tick 8~12초 → 비상정지 10초 타임아웃 | 호출 수 감축(계좌 스냅샷 tick당 1회 공유) 없이 페이싱만 넣으면 지연이 펌프로 전가된다 |
 
-배포 시 `alembic upgrade head` 필요 (`0031` → `0032`).
+**8차 검토(부분 완료)** — 세션 한도로 검증 3건만 끝났고 셋 다 반영했다.
+- `0032` 의 백필 2건 제거 — `alembic/CLAUDE.md` "임의 backfill 금지" 위반이었고, 운영
+  `limit_up_session` 은 0행이라 효과도 없었다.
+- `recover()` 가 `execution_mode='unknown'` 행을 전부 수동잠금하던 것을 **보유가 있는
+  행만**으로 좁혔다 — 감시만 하다 끝난 행 때문에 재시작마다 영구 잠금이 걸렸을 것이다.
+- 문서 드리프트 5곳 정정(`limit_up/CLAUDE.md` 4곳, `alembic/CLAUDE.md` head, `bootstrap`
+  docstring, 설계서의 `hard_stop_drawdown`).
+- `_pace_request` 지연 산정은 **PLAUSIBLE** 로 판정됐다 — 페이싱과 지연이 겹치므로 통상
+  N=2 에서 tick ≈2.5초, 10초 초과는 재제출·재취소·페이지네이션이 겹칠 때만. 위험은 유효.
+
+배포 시 `alembic upgrade head` 필요 (`0031` → `0032`). 나머지 7개 검토 각도는 미완.
 
 ## 8/30 6·7차 검토 — P0 6건 수정, **테스트 더블에 수량 제약 추가**
 

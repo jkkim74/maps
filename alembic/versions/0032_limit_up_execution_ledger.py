@@ -33,22 +33,7 @@ def upgrade() -> None:
         "limit_up_session",
         sa.Column("exit_quantity_by_date", sa.JSON(), nullable=True),
     )
-    op.execute(sa.text(
-        "UPDATE limit_up_session SET execution_mode = 'automatic' "
-        "WHERE EXISTS (SELECT 1 FROM limit_up_order_leg leg "
-        "WHERE leg.session_id = limit_up_session.id "
-        "AND leg.broker_order_id IS NOT NULL)"
-    ))
-    op.execute(sa.text(
-        "UPDATE limit_up_session SET execution_mode = 'recommend_only' "
-        "WHERE execution_mode = 'unknown' "
-        "AND (exit_order_ids IS NULL OR exit_order_ids = '') "
-        "AND EXISTS (SELECT 1 FROM limit_up_order_leg leg "
-        "WHERE leg.session_id = limit_up_session.id) "
-        "AND NOT EXISTS (SELECT 1 FROM limit_up_order_leg leg "
-        "WHERE leg.session_id = limit_up_session.id "
-        "AND leg.status NOT IN ('recommended', 'simulated_filled'))"
-    ))
+    # 백필 없음 — alembic/CLAUDE.md 규칙. 운영 limit_up_session 은 이 시점 0행이었다.
 
 
 def downgrade() -> None:

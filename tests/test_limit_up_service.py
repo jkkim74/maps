@@ -942,3 +942,19 @@ def test_account_daily_loss_is_passed_to_entry_risk_gate(db) -> None:
     service.on_trade(_trade(2.0, 99_700), now_kst=now)
 
     assert broker.orders == []
+
+
+def test_recover_does_not_lock_on_a_watch_only_row_of_unknown_provenance(db) -> None:
+    """A never-fired watching row is not exposure; locking on it re-locks every boot."""
+    broker = ServiceBroker()
+    service = _service(db, LimitUpMode.AUTOMATIC, broker)
+    row = service.repository.create_or_get_session(
+        ref_date=dt.date(2026, 8, 28), ticker="005930", market="KOSPI",
+        upper_limit_price=100_000, trigger_price=99_700, execution_mode="unknown",
+    )
+    assert row.state == LimitUpState.WATCHING.value
+    db.commit()
+
+    service.recover(ref_date=dt.date(2026, 8, 28), now_monotonic=100.0)
+
+    assert service.status()["manual_lock"] is False

@@ -134,10 +134,14 @@ def test_split_plan_migration_reports_existing_active_ticker_duplicates(
         command.upgrade(config, "head")
 
 
-def test_limit_up_execution_ledger_backfills_and_downgrades(
+def test_limit_up_execution_ledger_adds_default_and_downgrades(
     tmp_path, monkeypatch
 ) -> None:
-    """Legacy sessions are classified only when their persisted provenance is clear."""
+    """Legacy rows keep the server default — the migration carries no backfill.
+
+    alembic/CLAUDE.md forbids ad-hoc backfills; classification, if ever needed,
+    belongs in scripts/. Production held zero rows when 0032 shipped.
+    """
     db_path = tmp_path / "maps-limit-up-ledger.db"
     monkeypatch.setenv("MAPS_DB_URL", f"sqlite:///{db_path.as_posix()}")
     config = Config("alembic.ini")
@@ -173,11 +177,7 @@ def test_limit_up_execution_ledger_backfills_and_downgrades(
         modes = dict(connection.execute(text(
             "SELECT ticker, execution_mode FROM limit_up_session"
         )).all())
-    assert modes == {
-        "111111": "automatic",
-        "222222": "recommend_only",
-        "333333": "unknown",
-    }
+    assert modes == {"111111": "unknown", "222222": "unknown", "333333": "unknown"}
 
     command.downgrade(config, "0031_limit_up_guard")
     assert "execution_mode" not in {
