@@ -210,11 +210,14 @@ class KISAdapter(BrokerAdapter):
                 _RequestPaceState(lock=threading.Lock()),
             )
         interval = 0.05 if self._real else 0.5
+        scheduled_at: float
         with state.lock:
-            remaining = state.last_request_at + interval - time.monotonic()
-            if remaining > 0:
-                time.sleep(remaining)
-            state.last_request_at = time.monotonic()
+            now = time.monotonic()
+            scheduled_at = max(now, state.last_request_at + interval)
+            state.last_request_at = scheduled_at
+        remaining = scheduled_at - time.monotonic()
+        if remaining > 0:
+            time.sleep(remaining)
 
     def place_order(self, order: Order) -> OrderResult:
         """Submit a domestic cash stock order through KIS."""

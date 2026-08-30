@@ -900,7 +900,10 @@ def test_unknown_recovered_session_locks_without_selling(db) -> None:
     assert [order for _, order in broker.orders if order.side is OrderSide.SELL] == []
 
 
-@pytest.mark.parametrize("cancel_result", [False, BrokerAdapterError("cancel failed")])
+@pytest.mark.parametrize(
+    "cancel_result",
+    [False, BrokerAdapterError("cancel failed"), RuntimeError("timeout")],
+)
 def test_protective_sell_waits_for_verified_buy_cancels(db, cancel_result) -> None:
     broker = ServiceBroker()
     service = _service(db, LimitUpMode.AUTOMATIC, broker)

@@ -326,3 +326,12 @@ def test_hard_stop_is_anchored_to_entry_and_only_ever_widens() -> None:
     # a later, higher average must not pull the stop back up
     machine.on_fill(at=3.0, cumulative_quantity=30, avg_price=99_000.0)
     assert machine.hard_stop_price == 93_100
+
+
+def test_late_fill_adoption_anchors_stop_to_average_entry() -> None:
+    machine = LimitUpMachine("005930", upper_limit_price=100_000, config=LimitUpConfig())
+    machine.state = LimitUpState.CLOSED
+
+    machine.adopt_late_fill(at=2.0, cumulative_quantity=20, avg_price=90_000.0)
+
+    assert machine.hard_stop_price == 85_500

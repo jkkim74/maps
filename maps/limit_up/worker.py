@@ -242,8 +242,11 @@ class LimitUpCommandWorker:
             self.repository.db.commit()
             try:
                 cancelled = self.order_manager.cancel(leg.broker_order_id)
-            except BrokerAdapterError:
+            except Exception:
                 leg.status = "reconciling"
+                logger.exception(
+                    "매수 취소 예외 [%s] id=%s", session.ticker, leg.broker_order_id
+                )
             else:
                 leg.status = "cancelled" if cancelled else "reconciling"
             self.repository.db.commit()

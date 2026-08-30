@@ -469,7 +469,13 @@ class LimitUpMachine:
         if self.state in {LimitUpState.NET_OPEN, LimitUpState.RECONCILING}:
             self.state = LimitUpState.FILLED_WAIT_LOCK
 
-    def adopt_late_fill(self, *, at: float, cumulative_quantity: int) -> None:
+    def adopt_late_fill(
+        self,
+        *,
+        at: float,
+        cumulative_quantity: int,
+        avg_price: float | None = None,
+    ) -> None:
         """Reopen a session closed as unfilled that the broker actually filled.
 
         A cancel racing a fill can leave real shares behind a CLOSED session. Those
@@ -483,7 +489,11 @@ class LimitUpMachine:
         if cumulative_quantity <= 0 or self.state is not LimitUpState.CLOSED:
             return
         self.state = LimitUpState.FILLED_WAIT_LOCK
-        self.on_fill(at=at, cumulative_quantity=cumulative_quantity)
+        self.on_fill(
+            at=at,
+            cumulative_quantity=cumulative_quantity,
+            avg_price=avg_price,
+        )
 
     def on_timer(self, now: float) -> list[MachineCommand]:
         """Apply no-fill expiry, lock confirmation, or filled time cut."""

@@ -182,6 +182,30 @@ def test_retry_attempts_each_pass_through_the_shared_pacer(
     assert len(paced) == 3  # token issuance plus both HTTP attempts
 
 
+def test_pacer_does_not_hold_lane_lock_while_sleeping(
+    settings: MapsSettings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    broker = KISAdapter(settings, http=FakeSession())
+    clock = [100.0]
+    lock_available: list[bool] = []
+
+    monkeypatch.setattr(kis_adapter.time, "monotonic", lambda: clock[0])
+    broker._pace_request()
+    state = kis_adapter._REQUEST_PACE_STATES[broker._token_cache_key]
+
+    def fake_sleep(seconds: float) -> None:
+        acquired = state.lock.acquire(blocking=False)
+        lock_available.append(acquired)
+        if acquired:
+            state.lock.release()
+        clock[0] += seconds
+
+    monkeypatch.setattr(kis_adapter.time, "sleep", fake_sleep)
+    broker._pace_request()
+
+    assert lock_available == [True]
+
+
 def test_token_is_shared_across_adapter_instances(settings: MapsSettings) -> None:
     http1 = FakeSession()
     broker1 = KISAdapter(settings, http=http1)

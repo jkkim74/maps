@@ -26,7 +26,7 @@ from maps.limit_up.domain import (
 )
 from maps.limit_up.feed import FeedQuote, FeedTrade, TapeBuffer
 from maps.limit_up.repository import LimitUpRepository
-from maps.limit_up.worker import LimitUpCommandWorker
+from maps.limit_up.worker import CancelBuysResult, LimitUpCommandWorker
 
 
 logger = logging.getLogger(__name__)
@@ -236,7 +236,9 @@ class LimitUpService:
                     # cancel_pending_buys 가 내부에서 reconcile 하므로 앞서 따로 하면
                     # 첫 결과를 버리고 I/O 절반을 낭비한다. 청산 후에는 레그가 종결
                     # 상태라 취소 루프는 아무것도 안 보내고 reconcile 만 남는다.
-                    cancel = self.worker.cancel_pending_buys(session)
+                    cancel = self._cancel_buys_safely(session)
+                    if cancel is None:
+                        continue
                     if not cancel.is_clear:
                         self.manual_lock = True
                         continue
@@ -935,6 +937,17 @@ class LimitUpService:
         feed_lost = "feed_disconnected" in self.guard.halted_reasons
         return self.manual_lock or (feed_lost and bool(self.held_tickers()))
 
+    def _cancel_buys_safely(self, session: LimitUpSession) -> CancelBuysResult | None:
+        """Cancel buys, latching manual control if broker I/O is unavailable."""
+        try:
+            return self.worker.cancel_pending_buys(session)
+        except Exception:
+            self.manual_lock = True
+            logger.exception(
+                "매수 취소/재조정 실패로 수동 잠금 [%s]", session.ticker
+            )
+            return None
+
     def _apply_virtual_fills(
         self, ticker: str, price: int, at: float, now_kst: dt.datetime
     ) -> None:
@@ -1078,7 +1091,9 @@ class LimitUpService:
 
             if command.kind is CommandKind.CANCEL_BUYS:
                 if self.can_place_exit_for(ticker):
-                    cancel = self.worker.cancel_pending_buys(session)
+                    cancel = self._cancel_buys_safely(session)
+                    if cancel is None:
+                        return
                     if not cancel.is_clear:
                         # 취소하지 못한 매수가 브로커에 살아 있다. 지금 팔아도 그 주문이
                         # 나중에 체결되면 포지션이 되살아난다 — 사람이 볼 수 있게 잠근다.
@@ -1094,6 +1109,7 @@ class LimitUpService:
                         machine.adopt_late_fill(
                             at=self.monotonic_hint,
                             cumulative_quantity=result.owned_quantity,
+                            avg_price=self.repository.average_fill_price(session),
                         )
                         if machine.state is LimitUpState.FILLED_WAIT_LOCK:
                             session.state = machine.state.value
