@@ -1,5 +1,39 @@
 # HANDOFF
 
+## 8/30 상한가 전략 후속 수정·운영 배포 — ✅ `b18c8b1`, 엔진은 OFF 유지
+
+상한가 전략 재리뷰에서 확인된 3건을 수정하고 전체 검증·운영 배포까지 완료했다.
+
+- **늦은 체결 손절 기준**: `adopt_late_fill()` 이 평균 체결가를 받아
+  `effective_stop_price("limit_up_v1", avg_price)` 기준으로 하드스톱을 넓히도록 수정했다.
+  서비스는 세션 레그의 가중평균 체결가를 전달한다.
+- **KIS REST 페이싱**: 계정별 다음 요청 시각은 락 안에서 예약하되 실제 `sleep` 은 락 밖에서
+  수행한다. 최소 요청 간격은 유지하면서 다른 호출이 sleep 락에 막히지 않는다.
+- **매수 취소 안전 실패**: `BrokerAdapterError` 외 일반 예외도 레그를 `reconciling` 으로 남기고,
+  취소·재조정 자체가 실패하면 서비스가 `manual_lock=True` 로 전환해 후속 매도를 막는다.
+
+검증·배포 상태:
+
+| 항목 | 결과 |
+|---|---|
+| 기능 커밋 | `b18c8b1 fix: harden limit-up recovery and request pacing` |
+| 로컬 전체 테스트 | `1152 passed, 25 warnings` |
+| 추가 검사 | `compileall`·`git diff --check` 통과 |
+| 운영 HEAD | `b18c8b1` |
+| 운영 Alembic | `0032_limit_up_ledger (head)` |
+| 운영 서비스 | `maps.service active (running)`, `/health` HTTP 200 |
+| 외부 URL | `https://maps.magable.kr/` HTTP 303(인증 리다이렉트) |
+| 배포 직후 오류 | 최근 5분 systemd error 없음 |
+| 상한가 엔진 | `MAPS_LIMIT_UP_ENABLED=false` — **명시적 재개 전까지 켜지 말 것** |
+
+배포 시각은 2026-08-30 23:53 KST. 서버는 배포 전 분석 락이 idle 이었고 tracked worktree가
+깨끗했다. 서버의 기존 `backups/`, `diary/`, `reports/`, 운영 스크립트 등 untracked 파일과
+로컬 사용자 untracked 파일은 그대로 보존했다.
+
+다음 세션은 코드를 다시 배포할 필요가 없다. 필요하면 운영 로그와 `manual_lock` 상태를
+확인하고, 상한가 엔진 재가동은 실거래/모의거래 모드와 활성 세션을 검토한 뒤 별도 승인으로
+진행한다. 아래의 “배포 시 `alembic upgrade head` 필요” 문구는 배포 전 당시의 과거 기록이다.
+
 ## 8/30 Codex 수정분 병합 — 제약 위반 3건 해소, 내 검토로 5곳 보정
 
 Codex 가 남은 제약 위반(하드스톱 `effective_stop_price` 미사용, `trigger_price` 틱 오차,
