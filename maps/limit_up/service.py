@@ -134,7 +134,10 @@ class LimitUpService:
             upper_limit_price=candidate.upper_limit_price,
             trigger_price=trigger_price(candidate.upper_limit_price),
             total_listed_shares=candidate.total_listed_shares,
+            execution_mode=self.mode.value,
         )
+        if session.state != LimitUpState.WATCHING.value:
+            return False
         machine = LimitUpMachine(
             candidate.ticker,
             upper_limit_price=candidate.upper_limit_price,
@@ -164,7 +167,7 @@ class LimitUpService:
                 "buy": trade.buy_initiated,
             },
         )
-        if self.mode is LimitUpMode.RECOMMEND_ONLY:
+        if self._is_virtual(trade.ticker):
             self._apply_virtual_fills(trade.ticker, trade.price, trade.received_at, now_kst)
         commands = machine.on_trade(
             TradeEvent(
@@ -218,7 +221,7 @@ class LimitUpService:
         self.monotonic_hint = now_monotonic
         for ticker, machine in list(self._machines.items()):
             last_reconcile = self._last_reconcile_at.get(ticker, float("-inf"))
-            if self.exits_are_live() and now_monotonic - last_reconcile >= 1.0:
+            if self.can_place_exit_for(ticker) and now_monotonic - last_reconcile >= 1.0:
                 if machine.state in {LimitUpState.NET_OPEN, LimitUpState.FILLED_WAIT_LOCK}:
                     self._last_reconcile_at[ticker] = now_monotonic
                     result = self.worker.reconcile(self._sessions[ticker])
@@ -230,17 +233,24 @@ class LimitUpService:
                     # 청산 손익이 NULL 로 남아 일일 중단선에 반영되지 않는다.
                     self._last_reconcile_at[ticker] = now_monotonic
                     session = self._sessions[ticker]
-                    result = self.worker.reconcile(session)
-                    if result.position_quantity == 0:
+                    # cancel_pending_buys 가 내부에서 reconcile 하므로 앞서 따로 하면
+                    # 첫 결과를 버리고 I/O 절반을 낭비한다. 청산 후에는 레그가 종결
+                    # 상태라 취소 루프는 아무것도 안 보내고 reconcile 만 남는다.
+                    cancel = self.worker.cancel_pending_buys(session)
+                    if not cancel.is_clear:
+                        self.manual_lock = True
+                        continue
+                    result = cancel.reconciliation
+                    if result.owned_quantity == 0:
                         machine.state = LimitUpState.CLOSED
                         machine.filled_quantity = 0
                         session.state = LimitUpState.CLOSED.value
                         self.repository.db.commit()
-                    elif not result.open_order_ids:
+                    elif not result.open_exit_order_ids:
                         # 손절 제출이 예외로 실패하면 상태만 RECONCILING 이 되고 이후
                         # 손절 이벤트는 중복 방지로 무시된다. 열린 주문이 하나도 없는데
                         # 보유가 남아 있다는 건 매도가 나가지 않았다는 뜻이다.
-                        self._retry_stuck_exit(ticker, result.position_quantity)
+                        self._retry_stuck_exit(ticker, result.owned_quantity)
             commands = machine.on_timer(now_monotonic)
             self._handle_commands(ticker, commands, now_kst=wall)
 
@@ -351,6 +361,8 @@ class LimitUpService:
             self.worker.sell_actual_position(
                 session, reason="eod_review_fail", owned_quantity=machine.filled_quantity
             )
+        elif self._is_virtual(ticker):
+            self._close_virtual(ticker, "eod_review_fail", session.ref_date)
         elif not self._strand_unprotected(ticker, "eod_review_fail"):
             machine.state = LimitUpState.CLOSED
             session.state = LimitUpState.CLOSED.value
@@ -424,11 +436,17 @@ class LimitUpService:
         shares would be "sold" for real, hitting whatever the account actually
         holds in that ticker.
         """
-        return bool(self._virtual_filled_legs.get(ticker))
+        session = self._sessions.get(ticker)
+        return session is not None and session.execution_mode == LimitUpMode.RECOMMEND_ONLY.value
 
     def can_place_exit_for(self, ticker: str) -> bool:
         """Return whether a real exit order may be sent for one session."""
-        return self.exits_are_live() and not self._is_virtual(ticker)
+        session = self._sessions.get(ticker)
+        return (
+            self.exits_are_live()
+            and session is not None
+            and session.execution_mode == LimitUpMode.AUTOMATIC.value
+        )
 
     def exits_are_live(self) -> bool:
         """Return whether protective orders can still reach the broker.
@@ -452,16 +470,25 @@ class LimitUpService:
         Recomputed at every checkpoint rather than frozen at 15:18, so a session
         closing in between re-splits the budget across whoever is left.
         """
-        tickers = self.carried_tickers()
         budget = overnight_budget(self.repository.realized_pnl_total(ref_date))
-        return {
-            ticker: overnight_allowance(
-                budget_krw=budget,
-                session_count=len(tickers),
-                upper_limit_price=self._machines[ticker].upper_limit_price,
-            )
-            for ticker in tickers
-        }
+        allowances: dict[str, int] = {}
+        tickers = self.carried_tickers()
+        for execution_mode in (
+            LimitUpMode.AUTOMATIC.value,
+            LimitUpMode.RECOMMEND_ONLY.value,
+        ):
+            group = [
+                ticker
+                for ticker in tickers
+                if self._sessions[ticker].execution_mode == execution_mode
+            ]
+            for ticker in group:
+                allowances[ticker] = overnight_allowance(
+                    budget_krw=budget,
+                    session_count=len(group),
+                    upper_limit_price=self._machines[ticker].upper_limit_price,
+                )
+        return allowances
 
     def apply_overnight_cap(self, *, ref_date: dt.date) -> dict[str, int]:
         """15:18 — sell the excess over each carried session's budget share.
@@ -485,7 +512,7 @@ class LimitUpService:
                 # 15:25 확인·15:28 강제청산까지 함께 죽는다). 체결 여부는 confirm 이 본다.
                 continue
             session = self._sessions[ticker]
-            if self.exits_are_live():
+            if self.can_place_exit_for(ticker):
                 # tick() only reconciles NET_OPEN/FILLED_WAIT_LOCK, so a locked
                 # session's cached quantity can lag the actual holding. Sizing the
                 # trim off a stale number would under-trim and breach the cap.
@@ -505,8 +532,13 @@ class LimitUpService:
                 self.worker.sell_overnight_excess(
                     session, quantity=excess, price=machine.upper_limit_price
                 )
+            elif self._is_virtual(ticker):
+                self.repository.add_exit_quantity(
+                    session, ref_date=ref_date, quantity=excess
+                )
+                machine.filled_quantity = self.repository.remaining_quantity(session)
             else:
-                machine.filled_quantity = allowed
+                self._strand_unprotected(ticker, "overnight_trim")
             submitted[ticker] = excess
         self.repository.db.commit()
         return submitted
@@ -527,7 +559,7 @@ class LimitUpService:
             if machine.state is not LimitUpState.EOD_TRIM:
                 continue
             session = self._sessions[ticker]
-            if self.exits_are_live():
+            if self.can_place_exit_for(ticker):
                 machine.filled_quantity = self.worker.reconcile(session).owned_quantity
             if machine.filled_quantity > allowed:
                 continue
@@ -551,7 +583,6 @@ class LimitUpService:
         Returns:
             Tickers liquidated in full.
         """
-        del ref_date
         liquidated: list[str] = []
         # EOD_TRIM(캡 미체결)뿐 아니라 LOCKED 도 대상이다. 장애·재시작으로 15:18 창을
         # 놓치면 심사 자체를 못 받은 LOCKED 세션이 상한 적용 없이 익일로 넘어간다.
@@ -583,9 +614,11 @@ class LimitUpService:
                 result = self.worker.sell_actual_position(
                     session, reason=reason, owned_quantity=machine.filled_quantity
                 )
-                if result.position_quantity == 0:
+                if result.owned_quantity == 0:
                     machine.state = LimitUpState.CLOSED
                     machine.filled_quantity = 0
+            elif self._is_virtual(ticker):
+                self._close_virtual(ticker, reason, ref_date)
             elif not self._strand_unprotected(ticker, reason):
                 machine.state = LimitUpState.CLOSED
             session.state = machine.state.value
@@ -602,8 +635,6 @@ class LimitUpService:
         now_kst: dt.datetime | None = None,
     ) -> None:
         """Pause entries and rebuild known sessions from broker-authoritative holdings."""
-        if self.worker is None:
-            return
         wall = now_kst or dt.datetime.now(dt.timezone(dt.timedelta(hours=9)))
         # 기동일 세션만 복구하면, 익일 아침에 재시작했을 때 전일 오버나이트 보유가
         # unknown_position 으로 밀려 08:59:30 청산 창(30초)에서도 빠진다. 미종료 세션은
@@ -615,13 +646,21 @@ class LimitUpService:
             .order_by(LimitUpSession.ref_date)
             .all()
         )
-        known = {row.ticker for row in rows}
-        actual = self.worker.broker.get_positions()
+        known = {
+            row.ticker
+            for row in rows
+            if row.execution_mode == LimitUpMode.AUTOMATIC.value
+        }
+        actual = self.worker.broker.get_positions() if self.worker is not None else {}
         self.unknown_positions = sorted(
             ticker for ticker, quantity in actual.items() if quantity > 0 and ticker not in known
         )
         if self.unknown_positions:
             self.manual_lock = True
+        if self.worker is not None and any(
+            row.execution_mode == LimitUpMode.AUTOMATIC.value for row in rows
+        ):
+            self._orders_enabled = True
         for row in rows:
             machine = LimitUpMachine(
                 row.ticker,
@@ -632,9 +671,17 @@ class LimitUpService:
             # 계좌 보유를 그대로 세션 보유로 삼으면 공유 계좌에서 남의 물량을 V1 이
             # 산 것으로 장부에 올린다. 세션 자신의 레그 체결과의 min 이 소유분이다.
             position_qty = actual.get(row.ticker, 0)
-            machine.filled_quantity = min(
-                position_qty, self.repository.filled_quantity(row)
-            )
+            if row.execution_mode == LimitUpMode.AUTOMATIC.value and self.worker is not None:
+                reconciled = self.worker.reconcile(row)
+                position_qty = reconciled.position_quantity
+                machine.filled_quantity = reconciled.owned_quantity
+            else:
+                machine.filled_quantity = self.repository.remaining_quantity(row)
+            if row.execution_mode == "unknown" or (
+                row.execution_mode == LimitUpMode.AUTOMATIC.value and self.worker is None
+            ):
+                self.manual_lock = True
+                self.unknown_positions = sorted({*self.unknown_positions, row.ticker})
             if row.first_fill_at is not None:
                 first_fill = row.first_fill_at.replace(tzinfo=_UTC)
                 elapsed = max(0.0, (wall.astimezone(_UTC) - first_fill).total_seconds())
@@ -647,7 +694,12 @@ class LimitUpService:
                 machine.net_fired_at = now_monotonic - elapsed
             # 가격을 복원하지 않으면 재연결 후 첫 호가가 0 원으로 평가된다.
             # 호가창 스냅샷은 보통 체결보다 먼저 도착하므로 거의 매번 그렇게 된다.
-            held = self.worker.broker.get_position(row.ticker)
+            held = (
+                self.worker.broker.get_position(row.ticker)
+                if self.worker is not None
+                and row.execution_mode == LimitUpMode.AUTOMATIC.value
+                else None
+            )
             self._last_prices[row.ticker] = int(
                 (held.current_price or held.avg_price) if held else row.upper_limit_price
             )
@@ -661,16 +713,20 @@ class LimitUpService:
                 current_price=0,
                 change_rate=0.0,
             )
-            if position_qty == 0 and row.state in {
+            if (
+                row.execution_mode == LimitUpMode.AUTOMATIC.value
+                and position_qty == 0
+                and row.state in {
                 LimitUpState.FILLED_WAIT_LOCK.value,
                 LimitUpState.LOCKED.value,
                 LimitUpState.OVERNIGHT.value,
-            }:
+                }
+            ):
                 row.state = LimitUpState.RECONCILING.value
         self.repository.db.commit()
         self._resubmit_interrupted_exits(wall)
 
-    def _retry_stuck_exit(self, ticker: str, position_quantity: int) -> None:
+    def _retry_stuck_exit(self, ticker: str, owned_quantity: int) -> None:
         """Re-send an exit for a position whose sell never reached the broker.
 
         A broker error during the protective exit leaves the machine in
@@ -680,22 +736,22 @@ class LimitUpService:
 
         Args:
             ticker: Session ticker.
-            position_quantity: Broker-authoritative held quantity.
+            owned_quantity: Broker-confirmed shares owned by this session.
         """
         session = self._sessions[ticker]
         machine = self._machines[ticker]
         logger.error(
             "청산이 나가지 않은 보유 발견 [%s] qty=%s — 재제출한다",
-            ticker, position_quantity,
+            ticker, owned_quantity,
         )
         if not self.worker.cancel_open_exits(session).is_clear:
             return
         result = self.worker.sell_actual_position(
             session,
             reason=session.end_reason or "stuck_exit_retry",
-            owned_quantity=machine.filled_quantity or position_quantity,
+            owned_quantity=owned_quantity,
         )
-        if result.position_quantity == 0:
+        if result.owned_quantity == 0:
             machine.state = LimitUpState.CLOSED
             machine.filled_quantity = 0
             session.state = LimitUpState.CLOSED.value
@@ -711,15 +767,22 @@ class LimitUpService:
         Args:
             now_kst: Wall-clock time used for the transition record.
         """
-        del now_kst
-        if not self.exits_are_live():
-            return
         for ticker, machine in list(self._machines.items()):
             if machine.state is not LimitUpState.RECONCILING:
                 continue
             if machine.filled_quantity <= 0:
                 continue
             session = self._sessions[ticker]
+            if self._is_virtual(ticker):
+                self._close_virtual(
+                    ticker,
+                    session.end_reason or "recovered_exit",
+                    now_kst.date(),
+                )
+                continue
+            if not self.can_place_exit_for(ticker):
+                self._strand_unprotected(ticker, session.end_reason or "recovered_exit")
+                continue
             if not self.worker.cancel_open_exits(session).is_clear:
                 # 취소하지 못한 매도가 살아 있다. 그 위에 전량매도를 얹으면 보유보다
                 # 많이 팔거나 잔량 부족으로 거절된다 — 사람이 볼 수 있게 두고 멈춘다.
@@ -732,7 +795,7 @@ class LimitUpService:
                 reason=session.end_reason or "recovered_exit",
                 owned_quantity=machine.filled_quantity,
             )
-            if result.position_quantity == 0:
+            if result.owned_quantity == 0:
                 machine.state = LimitUpState.CLOSED
                 machine.filled_quantity = 0
                 session.state = LimitUpState.CLOSED.value
@@ -832,14 +895,37 @@ class LimitUpService:
             action="next_open_sell",
         )
         if self.can_place_exit_for(ticker):
-            self.worker.sell_actual_position(
+            result = self.worker.sell_actual_position(
                 session, reason="next_open", owned_quantity=machine.filled_quantity
+            )
+            if result.owned_quantity == 0:
+                machine.state = LimitUpState.CLOSED
+                machine.filled_quantity = 0
+                session.state = LimitUpState.CLOSED.value
+                session.end_reason = "next_open"
+        elif self._is_virtual(ticker):
+            self._close_virtual(
+                ticker,
+                "next_open",
+                dt.datetime.now(dt.timezone(dt.timedelta(hours=9))).date(),
             )
         elif not self._strand_unprotected(ticker, "next_open"):
             machine.state = LimitUpState.CLOSED
             session.state = LimitUpState.CLOSED.value
             session.end_reason = "next_open"
         self.repository.db.commit()
+
+    def _close_virtual(self, ticker: str, reason: str, ref_date: dt.date) -> None:
+        """Close a paper position in its durable ledger without broker I/O."""
+        session = self._sessions[ticker]
+        machine = self._machines[ticker]
+        self.repository.add_exit_quantity(
+            session, ref_date=ref_date, quantity=machine.filled_quantity
+        )
+        machine.filled_quantity = self.repository.remaining_quantity(session)
+        machine.state = LimitUpState.CLOSED
+        session.state = LimitUpState.CLOSED.value
+        session.end_reason = reason
 
     def control_lost(self) -> bool:
         """Return whether exposure exists without trustworthy automation control."""
@@ -853,12 +939,27 @@ class LimitUpService:
         machine = self._machines[ticker]
         if machine.state is not LimitUpState.NET_OPEN:
             return
-        filled_legs = self._virtual_filled_legs.setdefault(ticker, set())
-        cumulative = machine.filled_quantity
-        for leg in self._grids.get(ticker, ()):
-            if leg.name not in filled_legs and price <= leg.price:
-                filled_legs.add(leg.name)
-                cumulative += leg.quantity
+        # 이 경로는 체결 프레임마다 돈다. 레그 두 개의 가격 비교는 메모리로 끝내고,
+        # DB 는 플립(레그당 평생 1회)에만 쓴다 — 프레임마다 SELECT/flush 를 하면
+        # 펌프 스레드에서 종목당 수천 쿼리가 실주문 세션의 손절 프레임 앞을 막는다.
+        session = self._sessions[ticker]
+        filled = self._virtual_filled_legs.setdefault(ticker, set())
+        flipped = [
+            leg for leg in self._grids.get(ticker, ())
+            if leg.name not in filled and price <= leg.price
+        ]
+        if not flipped:
+            return
+        for leg in flipped:
+            filled.add(leg.name)
+            row = self.repository.upsert_leg(
+                session, name=leg.name, price=leg.price, quantity=leg.quantity,
+                status="simulated_filled",
+            )
+            row.filled_quantity = leg.quantity
+            row.avg_fill_price = float(leg.price)
+        self.repository.db.flush()
+        cumulative = self.repository.remaining_quantity(session)
         if cumulative > machine.filled_quantity:
             self._record_fill(ticker, cumulative, at, now_kst)
 
@@ -868,7 +969,11 @@ class LimitUpService:
         """Record the first broker or virtual fill and force a tape dump."""
         machine = self._machines[ticker]
         first = machine.first_fill_at is None
-        machine.on_fill(at=at, cumulative_quantity=quantity)
+        machine.on_fill(
+            at=at,
+            cumulative_quantity=quantity,
+            avg_price=self.repository.average_fill_price(self._sessions[ticker]),
+        )
         session = self._sessions[ticker]
         if first:
             session.first_fill_at = _utc_naive(now_kst)
@@ -903,8 +1008,12 @@ class LimitUpService:
                     continue
                 self.guard.register_attempt()
                 self._persist_guard()
+                session.execution_mode = self.mode.value
                 budget = 2_000_000
-                if self.worker is not None:
+                if (
+                    session.execution_mode == LimitUpMode.AUTOMATIC.value
+                    and self.worker is not None
+                ):
                     budget = min(budget, int(self.worker.broker.get_account_balance().cash))
                 try:
                     grid = build_grid(
@@ -934,11 +1043,23 @@ class LimitUpService:
                 )
                 self._dump_tape(ticker, "TRIGGER")
                 self.repository.db.commit()
-                if self.mode is LimitUpMode.AUTOMATIC and self.worker is not None:
-                    result = self.worker.fire_grid(session, grid)
-                    if result.position_quantity > 0:
+                if (
+                    session.execution_mode == LimitUpMode.AUTOMATIC.value
+                    and self.worker is not None
+                ):
+                    result = self.worker.fire_grid(
+                        session,
+                        grid,
+                        daily_pnl_ratio=self.repository.daily_account_pnl_ratio(
+                            now_kst.date()
+                        ),
+                    )
+                    if result.owned_quantity > 0:
                         self._record_fill(
-                            ticker, result.position_quantity, trade.received_at if trade else 0.0, now_kst
+                            ticker,
+                            result.owned_quantity,
+                            trade.received_at if trade else 0.0,
+                            now_kst,
                         )
                 else:
                     for leg in grid:
@@ -954,20 +1075,22 @@ class LimitUpService:
 
             if command.kind is CommandKind.CANCEL_BUYS:
                 if self.can_place_exit_for(ticker):
-                    result = self.worker.cancel_pending_buys(session)
-                    if self.worker.has_stranded_buy(session):
+                    cancel = self.worker.cancel_pending_buys(session)
+                    if not cancel.is_clear:
                         # 취소하지 못한 매수가 브로커에 살아 있다. 지금 팔아도 그 주문이
                         # 나중에 체결되면 포지션이 되살아난다 — 사람이 볼 수 있게 잠근다.
                         self.manual_lock = True
                         logger.error(
                             "매수 취소 실패로 잔여 주문이 남았다 [%s] — 수동 잠금", ticker
                         )
+                        return
+                    result = cancel.reconciliation
                     # 취소가 체결과 경합하면 "미체결" 로 닫은 세션에 실제 주식이 남는다.
                     # 브로커가 정본이므로 그 수량을 보고 세션을 되살린다.
-                    if result.position_quantity > 0:
+                    if result.owned_quantity > 0:
                         machine.adopt_late_fill(
                             at=self.monotonic_hint,
-                            cumulative_quantity=result.position_quantity,
+                            cumulative_quantity=result.owned_quantity,
                         )
                         if machine.state is LimitUpState.FILLED_WAIT_LOCK:
                             session.state = machine.state.value
@@ -975,7 +1098,7 @@ class LimitUpService:
                                 session,
                                 state=LimitUpState.FILLED_WAIT_LOCK,
                                 action="late_fill_adopted",
-                                payload={"quantity": result.position_quantity},
+                                payload={"quantity": result.owned_quantity},
                             )
                             self.repository.db.commit()
                             continue
@@ -1013,10 +1136,12 @@ class LimitUpService:
                     )
                     # 결과를 버리면 세션이 RECONCILING 에 영원히 남아 슬롯을 잡고,
                     # 늦게 체결된 청산 손익이 NULL 로 남아 일일 중단선에 안 잡힌다.
-                    if result.position_quantity == 0:
+                    if result.owned_quantity == 0:
                         machine.state = LimitUpState.CLOSED
                         machine.filled_quantity = 0
                         session.end_reason = command.reason
+                elif self._is_virtual(ticker):
+                    self._close_virtual(ticker, command.reason, now_kst.date())
                 elif not self._strand_unprotected(ticker, command.reason):
                     machine.state = LimitUpState.CLOSED
                     session.end_reason = command.reason

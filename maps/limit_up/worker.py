@@ -21,7 +21,13 @@ from maps.execution.broker_adapter import (
     raw_broker_order_id,
 )
 from maps.execution.order_manager import OrderManager
-from maps.limit_up.domain import EXIT_STRATEGY_IDS, GridLeg, exit_strategy_id, realized_pnl
+from maps.limit_up.domain import (
+    EXIT_STRATEGY_IDS,
+    GridLeg,
+    exit_audit_code,
+    exit_strategy_id,
+    realized_pnl,
+)
 from maps.limit_up.repository import LimitUpRepository
 
 
@@ -50,13 +56,32 @@ class ReconcileResult:
         position_quantity: **Account-wide** holding for the ticker. On a shared
             account this includes other strategies' shares — never treat it as
             this session's position.
-        open_order_ids: This session's still-open order ids.
-        filled_quantity: Shares filled on this session's own legs.
+        open_buy_order_ids: This session's still-open entry ids.
+        open_exit_order_ids: This session's still-open exit ids.
+        bought_quantity: Cumulative fills on this session's buy legs.
+        exited_quantity: Cumulative fills on this session's exit ledger.
     """
 
     position_quantity: int
-    open_order_ids: tuple[str, ...]
-    filled_quantity: int
+    open_buy_order_ids: tuple[str, ...]
+    open_exit_order_ids: tuple[str, ...]
+    bought_quantity: int
+    exited_quantity: int
+
+    @property
+    def open_order_ids(self) -> tuple[str, ...]:
+        """Return every session-owned open order."""
+        return tuple(sorted({*self.open_buy_order_ids, *self.open_exit_order_ids}))
+
+    @property
+    def filled_quantity(self) -> int:
+        """Compatibility alias for gross buy fills."""
+        return self.bought_quantity
+
+    @property
+    def remaining_quantity(self) -> int:
+        """Return bought shares less confirmed session exits."""
+        return max(0, self.bought_quantity - self.exited_quantity)
 
     @property
     def owned_quantity(self) -> int:
@@ -65,7 +90,35 @@ class ReconcileResult:
         The account can hold more (another strategy) or fewer (someone sold
         outside the engine); both directions matter, so take the smaller.
         """
-        return max(0, min(self.position_quantity, self.filled_quantity))
+        return max(0, min(self.position_quantity, self.remaining_quantity))
+
+
+@dataclass(frozen=True)
+class CancelBuysResult:
+    """Broker-verified result of cancelling a session's entry orders."""
+
+    reconciliation: ReconcileResult
+    stranded_buy_ids: tuple[str, ...]
+
+    @property
+    def is_clear(self) -> bool:
+        """Return whether broker truth shows no entry order still open."""
+        return not self.stranded_buy_ids
+
+    @property
+    def position_quantity(self) -> int:
+        """Forward the account diagnostic for compatibility."""
+        return self.reconciliation.position_quantity
+
+    @property
+    def open_order_ids(self) -> tuple[str, ...]:
+        """Forward all open session orders for compatibility."""
+        return self.reconciliation.open_order_ids
+
+    @property
+    def owned_quantity(self) -> int:
+        """Forward the session-owned quantity."""
+        return self.reconciliation.owned_quantity
 
 
 class LimitUpCommandWorker:
@@ -86,7 +139,6 @@ class LimitUpCommandWorker:
         self.order_manager = order_manager
         self.broker = broker
         self.repository = repository
-        self._stranded_buys: dict[int, bool] = {}
 
     def legs(self, session: LimitUpSession) -> list[LimitUpOrderLeg]:
         """Return fixed legs in deterministic A/S order for audit displays."""
@@ -162,7 +214,7 @@ class LimitUpCommandWorker:
             except Exception:
                 leg.status = "rejected"
                 self.repository.db.commit()
-                return self.cancel_pending_buys(session)
+                return self.cancel_pending_buys(session).reconciliation
             leg.broker_order_id = result.order_id
             leg.filled_quantity = result.filled_quantity
             leg.avg_fill_price = result.avg_price or None
@@ -170,9 +222,8 @@ class LimitUpCommandWorker:
             self.repository.db.commit()
         return self.reconcile(session)
 
-    def cancel_pending_buys(self, session: LimitUpSession) -> ReconcileResult:
-        """Cancel all known buy legs and reconcile every ambiguous response."""
-        ambiguous = False
+    def cancel_pending_buys(self, session: LimitUpSession) -> CancelBuysResult:
+        """Cancel known buy legs and verify the result against broker truth."""
         for leg in self.legs(session):
             if not leg.broker_order_id or leg.status not in {
                 "created",
@@ -190,27 +241,19 @@ class LimitUpCommandWorker:
             )
             self.repository.db.commit()
             try:
-                self.order_manager.cancel(leg.broker_order_id)
+                cancelled = self.order_manager.cancel(leg.broker_order_id)
             except BrokerAdapterError:
-                ambiguous = True
                 leg.status = "reconciling"
             else:
-                leg.status = "cancelled"
+                leg.status = "cancelled" if cancelled else "reconciling"
             self.repository.db.commit()
-        # reconcile 이 leg.status 를 브로커 기준으로 되돌리므로 ambiguous 를 여기서
-        # 잃으면 흔적이 사라진다. 매도 경로가 CancelExitsResult 를 돌려주는 것과 같은
-        # 이유로, 취소하지 못한 매수가 남았다는 사실을 호출부가 알아야 한다.
+        # 호출 결과가 False이거나 예외여도 최종 판단은 브로커 미체결 목록으로 한다.
+        # 남은 매수 ID를 반환해야 호출부가 같은 명령 묶음의 매도를 중단할 수 있다.
         result = self.reconcile(session)
-        self._stranded_buys[session.id] = ambiguous
-        return result
-
-    def has_stranded_buy(self, session: LimitUpSession) -> bool:
-        """Return whether a buy order stayed live after a failed cancel.
-
-        A resting buy can still fill *after* the protective sell, recreating the
-        position the sell was meant to remove.
-        """
-        return self._stranded_buys.get(session.id, False)
+        return CancelBuysResult(
+            reconciliation=result,
+            stranded_buy_ids=result.open_buy_order_ids,
+        )
 
     def reconcile(self, session: LimitUpSession) -> ReconcileResult:
         """Apply daily fills, then open orders, then the actual broker holding."""
@@ -240,30 +283,31 @@ class LimitUpCommandWorker:
                     if leg.filled_quantity
                     else OrderStatus.PENDING.value
                 )
-        self._settle_realized_pnl(session, result_by_id)
+        self._settle_exit_ledger(session, result_by_id)
         position = self.broker.get_position(session.ticker)
         # 이 세션이 낸 주문만 열린 주문으로 센다. 같은 종목의 다른 전략 주문이나 우리
         # 매수 주문까지 세면 정체된 손절의 재제출이 영영 막힌다.
-        session_order_ids = {
+        buy_order_ids = {
             raw_broker_order_id(leg.broker_order_id)
             for leg in self.legs(session)
             if leg.broker_order_id
-        } | {
+        }
+        exit_order_ids = {
             raw_broker_order_id(item)
             for item in (session.exit_order_ids or "").split(",")
             if item
         }
+        bought = self.repository.bought_quantity(session)
+        exited = self.repository.exited_quantity(session)
         self.repository.db.commit()
         return ReconcileResult(
             position_quantity=position.quantity if position else 0,
             # 이 세션의 티커로 좁힌다. 계좌 전체를 담으면 무관한 주문 하나 때문에
             # tick() 의 "열린 주문이 없다" 재제출 조건이 영영 성립하지 않는다.
-            open_order_ids=tuple(sorted(
-                raw_id
-                for raw_id, order in open_by_id.items()
-                if raw_id in session_order_ids
-            )),
-            filled_quantity=sum(leg.filled_quantity for leg in self.legs(session)),
+            open_buy_order_ids=tuple(sorted(buy_order_ids & open_by_id.keys())),
+            open_exit_order_ids=tuple(sorted(exit_order_ids & open_by_id.keys())),
+            bought_quantity=bought,
+            exited_quantity=exited,
         )
 
     def sell_actual_position(
@@ -292,7 +336,11 @@ class LimitUpCommandWorker:
         position = self.broker.get_position(session.ticker)
         if position is None or position.quantity <= 0:
             return self.reconcile(session)
-        owned = owned_quantity if owned_quantity is not None else self.repository.filled_quantity(session)
+        owned = (
+            owned_quantity
+            if owned_quantity is not None
+            else self.repository.remaining_quantity(session)
+        )
         quantity = min(position.quantity, owned) if owned > 0 else 0
         if quantity <= 0:
             logger.warning(
@@ -316,7 +364,7 @@ class LimitUpCommandWorker:
             current_price=position.current_price or position.avg_price,
             decision_context={"limit_up_session_id": session.id, "reason": reason},
         )
-        result = self.order_manager.submit_exit(order, exit_reason=reason)
+        result = self.order_manager.submit_exit(order, exit_reason=exit_audit_code(reason))
         self._record_exit_order(session, result.order_id)
         self.repository.db.commit()
         return self.reconcile(session)
@@ -334,7 +382,7 @@ class LimitUpCommandWorker:
         existing.append(order_id)
         session.exit_order_ids = ",".join(existing)
 
-    def _settle_realized_pnl(
+    def _settle_exit_ledger(
         self, session: LimitUpSession, result_by_id: dict[str, OrderResult]
     ) -> None:
         """Book each filled exit against the day it actually settled on.
@@ -366,6 +414,14 @@ class LimitUpCommandWorker:
             result = result_by_id.get(raw_broker_order_id(order_id))
             if result is None or result.filled_quantity <= 0:
                 continue
+            stamp = result.filled_at or result.submitted_at
+            day = (
+                stamp.astimezone(_KST).date().isoformat()
+                if stamp.tzinfo is not None
+                else stamp.date().isoformat()
+            )
+            quantity, amount = by_day.get(day, (0, 0.0))
+            by_day[day] = (quantity + result.filled_quantity, amount)
             if result.avg_price <= 0:
                 # 방금 보고된 체결은 평균가가 비어 올 수 있다. 0 으로 곱하면 진입금액
                 # 전액이 손실로 기록돼 일일 중단선이 걸리고 오버나이트 예산이 0 이 된다.
@@ -375,23 +431,30 @@ class LimitUpCommandWorker:
                     session.ticker, order_id, result.filled_quantity,
                 )
                 continue
-            day = (result.filled_at or result.submitted_at).date().isoformat()
-            quantity, amount = by_day.get(day, (0, 0.0))
             by_day[day] = (
-                quantity + result.filled_quantity,
-                amount + result.filled_quantity * result.avg_price,
+                by_day[day][0],
+                by_day[day][1] + result.filled_quantity * result.avg_price,
             )
         if not by_day:
             return
 
         ledger = dict(session.realized_pnl_by_date or {})
+        pnl_updated = False
         for day, (quantity, amount) in by_day.items():
+            self.repository.record_exit_quantity(
+                session, ref_date=dt.date.fromisoformat(day), quantity=quantity
+            )
+            if amount <= 0:
+                continue
             ledger[day] = realized_pnl(
                 buy_amount=buy_amount,
                 buy_quantity=buy_quantity,
                 sell_amount=amount,
                 sell_quantity=quantity,
             )
+            pnl_updated = True
+        if not pnl_updated:
+            return
         session.realized_pnl_by_date = ledger
         # 총합은 원장에서 파생된다 — 두 곳에서 따로 계산하면 조용히 어긋난다.
         session.realized_pnl = sum(ledger.values())
@@ -515,7 +578,9 @@ class LimitUpCommandWorker:
                 "reason": "overnight_cap",
             },
         )
-        result = self.order_manager.submit_exit(order, exit_reason="overnight_cap")
+        result = self.order_manager.submit_exit(
+            order, exit_reason=exit_audit_code("overnight_cap")
+        )
         self._record_exit_order(session, result.order_id)
         self.repository.db.commit()
         return self.reconcile(session)

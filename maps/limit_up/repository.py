@@ -12,6 +12,7 @@ from maps.common.models import (
     LimitUpOrderLeg,
     LimitUpSession,
     LimitUpTape,
+    PortfolioSnapshot,
 )
 from maps.limit_up.domain import LimitUpState
 from maps.limit_up.feed import TapeSnapshot
@@ -33,6 +34,7 @@ class LimitUpRepository:
         upper_limit_price: int,
         trigger_price: int,
         total_listed_shares: int = 0,
+        execution_mode: str = "automatic",
     ) -> LimitUpSession:
         """Return the unique daily ticker session, creating it when absent."""
         existing = (
@@ -52,6 +54,7 @@ class LimitUpRepository:
             upper_limit_price=upper_limit_price,
             trigger_price=trigger_price,
             total_listed_shares=total_listed_shares,
+            execution_mode=execution_mode,
         )
         self.db.add(row)
         self.db.flush()
@@ -127,8 +130,8 @@ class LimitUpRepository:
         row.halted_reasons = sorted(halted_reasons)
         self.db.flush()
 
-    def filled_quantity(self, session: LimitUpSession) -> int:
-        """Return shares bought on this session's own legs.
+    def bought_quantity(self, session: LimitUpSession) -> int:
+        """Return cumulative shares bought on this session's own legs.
 
         Session ownership never comes from the account position: a shared
         account can hold another strategy's shares in the same ticker.
@@ -139,6 +142,73 @@ class LimitUpRepository:
             .all()
         )
         return sum(int(row[0] or 0) for row in rows)
+
+    def average_fill_price(self, session: LimitUpSession) -> float | None:
+        """Return the quantity-weighted entry price across this session's legs."""
+        rows = (
+            self.db.query(LimitUpOrderLeg.filled_quantity, LimitUpOrderLeg.avg_fill_price, LimitUpOrderLeg.price)
+            .filter(LimitUpOrderLeg.session_id == session.id)
+            .all()
+        )
+        qty = sum(int(q or 0) for q, _, _ in rows)
+        if qty <= 0:
+            return None
+        amount = sum(int(q or 0) * float(avg or price) for q, avg, price in rows)
+        return amount / qty
+
+    def filled_quantity(self, session: LimitUpSession) -> int:
+        """Compatibility alias for the cumulative bought quantity."""
+        return self.bought_quantity(session)
+
+    def exited_quantity(self, session: LimitUpSession) -> int:
+        """Return cumulative session-owned shares confirmed or simulated sold."""
+        return sum(int(value or 0) for value in (session.exit_quantity_by_date or {}).values())
+
+    def remaining_quantity(self, session: LimitUpSession) -> int:
+        """Return the session ledger's net shares before account reconciliation."""
+        return max(0, self.bought_quantity(session) - self.exited_quantity(session))
+
+    def record_exit_quantity(
+        self, session: LimitUpSession, *, ref_date: dt.date, quantity: int
+    ) -> None:
+        """Overwrite one KST day's cumulative exit quantity without losing prior days."""
+        ledger = dict(session.exit_quantity_by_date or {})
+        ledger[ref_date.isoformat()] = max(0, int(quantity))
+        session.exit_quantity_by_date = ledger
+        self.db.flush()
+
+    def add_exit_quantity(
+        self, session: LimitUpSession, *, ref_date: dt.date, quantity: int
+    ) -> None:
+        """Add a simulated exit to one KST day in the durable session ledger."""
+        key = ref_date.isoformat()
+        ledger = dict(session.exit_quantity_by_date or {})
+        ledger[key] = max(0, int(ledger.get(key, 0))) + max(0, int(quantity))
+        session.exit_quantity_by_date = ledger
+        self.db.flush()
+
+    def daily_account_pnl_ratio(self, ref_date: dt.date) -> float:
+        """Return broker account day P/L using the same snapshot formula as ops."""
+        today = (
+            self.db.query(PortfolioSnapshot)
+            .filter(
+                PortfolioSnapshot.ref_date == ref_date,
+                PortfolioSnapshot.source == "broker",
+            )
+            .first()
+        )
+        previous = (
+            self.db.query(PortfolioSnapshot)
+            .filter(
+                PortfolioSnapshot.ref_date < ref_date,
+                PortfolioSnapshot.source == "broker",
+            )
+            .order_by(PortfolioSnapshot.ref_date.desc())
+            .first()
+        )
+        if today is None or previous is None or previous.total_assets <= 0:
+            return 0.0
+        return (today.total_assets - previous.total_assets) / previous.total_assets
 
     def event_exists(
         self,

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import datetime as dt
 
+import pytest
+
 from maps.execution.broker_adapter import (
     AccountBalance,
     BrokerAdapter,
@@ -19,7 +21,7 @@ from maps.limit_up.domain import LimitUpConfig, LimitUpState
 from maps.limit_up.feed import FeedQuote, FeedTrade
 from maps.limit_up.repository import LimitUpRepository
 from maps.common.exceptions import BrokerAdapterError
-from maps.common.models import LimitUpSession
+from maps.common.models import LimitUpSession, PortfolioSnapshot
 from maps.limit_up.service import Candidate, LimitUpMode, LimitUpService
 from maps.limit_up.worker import LimitUpCommandWorker
 from maps.risk.manager import RiskManager
@@ -454,7 +456,7 @@ def test_unfilled_trim_gives_up_the_carry_instead_of_breaching_the_cap(db) -> No
     assert service._sessions["005930"].end_reason == "overnight_cap_unfilled"
 
 
-def test_fill_racing_a_cancel_keeps_the_session_protected(db) -> None:
+def test_account_position_without_session_fill_is_not_adopted(db) -> None:
     """Closing as unfilled while shares exist drops them out of every guard.
 
     A cancel racing a fill leaves real stock behind a CLOSED session — no hard
@@ -474,9 +476,8 @@ def test_fill_racing_a_cancel_keeps_the_session_protected(db) -> None:
     broker.positions["005930"] = Position("005930", 12, 98_800.0)
     service.tick(now_monotonic=200.0, now_kst=now)  # no_fill_timeout -> CANCEL_BUYS
 
-    assert machine.state is LimitUpState.FILLED_WAIT_LOCK
-    assert machine.filled_quantity == 12
-    assert "005930" in service.held_tickers()
+    assert machine.state is LimitUpState.CLOSED
+    assert machine.filled_quantity == 0
 
 
 def test_completed_exit_leaves_reconciling(db) -> None:
@@ -813,3 +814,131 @@ def test_a_failed_stop_loss_order_does_not_strand_the_position(db) -> None:
     sells = [order for _, order in broker.orders if order.side is OrderSide.SELL]
     assert len(sells) == 1
     assert sells[0].quantity == 20
+
+
+def test_recommendation_hard_stop_closes_paper_ledger_across_restart(db) -> None:
+    now = dt.datetime(2026, 8, 28, 10, 0, tzinfo=KST)
+    service = _service(db, LimitUpMode.RECOMMEND_ONLY)
+    service.watch_candidate(_candidate(), now_kst=now)
+    service.on_trade(_trade(1.0, 99_600), now_kst=now)
+    service.on_trade(_trade(2.0, 99_700), now_kst=now)
+    service.on_trade(_trade(3.0, 98_000), now_kst=now)
+    assert service.machine("005930").filled_quantity == 12
+
+    service.on_trade(_trade(4.0, 90_000), now_kst=now)
+
+    session = service._sessions["005930"]
+    assert session.state == LimitUpState.CLOSED.value
+    assert service.repository.remaining_quantity(session) == 0
+    assert session.exit_quantity_by_date == {"2026-08-28": 12}
+    restarted = _service(db, LimitUpMode.AUTOMATIC, ServiceBroker())
+    restarted.recover(ref_date=now.date(), now_monotonic=100.0, now_kst=now)
+    assert restarted.watched_tickers() == ()
+
+
+def test_live_session_stays_sellable_after_mode_downgrade(db) -> None:
+    broker = ServiceBroker()
+    service = _service(db, LimitUpMode.AUTOMATIC, broker)
+    now = dt.datetime(2026, 8, 28, 10, 0, tzinfo=KST)
+    service.watch_candidate(_candidate(), now_kst=now)
+    machine = service.machine("005930")
+    machine.fire_net(at=1.0)
+    machine.on_fill(at=2.0, cumulative_quantity=20)
+    _seed_owned(service, "005930", 20)
+    broker.positions["005930"] = Position("005930", 20, 98_000.0)
+
+    service.set_mode(LimitUpMode.RECOMMEND_ONLY)
+    service.on_trade(_trade(3.0, 90_000), now_kst=now)
+
+    sells = [order for _, order in broker.orders if order.side is OrderSide.SELL]
+    assert [order.quantity for order in sells] == [20]
+
+
+def test_paper_session_does_not_dilute_live_overnight_allowance(db) -> None:
+    broker = ServiceBroker()
+    service = _service(db, LimitUpMode.AUTOMATIC, broker)
+    now = dt.datetime(2026, 8, 28, 14, 0, tzinfo=KST)
+    service.watch_candidate(_candidate(), now_kst=now)
+    live = service.machine("005930")
+    live.state = LimitUpState.OVERNIGHT
+    live.filled_quantity = 40
+    _seed_owned(service, "005930", 40)
+    broker.positions["005930"] = Position("005930", 40, 98_000.0)
+
+    service.set_mode(LimitUpMode.RECOMMEND_ONLY)
+    service.watch_candidate(Candidate(
+        ticker="000660", market="KOSPI", upper_limit_price=100_000,
+        total_listed_shares=10_000_000, current_price=96_000, change_rate=25.0,
+    ), now_kst=now)
+    paper = service.machine("000660")
+    paper.state = LimitUpState.OVERNIGHT
+    paper.filled_quantity = 40
+    _seed_owned(service, "000660", 40)
+
+    allowances = service.overnight_allowances(now.date())
+
+    assert allowances == {"005930": 33, "000660": 33}
+
+
+def test_unknown_recovered_session_locks_without_selling(db) -> None:
+    broker = ServiceBroker()
+    service = _service(db, LimitUpMode.AUTOMATIC, broker)
+    row = service.repository.create_or_get_session(
+        ref_date=dt.date(2026, 8, 28), ticker="005930", market="KOSPI",
+        upper_limit_price=100_000, trigger_price=99_700, execution_mode="unknown",
+    )
+    row.state = LimitUpState.OVERNIGHT.value
+    leg = service.repository.upsert_leg(row, name="S", price=98_800, quantity=10)
+    leg.filled_quantity = 10
+    broker.positions["005930"] = Position("005930", 10, 98_800.0)
+    db.commit()
+
+    service.recover(ref_date=row.ref_date, now_monotonic=100.0)
+
+    assert service.manual_lock
+    assert service.unknown_positions == ["005930"]
+    assert [order for _, order in broker.orders if order.side is OrderSide.SELL] == []
+
+
+@pytest.mark.parametrize("cancel_result", [False, BrokerAdapterError("cancel failed")])
+def test_protective_sell_waits_for_verified_buy_cancels(db, cancel_result) -> None:
+    broker = ServiceBroker()
+    service = _service(db, LimitUpMode.AUTOMATIC, broker)
+    now = dt.datetime(2026, 8, 28, 10, 0, tzinfo=KST)
+    service.watch_candidate(_candidate(), now_kst=now)
+    service.on_trade(_trade(1.0, 99_600), now_kst=now)
+    service.on_trade(_trade(2.0, 99_700), now_kst=now)
+    machine = service.machine("005930")
+    machine.on_fill(at=2.5, cumulative_quantity=20)
+    _seed_owned(service, "005930", 20)
+    broker.positions["005930"] = Position("005930", 20, 98_800.0)
+
+    def cancel(order_id: str) -> bool:
+        if isinstance(cancel_result, Exception):
+            raise cancel_result
+        return cancel_result
+
+    broker.cancel_order = cancel  # type: ignore[method-assign]
+    service.on_trade(_trade(3.0, 90_000), now_kst=now)
+
+    assert service.manual_lock
+    assert [order for _, order in broker.orders if order.side is OrderSide.SELL] == []
+
+
+def test_account_daily_loss_is_passed_to_entry_risk_gate(db) -> None:
+    broker = ServiceBroker()
+    service = _service(db, LimitUpMode.AUTOMATIC, broker)
+    today = dt.date(2026, 8, 28)
+    db.add_all([
+        PortfolioSnapshot(
+            ref_date=dt.date(2026, 8, 27), source="broker", total_assets=100
+        ),
+        PortfolioSnapshot(ref_date=today, source="broker", total_assets=98.5),
+    ])
+    db.commit()
+    now = dt.datetime.combine(today, dt.time(10), tzinfo=KST)
+    service.watch_candidate(_candidate(), now_kst=now)
+    service.on_trade(_trade(1.0, 99_600), now_kst=now)
+    service.on_trade(_trade(2.0, 99_700), now_kst=now)
+
+    assert broker.orders == []

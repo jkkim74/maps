@@ -1,5 +1,29 @@
 # HANDOFF
 
+## 8/30 Codex 수정분 병합 — 제약 위반 3건 해소, 내 검토로 5곳 보정
+
+Codex 가 남은 제약 위반(하드스톱 `effective_stop_price` 미사용, `trigger_price` 틱 오차,
+`fire_grid` 손익률 고정)을 고치고 원장 구조를 개선했다(19파일, 마이그레이션 `0032`).
+`/code-review max` 는 세션 한도로 효율성 각도 1개만 완료 → 내가 직접 읽고 검토했다.
+
+**Codex 가 내 설계보다 나은 점 (그대로 채택)**
+- `execution_mode` 를 **세션 행에 영속** — 내 `_is_virtual` 메모리 판정은 재시작에 취약했다
+- `ReconcileResult` 가 매수/청산 open id 를 분리, `remaining = bought − exited` 원장
+- `CancelBuysResult` 가 예외/False 대신 **브로커 미체결 목록**을 진실로 쓴다
+- `exit_audit_code()` — `order_log.exit_reason` 16자 제한을 `end_reason` 상세와 분리
+
+**내가 보정한 5곳**
+
+| # | 문제 | 조치 |
+|---|---|---|
+| 1 | `effective_stop_price("limit_up_v1", **상한가**)` — 정본은 진입가 기준. 실제 진입은 그리드로 1.2~2.5% 아래라 손절이 **좁아진다**(제약 7 이 경고하는 방향) | 체결 전엔 상한가(최고 가능 진입가), 첫 체결에 실제 평균가로 **넓히기만** 한다 |
+| 2 | `_apply_virtual_fills` 가 트레이드 **프레임마다** SELECT+flush 를 펌프 스레드에서 — `on_trade` 계약("DB I/O 없음") 위반 | 메모리 비교, 플립(레그당 1회)에만 DB |
+| 3 | `tick` RECONCILING 이 reconcile → `cancel_pending_buys`(내부 reconcile) → **첫 결과 폐기** | 한 번만 |
+| 4 | `after_hours` 가 `exit_reason="after_hours"` 하드코딩 — 방금 만든 `exit_audit_code()` 우회 | 함수 경유 |
+| 5 | (미수정, 별도 설계) `_pace_request` 가 **락 잡은 채 sleep**, 프로세스 전역 단일 레인 — RECONCILING 4티커면 tick 8~12초 → 비상정지 10초 타임아웃 | 호출 수 감축(계좌 스냅샷 tick당 1회 공유) 없이 페이싱만 넣으면 지연이 펌프로 전가된다 |
+
+배포 시 `alembic upgrade head` 필요 (`0031` → `0032`).
+
 ## 8/30 6·7차 검토 — P0 6건 수정, **테스트 더블에 수량 제약 추가**
 
 두 번의 추가 검토가 P0 6건을 더 냈다. **그중 2건은 내가 직전 회차에 만든 회귀다.**

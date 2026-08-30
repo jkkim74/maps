@@ -32,8 +32,10 @@ from maps.limit_up.domain import (
     AFTER_HOURS_FLOOR_RATIO,
     EXIT_STRATEGY_IDS,
     LimitUpState,
+    exit_audit_code,
 )
 from maps.limit_up.repository import LimitUpRepository
+from maps.limit_up.worker import LimitUpCommandWorker
 from maps.market.trading_rules import round_down_krx_price
 
 
@@ -134,6 +136,7 @@ def run_after_hours_watch(
         db.query(LimitUpSession)
         .filter(LimitUpSession.ref_date == ref_date)
         .filter(LimitUpSession.state.in_(_WATCHED_STATES))
+        .filter(LimitUpSession.execution_mode == "automatic")
         .all()
     )
     counters = {"watched": len(rows), "exited": 0, "no_trade": 0, "bad_data": 0, "errors": 0}
@@ -203,16 +206,26 @@ def _submit_after_hours_exit(
     need the stale ``order_log`` row settled, and guessing at that before the
     venue behaviour is known buys complexity, not safety.
     """
-    position = broker.get_position(session.ticker)
-    if position is None or position.quantity <= 0:
+    reconciled = LimitUpCommandWorker(
+        order_manager, broker, repository
+    ).reconcile(session)
+    if reconciled.remaining_quantity == 0:
+        repository.transition(
+            session,
+            state=LimitUpState.CLOSED,
+            action="after_hours_filled",
+        )
+        session.end_reason = "after_hours_break_exit"
+        return False
+    if reconciled.position_quantity <= 0:
         return False
     # 계좌 전체가 아니라 이 세션이 산 만큼만 판다 — 공유 계좌에서 남의 보유까지
     # 시간외 하한가로 던지면 그쪽 전략이 통째로 무너진다.
-    owned = min(position.quantity, repository.filled_quantity(session))
+    owned = reconciled.owned_quantity
     if owned <= 0:
         logger.warning(
             "시간외 탈출 건너뜀 [%s] — 세션 소유분 0 (계좌 보유 %s)",
-            session.ticker, position.quantity,
+            session.ticker, reconciled.position_quantity,
         )
         return False
     submitted = {item for item in (session.exit_order_ids or "").split(",") if item}
@@ -226,7 +239,7 @@ def _submit_after_hours_exit(
             logger.error(
                 "시간외 탈출 주문이 사라졌는데 보유가 남아 있다 [%s] qty=%s — "
                 "회차 이월이 안 되는 것일 수 있다. 수동 확인 필요.",
-                session.ticker, position.quantity,
+                session.ticker, reconciled.position_quantity,
             )
         return False
 
@@ -236,9 +249,9 @@ def _submit_after_hours_exit(
         ticker=session.ticker,
         side=OrderSide.SELL,
         order_type=OrderType.AFTER_HOURS_SINGLE,
-        quantity=position.quantity,
+        quantity=owned,
         limit_price=price,
-        current_price=position.current_price or position.avg_price,
+        current_price=session.upper_limit_price,
         decision_context={
             "limit_up_session_id": session.id,
             "reason": "after_hours_break_exit",
@@ -247,7 +260,7 @@ def _submit_after_hours_exit(
     # 제출이 성공한 **뒤** 상태를 확정한다. 먼저 커밋하면 한 번의 제출 실패가
     # 그 종목의 시간외 방어를 그날 내내 비활성화하고(이후 회차는 "주문이 사라졌다"고
     # 오인한다), 로그가 보내지도 않은 주문을 두고 거래소를 탓하게 된다.
-    result = order_manager.submit_exit(order, exit_reason="after_hours_break_exit")
+    result = order_manager.submit_exit(order, exit_reason=exit_audit_code("after_hours_break_exit"))
     repository.transition(
         session,
         state=LimitUpState.AFTER_HOURS_EXIT,

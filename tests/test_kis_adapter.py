@@ -126,6 +126,7 @@ class FakeSession:
 def settings(tmp_path: Path) -> MapsSettings:
     kis_adapter._TOKEN_CACHE.clear()
     kis_adapter._BALANCE_CACHE.clear()
+    kis_adapter._REQUEST_PACE_STATES.clear()
     return MapsSettings(
         maps_broker_mode="kis",
         maps_log_dir=str(tmp_path),
@@ -135,6 +136,50 @@ def settings(tmp_path: Path) -> MapsSettings:
         kis_real_trading=False,
         kis_paper_base_url="https://paper.example",
     )
+
+
+@pytest.mark.parametrize("real, expected", [(False, 0.5), (True, 0.05)])
+def test_rest_pacing_is_shared_by_account_and_environment(
+    settings: MapsSettings,
+    monkeypatch: pytest.MonkeyPatch,
+    real: bool,
+    expected: float,
+) -> None:
+    """Separate adapters sharing credentials must use one venue request lane."""
+    configured = settings.model_copy(update={"kis_real_trading": real})
+    clock = [100.0]
+    sleeps: list[float] = []
+
+    monkeypatch.setattr(kis_adapter.time, "monotonic", lambda: clock[0])
+
+    def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        clock[0] += seconds
+
+    monkeypatch.setattr(kis_adapter.time, "sleep", fake_sleep)
+    first = KISAdapter(configured, http=FakeSession())
+    second = KISAdapter(configured, http=FakeSession())
+
+    first._pace_request()
+    second._pace_request()
+
+    assert sleeps == pytest.approx([expected])
+
+
+def test_retry_attempts_each_pass_through_the_shared_pacer(
+    settings: MapsSettings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A transient retry must not bypass the same rate-limit boundary."""
+    http = FakeSession()
+    http.fail_next_requests = 1
+    broker = KISAdapter(settings, http=http)
+    paced: list[None] = []
+    monkeypatch.setattr(broker, "_pace_request", lambda: paced.append(None))
+    monkeypatch.setattr(kis_adapter.time, "sleep", lambda seconds: None)
+
+    broker.get_kosdaq_index()
+
+    assert len(paced) == 3  # token issuance plus both HTTP attempts
 
 
 def test_token_is_shared_across_adapter_instances(settings: MapsSettings) -> None:

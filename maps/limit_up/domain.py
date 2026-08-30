@@ -10,6 +10,7 @@ from enum import Enum
 
 from maps.backtest.cost_model import BROKER_FEE_PER_SIDE, TRANSACTION_TAX_SELL
 from maps.market.trading_rules import krx_tick_size, round_up_krx_price
+from maps.strategy.live_rules import effective_stop_price
 
 
 MIN_TURNOVER_FLOOR_KRW = 50_000_000_000
@@ -49,6 +50,13 @@ _EXIT_REASON_KINDS: dict[str, str] = {
     "next_open": "next_open",
     "after_hours_break_exit": "after_hours",
 }
+_EXIT_AUDIT_CODES: dict[str, str] = {
+    "overnight_cap_unfilled": "cap_unfilled",
+    "after_hours_break_exit": "after_hours",
+    "eod_review_missed": "eod_missed",
+    "eod_review_fail": "eod_fail",
+    "upper_limit_without_fill": "no_fill_limit",
+}
 
 
 def exit_strategy_id(reason: str) -> str:
@@ -61,6 +69,14 @@ def exit_strategy_id(reason: str) -> str:
         A reason-scoped strategy id; unknown reasons fall back to the stop lane.
     """
     return EXIT_STRATEGY_IDS[_EXIT_REASON_KINDS.get(reason, "stop")]
+
+
+def exit_audit_code(reason: str) -> str:
+    """Return the compact OrderLog code while session.end_reason stays detailed."""
+    code = _EXIT_AUDIT_CODES.get(reason, reason)
+    if len(code) > 16:
+        raise ValueError(f"limit-up exit audit code exceeds 16 characters: {code}")
+    return code
 
 
 class LimitUpState(str, Enum):
@@ -96,7 +112,6 @@ class LimitUpConfig:
     no_fill_timeout_seconds: float = 180.0
     fill_timeout_seconds: float = 180.0
     lock_seconds: float = 10.0
-    hard_stop_drawdown: float = 0.05
 
     def __post_init__(self) -> None:
         """Reject any setting that weakens the hard liquidity floor."""
@@ -145,8 +160,10 @@ class MachineCommand:
 
 def trigger_price(upper_limit_price: int) -> int:
     """Return exactly three quotation ticks below the broker upper limit."""
-    tick = krx_tick_size(upper_limit_price)
-    return upper_limit_price - (3 * tick)
+    price = upper_limit_price
+    for _ in range(3):
+        price -= krx_tick_size(price)
+    return price
 
 
 def build_grid(*, upper_limit_price: int, budget_krw: int) -> tuple[GridLeg, GridLeg]:
@@ -360,6 +377,11 @@ class LimitUpMachine:
         self.ticker = ticker
         self.upper_limit_price = upper_limit_price
         self.config = config
+        # 정본 함수는 **진입가** 기준이다. 체결 전에는 진입가를 모르므로 가능한 최고
+        # 진입가(상한가)로 두고, 첫 체결에서 실제 평균가로 **넓히기만** 한다 — 좁히면
+        # 제약 7 이 경고하는 "손절이 조여지는" 방향이다.
+        self.hard_stop_price = self._stop_for(upper_limit_price)
+        self.entry_price: float | None = None
         self.state = LimitUpState.WATCHING
         self.last_trade_price: int | None = None
         self.net_fired_at: float | None = None
@@ -418,10 +440,29 @@ class LimitUpMachine:
             self.lock_started_at = None
         return []
 
-    def on_fill(self, *, at: float, cumulative_quantity: int) -> None:
-        """Start the time cut on the first broker-confirmed share."""
+    @staticmethod
+    def _stop_for(entry_price: float) -> int:
+        """Return the canonical hard stop for one entry price."""
+        stop = effective_stop_price("limit_up_v1", entry_price)
+        if stop is None:
+            raise ValueError("limit_up_v1 hard stop is not configured")
+        return int(stop)
+
+    def on_fill(
+        self, *, at: float, cumulative_quantity: int, avg_price: float | None = None
+    ) -> None:
+        """Start the time cut on the first broker-confirmed share.
+
+        Args:
+            at: Monotonic fill time.
+            cumulative_quantity: Session-owned shares after this fill.
+            avg_price: Average entry price; re-anchors the stop, wider only.
+        """
         if cumulative_quantity <= 0:
             return
+        if avg_price and avg_price > 0:
+            self.entry_price = avg_price
+            self.hard_stop_price = min(self.hard_stop_price, self._stop_for(avg_price))
         self.filled_quantity = max(self.filled_quantity, cumulative_quantity)
         if self.first_fill_at is None:
             self.first_fill_at = at
@@ -485,7 +526,7 @@ class LimitUpMachine:
             LimitUpState.EOD_REVIEW,
             LimitUpState.OVERNIGHT,
         }
-        return held_state and price < self.upper_limit_price * (1.0 - self.config.hard_stop_drawdown)
+        return held_state and price < self.hard_stop_price
 
     def _protective_exit(self, reason: str) -> list[MachineCommand]:
         """Enter reconciliation and request cancel-before-sell exactly once."""

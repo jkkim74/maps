@@ -247,6 +247,7 @@ def test_unfilled_exit_leaves_realized_pnl_unknown_rather_than_zero(db) -> None:
 
     assert session.exit_order_ids is not None
     assert session.realized_pnl is None
+    assert not (session.realized_pnl_by_date or {})
 
 
 def test_recovery_cancels_an_exit_whose_id_was_never_recorded(db) -> None:
@@ -404,4 +405,36 @@ def test_a_fill_without_an_average_price_is_not_booked_as_a_total_loss(db) -> No
     worker.reconcile(session)
 
     assert session.realized_pnl is None
-    assert not (session.realized_pnl_by_date or {})
+
+
+def test_net_session_ownership_subtracts_exits_before_shared_account_position(db) -> None:
+    broker = ScriptedBroker()
+    worker, session = _worker(db, broker)
+    for name, quantity in (("S", 60), ("A", 40)):
+        leg = worker.repository.upsert_leg(
+            session,
+            name=name,
+            price=98_800,
+            quantity=quantity,
+            broker_order_id=f"buy-{name}",
+            status="filled",
+        )
+        leg.filled_quantity = quantity
+        leg.avg_fill_price = 98_800.0
+    session.exit_order_ids = "exit-1"
+    broker.daily_results = [OrderResult(
+        order_id="exit-1", strategy_id="", ticker="005930",
+        side=OrderSide.SELL, status=OrderStatus.FILLED,
+        filled_quantity=40, avg_price=100_000,
+        submitted_at=dt.datetime(2026, 8, 28, 15, 0),
+    )]
+    broker.position = Position("005930", quantity=360, avg_price=98_800)
+    db.commit()
+
+    reconciled = worker.reconcile(session)
+    worker.sell_actual_position(session, reason="hard_stop")
+
+    assert (reconciled.bought_quantity, reconciled.exited_quantity) == (100, 40)
+    assert reconciled.owned_quantity == 60
+    assert broker.orders[-1].side is OrderSide.SELL
+    assert broker.orders[-1].quantity == 60

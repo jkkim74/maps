@@ -93,3 +93,25 @@ def test_admin_api_still_allows_recommend_only(monkeypatch) -> None:
     )
 
     assert response.status_code == 200
+
+
+def test_emergency_off_reports_when_runtime_loop_is_absent(monkeypatch) -> None:
+    runtime = FakeRuntime()
+    runtime.emergency_off = lambda: (_ for _ in ()).throw(RuntimeError("loop absent"))
+    monkeypatch.setattr(bootstrap, "_runtime", runtime)
+
+    response = TestClient(main.app).post("/api/v1/limit-up/emergency-off")
+
+    assert response.status_code == 503
+    assert "not queued" in response.json()["detail"]
+
+
+def test_emergency_off_timeout_truthfully_reports_queued(monkeypatch) -> None:
+    runtime = FakeRuntime()
+    runtime.emergency_off = lambda: (_ for _ in ()).throw(TimeoutError("busy"))
+    monkeypatch.setattr(bootstrap, "_runtime", runtime)
+
+    response = TestClient(main.app).post("/api/v1/limit-up/emergency-off")
+
+    assert response.status_code == 503
+    assert "queued and will apply" in response.json()["detail"]

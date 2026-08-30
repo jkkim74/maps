@@ -673,7 +673,6 @@ class KISIntradayRuntime:
             no_fill_timeout_seconds=self.service.config.no_fill_timeout_seconds,
             fill_timeout_seconds=self.service.config.fill_timeout_seconds,
             lock_seconds=self.service.config.lock_seconds,
-            hard_stop_drawdown=self.service.config.hard_stop_drawdown,
         )
 
     async def _run_daily_actions(self, wall: dt.datetime) -> None:

@@ -1016,6 +1016,10 @@ class LimitUpSession(Base):
     eod_decision: Mapped[str | None] = mapped_column(String(16), nullable=True)
     end_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
     exit_order_ids: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    execution_mode: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="unknown"
+    )
+    exit_quantity_by_date: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     realized_pnl: Mapped[float | None] = mapped_column(Float, nullable=True)
     realized_pnl_by_date: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     after_hours_volume: Mapped[int | None] = mapped_column(BigInteger, nullable=True)

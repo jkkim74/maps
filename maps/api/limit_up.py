@@ -56,7 +56,7 @@ def emergency_off() -> LimitUpStatusResponse:
         return LimitUpStatusResponse(**_STOPPED)
     try:
         runtime.emergency_off()
-    except (RuntimeError, TimeoutError) as exc:
+    except TimeoutError as exc:
         # 펌프가 느린 브로커 호출에 물려 있을 때가 바로 운영자가 이 버튼을 누르는
         # 순간이다. 500 을 주면 "킬스위치가 실패했다" 고 읽고 재시작 같은 더 나쁜
         # 수를 둔다 — 요청은 큐에 들어가 곧 적용된다는 것을 알려준다.
@@ -64,6 +64,12 @@ def emergency_off() -> LimitUpStatusResponse:
         raise HTTPException(
             status_code=503,
             detail="engine busy; the emergency stop is queued and will apply",
+        ) from exc
+    except RuntimeError as exc:
+        logger.error("Upper-limit emergency stop unavailable: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail="engine unavailable; the emergency stop was not queued",
         ) from exc
     # 하드코딩된 _STOPPED 를 돌려주면 곧이어 GET /status 를 본 운영자가 값이 달라진 것을
     # 보고 "비상정지가 풀렸다" 고 읽는다. 실제 상태를 그대로 준다.

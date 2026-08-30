@@ -33,7 +33,7 @@ def test_fresh_database_reaches_current_schema(tmp_path, monkeypatch) -> None:
         revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
     engine.dispose()
 
-    assert revision == "0031_limit_up_guard"
+    assert revision == "0032_limit_up_ledger"
     assert {"trade_mode", "total_budget", "entries_cancelled", "exit_pending_reason"} <= pick_columns
     assert "ai_recommendation" in pick_columns
     assert "holding_details" in portfolio_columns
@@ -96,6 +96,8 @@ def test_fresh_database_reaches_current_schema(tmp_path, monkeypatch) -> None:
         "trigger_price",
         "first_fill_at",
         "end_reason",
+        "execution_mode",
+        "exit_quantity_by_date",
     } <= session_columns
     event_uniques = inspector.get_unique_constraints("limit_up_event")
     assert any(
@@ -130,3 +132,55 @@ def test_split_plan_migration_reports_existing_active_ticker_duplicates(
 
     with pytest.raises(RuntimeError, match="duplicate active tickers.*005930"):
         command.upgrade(config, "head")
+
+
+def test_limit_up_execution_ledger_backfills_and_downgrades(
+    tmp_path, monkeypatch
+) -> None:
+    """Legacy sessions are classified only when their persisted provenance is clear."""
+    db_path = tmp_path / "maps-limit-up-ledger.db"
+    monkeypatch.setenv("MAPS_DB_URL", f"sqlite:///{db_path.as_posix()}")
+    config = Config("alembic.ini")
+    command.upgrade(config, "0031_limit_up_guard")
+    engine = create_engine(f"sqlite:///{db_path.as_posix()}")
+    with engine.begin() as connection:
+        for ticker in ("111111", "222222", "333333"):
+            connection.execute(text(
+                "INSERT INTO limit_up_session "
+                "(ref_date, ticker, market, state, state_version, upper_limit_price, "
+                "trigger_price, total_listed_shares, pattern_failure_counted, created_at, updated_at) "
+                "VALUES ('2026-08-28', :ticker, 'KOSPI', 'overnight', 0, "
+                "100000, 99700, 1000000, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            ), {"ticker": ticker})
+        ids = dict(connection.execute(text(
+            "SELECT ticker, id FROM limit_up_session"
+        )).all())
+        connection.execute(text(
+            "INSERT INTO limit_up_order_leg "
+            "(session_id, name, broker_order_id, price, quantity, filled_quantity, status, created_at, updated_at) "
+            "VALUES (:id, 'S', 'broker-1', 98800, 10, 10, 'filled', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+        ), {"id": ids["111111"]})
+        connection.execute(text(
+            "INSERT INTO limit_up_order_leg "
+            "(session_id, name, price, quantity, filled_quantity, status, created_at, updated_at) "
+            "VALUES (:id, 'S', 98800, 10, 10, 'simulated_filled', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+        ), {"id": ids["222222"]})
+    engine.dispose()
+
+    command.upgrade(config, "head")
+    engine = create_engine(f"sqlite:///{db_path.as_posix()}")
+    with engine.connect() as connection:
+        modes = dict(connection.execute(text(
+            "SELECT ticker, execution_mode FROM limit_up_session"
+        )).all())
+    assert modes == {
+        "111111": "automatic",
+        "222222": "recommend_only",
+        "333333": "unknown",
+    }
+
+    command.downgrade(config, "0031_limit_up_guard")
+    assert "execution_mode" not in {
+        column["name"] for column in inspect(engine).get_columns("limit_up_session")
+    }
+    engine.dispose()

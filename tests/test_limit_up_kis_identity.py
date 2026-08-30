@@ -251,6 +251,13 @@ def test_emergency_off_still_retries_a_stuck_exit(db, kis_like_broker) -> None:
     machine.fire_net(at=1.0)
     machine.on_fill(at=2.0, cumulative_quantity=20)
     machine.state = LimitUpState.RECONCILING  # protective sell blew up mid-flight
+    session = service._sessions["005930"]
+    for name, qty in (("S", 12), ("A", 8)):
+        leg = service.repository.upsert_leg(
+            session, name=name, price=98_800, quantity=qty
+        )
+        leg.filled_quantity = qty
+    db.commit()
     broker.seed_position("005930", 20, 98_000.0)
 
     service.emergency_off()
@@ -261,7 +268,7 @@ def test_emergency_off_still_retries_a_stuck_exit(db, kis_like_broker) -> None:
     assert sells[0].quantity == 20
 
 
-def test_a_held_session_is_not_closed_when_orders_are_impossible(db, kis_like_broker) -> None:
+def test_a_live_carry_stays_sellable_after_restarting_in_recommend_mode(db, kis_like_broker) -> None:
     """recommend_only after a restart must not silently abandon a real carry.
 
     Marking it CLOSED removes it from recover(), the after-hours watch and the
@@ -286,9 +293,9 @@ def test_a_held_session_is_not_closed_when_orders_are_impossible(db, kis_like_br
 
     service.sell_next_open("005930")
 
-    assert service._sessions["005930"].state != LimitUpState.CLOSED.value
-    assert service.status()["manual_lock"] is True
-    assert "005930" in service.status()["unknown_positions"]
+    sells = [order for order in broker.submitted if order.side is OrderSide.SELL]
+    assert [order.quantity for order in sells] == [20]
+    assert service.status()["manual_lock"] is False
 
 
 def test_a_feed_blip_does_not_block_the_rest_of_the_day(db, kis_like_broker) -> None:

@@ -28,14 +28,14 @@ def test_entry_policy_is_the_only_thing_that_reads_mode() -> None:
     source = inspect.getsource(service)
     checks = re.findall(r"self\.mode is LimitUpMode\.AUTOMATIC", source)
 
-    assert len(checks) == 1, (
+    assert len(checks) == 0, (
         f"청산 경로가 mode 를 보고 있다 ({len(checks)}곳). "
         "진입은 FIRE_NET 한 곳뿐이고 나머지는 exits_are_live() 여야 한다."
     )
-    # and that one check must live in the command dispatcher's entry branch
+    # Entry dispatch uses immutable session provenance; exits must not read mode.
     dispatcher = inspect.getsource(service.LimitUpService._handle_commands)
     assert "CommandKind.FIRE_NET" in dispatcher
-    assert "self.mode is LimitUpMode.AUTOMATIC" in dispatcher
+    assert "session.execution_mode == LimitUpMode.AUTOMATIC.value" in dispatcher
 
 
 def test_order_log_is_never_queried_by_a_raw_broker_id() -> None:

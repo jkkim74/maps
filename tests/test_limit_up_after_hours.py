@@ -234,7 +234,7 @@ def test_a_still_open_exit_is_not_submitted_twice(db) -> None:
     assert len(submitted) == 1
 
 
-def test_a_vanished_exit_is_reported_loudly_instead_of_resubmitted(db, caplog) -> None:
+def test_a_confirmed_exit_is_not_resubmitted_for_foreign_shares(db, caplog) -> None:
     """Carry-over is unverified: a vanished order must not fail silently.
 
     Re-submitting would need the stale order_log row settled first, so until the
@@ -258,7 +258,21 @@ def test_a_vanished_exit_is_reported_loudly_instead_of_resubmitted(db, caplog) -
         )
 
     assert len(submitted) == 1
-    assert "시간외 탈출 주문이 사라졌는데" in caplog.text
+    assert session.state == LimitUpState.CLOSED.value
+
+
+def test_after_hours_exit_uses_session_owned_quantity_not_account_position(db) -> None:
+    broker, session, manager, submitted = _carried_session(db)
+    broker._positions["005930"].quantity = 50
+    _baseline_round(db, broker, manager)
+    broker.set_price("005930", 97_000)
+    broker.set_after_hours_volume("005930", 5_000)
+
+    run_after_hours_watch(
+        db, broker, manager, ref_date=dt.date(2026, 8, 28), drop_pct=0.02
+    )
+
+    assert submitted[-1].quantity == 20
 
 
 def test_kis_style_audit_ids_are_normalized_before_the_open_order_check(db) -> None:

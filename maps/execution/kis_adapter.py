@@ -123,6 +123,18 @@ _BALANCE_CACHE: dict[tuple[str, str, str, bool], tuple[float, dict[str, Any]]] =
 _BALANCE_CACHE_LOCK = threading.Lock()
 
 
+@dataclass
+class _RequestPaceState:
+    """One shared KIS REST lane for an app/account/environment tuple."""
+
+    lock: threading.Lock
+    last_request_at: float = float("-inf")
+
+
+_REQUEST_PACE_STATES: dict[tuple[str, str, str, bool], _RequestPaceState] = {}
+_REQUEST_PACE_STATES_LOCK = threading.Lock()
+
+
 def _quote_is_halted(quote: dict[str, Any]) -> bool:
     """Return whether an inquire-price payload reports a halted or flagged stock.
 
@@ -189,6 +201,20 @@ class KISAdapter(BrokerAdapter):
 
         mode = "real" if self._real else "paper"
         logger.info("KISAdapter initialized [%s], account=%s", mode, self._account_no)
+
+    def _pace_request(self) -> None:
+        """Serialize KIS REST calls at the venue's paper/production interval."""
+        with _REQUEST_PACE_STATES_LOCK:
+            state = _REQUEST_PACE_STATES.setdefault(
+                self._token_cache_key,
+                _RequestPaceState(lock=threading.Lock()),
+            )
+        interval = 0.05 if self._real else 0.5
+        with state.lock:
+            remaining = state.last_request_at + interval - time.monotonic()
+            if remaining > 0:
+                time.sleep(remaining)
+            state.last_request_at = time.monotonic()
 
     def place_order(self, order: Order) -> OrderResult:
         """Submit a domestic cash stock order through KIS."""
@@ -290,6 +316,7 @@ class KISAdapter(BrokerAdapter):
             "secretkey": self._app_secret,
         }
         try:
+            self._pace_request()
             response = self._http.post(
                 f"{self._base_url}{_WS_APPROVAL_PATH}",
                 json=body,
@@ -662,6 +689,7 @@ class KISAdapter(BrokerAdapter):
             "appsecret": self._app_secret,
         }
         try:
+            self._pace_request()
             response = self._http.post(
                 self._url(_TOKEN_PATH),
                 json=body,
@@ -741,6 +769,7 @@ class KISAdapter(BrokerAdapter):
 
     def _hashkey(self, body: dict[str, Any]) -> str:
         try:
+            self._pace_request()
             response = self._http.post(
                 self._url(_HASHKEY_PATH),
                 json=body,
@@ -838,6 +867,7 @@ class KISAdapter(BrokerAdapter):
         while attempt < attempts:
             attempt += 1
             try:
+                self._pace_request()
                 response = self._http.request(
                     method,
                     self._url(path),

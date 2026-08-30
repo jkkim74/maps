@@ -6,6 +6,7 @@ from maps.market.trading_rules import round_down_krx_price
 
 
 _STOP_LOSS_PCTS: dict[str, float] = {
+    "limit_up_v1": 0.05,
     "pullback_v3": 0.05,
     "pullback_v3_3": 0.05,
     "pullback_v2": 0.06,

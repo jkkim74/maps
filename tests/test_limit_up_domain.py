@@ -15,6 +15,7 @@ from maps.limit_up.domain import (
     TradeEvent,
     build_grid,
     eod_hold_allowed,
+    exit_audit_code,
     overnight_allowance,
     overnight_budget,
     realized_pnl,
@@ -58,6 +59,7 @@ def test_turnover_setting_cannot_cross_the_500eok_safety_floor() -> None:
 def test_trigger_and_grid_use_upper_limit_ticks_and_ceil_rounding() -> None:
     """Wrong tick arithmetic would fire late or place off-grid buy prices."""
     assert trigger_price(39_450) == 39_300
+    assert trigger_price(200_500) == 199_400
 
     grid = build_grid(upper_limit_price=39_450, budget_krw=2_000_000)
 
@@ -65,6 +67,16 @@ def test_trigger_and_grid_use_upper_limit_ticks_and_ceil_rounding() -> None:
         ("S", 39_000, 30),
         ("A", 38_500, 20),
     ]
+
+
+def test_every_v1_exit_reason_fits_the_order_log_column() -> None:
+    reasons = {
+        "hard_stop", "time_stop", "stuck_exit_retry", "recovered_exit",
+        "eod_review_fail", "overnight_cap_unfilled", "eod_review_missed",
+        "next_open", "after_hours_break_exit", "overnight_cap",
+    }
+
+    assert all(len(exit_audit_code(reason)) <= 16 for reason in reasons)
 
 
 def test_entry_requires_buy_led_upward_cross_and_both_numeric_gates() -> None:
@@ -132,6 +144,7 @@ def test_time_cut_cancels_then_sells_and_counts_pattern_failure() -> None:
 def test_hard_stop_has_priority_even_after_lock() -> None:
     """LOCKED must never disable the absolute upper-limit-relative stop."""
     machine = LimitUpMachine("005930", upper_limit_price=13_000, config=_config())
+    assert machine.hard_stop_price == 12_350
     machine.fire_net(at=10.0)
     machine.on_fill(at=20.0, cumulative_quantity=5)
     machine.on_quote(_quote(21.0, 13_000, 0))
@@ -293,3 +306,23 @@ def test_overnight_allowance_splits_evenly_and_floors_to_whole_shares() -> None:
     assert overnight_allowance(
         budget_krw=budget, session_count=2, upper_limit_price=2_000_000
     ) == 0
+
+
+def test_hard_stop_is_anchored_to_entry_and_only_ever_widens() -> None:
+    """effective_stop_price is entry-based; the limit price is only a pre-fill bound.
+
+    Constraint 7: the stop may loosen, never tighten. Fills land below the limit
+    (grid is -1.2%/-2.5%), so anchoring to the limit would clip the stop.
+    """
+    machine = LimitUpMachine("005930", upper_limit_price=100_000, config=LimitUpConfig())
+    pre_fill = machine.hard_stop_price
+    assert pre_fill == 95_000
+
+    machine.fire_net(at=1.0)
+    machine.on_fill(at=2.0, cumulative_quantity=20, avg_price=98_000.0)
+    assert machine.hard_stop_price == 93_100  # 98,000 x 0.95 rounded down to tick
+    assert machine.hard_stop_price < pre_fill
+
+    # a later, higher average must not pull the stop back up
+    machine.on_fill(at=3.0, cumulative_quantity=30, avg_price=99_000.0)
+    assert machine.hard_stop_price == 93_100
