@@ -1,5 +1,28 @@
 # HANDOFF
 
+## 8/31 상한가 조회 현황 조사 — 🔴 화면·알림이 전무하다 (다음 작업 후보)
+
+재가동 직후 사용자 질문("어느 화면에서 후보·매매 내역을 보나")으로 조사한 결과다.
+코드 grep 으로 확인했다 — 템플릿(`*.html`)·모바일(`apps/mobile/src`) 어디에도
+limit_up/상한가 관련 화면이 없고, `maps/limit_up/` 패키지에 알림(텔레그램/슬랙) 호출도 없다.
+
+**현재 유일한 조회 수단:**
+
+| 대상 | 방법 |
+|---|---|
+| 감시 중 후보·세션 상태 | `GET /api/v1/limit-up/status` (로그인 필요) — `sessions` 필드에 종목별 `state`·`filled_quantity`. 장 마감 후 재시작하면 인메모리라 비어 보일 수 있음 |
+| 세션·가상 체결 원장 | 운영 PG `limit_up_session` / `limit_up_order_leg` / `limit_up_event` 테이블 직접 조회 |
+| 실매매 기록 (automatic 전환 후) | `order_log` 에서 `strategy_id LIKE 'limit_up_v1%'` — 매수 `:S`/`:A`, 청산 `:exit:stop\|trim\|eod\|next_open\|after_hours` |
+
+관리자 API 는 status / emergency-off / settings 3개뿐이다(`maps/api/limit_up.py`).
+`recommend_only` 가 "추천"을 내도 지금은 API 를 직접 열어보지 않으면 알 수 없다.
+
+**다음 작업 후보 (사용자와 합의된 방향, 미착수):**
+① 웹 대시보드에 상한가 현황 화면(감시 후보·세션 상태·가상 체결·일일 가드)
+② 감시 등록/트리거/청산 시 텔레그램 알림 (`ops/notifications.py` 재사용)
+— 착수 시 `maps/api/` 는 화면당 라우터 1개 규약, 카탈로그(`strategy/catalog.py`) 등록
+여부는 별도 판단(일봉 전략이 아니므로 기존 승격 파이프라인과 무관).
+
 ## 8/31 recover() unknown 판정 협소화 — ✅ 배포·`recommend_only` 재가동 완료
 
 같은 날 오전 롤백의 원인이었던 reconciliation 블로커를 해소하고 엔진을 다시 켰다.
