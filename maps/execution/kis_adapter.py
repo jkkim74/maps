@@ -53,6 +53,7 @@ _DAILY_CCLD_PATH = "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
 _PRICE_PATH = "/uapi/domestic-stock/v1/quotations/inquire-price"
 _VOLUME_RANK_PATH = "/uapi/domestic-stock/v1/quotations/volume-rank"
 _INDEX_TIME_PRICE_PATH = "/uapi/domestic-stock/v1/quotations/inquire-index-timeprice"
+_INDEX_TIME_INTERVAL_SECONDS = "60"
 _WS_APPROVAL_PATH = "/oauth2/Approval"
 
 
@@ -344,7 +345,7 @@ class KISAdapter(BrokerAdapter):
             params={
                 "FID_COND_MRKT_DIV_CODE": "U",
                 "FID_INPUT_ISCD": "1001",
-                "FID_INPUT_HOUR_1": dt.datetime.now(_KST).strftime("%H%M%S"),
+                "FID_INPUT_HOUR_1": _INDEX_TIME_INTERVAL_SECONDS,
             },
         )
         rows = self._as_list(data.get("output"))

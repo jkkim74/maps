@@ -240,6 +240,7 @@ def test_websocket_approval_and_kosdaq_index_use_official_contract(
     assert approval["json"]["grant_type"] == "client_credentials"
     assert index["headers"]["tr_id"] == "FHPUP02110200"
     assert index["params"]["FID_INPUT_ISCD"] == "1001"
+    assert index["params"]["FID_INPUT_HOUR_1"] == "60"
 
 
 def test_token_is_reused_from_file_cache_after_memory_cache_clear(settings: MapsSettings) -> None:
