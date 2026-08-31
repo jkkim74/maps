@@ -8,7 +8,8 @@ KIS KOSDAQ 지수 조회 장애의 직접 원인인 `FID_INPUT_HOUR_1` 값이 �
 
 | 항목 | 확인 결과 |
 |---|---|
-| 배포 커밋 / 운영 HEAD | `f2d9534 fix: gate KIS index polling to market hours` |
+| 기능 배포 / 현재 서비스 로드 코드 커밋 | `f2d9534 fix: gate KIS index polling to market hours` |
+| 저장소 / 운영 HEAD (문서 동기화 후) | `51de981 docs: hand off limit-up safety rollback` — 이후 문서·테스트 커밋은 서비스 재기동 없이 동기화 |
 | 집중 테스트 | `179 passed, 6 warnings` |
 | 장외 스케줄러 가드 | `3 passed, 54 deselected` |
 | 전체 회귀 테스트 | `1154 passed, 16 warnings` |

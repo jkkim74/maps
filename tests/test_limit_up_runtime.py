@@ -135,8 +135,8 @@ def test_engine_hours_cover_both_daily_action_windows() -> None:
     assert engine_active_at(dt.datetime(2026, 8, 28, 15, 28, tzinfo=KST))
 
 
-async def test_control_loop_skips_index_polling_before_regular_session() -> None:
-    """The broader engine window must not invoke KIS before the 09:00 open."""
+def _control_loop_runtime(wall: dt.datetime):
+    """Build one controlled control-loop iteration without broker I/O."""
     from maps.limit_up.runtime import KISIntradayRuntime
 
     class _Adapter:
@@ -148,25 +148,30 @@ async def test_control_loop_skips_index_polling_before_regular_session() -> None
             return 1_000.0
 
     class _Service:
+        def __init__(self) -> None:
+            self.kosdaq_calls = 0
+
         def tick(self, **_kwargs: object) -> None:
             return None
 
         def on_kosdaq(self, **_kwargs: object) -> None:
-            return None
+            self.kosdaq_calls += 1
 
     runtime = object.__new__(KISIntradayRuntime)
     adapter = _Adapter()
+    service = _Service()
     runtime.adapter = adapter
-    runtime.service = _Service()
+    runtime.service = service
     runtime._stop = asyncio.Event()
     runtime.monotonic = lambda: 2.0
-    runtime.wall_now = lambda: dt.datetime(2026, 8, 28, 8, 59, 59, tzinfo=KST)
+    runtime.wall_now = lambda: wall
     runtime._last_scan_at = 2.0
     runtime._last_index_at = 0.0
     runtime._last_deadman_at = 2.0
 
-    async def _call_service(*_args: object, **_kwargs: object) -> None:
-        return None
+    async def _call_service(callable_, *args: object, **kwargs: object) -> object:
+        kwargs.pop("priority")
+        return callable_(*args, **kwargs)
 
     async def _finish_iteration(*_args: object, **_kwargs: object) -> None:
         runtime._stop.set()
@@ -177,10 +182,35 @@ async def test_control_loop_skips_index_polling_before_regular_session() -> None
     runtime._call_service = _call_service
     runtime._run_daily_actions = _finish_iteration
     runtime.fallback_once = _fallback_once
+    return runtime, adapter, service
+
+
+async def test_control_loop_skips_index_polling_before_regular_session() -> None:
+    """The broader engine window must not invoke KIS before the 09:00 open."""
+    runtime, adapter, service = _control_loop_runtime(
+        dt.datetime(2026, 8, 28, 8, 59, 59, tzinfo=KST)
+    )
 
     await runtime._control_loop()
 
     assert adapter.index_calls == 0
+    assert service.kosdaq_calls == 0
+
+
+async def test_control_loop_polls_and_dispatches_once_during_regular_session() -> None:
+    """Characterizes the intended in-session KOSDAQ polling behavior.
+
+    Disabling polling entirely would leave the market guard stale and fail this
+    controlled 09:00--15:30 KST iteration.
+    """
+    runtime, adapter, service = _control_loop_runtime(
+        dt.datetime(2026, 8, 28, 9, 0, tzinfo=KST)
+    )
+
+    await runtime._control_loop()
+
+    assert adapter.index_calls == 1
+    assert service.kosdaq_calls == 1
 
 
 async def test_reconnect_clears_subscriptions_so_tickers_resubscribe() -> None:
