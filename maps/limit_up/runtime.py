@@ -57,6 +57,8 @@ def subscription_payload(approval_key: str, tr_id: str, ticker: str) -> str:
 # 모두 감싼다. 이 밖에서는 브로커를 부르지 않는다 — 24시간 도는 폴링은 그 자체로 사고다.
 _ENGINE_OPEN = dt.time(8, 50)
 _ENGINE_CLOSE = dt.time(15, 40)
+_INDEX_GUARD_OPEN = dt.time(9, 0)
+_INDEX_GUARD_CLOSE = dt.time(15, 30)
 _IDLE_SLEEP_SECONDS = 30.0
 # 보호 작업(타이머·지수 래치·피드 상실·EOD 청산)이 진입 작업보다 먼저 실행된다.
 _PRIORITY_HIGH = 0
@@ -85,6 +87,12 @@ def engine_active_at(wall: dt.datetime) -> bool:
     if is_krx_closed_date(wall.date()):
         return False
     return _ENGINE_OPEN <= wall.time().replace(tzinfo=None) <= _ENGINE_CLOSE
+
+
+def index_guard_active_at(wall: dt.datetime) -> bool:
+    """Return whether KOSDAQ index polling is valid during the regular session."""
+    clock = wall.time().replace(tzinfo=None)
+    return engine_active_at(wall) and _INDEX_GUARD_OPEN <= clock <= _INDEX_GUARD_CLOSE
 
 
 # 15:18 심사·트림 → 15:25 재확인 → 15:28 포기.
@@ -495,7 +503,7 @@ class KISIntradayRuntime:
                 if now_mono - self._last_scan_at >= 5.0:
                     self._last_scan_at = now_mono
                     await self.scan_once()
-                if now_mono - self._last_index_at >= 1.0:
+                if index_guard_active_at(wall) and now_mono - self._last_index_at >= 1.0:
                     self._last_index_at = now_mono
                     value = await asyncio.to_thread(self.adapter.get_kosdaq_index)
                     await self._call_service(

@@ -115,11 +115,72 @@ def test_engine_is_idle_outside_trading_hours_and_days() -> None:
     assert not engine_active_at(dt.datetime(2026, 8, 28, 22, 0, tzinfo=KST))
 
 
+def test_index_guard_runs_only_during_the_krx_regular_session() -> None:
+    """Next-open/EOD work stays live outside the narrower index window."""
+    import maps.limit_up.runtime as runtime_module
+
+    assert hasattr(runtime_module, "index_guard_active_at")
+    index_guard_active_at = runtime_module.index_guard_active_at
+    assert not index_guard_active_at(dt.datetime(2026, 8, 28, 8, 59, 59, tzinfo=KST))
+    assert index_guard_active_at(dt.datetime(2026, 8, 28, 9, 0, tzinfo=KST))
+    assert index_guard_active_at(dt.datetime(2026, 8, 28, 15, 30, tzinfo=KST))
+    assert not index_guard_active_at(dt.datetime(2026, 8, 28, 15, 30, 1, tzinfo=KST))
+    assert not index_guard_active_at(dt.datetime(2026, 8, 29, 10, 0, tzinfo=KST))
+
+
 def test_engine_hours_cover_both_daily_action_windows() -> None:
     """08:59:30 next-open exits and the 15:18-15:28 overnight review must fit."""
     assert engine_active_at(dt.datetime(2026, 8, 28, 8, 59, 30, tzinfo=KST))
     assert engine_active_at(dt.datetime(2026, 8, 28, 15, 18, tzinfo=KST))
     assert engine_active_at(dt.datetime(2026, 8, 28, 15, 28, tzinfo=KST))
+
+
+async def test_control_loop_skips_index_polling_before_regular_session() -> None:
+    """The broader engine window must not invoke KIS before the 09:00 open."""
+    from maps.limit_up.runtime import KISIntradayRuntime
+
+    class _Adapter:
+        def __init__(self) -> None:
+            self.index_calls = 0
+
+        def get_kosdaq_index(self) -> float:
+            self.index_calls += 1
+            return 1_000.0
+
+    class _Service:
+        def tick(self, **_kwargs: object) -> None:
+            return None
+
+        def on_kosdaq(self, **_kwargs: object) -> None:
+            return None
+
+    runtime = object.__new__(KISIntradayRuntime)
+    adapter = _Adapter()
+    runtime.adapter = adapter
+    runtime.service = _Service()
+    runtime._stop = asyncio.Event()
+    runtime.monotonic = lambda: 2.0
+    runtime.wall_now = lambda: dt.datetime(2026, 8, 28, 8, 59, 59, tzinfo=KST)
+    runtime._last_scan_at = 2.0
+    runtime._last_index_at = 0.0
+    runtime._last_deadman_at = 2.0
+
+    async def _call_service(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    async def _finish_iteration(*_args: object, **_kwargs: object) -> None:
+        runtime._stop.set()
+
+    async def _fallback_once() -> None:
+        return None
+
+    runtime._call_service = _call_service
+    runtime._run_daily_actions = _finish_iteration
+    runtime.fallback_once = _fallback_once
+
+    await runtime._control_loop()
+
+    assert adapter.index_calls == 0
 
 
 async def test_reconnect_clears_subscriptions_so_tickers_resubscribe() -> None:
