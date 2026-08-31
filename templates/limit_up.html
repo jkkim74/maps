@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+
+{% block topbar_actions %}
+<input type="date" class="topbar-btn" id="lu-date" onchange="changeLimitUpDate(this.value)">
+<button class="topbar-btn" onclick="limitUpEmergencyOff(this)">🛑 비상정지</button>
+{% endblock %}
+
+{% block content %}
+<div class="section-header"><span class="section-title">엔진 상태 (실행 중인 프로세스)</span><hr></div>
+<div id="lu-status"><div class="loading"><div class="spinner"></div></div></div>
+
+<div class="section-header"><span class="section-title">세션 · 가상 체결 (DB 원장)</span><hr></div>
+<div class="card"><div class="card-body" id="lu-sessions">
+  <div class="loading"><div class="spinner"></div></div>
+</div></div>
+
+<div class="section-header"><span class="section-title">원장 이벤트</span><hr></div>
+<div class="card"><div class="card-body" id="lu-events">
+  <div class="loading"><div class="spinner"></div></div>
+</div></div>
+{% endblock %}

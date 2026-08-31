@@ -16,6 +16,7 @@ from maps.common.models import (
     PortfolioSnapshot,
 )
 from maps.execution.broker_adapter import OrderSide, OrderStatus
+from maps.limit_up import notify
 from maps.limit_up.domain import LimitUpState
 from maps.limit_up.feed import TapeSnapshot
 
@@ -293,7 +294,13 @@ class LimitUpRepository:
         payload: dict | None = None,
         leg: str | None = None,
     ) -> LimitUpEvent:
-        """Append an event once for session/action/leg/state-version."""
+        """Append an event once for session/action/leg/state-version.
+
+        This is also where operator alerts fire. The ledger is the one place
+        every command intent passes through, so hooking it means a new exit
+        reason is announced without another call site to remember — and the
+        idempotency check above makes each alert fire exactly once.
+        """
         key = f"{session.id}:{action}:{leg or '-'}:{state_version}"
         existing = (
             self.db.query(LimitUpEvent)
@@ -312,6 +319,7 @@ class LimitUpRepository:
         )
         self.db.add(row)
         self.db.flush()
+        notify.event_alert(session, action, payload)
         return row
 
     def upsert_leg(

@@ -187,6 +187,7 @@ _SCREEN_MAP = {
     "wfa":              "Walk-Forward Report",
     "cost-sensitivity": "Cost Sensitivity",
     "live-monitor":     "Live Monitor",
+    "limit-up":         "상한가 V1",
     "data-quality":     "Data Quality",
     "ops-config":       "Ops Config",
     "stock-report":     "Stock Report",
@@ -340,6 +341,11 @@ async def scr12(request: Request) -> HTMLResponse:
 @app.get("/live-monitor", response_class=HTMLResponse)
 async def scr13(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "live_monitor.html", _ctx(request, "live-monitor"))
+
+
+@app.get("/limit-up", response_class=HTMLResponse)
+async def scr_limit_up(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(request, "limit_up.html", _ctx(request, "limit-up"))
 
 
 @app.get("/data-quality", response_class=HTMLResponse)

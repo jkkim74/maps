@@ -1093,3 +1093,28 @@ def test_recover_does_not_lock_on_a_watch_only_row_of_unknown_provenance(db) -> 
     service.recover(ref_date=dt.date(2026, 8, 28), now_monotonic=100.0)
 
     assert service.status()["manual_lock"] is False
+
+
+def test_watch_and_trigger_are_announced_to_the_operator(db, monkeypatch) -> None:
+    """추천 모드의 신호는 알림 말고는 사람에게 닿는 경로가 없다.
+
+    화면은 사람이 열어야 보이고, `recommend_only` 는 주문을 내지 않아 체결 통보도
+    없다. 감시 등록과 트리거가 조용하면 그날의 추천은 아무도 모른 채 지나간다.
+    """
+    from maps.limit_up import notify
+
+    sent: list[str] = []
+    monkeypatch.setattr(notify, "push", sent.append)
+    service = _service(db, LimitUpMode.RECOMMEND_ONLY)
+    now = dt.datetime(2026, 8, 28, 10, 0, tzinfo=KST)
+
+    assert service.watch_candidate(_candidate(), now_kst=now)
+    service.on_trade(_trade(1.0, 99_600), now_kst=now)
+    service.on_trade(_trade(2.0, 99_700), now_kst=now)
+    service.on_trade(_trade(3.0, 99_800), now_kst=now)
+
+    assert "상한가 감시" in sent[0]
+    trigger = next(text for text in sent if "상한가 트리거" in text)
+    assert "005930" in trigger
+    # 그리드가 붙지 않으면 "무엇을 얼마에 사라" 가 빠져 추천이 실행 불가능해진다.
+    assert "주 @" in trigger

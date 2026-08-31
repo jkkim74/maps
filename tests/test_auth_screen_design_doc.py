@@ -116,7 +116,9 @@ def test_free_user_menu_matches_is_allowed(doc: str) -> None:
         label = screen_map()[key]
         assert normalize_label(label) in nav_section, f"무료 메뉴 그림에 빠진 화면: {key} ({label})"
 
-    matrix = doc[doc.index("화면 24개 권한 매트릭스"):]
+    # 화면 개수는 코드에서 세므로 제목에 박아 두지 않는다 — 화면 하나를 추가하면
+    # 문서가 아니라 이 테스트가 먼저 낡는다.
+    matrix = doc[doc.index(f"화면 {len(screen_map())}개 권한 매트릭스"):]
     for key in blocked:
         assert f"<code>{key}</code>" in matrix, f"권한 매트릭스에 빠진 관리자 전용 화면: {key}"
 

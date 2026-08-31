@@ -1278,6 +1278,71 @@ class LimitUpStatusResponse(BaseModel):
     sessions: dict[str, dict]
 
 
+class LimitUpLegRow(BaseModel):
+    """상한가 세션의 고정 매수 레그 한 줄.
+
+    `recommend_only` 에서는 상태가 `recommended` 로 남는다 — 실주문이 아니라
+    "이 가격에 이 수량" 이라는 추천이다.
+    """
+
+    name: str
+    price: int
+    quantity: int
+    filled_quantity: int
+    avg_fill_price: float | None = None
+    status: str
+
+
+class LimitUpEventRow(BaseModel):
+    """상한가 세션 원장 이벤트 한 줄."""
+
+    action: str
+    leg: str | None = None
+    payload: dict | None = None
+    created_at: datetime.datetime
+
+
+class LimitUpSessionRow(BaseModel):
+    """하루치 상한가 세션 하나의 조회용 표현."""
+
+    ticker: str
+    name: str | None = None
+    market: str
+    state: str
+    execution_mode: str
+    upper_limit_price: int
+    trigger_price: int
+    trigger_at: datetime.datetime | None = None
+    first_fill_at: datetime.datetime | None = None
+    end_reason: str | None = None
+    realized_pnl: float | None = None
+    filled_quantity: int = 0
+    legs: list[LimitUpLegRow] = []
+    events: list[LimitUpEventRow] = []
+
+
+class LimitUpGuardRow(BaseModel):
+    """저장된 일일 진입 가드 — 재시작에도 살아남는 쪽이 정본이다."""
+
+    ref_date: datetime.date
+    attempts: int
+    pattern_failures: int
+    kosdaq_high: float | None = None
+    halted_reasons: list[str] = []
+
+
+class LimitUpSessionsResponse(BaseModel):
+    """상한가 현황 화면의 영속 데이터.
+
+    `/status` 는 인메모리라 재시작하면 비지만, 이쪽은 DB 원장이라 장 마감 뒤에도
+    그날 무슨 일이 있었는지 그대로 남는다.
+    """
+
+    ref_date: datetime.date
+    sessions: list[LimitUpSessionRow] = []
+    guard: LimitUpGuardRow | None = None
+
+
 class LimitUpSettingsUpdate(BaseModel):
     """관리자가 바꿀 수 있는 V1 설정.
 

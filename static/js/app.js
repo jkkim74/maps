@@ -1863,6 +1863,7 @@ const PAGE_LOADERS = {
   'stock-report':   () => {},  // stock_report.html 인라인 스크립트로 처리
   'trade-review':   loadTradeReview,
   'batch-monitor':  loadBatchMonitor,
+  'limit-up':       loadLimitUp,
 };
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -2057,5 +2058,156 @@ async function loadBatchMonitor() {
       </div>`;
   } catch (e) {
     empty('bm-matrix', `오류: ${e.message}`);
+  }
+}
+
+// ── SCR-22 상한가 V1 ─────────────────────────────────────────────────────────
+// 두 소스를 나란히 보여 준다. `/status` 는 살아 있는 프로세스의 인메모리 상태라
+// 재시작하면 비고, `/sessions` 는 DB 원장이라 장 마감 뒤에도 남는다. 둘 중 하나만
+// 보면 "엔진이 아무것도 안 했다" 와 "엔진이 방금 재시작했다" 를 구별할 수 없다.
+let _luDate = '';
+
+function changeLimitUpDate(v) {
+  _luDate = v || '';
+  loadLimitUp();
+}
+
+const _LU_STATE = {
+  watching: ['감시', 'info'], net_open: ['그물', 'alert'],
+  filled_wait_lock: ['체결', 'alert'], locked: ['잠금', 'pass'],
+  eod_review: ['EOD심사', 'info'], eod_trim: ['트림', 'alert'],
+  overnight: ['오버나이트', 'pass'], reconciling: ['정산중', 'alert'],
+  after_hours_exit: ['시간외탈출', 'alert'], closed: ['종료', 'fail'],
+};
+
+function _luStateBadge(state) {
+  const [label, cls] = _LU_STATE[state] || [state, 'info'];
+  return badge(label, cls);
+}
+
+async function loadLimitUp() {
+  loading('lu-status');
+  loading('lu-sessions');
+  loading('lu-events');
+  const q = _luDate ? `?ref_date=${_luDate}` : '';
+  try {
+    const [st, day] = await Promise.all([
+      apiFetch('/limit-up/status'),
+      apiFetch('/limit-up/sessions' + q),
+    ]);
+    const dateInput = document.getElementById('lu-date');
+    if (dateInput && !dateInput.value) dateInput.value = day.ref_date;
+    _luRenderStatus(st, day.guard);
+    _luRenderSessions(day.sessions);
+    _luRenderEvents(day.sessions);
+  } catch (e) {
+    empty('lu-status', `오류: ${esc(e.message)}`);
+    empty('lu-sessions', '');
+    empty('lu-events', '');
+  }
+}
+
+function _luRenderStatus(st, guard) {
+  const halted = st.entry_halted;
+  const reasons = st.halted_reasons.length ? st.halted_reasons.join(', ') : '없음';
+  const unknown = st.unknown_positions.length
+    ? st.unknown_positions.join(', ') : '없음';
+  document.getElementById('lu-status').innerHTML = `
+    <div class="kpi-grid">
+      <div class="kpi-card ${st.mode === 'off' ? 'fail' : ''}">
+        <div class="kpi-label">모드</div>
+        <div class="kpi-value">${esc(st.mode)}</div>
+        <div class="kpi-sub">recommend_only 는 실주문을 내지 않습니다</div>
+      </div>
+      <div class="kpi-card ${halted ? 'fail' : 'pass'}">
+        <div class="kpi-label">신규 진입</div>
+        <div class="kpi-value">${halted ? '차단' : '허용'}</div>
+        <div class="kpi-sub">사유 ${esc(reasons)}</div>
+      </div>
+      <div class="kpi-card ${st.manual_lock ? 'fail' : ''}">
+        <div class="kpi-label">수동 잠금</div>
+        <div class="kpi-value">${st.manual_lock ? 'LOCKED' : '해제'}</div>
+        <div class="kpi-sub">미분류 보유 ${esc(unknown)}</div>
+      </div>
+      <div class="kpi-card ${st.daily_pnl < 0 ? 'fail' : ''}">
+        <div class="kpi-label">당일 실현손익</div>
+        <div class="kpi-value">${fmt.krw(st.daily_pnl)}</div>
+        <div class="kpi-sub">시도 ${st.attempts} · 패턴실패 ${st.pattern_failures}${
+          guard ? ` · 저장된 시도 ${guard.attempts}` : ''}</div>
+      </div>
+    </div>`;
+}
+
+function _luRenderSessions(sessions) {
+  if (!sessions.length) {
+    empty('lu-sessions', '이 날짜에는 감시된 종목이 없습니다');
+    return;
+  }
+  const rows = sessions.map(s => {
+    const legs = s.legs.length
+      ? s.legs.map(l =>
+          `${l.name} ${l.quantity.toLocaleString()}주 @ ${fmt.krw(l.price)}` +
+          ` <span class="text-muted">(${esc(l.status)}${
+            l.filled_quantity ? `, 체결 ${l.filled_quantity}` : ''})</span>`
+        ).join('<br>')
+      : '<span class="text-muted">—</span>';
+    const pnlCls = s.realized_pnl == null ? '' : (s.realized_pnl >= 0 ? 'text-pass' : 'text-fail');
+    return `<tr>
+      <td><b>${esc(s.name || s.ticker)}</b><br>
+        <span class="mono text-muted" style="font-size:0.72rem">${esc(s.ticker)} · ${esc(s.market)}</span></td>
+      <td>${_luStateBadge(s.state)}<br>
+        <span class="text-muted" style="font-size:0.72rem">${esc(s.execution_mode)}</span></td>
+      <td class="mono">${fmt.krw(s.upper_limit_price)}<br>
+        <span class="text-muted" style="font-size:0.72rem">트리거 ${fmt.krw(s.trigger_price)}</span></td>
+      <td style="font-size:0.78rem">${legs}</td>
+      <td class="mono">${s.filled_quantity ? s.filled_quantity.toLocaleString() + '주' : '—'}</td>
+      <td class="mono ${pnlCls}">${s.realized_pnl == null ? '—' : fmt.krw(s.realized_pnl)}</td>
+      <td>${s.end_reason ? esc(s.end_reason) : '—'}</td>
+    </tr>`;
+  }).join('');
+  document.getElementById('lu-sessions').innerHTML = `
+    <div style="overflow-x:auto"><table>
+      <thead><tr><th>종목</th><th>상태</th><th>가격</th><th>레그</th>
+        <th>체결</th><th>실현손익</th><th>종료 사유</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>
+    <div class="text-muted" style="font-size:0.75rem;margin-top:8px">
+      recommend_only 에서 레그 상태 <code>recommended</code> 는 실주문이 아니라
+      "이 가격에 이 수량" 추천입니다. 실현손익이 —면 아직 정산되지 않은 것입니다.
+    </div>`;
+}
+
+function _luRenderEvents(sessions) {
+  const events = [];
+  sessions.forEach(s => s.events.forEach(e => events.push({ ...e, ticker: s.ticker })));
+  if (!events.length) {
+    empty('lu-events', '원장 이벤트가 없습니다');
+    return;
+  }
+  events.sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
+  const rows = events.slice(0, 200).map(e => `<tr>
+    <td class="mono" style="font-size:0.72rem">${esc(e.created_at.replace('T', ' ').slice(0, 19))}</td>
+    <td class="mono">${esc(e.ticker)}</td>
+    <td>${esc(e.action)}${e.leg ? ` <span class="text-muted">(${esc(e.leg)})</span>` : ''}</td>
+    <td class="mono text-muted" style="font-size:0.72rem">${
+      e.payload ? esc(JSON.stringify(e.payload)) : '—'}</td>
+  </tr>`).join('');
+  document.getElementById('lu-events').innerHTML = `
+    <div style="overflow-x:auto"><table>
+      <thead><tr><th>시각(UTC)</th><th>종목</th><th>이벤트</th><th>payload</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>`;
+}
+
+async function limitUpEmergencyOff(btn) {
+  if (!confirm('상한가 엔진의 신규 진입을 즉시 차단합니다. 청산은 계속 가능합니다. 진행할까요?')) return;
+  btn.disabled = true;
+  try {
+    await apiPost('/limit-up/emergency-off', {});
+    await loadLimitUp();
+  } catch (e) {
+    alert(`비상정지 실패: ${e.message}`);
+  } finally {
+    btn.disabled = false;
   }
 }

@@ -158,6 +158,12 @@
         <span class="nav-badge new">NEW</span>
       </a>
       {% endif %}
+      {% if 'limit-up' in nav_keys %}
+      <a href="/limit-up"       class="nav-item {% if screen == 'limit-up' %}active{% endif %}">
+        <span class="nav-scr">22</span>상한가 V1
+        <span class="nav-badge new">NEW</span>
+      </a>
+      {% endif %}
     </div>
     <div class="nav-section">
       <div class="nav-section-label">내 계정</div>

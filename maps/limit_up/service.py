@@ -24,6 +24,7 @@ from maps.limit_up.domain import (
     overnight_budget,
     trigger_price,
 )
+from maps.limit_up import notify
 from maps.limit_up.feed import FeedQuote, FeedTrade, TapeBuffer
 from maps.limit_up.repository import LimitUpRepository
 from maps.limit_up.worker import CancelBuysResult, LimitUpCommandWorker
@@ -148,6 +149,7 @@ class LimitUpService:
         self._candidates[candidate.ticker] = candidate
         self._last_prices[candidate.ticker] = candidate.current_price
         self.repository.db.commit()
+        notify.watch_started(session)
         return True
 
     def on_trade(self, trade: FeedTrade, *, now_kst: dt.datetime) -> None:
@@ -1067,6 +1069,10 @@ class LimitUpService:
                     payload={
                         "turnover": session.trigger_turnover_krw,
                         "strength": session.trigger_strength,
+                        "grid": [
+                            {"name": leg.name, "price": leg.price, "quantity": leg.quantity}
+                            for leg in grid
+                        ],
                     },
                 )
                 self._dump_tape(ticker, "TRIGGER")

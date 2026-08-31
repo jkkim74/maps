@@ -2,16 +2,33 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+import datetime as dt
 
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.orm import Session
+
+from maps.api.deps import get_db
 from maps.api.schemas import (
+    LimitUpEventRow,
+    LimitUpGuardRow,
+    LimitUpLegRow,
+    LimitUpSessionRow,
+    LimitUpSessionsResponse,
     LimitUpSettingsUpdate,
     LimitUpStatusResponse,
+)
+from maps.common.models import (
+    LimitUpDailyGuard,
+    LimitUpEvent,
+    LimitUpOrderLeg,
+    LimitUpSession,
+    SecurityMetadata,
 )
 from maps.common.settings import get_settings
 import logging
 
 from maps.limit_up import bootstrap
+from maps.limit_up.runtime import KST
 from maps.limit_up.service import LimitUpMode, automatic_mode_blocked_reason
 
 
@@ -105,3 +122,108 @@ def update_limit_up_settings(payload: LimitUpSettingsUpdate) -> LimitUpStatusRes
         mode=payload.mode, min_turnover_krw=payload.min_turnover_krw
     )
     return LimitUpStatusResponse(**{**_STOPPED, **runtime.service.status()})
+
+
+@router.get("/sessions", response_model=LimitUpSessionsResponse)
+def get_limit_up_sessions(
+    ref_date: dt.date | None = Query(default=None),
+    db: Session = Depends(get_db),
+) -> LimitUpSessionsResponse:
+    """Return one trading day of persisted sessions, legs, and ledger events.
+
+    ``/status`` only knows what the running process holds in memory, so it goes
+    blank on restart and after the close. This reads the durable ledger instead
+    — the screen must still answer "what happened today" tomorrow morning.
+
+    Args:
+        ref_date: KRX trading date; defaults to today in KST.
+        db: Request-scoped session.
+
+    Returns:
+        The day's sessions newest-first with their legs and events.
+    """
+    day = ref_date or dt.datetime.now(KST).date()
+    sessions = (
+        db.query(LimitUpSession)
+        .filter(LimitUpSession.ref_date == day)
+        .order_by(LimitUpSession.id.desc())
+        .all()
+    )
+    ids = [row.id for row in sessions]
+    legs: dict[int, list[LimitUpOrderLeg]] = {}
+    events: dict[int, list[LimitUpEvent]] = {}
+    if ids:
+        for leg in (
+            db.query(LimitUpOrderLeg)
+            .filter(LimitUpOrderLeg.session_id.in_(ids))
+            .order_by(LimitUpOrderLeg.name)
+            .all()
+        ):
+            legs.setdefault(leg.session_id, []).append(leg)
+        for event in (
+            db.query(LimitUpEvent)
+            .filter(LimitUpEvent.session_id.in_(ids))
+            .order_by(LimitUpEvent.id)
+            .all()
+        ):
+            events.setdefault(event.session_id, []).append(event)
+    names = {
+        row.ticker: row.name
+        for row in db.query(SecurityMetadata).filter(
+            SecurityMetadata.ticker.in_([row.ticker for row in sessions] or [""])
+        )
+    }
+    guard = db.get(LimitUpDailyGuard, day)
+    return LimitUpSessionsResponse(
+        ref_date=day,
+        sessions=[
+            LimitUpSessionRow(
+                ticker=row.ticker,
+                name=names.get(row.ticker),
+                market=row.market,
+                state=row.state,
+                execution_mode=row.execution_mode,
+                upper_limit_price=row.upper_limit_price,
+                trigger_price=row.trigger_price,
+                trigger_at=row.trigger_at,
+                first_fill_at=row.first_fill_at,
+                end_reason=row.end_reason,
+                realized_pnl=row.realized_pnl,
+                filled_quantity=sum(
+                    leg.filled_quantity for leg in legs.get(row.id, [])
+                ),
+                legs=[
+                    LimitUpLegRow(
+                        name=leg.name,
+                        price=leg.price,
+                        quantity=leg.quantity,
+                        filled_quantity=leg.filled_quantity,
+                        avg_fill_price=leg.avg_fill_price,
+                        status=leg.status,
+                    )
+                    for leg in legs.get(row.id, [])
+                ],
+                events=[
+                    LimitUpEventRow(
+                        action=event.action,
+                        leg=event.leg,
+                        payload=event.payload,
+                        created_at=event.created_at,
+                    )
+                    for event in events.get(row.id, [])
+                ],
+            )
+            for row in sessions
+        ],
+        guard=(
+            None
+            if guard is None
+            else LimitUpGuardRow(
+                ref_date=guard.ref_date,
+                attempts=guard.attempts,
+                pattern_failures=guard.pattern_failures,
+                kosdaq_high=guard.kosdaq_high,
+                halted_reasons=list(guard.halted_reasons or []),
+            )
+        ),
+    )
