@@ -1,5 +1,52 @@
 # HANDOFF
 
+## 8/31 recover() unknown 판정 협소화 — ✅ 배포·`recommend_only` 재가동 완료
+
+같은 날 오전 롤백의 원인이었던 reconciliation 블로커를 해소하고 엔진을 다시 켰다.
+
+**근본 원인**: `recover()`(service.py)가 `known = automatic 미종료 세션 티커` 와
+**계좌 전체 잔고**를 대조해 차집합을 전부 `unknown_positions` 로 잠갔다.
+`recommend_only` 에서는 automatic 세션이 존재할 수 없어 `known` 이 구조적으로 공집합 →
+공유 계좌의 타 전략 보유가 있으면 100% 잠금. 운영 order_log 실조회로 11종목 전부
+타 전략 소속임을 확인했다(donchian_v2 4, ath_breakout_v1 5, strategy_trade 2 — 모두 buy/filled).
+
+**수정** (`01c9d42 fix: lock recovery only on limit-up traced holdings`):
+
+- `repository.has_unresolved_limit_up_trace(ticker, broker=)` 신설 — order_log 의
+  `limit_up_v1%` 레인에서 체결 순매수 > 0 **또는** 미정산 매수(pending/partial) 존재 시만 참.
+  브로커 모드 컬럼으로 mock 잔재를 배제한다.
+- `recover()` 의 unknown 판정에 이 조건을 AND — 타 전략/수동 보유는 무시하고,
+  limit_up 자신이 만든 고아 보유는 여전히 fail-closed 로 잠근다(안전 속성 유지).
+- 잠글 때 ERROR 로그 추가(기존엔 무로그라 status API 를 봐야만 알 수 있었다).
+- 판정 소스를 세션 레그가 아닌 order_log 로 한 이유: ① OrderManager 자기 커밋이라
+  "세션 기록 유실" 과 실패 도메인 분리 ② recommend_only 가상 세션도 레그에 체결을 써서
+  레그 기준이면 추천 티커를 타 전략이 실보유할 때 오탐 잠금.
+- TDD — 신규 테스트 6건 + 기존 1건 수정(test_limit_up_service.py). 운영 사고 재현
+  (`test_recommend_only_recover_ignores_foreign_holdings_on_shared_account`),
+  고아 흔적 잠금 유지, 순매수 0 상쇄, 미정산 매수 fail-closed, mock 잔재 무시.
+  `execution_mode='unknown'` 행 경로(682-689)와 소스 가드는 불변.
+- 문서: `maps/limit_up/CLAUDE.md` 에 고아 판정 규칙과 **manual_lock 해제 절차**
+  (인메모리 파생값 — 해제 = 원인 제거 후 재기동, 해제 API 는 의도적으로 없음) 명문화.
+
+| 항목 | 결과 |
+|---|---|
+| 로컬 전체 테스트 | `1161 passed, 16 warnings` (기준선 1154 + 7) |
+| 추가 검사 | `compileall`·`git diff --check` 통과 |
+| 운영 HEAD | `01c9d42` (17:06 KST 배포, analyze idle 확인, 마이그레이션 없음) |
+| 엔진 | `MAPS_LIMIT_UP_ENABLED=true`, `MAPS_LIMIT_UP_MODE=recommend_only` (17:07 재기동) |
+| `.env` 백업 | `/opt/maps/.env.bak.limit_up_enable_20260831_17*` |
+| status API | `manual_lock=false`, `unknown_positions=[]`, `entry_halted=false` ✅ |
+| 기동 로그 | `=== 상한가 V1 기동: mode=recommend_only ===`, err 레벨 로그 0건 |
+| 외부/헬스 | 303(인증 리디렉션) / `{"status":"ok"}` |
+
+**다음 확인**: 익일(9/1 화) 장중 08:50 이후 웹소켓 연결·스캔 로그와
+`GET /api/v1/limit-up/status`, 그리고 limit_up 레인 order_log 신규 행이 0인지
+(recommend_only 는 실주문 없음).
+
+**남은 작업 (이번 범위 밖)**: ① 시간외 `ORD_DVSN=21` 실검증 ② 미체결 주문 회차 이월
+실측(둘 다 거래일 16~18시 모의계좌 실주문, 사람 개입 필요) ③ 상한가 V1 전용 승격 기준
+설계 ④ `_pace_request` 지연 PLAUSIBLE 건 별도 설계. `automatic` 전환은 이후 심사.
+
 ## 8/31 KIS KOSDAQ 지수 API 수정 배포 완료 — 안전 게이트로 엔진 OFF 유지 (이전 API 장애 기록 대체)
 
 KIS KOSDAQ 지수 조회 장애의 직접 원인인 `FID_INPUT_HOUR_1` 값이 현재 시각(HHMMSS)으로 전송되던 문제를 수정했다. 이제 KIS 프로토콜 상수 `"60"`(1분 봉)를 사용하며, KOSDAQ 지수 폴링은 정규장 `09:00~15:30 KST`에만 수행한다. 엔진의 기존 운영 창(`08:50~15:40`)은 변경하지 않았다.
@@ -23,6 +70,9 @@ KIS KOSDAQ 지수 조회 장애의 직접 원인인 `FID_INPUT_HOUR_1` 값이 �
 `recommend_only` 기동 직후 인증된 상태 점검에서 `manual_lock=true` 및 미분류 보유종목 11개(`0015N0`, `006800`, `034020`, `038680`, `041830`, `051900`, `073240`, `195990`, `241710`, `282330`, `300720`)가 확인되었다. 이는 요구 안전 조건인 `manual_lock=false`, `unknown_positions=[]`를 만족하지 못하므로 즉시 백업 `/opt/maps/.env.bak.limit_up_recommend_20260831_152748`으로 롤백했다.
 
 현재 운영 상태는 **엔진 OFF** (`MAPS_LIMIT_UP_ENABLED=false`), 모드는 `recommend_only`이며 서비스는 정상이다. `automatic`은 승인되지 않았고, 보유종목/계정 조정(reconciliation) 문제를 해소하기 전에는 `recommend_only`도 다시 켜지 않는다. 잠금 해제·보유종목 분류·주문 생성은 이 작업에서 수행하지 않았다.
+
+> ✅ **같은 날 저녁 갱신 — 이 절의 "엔진 OFF" 는 낡았다.** reconciliation 블로커가
+> 판정 로직 수정으로 해소됐고 엔진은 `recommend_only` 로 재가동됐다. 맨 위 절 참고.
 
 배포 재시작 중 이전 프로세스 종료에 따른 무해한 `ConnectionClosedOK` 한 건은 있었지만, 대상 전략 오류 스캔에는 없었고 서비스 헬스는 정상으로 회복됐다. 최초 Windows SSH 래퍼의 BOM/CRLF 전송 문제도 별도 읽기 전용 재확인으로 안전하게 검증했으며, 이후 BOM 없는 전송으로 작업했다.
 
