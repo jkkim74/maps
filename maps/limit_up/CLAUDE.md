@@ -141,6 +141,24 @@ overnight_budget = (1,000,000 − max(0, 당일 실현손실)) / 0.30
 은 세션 소유분으로 상한을 두며, 호출부가 `machine.filled_quantity` 를 넘긴다.
 `sell_overnight_excess` 가 처음부터 `min(...)` 을 쓴 것과 같은 규칙이다.
 
+같은 이유로 **`recover()` 의 고아 판정도 계좌 전체를 잠그지 않는다.** automatic 세션에
+없는 보유 중 `repository.has_unresolved_limit_up_trace()` — order_log 의 `limit_up_v1%`
+레인에 체결 순매수가 남았거나 미정산 매수(pending/partial)가 있는 티커 — 만 수동 잠금
+대상이다. 판정 소스가 세션 레그가 아니라 order_log 인 이유는 두 가지다: ① order_log 는
+OrderManager 가 자기 커밋으로 쓰므로 "세션 기록 유실" 과 실패 도메인이 분리돼 있고,
+② recommend_only 가상 세션도 레그에 체결을 쓰므로 레그 기준이면 추천만 했던 티커를
+타 전략이 실보유할 때 오탐 잠금이 난다. 전부 잠그면 recommend_only 는 `known` 이
+구조적으로 공집합이라 계좌에 뭐라도 있는 순간 기동이 무조건 잠긴다(2026-08-31 사고:
+타 전략 보유 11종목으로 즉시 잠금 → 롤백).
+
+### `manual_lock` 해제 절차
+
+`manual_lock`/`unknown_positions` 는 **인메모리 파생값**이다 — 저장되지 않고, 매 기동
+시 `recover()` 가 브로커 잔고에서 재계산한다. 해제 = **원인 제거 후 재기동**이다
+(고아 보유를 수동 정리하거나 order_log 와 대사해 소유를 확정한다). 해제 API 는
+**의도적으로 없다** — fail-closed 재계산을 우회해 진입만 다시 여는 오용 경로가 되기
+때문이다. 잠길 때는 ERROR 로그(`고아 limit_up 보유로 수동 잠금`)가 남는다.
+
 ## 🔴 팔 수 없으면 닫지도 않는다
 
 `exits_are_live()` 가 거짓인데 실보유가 있으면 `_strand_unprotected()` 가 세션을
@@ -289,7 +307,7 @@ worker 가 **같은 action 이름**으로 `event_exists()` 를 검사하면 항�
 | 모드 | 동작 |
 |---|---|
 | `off` | 후보 감시조차 하지 않는다 |
-| `recommend_only`(기본) | 종목·가격·수량만 제공. 주문·취소·정정 없음. 실현손익이 없으므로 일일 중단선 합은 항상 0 |
+| `recommend_only`(기본) | 종목·가격·수량만 제공. 주문·취소·정정 없음. 실현손익이 없으므로 일일 중단선 합은 항상 0. 공유 계좌의 타 전략 보유로 기동이 잠기지 않는다(2026-08-31 사고 수정) |
 | `automatic` | 동일 신호로 매수·익절·손절·시간청산·미체결 관리를 자동 실행 |
 
 ### 🔴 모드와 무관하게 **command worker 를 항상 만든다**

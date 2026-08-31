@@ -12,8 +12,10 @@ from maps.common.models import (
     LimitUpOrderLeg,
     LimitUpSession,
     LimitUpTape,
+    OrderLog,
     PortfolioSnapshot,
 )
+from maps.execution.broker_adapter import OrderSide, OrderStatus
 from maps.limit_up.domain import LimitUpState
 from maps.limit_up.feed import TapeSnapshot
 
@@ -142,6 +144,39 @@ class LimitUpRepository:
             .all()
         )
         return sum(int(row[0] or 0) for row in rows)
+
+    def has_unresolved_limit_up_trace(self, ticker: str, *, broker: str | None) -> bool:
+        """Return whether ``order_log`` says this engine may still own the ticker.
+
+        Recovery must lock only on holdings *this engine* can have produced — on a
+        shared account every other strategy's position would otherwise trip the
+        manual lock (2026-08-31: recommend_only startup locked on 11 foreign
+        holdings because ``known`` can only ever contain automatic sessions).
+
+        The source is ``order_log``, not the session leg ledger: order_log is
+        written by ``OrderManager`` in its own commit, so it survives the exact
+        "session record lost" failure this check exists for — and recommend_only
+        virtual sessions write leg fills too, which would false-lock a ticker
+        another strategy actually holds. Unsettled buys (pending/partial) count as
+        a trace because a crash before EOD sync leaves their fills unrecorded.
+        """
+        rows = (
+            self.db.query(OrderLog.side, OrderLog.status, OrderLog.fill_qty)
+            .filter(OrderLog.strategy_id.like("limit_up_v1%"))
+            .filter(OrderLog.ticker == ticker)
+            .filter(OrderLog.broker == broker)
+            .all()
+        )
+        net = 0
+        for side, status, fill_qty in rows:
+            if side == OrderSide.BUY.value and status in (
+                OrderStatus.PENDING.value,
+                OrderStatus.PARTIALLY_FILLED.value,
+            ):
+                return True
+            quantity = int(fill_qty or 0)
+            net += quantity if side == OrderSide.BUY.value else -quantity
+        return net > 0
 
     def average_fill_price(self, session: LimitUpSession) -> float | None:
         """Return the quantity-weighted entry price across this session's legs."""

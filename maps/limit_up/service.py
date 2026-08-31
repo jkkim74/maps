@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from maps.common.models import LimitUpSession
-from maps.common.settings import MapsSettings
+from maps.common.settings import MapsSettings, get_settings
 from maps.limit_up.domain import (
     CommandKind,
     DailyGuard,
@@ -654,11 +654,23 @@ class LimitUpService:
             if row.execution_mode == LimitUpMode.AUTOMATIC.value
         }
         actual = self.worker.broker.get_positions() if self.worker is not None else {}
+        # 공유 계좌라 잔고에는 타 전략·수동 보유가 섞여 있다. order_log 의 limit_up
+        # 레인 흔적이 있는 티커만 우리 고아일 수 있다 — 전부 잠그면 recommend_only 는
+        # known 이 공집합이라 계좌에 뭐라도 있는 순간 무조건 잠긴다(2026-08-31 사고).
+        broker_mode = get_settings().maps_broker_mode
         self.unknown_positions = sorted(
-            ticker for ticker, quantity in actual.items() if quantity > 0 and ticker not in known
+            ticker
+            for ticker, quantity in actual.items()
+            if quantity > 0
+            and ticker not in known
+            and self.repository.has_unresolved_limit_up_trace(ticker, broker=broker_mode)
         )
         if self.unknown_positions:
             self.manual_lock = True
+            logger.error(
+                "고아 limit_up 보유로 수동 잠금: %s — 계좌 정리 후 재기동해야 풀린다",
+                ", ".join(self.unknown_positions),
+            )
         if self.worker is not None and any(
             row.execution_mode == LimitUpMode.AUTOMATIC.value for row in rows
         ):

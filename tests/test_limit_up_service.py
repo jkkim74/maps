@@ -21,7 +21,7 @@ from maps.limit_up.domain import LimitUpConfig, LimitUpState
 from maps.limit_up.feed import FeedQuote, FeedTrade
 from maps.limit_up.repository import LimitUpRepository
 from maps.common.exceptions import BrokerAdapterError
-from maps.common.models import LimitUpSession, PortfolioSnapshot
+from maps.common.models import LimitUpSession, OrderLog, PortfolioSnapshot
 from maps.limit_up.service import Candidate, LimitUpMode, LimitUpService
 from maps.limit_up.worker import LimitUpCommandWorker
 from maps.risk.manager import RiskManager
@@ -224,10 +224,44 @@ def test_eod_review_holds_only_when_both_fresh_bid_tests_pass(db) -> None:
     assert machine.state is LimitUpState.OVERNIGHT
 
 
+_order_log_seq = iter(range(1, 10_000))
+
+
+def _seed_order_log(
+    db,
+    ticker: str,
+    *,
+    strategy_id: str,
+    side: str,
+    fill_qty: int,
+    status: str = "filled",
+    broker: str = "kis",
+) -> None:
+    """Insert one audit row the way OrderManager records a submitted order."""
+    seq = next(_order_log_seq)
+    db.add(
+        OrderLog(
+            order_id=f"{broker}:test:20260828:{seq:010d}",
+            strategy_id=strategy_id,
+            ticker=ticker,
+            side=side,
+            qty=max(fill_qty, 1),
+            fill_qty=fill_qty,
+            status=status,
+            broker=broker,
+        )
+    )
+    db.commit()
+
+
 def test_recovery_unknown_broker_position_enters_manual_lock(db) -> None:
-    """A position with no V1 session must never be auto-sold or silently adopted."""
+    """A limit-up traced position with no V1 session must lock, never auto-sell."""
     broker = ServiceBroker()
     broker.positions["000660"] = Position("000660", 3, 200_000)
+    # 이 테스트는 mock 모드(ServiceBroker)라 흔적도 mock 레인에 남는다.
+    _seed_order_log(
+        db, "000660", strategy_id="limit_up_v1:S", side="buy", fill_qty=3, broker="mock"
+    )
     service = _service(db, LimitUpMode.AUTOMATIC, broker)
 
     service.recover(ref_date=dt.date(2026, 8, 28), now_monotonic=100.0)
@@ -235,6 +269,104 @@ def test_recovery_unknown_broker_position_enters_manual_lock(db) -> None:
     assert service.status()["manual_lock"] is True
     assert service.status()["unknown_positions"] == ["000660"]
     assert broker.orders == []
+
+
+def test_automatic_recover_ignores_foreign_holdings_without_limit_up_trace(db) -> None:
+    """A holding another strategy bought is not this engine's orphan to lock on."""
+    broker = ServiceBroker()
+    broker.positions["000660"] = Position("000660", 3, 200_000)
+    _seed_order_log(
+        db, "000660", strategy_id="donchian_v2", side="buy", fill_qty=3, broker="mock"
+    )
+    service = _service(db, LimitUpMode.AUTOMATIC, broker)
+
+    service.recover(ref_date=dt.date(2026, 8, 28), now_monotonic=100.0)
+
+    assert service.status()["manual_lock"] is False
+    assert service.status()["unknown_positions"] == []
+    assert broker.orders == []
+
+
+def test_recommend_only_recover_ignores_foreign_holdings_on_shared_account(
+    db, kis_like_broker
+) -> None:
+    """2026-08-31 운영 사고 재현: 공유 계좌의 타 전략 보유로 기동이 잠기면 안 된다."""
+    kis_like_broker.seed_foreign_position("006800", 10, 5_000)
+    kis_like_broker.seed_foreign_position("051900", 4, 300_000)
+    _seed_order_log(db, "006800", strategy_id="strategy_trade", side="buy", fill_qty=10)
+    _seed_order_log(db, "051900", strategy_id="ath_breakout_v1", side="buy", fill_qty=4)
+    service = _service(db, LimitUpMode.RECOMMEND_ONLY, kis_like_broker)
+
+    service.recover(ref_date=dt.date(2026, 8, 28), now_monotonic=100.0)
+
+    assert service.status()["manual_lock"] is False
+    assert service.status()["unknown_positions"] == []
+    assert kis_like_broker.submitted == []
+    now = dt.datetime(2026, 8, 28, 10, 0, tzinfo=KST)
+    assert service.watch_candidate(_candidate(), now_kst=now) is True
+
+
+def test_recover_locks_orphan_holding_with_limit_up_buy_trace(db, kis_like_broker) -> None:
+    """A holding our own buy lane produced must lock when its session is gone."""
+    kis_like_broker.seed_position("005930", 3, 98_800)
+    _seed_order_log(db, "005930", strategy_id="limit_up_v1:S", side="buy", fill_qty=3)
+    service = _service(db, LimitUpMode.RECOMMEND_ONLY, kis_like_broker)
+
+    service.recover(ref_date=dt.date(2026, 8, 28), now_monotonic=100.0)
+
+    assert service.status()["manual_lock"] is True
+    assert service.status()["unknown_positions"] == ["005930"]
+    assert kis_like_broker.submitted == []
+
+
+def test_recover_ignores_ticker_whose_limit_up_trace_netted_to_zero(
+    db, kis_like_broker
+) -> None:
+    """A fully exited limit-up ticker rebought by another strategy is not ours."""
+    _seed_order_log(db, "005930", strategy_id="limit_up_v1:S", side="buy", fill_qty=3)
+    _seed_order_log(
+        db, "005930", strategy_id="limit_up_v1:exit:stop", side="sell", fill_qty=3
+    )
+    kis_like_broker.seed_foreign_position("005930", 5, 70_000)
+    service = _service(db, LimitUpMode.RECOMMEND_ONLY, kis_like_broker)
+
+    service.recover(ref_date=dt.date(2026, 8, 28), now_monotonic=100.0)
+
+    assert service.status()["manual_lock"] is False
+    assert service.status()["unknown_positions"] == []
+
+
+def test_recover_locks_on_unsettled_limit_up_buy_order(db, kis_like_broker) -> None:
+    """A pending limit-up buy may have filled unrecorded — fail closed and lock."""
+    kis_like_broker.seed_position("005930", 3, 98_800)
+    _seed_order_log(
+        db,
+        "005930",
+        strategy_id="limit_up_v1:A",
+        side="buy",
+        fill_qty=0,
+        status="pending",
+    )
+    service = _service(db, LimitUpMode.RECOMMEND_ONLY, kis_like_broker)
+
+    service.recover(ref_date=dt.date(2026, 8, 28), now_monotonic=100.0)
+
+    assert service.status()["manual_lock"] is True
+    assert service.status()["unknown_positions"] == ["005930"]
+
+
+def test_recover_ignores_mock_mode_limit_up_traces(db, kis_like_broker) -> None:
+    """Mock-mode experiment leftovers must not lock a kis-mode recovery."""
+    _seed_order_log(
+        db, "005930", strategy_id="limit_up_v1:S", side="buy", fill_qty=3, broker="mock"
+    )
+    kis_like_broker.seed_foreign_position("005930", 3, 70_000)
+    service = _service(db, LimitUpMode.RECOMMEND_ONLY, kis_like_broker)
+
+    service.recover(ref_date=dt.date(2026, 8, 28), now_monotonic=100.0)
+
+    assert service.status()["manual_lock"] is False
+    assert service.status()["unknown_positions"] == []
 
 
 def test_recovery_restores_first_fill_deadline_and_eod_share_facts(db) -> None:
