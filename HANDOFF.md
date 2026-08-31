@@ -1,5 +1,30 @@
 # HANDOFF
 
+## 8/31 KIS KOSDAQ 지수 API 수정 배포 완료 — 안전 게이트로 엔진 OFF 유지 (이전 API 장애 기록 대체)
+
+KIS KOSDAQ 지수 조회 장애의 직접 원인인 `FID_INPUT_HOUR_1` 값이 현재 시각(HHMMSS)으로 전송되던 문제를 수정했다. 이제 KIS 프로토콜 상수 `"60"`(1분 봉)를 사용하며, KOSDAQ 지수 폴링은 정규장 `09:00~15:30 KST`에만 수행한다. 엔진의 기존 운영 창(`08:50~15:40`)은 변경하지 않았다.
+
+검증 및 배포 결과:
+
+| 항목 | 확인 결과 |
+|---|---|
+| 배포 커밋 / 운영 HEAD | `f2d9534 fix: gate KIS index polling to market hours` |
+| 집중 테스트 | `179 passed, 6 warnings` |
+| 장외 스케줄러 가드 | `3 passed, 54 deselected` |
+| 전체 회귀 테스트 | `1154 passed, 16 warnings` |
+| 추가 검증 | `compileall`, `git diff --check` 통과 |
+| 운영 Alembic | `0032_limit_up_ledger (head)` |
+| 운영 서비스 / 내부 헬스 | `active`, `{"status":"ok","service":"maps","version":"0.2.0"}` |
+| 외부 HTTP | `303` (인증 리디렉션) |
+| 전략 오류 스캔 | 대상 오류 없음 (`KIS KOSDAQ index response was empty`, control-loop failure, `EGW00201`) |
+| 전략 주문·데이터 | limit-up 주문·세션·이벤트·order leg·tape 모두 `0`, orphan도 `0` |
+
+`recommend_only` 기동 직후 인증된 상태 점검에서 `manual_lock=true` 및 미분류 보유종목 11개(`0015N0`, `006800`, `034020`, `038680`, `041830`, `051900`, `073240`, `195990`, `241710`, `282330`, `300720`)가 확인되었다. 이는 요구 안전 조건인 `manual_lock=false`, `unknown_positions=[]`를 만족하지 못하므로 즉시 백업 `/opt/maps/.env.bak.limit_up_recommend_20260831_152748`으로 롤백했다.
+
+현재 운영 상태는 **엔진 OFF** (`MAPS_LIMIT_UP_ENABLED=false`), 모드는 `recommend_only`이며 서비스는 정상이다. `automatic`은 승인되지 않았고, 보유종목/계정 조정(reconciliation) 문제를 해소하기 전에는 `recommend_only`도 다시 켜지 않는다. 잠금 해제·보유종목 분류·주문 생성은 이 작업에서 수행하지 않았다.
+
+배포 재시작 중 이전 프로세스 종료에 따른 무해한 `ConnectionClosedOK` 한 건은 있었지만, 대상 전략 오류 스캔에는 없었고 서비스 헬스는 정상으로 회복됐다. 최초 Windows SSH 래퍼의 BOM/CRLF 전송 문제도 별도 읽기 전용 재확인으로 안전하게 검증했으며, 이후 BOM 없는 전송으로 작업했다.
+
 ## 8/30 상한가 전략 후속 수정·운영 배포 — ✅ `b18c8b1`, 엔진은 OFF 유지
 
 상한가 전략 재리뷰에서 확인된 3건을 수정하고 전체 검증·운영 배포까지 완료했다.
