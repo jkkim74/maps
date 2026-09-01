@@ -135,7 +135,7 @@ def test_engine_hours_cover_both_daily_action_windows() -> None:
     assert engine_active_at(dt.datetime(2026, 8, 28, 15, 28, tzinfo=KST))
 
 
-def _control_loop_runtime(wall: dt.datetime):
+def _control_loop_runtime(wall: dt.datetime, index_error: Exception | None = None):
     """Build one controlled control-loop iteration without broker I/O."""
     from maps.limit_up.runtime import KISIntradayRuntime
 
@@ -145,6 +145,8 @@ def _control_loop_runtime(wall: dt.datetime):
 
         def get_kosdaq_index(self) -> float:
             self.index_calls += 1
+            if index_error is not None:
+                raise index_error
             return 1_000.0
 
     class _Service:
@@ -157,23 +159,48 @@ def _control_loop_runtime(wall: dt.datetime):
         def on_kosdaq(self, **_kwargs: object) -> None:
             self.kosdaq_calls += 1
 
+    class _Deadman:
+        def __init__(self) -> None:
+            self.unhealthy = 0
+
+        def ping(self, healthy: bool = True) -> None:
+            if not healthy:
+                self.unhealthy += 1
+
     runtime = object.__new__(KISIntradayRuntime)
     adapter = _Adapter()
     service = _Service()
     runtime.adapter = adapter
     runtime.service = service
+    runtime.deadman = _Deadman()
+    runtime.iterations = 0
+    runtime.daily_actions_iteration = 0
     runtime._stop = asyncio.Event()
     runtime.monotonic = lambda: 2.0
-    runtime.wall_now = lambda: wall
     runtime._last_scan_at = 2.0
     runtime._last_index_at = 0.0
     runtime._last_deadman_at = 2.0
+
+    # A failing iteration must still terminate the test, so cap the loop here
+    # rather than relying on _run_daily_actions being reached.
+    walls = iter((wall, wall, wall))
+
+    def _wall_now() -> dt.datetime:
+        runtime.iterations += 1
+        try:
+            return next(walls)
+        except StopIteration:
+            runtime._stop.set()
+            return wall
+
+    runtime.wall_now = _wall_now
 
     async def _call_service(callable_, *args: object, **kwargs: object) -> object:
         kwargs.pop("priority")
         return callable_(*args, **kwargs)
 
     async def _finish_iteration(*_args: object, **_kwargs: object) -> None:
+        runtime.daily_actions_iteration = runtime.iterations
         runtime._stop.set()
 
     async def _fallback_once() -> None:
@@ -211,6 +238,29 @@ async def test_control_loop_polls_and_dispatches_once_during_regular_session() -
 
     assert adapter.index_calls == 1
     assert service.kosdaq_calls == 1
+
+
+async def test_control_loop_survives_a_failed_index_poll() -> None:
+    """A missing index value must not cancel the rest of the iteration.
+
+    KIS serves the guard from a 60-second bucket endpoint, so the first bucket
+    of the day does not exist yet at 09:00:00 and comes back empty. Letting
+    that abort the iteration skips the EOD stages and the fallback sweep, and
+    reports the engine dead to the deadman monitor.
+    """
+    from maps.common.exceptions import BrokerAdapterError
+
+    runtime, adapter, service = _control_loop_runtime(
+        dt.datetime(2026, 8, 28, 9, 0, tzinfo=KST),
+        index_error=BrokerAdapterError("KIS KOSDAQ index response was empty"),
+    )
+
+    await runtime._control_loop()
+
+    assert adapter.index_calls == 1
+    assert service.kosdaq_calls == 0
+    assert runtime.daily_actions_iteration == 1
+    assert runtime.deadman.unhealthy == 0
 
 
 async def test_reconnect_clears_subscriptions_so_tickers_resubscribe() -> None:

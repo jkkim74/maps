@@ -15,6 +15,7 @@ import requests
 import websockets
 from sqlalchemy.orm import Session
 
+from maps.common.exceptions import BrokerAdapterError
 from maps.common.models import SecurityMetadata
 from maps.common.settings import MapsSettings
 from maps.execution.kis_adapter import KISAdapter
@@ -505,14 +506,23 @@ class KISIntradayRuntime:
                     await self.scan_once()
                 if index_guard_active_at(wall) and now_mono - self._last_index_at >= 1.0:
                     self._last_index_at = now_mono
-                    value = await asyncio.to_thread(self.adapter.get_kosdaq_index)
-                    await self._call_service(
-                        self.service.on_kosdaq,
-                        value=value,
-                        at=now_mono,
-                        now_kst=wall,
-                        priority=_PRIORITY_HIGH,
-                    )
+                    # 지수를 못 읽는 것은 이 이터레이션의 나머지를 포기할 이유가 아니다.
+                    # KIS 지수 엔드포인트는 1분 봉 단위라 09:00:00 에는 첫 봉이 아직 없어
+                    # 매 거래일 확정적으로 빈 응답을 준다. 이걸 바깥 except 로 흘리면
+                    # EOD 단계·폴백 스윕이 통째로 밀리고 엔진이 죽은 것으로 보고된다.
+                    # 재시도 간격은 위의 1초 쿨다운이 이미 담당한다.
+                    try:
+                        value = await asyncio.to_thread(self.adapter.get_kosdaq_index)
+                    except BrokerAdapterError as exc:
+                        logger.warning("코스닥 지수 조회 실패 — 이번 회차 가드 갱신 생략: %s", exc)
+                    else:
+                        await self._call_service(
+                            self.service.on_kosdaq,
+                            value=value,
+                            at=now_mono,
+                            now_kst=wall,
+                            priority=_PRIORITY_HIGH,
+                        )
                 await self._run_daily_actions(wall)
                 await self.fallback_once()
                 if now_mono - self._last_deadman_at >= 60.0:
