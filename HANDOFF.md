@@ -1,6 +1,92 @@
 # HANDOFF
 
-## 8/31 상한가 조회 현황 조사 — 🔴 화면·알림이 전무하다 (다음 작업 후보)
+## 9/1 상한가 화면·알림 배포 확인 + 첫 장중 실측 — ✅ 정상, 지수 조회 오류 1건 수정
+
+두 가지를 했다. ① 다른 PC 세션이 만든 화면·알림이 이미 운영에 올라가 있는 것을 확인하고
+문서를 사실과 맞췄다. ② 문서가 지시한 "9/1 장중 확인" 을 실제로 관측하고, 거기서 나온
+로그 오류 1건을 고쳤다.
+
+### ① 화면·알림은 이미 구현·배포됐다 (`eee53ba`)
+
+바로 아래 8/31 절이 "미착수 다음 작업 후보"로 남긴 ①화면 ②알림을 **다른 세션이 이미
+구현했다** — `eee53ba feat: add limit-up screen and telegram alerts` (15파일 +708줄).
+그 커밋이 `HANDOFF.md` 를 갱신하지 않아 문서만 뒤처져 있었다.
+
+| 항목 | 상태 |
+|---|---|
+| 화면 `/limit-up` (SCR-22, 관리자 전용) | `templates/limit_up.html` — `/status`(인메모리)와 `/sessions`(DB 원장)를 **나란히** 표시 |
+| 신규 API | `GET /api/v1/limit-up/sessions?ref_date=` |
+| 알림 | `maps/limit_up/notify.py` — 훅은 `repository.append_event()` 한 곳, 감시 등록만 `watch_candidate` 직접 호출 |
+| 운영 HEAD | `eee53ba` (마이그레이션 없음) |
+| 운영 확인 | 09:35 KST `/limit-up`·`/status`·`/sessions` 모두 200 OK |
+
+계약은 `maps/limit_up/CLAUDE.md` 의 "알림과 화면 — 원장이 정본이다" 절에 이미 반영돼 있다.
+
+### ② 9/1 첫 장중 실측 (09:00~09:40 KST)
+
+| 항목 | 실측 | 판정 |
+|---|---|---|
+| 웹소켓 | 09:00:01 끊김 → 09:00:02 `feed_disconnected` 래치 해제 | ✅ 정상 |
+| limit_up 레인 `order_log` | 0행 | ✅ `recommend_only` 정상 |
+| `limit_up_session/event/tape` | **전 기간 0행** | 🟢 결함 아님 (아래) |
+| 일일 가드 (9/1) | `halted_reasons=['kosdaq_drawdown']`, `kosdaq_high=833.52`, 09:33 래치 | 🟢 설계대로 |
+| 텔레그램 | `maps_env=production`, 토큰·chat_id 있음, `TelegramNotifier.enabled=True` | ✅ 발송 가능 |
+| KIS 코스닥 지수 | 09:00:00~09:00:30 `KIS KOSDAQ index response was empty` **58회** | 🔴 수정함 |
+| KIS 레이트리밋 | 09:29:00 `EGW00201 초당 거래건수를 초과` 1회 | 🔴 미해결 |
+
+> 🟢 **세션 0행과 `kosdaq_drawdown` 래치를 장애로 오인하지 말 것.**
+> 스캔은 `runtime.scan_once` 에서 **09:10~14:30** 에만 돌고, 정상 스캔은 로그도 DB 도
+> 남기지 않는다 — `scan_once`·`watch_candidate`·`get_limit_up_candidates` 어디에도
+> `logger` 호출이 없다. "조용함" 은 건강한 무후보와 구별되지 않는다.
+> 래치는 지수 822.02 vs 고점 833.52 에서 −1.5% 를 깨며 걸린 것으로, **당일 신규 진입
+> 차단이 정상 동작한 것**이다. 풀지 말 것 — 가드는 하루짜리라 익일 자동으로 새로 생긴다.
+
+### ③ 수정 — 지수 조회 실패를 제어 루프에서 격리
+
+`get_kosdaq_index` 는 `inquire-index-timeprice` 를 `FID_INPUT_HOUR_1="60"`(1분 봉)으로
+부른다. **09:00:00 에는 첫 봉이 아직 없어 `output` 이 빈 배열**이고
+`kis_adapter.py:352-353` 이 이를 치명 오류로 올린다. `index_guard_active_at` 가 정확히
+09:00 에 열리므로 **매 거래일 확정적으로 재현**되고, 09:00:31 경 첫 봉이 닫히면 낫는다.
+
+피해는 로그 스팸이 아니었다. `_control_loop` 은 여섯 단계를 **하나의 `try`** 로 묶는데
+지수 조회가 3번째다. 예외가 나면 그 이터레이션의 **4~6단계(`_run_daily_actions`,
+`fallback_once`, deadman ping)가 통째로 건너뛰어지고** `except` 가
+`deadman.ping(healthy=False)` 를 58회 보낸다. 이번엔 09:10 전이라 잃은 스캔이 없었지만,
+**장중 같은 예외는 EOD 단계를 밀어낸다** — 15:18/15:25/15:28 이 그 안에 있다.
+
+→ 지수 폴링 블록만 자체 `try/except BrokerAdapterError` 로 감싸고 `logger.warning` 한 줄로
+낮췄다. 새 백오프는 만들지 않았다 — 기존 1초 쿨다운(`_last_index_at` 을 호출 **전에**
+갱신)이 이미 담당한다. 값이 없으면 가드를 갱신하지 않고 넘어가며, 진입 차단 래치는
+유지되므로 안전 속성은 불변이다.
+
+`kis_adapter.get_kosdaq_index` 는 **고치지 않았다.** "빈 응답 = 값 없음" 을 예외로 알리는
+계약은 옳고, 호출자가 `runtime.py:508` 하나뿐이라 판단은 호출자에 두는 게 맞다.
+`_INDEX_GUARD_OPEN` 을 09:01 로 미루는 한 줄 대안은 09:00 만 가리고 장중 문제를 남기므로
+채택하지 않았다.
+
+검증: 회귀 테스트 `test_control_loop_survives_a_failed_index_poll` — 지수 조회가
+`BrokerAdapterError` 를 내도 **같은 이터레이션에서** `_run_daily_actions` 가 실행되고
+deadman 이 unhealthy 로 떨어지지 않는지 고정한다(수정 전 `assert 2 == 1` 로 실패).
+전체 **1,169 passed**. 배포 안 함 — 운영 HEAD 는 아직 `eee53ba` 다.
+
+### 다음 작업 후보
+
+1. 🔴 **스캔 관측성이 없다.** `get_limit_up_candidates` 가 행을 돌려준 뒤
+   `watch_candidate` 가 `False` 를 낼 때까지 로그가 한 줄도 없다. 그래서 "오늘 +25% 종목이
+   없었다" 와 "게이트에서 탈락했다" 를 **사후에 구별할 수 없다.** 후보 수와 탈락 사유를
+   주기적으로 한 줄 남기면 된다. 이게 없으면 앞으로도 매일 "왜 아무것도 안 잡혔나" 를
+   DB 로 역산해야 한다.
+2. 🔴 **`EGW00201` 이 실제로 발현했다.** `_send_with_retry` 는 HTTP 429/5xx 만 재시도하고,
+   KIS 가 흔히 쓰는 **HTTP 200 + `rt_cd!="0"`** 경로(`kis_adapter.py:823-839`)는
+   재시도·백오프가 **전혀 없다**. `_pace_request` 는 프로세스 전역 단일 레인
+   (`interval = 0.05 if real else 0.5`)이라 상한가 외 서브시스템과 공유된다 —
+   09:29 건도 상한가가 아닌 다른 호출일 가능성이 높다. 8/30 절이 "별도 설계 필요" 로
+   남긴 항목이 **관측으로 승격**됐다.
+
+## 8/31 상한가 조회 현황 조사 — ✅ `eee53ba` 로 완료 (화면·알림 모두 구현됨)
+
+> ✅ **이 절은 낡았다.** 아래 "다음 작업 후보 ①②" 는 `eee53ba` 가 전부 구현했고 운영에도
+> 올라가 있다. 맨 위 9/1 절을 볼 것.
 
 재가동 직후 사용자 질문("어느 화면에서 후보·매매 내역을 보나")으로 조사한 결과다.
 코드 grep 으로 확인했다 — 템플릿(`*.html`)·모바일(`apps/mobile/src`) 어디에도
@@ -87,7 +173,7 @@ KIS KOSDAQ 지수 조회 장애의 직접 원인인 `FID_INPUT_HOUR_1` 값이 �
 | 운영 Alembic | `0032_limit_up_ledger (head)` |
 | 운영 서비스 / 내부 헬스 | `active`, `{"status":"ok","service":"maps","version":"0.2.0"}` |
 | 외부 HTTP | `303` (인증 리디렉션) |
-| 전략 오류 스캔 | 대상 오류 없음 (`KIS KOSDAQ index response was empty`, control-loop failure, `EGW00201`) |
+| 전략 오류 스캔 | 대상 오류 없음 (`KIS KOSDAQ index response was empty`, control-loop failure, `EGW00201`) — ⚠️ **장이 닫힌 시각의 스캔이었다.** 셋 다 9/1 개장 후 재현됐다(맨 위 절) |
 | 전략 주문·데이터 | limit-up 주문·세션·이벤트·order leg·tape 모두 `0`, orphan도 `0` |
 
 `recommend_only` 기동 직후 인증된 상태 점검에서 `manual_lock=true` 및 미분류 보유종목 11개(`0015N0`, `006800`, `034020`, `038680`, `041830`, `051900`, `073240`, `195990`, `241710`, `282330`, `300720`)가 확인되었다. 이는 요구 안전 조건인 `manual_lock=false`, `unknown_positions=[]`를 만족하지 못하므로 즉시 백업 `/opt/maps/.env.bak.limit_up_recommend_20260831_152748`으로 롤백했다.
