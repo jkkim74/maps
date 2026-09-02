@@ -2,6 +2,21 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> ## ✅ 실행 완료 (2026-09-02) — 단, 계획대로의 순서는 아니었다
+>
+> - **Task 2(.env 변경)는 10:59:39 KST 에 먼저 수행**됐다(백업
+>   `.env.bak.limit_up_automatic_20260902_105939_KST`). 그러나 재시작이 없어 구 프로세스는
+>   계속 `recommend_only` 로 돌았다.
+> - **Task 3(재시작·검증)은 11:21 의 `9ecd10b` 배포 재시작이 대신 수행**했다. 기동 로그
+>   `상한가 V1 기동: mode=automatic`, `automatic_mode_blocked_reason()=None`,
+>   `KIS_REAL_TRADING=false` 확인.
+> - 성공 기준은 모두 충족(서비스 active, health 200, 안전게이트 통과, control loop·deadman
+>   실패 0). 롤백하지 않았고 사용자가 `automatic` 유지를 확정했다.
+> - **미완**: 9/2 는 `kosdaq_drawdown` 래치로 신규 진입이 막혀 실주문 관측이 불가능했다.
+>   `automatic` 첫 실주문 검증은 래치 없는 거래일로 이월된다.
+>
+> 자세한 실측은 `HANDOFF.md` 맨 위 9/2 절 참고. 아래 체크박스는 원래 계획 원문이다.
+
 **Goal:** Permanently switch the production upper-limit V1 engine from `recommend_only` to `automatic` on the existing KIS paper account and verify safe operation.
 
 **Architecture:** Preserve `/opt/maps/.env`, replace exactly one mode setting, and restart the `maps` systemd unit so the mode becomes persistent. Verify the account remains paper-only, the startup safety gate accepts automatic mode, and the live runtime stays healthy; restore the backup immediately if any success condition fails.
