@@ -145,7 +145,7 @@
 
 | | 내용 | 현재 상태 |
 |---|---|---|
-| 1 | ~~**분석 워치리스트 픽에 손절폭 상한 검증이 없다.**~~ → **✅ 해소.** `live_rules.analysis_pick_max_stop_price()`(고정 20%)를 무장 두 경로(`/arm-plan`·`/{id}/arm`)에서 `STOP_TOO_WIDE` 로 거부. 상세는 맨 위 9/3 절 | ✅ 코드 완료, 🟡 **미배포** |
+| 1 | ~~**분석 워치리스트 픽에 손절폭 상한 검증이 없다.**~~ → **✅ 해소.** `live_rules.analysis_pick_max_stop_price()`(고정 20%)를 무장 두 경로(`/arm-plan`·`/{id}/arm`)에서 `STOP_TOO_WIDE` 로 거부. | ✅ `08a74a8` 17:50 배포 |
 | 2 | `scheduler.py:1830` 이 `plan_stop` 을 `round_to_krx_tick`(**반올림**)으로 되감는다. `effective_stop_price` 가 의도적으로 내림한 값을 되돌려 **손절을 조일 수 있다**. `trading_rules.py:122-124` 가 명시적으로 금지한 동작 | 🟡 |
 | 3 | `price_calculator._technical_stop`(`:113-128`)이 `effective_stop_price` 를 우회한다. ATR 전용(고정% 하한 없음), 배수 테이블도 별개(`CORE 3.0/SWING 2.0/TRADING 1.5`) | 🟢 `MAPS_PLAN_BASED_EXITS_ENABLED` 미설정(기본 `False`) — **비활성** |
 | 4 | **갭하락 무방어.** 손절 청산은 전부 시장가이고 감시는 09:00~15:30 60초 폴링이라 장 마감~익일 개장 갭은 그대로 맞는다. 씨이랩의 −1.5%p 가 여기서 나왔다 | 🟡 상한으로 폭이 줄면 영향도 준다 |
