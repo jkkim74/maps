@@ -47,6 +47,14 @@ _ATR_MULTIPLIERS: dict[str, float] = {
     "contrarian_quality_accumulation_v1": 3.0,
 }
 
+# 손절폭 **상한** 배수 (고정 손절률의 몇 배까지 허용하는가).
+# 고정%는 "최소 이만큼은 넓게"(하한)이고, 이 값은 "이보다 넓히지는 마라"(상한)다.
+# 상한이 없으면 ATR 이 주가의 10% 인 종목에서 손절폭이 25% 까지 벌어진다
+# (2026-08-31 189330 씨이랩 −26.7%). 원화 위험은 사이징이 지키지만
+# (넓은 손절 → 작은 포지션), 손절폭이 넓을수록 복구에 필요한 상승률이
+# 비선형으로 커진다 — −20% 는 +25%, −26% 는 +36% 를 벌어야 본전이다.
+_MAX_STOP_WIDTH_MULTIPLE = 2.0
+
 
 def stop_loss_pct(strategy_id: str | None) -> float | None:
     """전략의 고정 손절 비율을 반환한다 (``0.05`` = 5%).
@@ -99,6 +107,26 @@ def atr_stop_price(
     return entry_price - multiplier * atr14
 
 
+def max_stop_price(
+    strategy_id: str | None, entry_price: float | None
+) -> float | None:
+    """손절폭 **상한선** — 이보다 낮은(넓은) 손절가는 허용하지 않는다.
+
+    고정 손절률의 :data:`_MAX_STOP_WIDTH_MULTIPLE` 배가 상한이다. 미등록
+    전략이면 상한도 없다(``None``) — 손절가 자체가 ``None`` 이기 때문이다.
+
+    :param strategy_id: 전략 ID.
+    :param entry_price: 체결 진입가.
+    :return: 허용되는 가장 낮은 손절가. 산출 불가하면 ``None``.
+    """
+    if not strategy_id or entry_price is None or entry_price <= 0:
+        return None
+    stop_loss_pct = _STOP_LOSS_PCTS.get(strategy_id)
+    if stop_loss_pct is None:
+        return None
+    return entry_price * (1.0 - stop_loss_pct * _MAX_STOP_WIDTH_MULTIPLE)
+
+
 def effective_stop_price(
     strategy_id: str | None,
     entry_price: float | None,
@@ -130,15 +158,66 @@ def effective_stop_price(
     :param security_type: 호가 단위 판정용. ETF/ETN/ELW 는 5원 고정이다.
     :return: 손절가(유효 호가). 두 규칙 모두 산출 불가하면 ``None``.
     """
-    candidates = [
-        price
-        for price in (
-            stop_loss_price(strategy_id, entry_price),
-            atr_stop_price(strategy_id, entry_price, atr14),
-        )
-        if price is not None and price > 0
-    ]
+    return stop_price_breakdown(
+        strategy_id, entry_price, atr14, security_type=security_type
+    )["stop_price"]
+
+
+def stop_price_breakdown(
+    strategy_id: str | None,
+    entry_price: float | None,
+    atr14: float | None = None,
+    *,
+    security_type: str = "stock",
+) -> dict:
+    """손절가와 **그 값이 나온 근거**를 함께 돌려준다.
+
+    :func:`effective_stop_price` 가 이 함수에 위임하므로 정본은 여전히 하나다.
+    반환 타입을 바꾸지 않은 이유는 호출부가 많기 때문이고, 근거가 따로 필요한
+    이유는 청산 주문에 남길 기록 때문이다 — 2026-09-03 조사에서 손절 3건의
+    손절가를 OHLCV 와 ATR 로 전부 역산해야 했다.
+
+    ``rule`` 은 어느 규칙이 최종 손절가를 정했는지다.
+
+    * ``"fixed"``  — 고정% 손절 (ATR 이 없거나 더 좁았다)
+    * ``"atr"``    — ATR 손절 (고정%보다 넓고 상한 이내였다)
+    * ``"capped"`` — ATR 이 상한을 넘어 :func:`max_stop_price` 로 잘렸다
+    * ``None``     — 산출 불가 (미등록 전략 등)
+
+    :return: ``stop_price`` · ``rule`` · 각 후보값을 담은 dict.
+    """
+    fixed = stop_loss_price(strategy_id, entry_price)
+    atr_stop = atr_stop_price(strategy_id, entry_price, atr14)
+    cap = max_stop_price(strategy_id, entry_price)
+    context: dict = {
+        "stop_price": None,
+        "rule": None,
+        "fixed_stop": fixed,
+        "atr_stop": atr_stop,
+        "cap_stop": cap,
+        "atr14": atr14,
+        "entry_price": entry_price,
+    }
+
+    candidates = [p for p in (fixed, atr_stop) if p is not None and p > 0]
     if not candidates:
-        return None
-    aligned = round_down_krx_price(min(candidates), security_type=security_type)
-    return float(aligned) if aligned > 0 else None
+        return context
+
+    chosen = min(candidates)
+    if atr_stop is not None and atr_stop > 0 and (
+        fixed is None or fixed <= 0 or atr_stop < fixed
+    ):
+        rule = "atr"
+    else:
+        rule = "fixed"
+    # 상한은 ATR 이 벌려 놓은 폭만 자른다. 고정%보다 좁아질 수 없다 — 상한이
+    # 고정률의 배수라 정의상 항상 고정% 손절가 이하다.
+    if cap is not None and cap > chosen:
+        chosen, rule = cap, "capped"
+
+    aligned = round_down_krx_price(chosen, security_type=security_type)
+    if aligned <= 0:
+        return context
+    context["stop_price"] = float(aligned)
+    context["rule"] = rule
+    return context

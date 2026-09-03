@@ -158,12 +158,19 @@ SQLite by default (`maps.db`). Switch to PostgreSQL via `MAPS_DB_URL`. All table
 6. **Live trading safety gate:** `MAPS_LIVE_TRADING_ENABLED=false` must be explicitly changed. `MAPS_BROKER_MODE=mock` disables real orders.
 
 7. **손절가는 `live_rules.effective_stop_price()` 하나로만 구한다.** 고정%와 ATR 손절 중
-   **넓은(가격이 낮은) 쪽**이 정본이다. ATR 은 고정% 하한선을 느슨하게만 만들 수 있고
-   조이지는 못한다. 청산 판정·**사이징**·화면 표시가 모두 이 함수를 거쳐야 한다.
+   **넓은(가격이 낮은) 쪽**을 고르고, 그 값을 `max_stop_price()`(고정 손절률의 **2배**)로
+   자른다. 즉 고정%는 하한, 그 2배가 상한이다. ATR 은 그 사이에서만 손절을 넓힐 수 있다.
+   청산 판정·**사이징**·화면 표시가 모두 이 함수를 거쳐야 한다.
    경로마다 다르면 백테스트와 실거래가 체계적으로 어긋난다(2026-07-29 수정: 사이징이
    고정%만 써서 ATR 이 넓은 종목의 포지션이 2배로 잡혔다).
-   `backtest/portfolio_replay._resolve_stop` 만 별도 구현을 유지한다 — 전략 신호의
-   `stop_price` 와 미등록 전략용 폴백이라는 백테스트 전용 입력이 있기 때문이다.
+   상한은 2026-09-03 에 추가했다 — ATR 이 주가의 10% 인 종목에서 손절폭이 25% 까지
+   벌어져 `189330` 이 −26.7% 에 청산됐다. 원화 위험은 사이징이 지켰지만(50만원, 예산대로)
+   손절폭이 넓을수록 본전까지 필요한 상승률이 비선형으로 커진다.
+   백테스트는 `backtest/engine.backtest_stop_price()` 를 쓴다 — 같은 규칙에 백테스트
+   전용 입력(전략 신호의 `stop_price`, 미등록 전략 폴백)만 더한 것이고,
+   단일전략 엔진과 `portfolio_replay._resolve_stop` 이 그 하나를 공유한다.
+   `backtest/engine._ATR_STOP_MULTIPLIER` 는 **미등록 전략 폴백 전용**이다 — 이걸 전
+   전략에 쓰던 동안 `ath_breakout_v1`(실거래 2.5)을 2.0 으로 검증했다.
 
 8. **pykrx 를 쓰기 전에 `ensure_krx_login_guard()` 를 호출한다.** pykrx 는 요청마다
    재로그인을 시도해서, 자격증명이 만료되면 재시도 누적이 KRX 계정을 잠근다

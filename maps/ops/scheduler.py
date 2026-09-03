@@ -101,7 +101,25 @@ from maps.risk.holding_regime_overlay import (
     evaluate_holding_regime,
 )
 from maps.strategy.ath_breakout_v1 import ATHBreakoutV1Strategy
-from maps.strategy.live_rules import effective_stop_price
+from maps.strategy.live_rules import effective_stop_price, stop_price_breakdown
+
+
+def _pick_exit_context(pick, current_price: float, reason: str) -> dict:
+    """분석 워치리스트 픽 청산의 근거 스냅샷.
+
+    전략 손절(고정%·ATR·상한)과 달리 이 경로는 ``pick.stop_price`` 하나만 본다.
+    ``source`` 로 경로를 구별할 수 있어야 사후에 손실 원인을 가를 수 있다.
+    """
+    return {
+        "source": "analysis_pick",
+        "reason": reason,
+        "pick_id": pick.id,
+        "stop_price": pick.stop_price,
+        "target_price": pick.target_price,
+        "buy_price": pick.buy_price,
+        "current_price": current_price,
+        "trade_mode": pick.trade_mode,
+    }
 from maps.strategy.ath_breakout_v2 import ATHBreakoutV2Strategy
 from maps.strategy.base import BaseStrategy, StrategyType
 from maps.strategy.donchian_v1 import DonchianV1Strategy
@@ -2690,7 +2708,8 @@ class OperationalPipeline:
             # 보유 중에 움직여, 진입 시 한 번만 한 사이징이 가정한 손절폭과 어긋난다
             # (2026-07-31: 089860 위험 0.50% → 0.55%). 기록이 없는 옛 주문만 폴백.
             atr14 = entry.atr14 or (signal.atr14 if signal is not None else None)
-            stop_price = effective_stop_price(entry.strategy_id, entry_price, atr14)
+            stop_context = stop_price_breakdown(entry.strategy_id, entry_price, atr14)
+            stop_price = stop_context["stop_price"]
             strategy_exit = bool(signal and signal.exit_signal)
 
             if self._settings.maps_plan_based_exits_enabled:
@@ -2734,6 +2753,11 @@ class OperationalPipeline:
                     f"{reason} entry={entry_price:.0f} "
                     f"current={current_price:.0f} stop={stop_price or 0:.0f}"
                 ),
+                # 손절선이 고정%·ATR·상한 중 무엇으로 정해졌는지 남긴다. 없으면
+                # 사후에 OHLCV 와 ATR 로 역산해야 한다(2026-09-03 조사).
+                decision_context={
+                    **stop_context, "reason": reason, "current_price": current_price
+                },
             )
             try:
                 manager.submit_exit(order, exit_reason=reason)
@@ -3120,6 +3144,7 @@ class OperationalPipeline:
                 quantity=held_qty,
                 current_price=current,
                 memo=f"strategy_trade {reason} cur={current:.0f}",
+                decision_context=_pick_exit_context(pick, current, reason),
             )
             try:
                 result = manager.submit_exit(order, exit_reason=reason)
@@ -3439,6 +3464,9 @@ class OperationalPipeline:
                         f"strategy_trade {reason} cur={current:.0f} "
                         f"target={pick.target_price or 0:.0f} stop={pick.stop_price or 0:.0f}"
                     ),
+                    # 이 경로의 손절가는 전략 규칙이 아니라 픽에 저장된 절대가다.
+                    # 어느 경로가 청산했는지 구별되지 않으면 손실 원인을 못 가른다.
+                    decision_context=_pick_exit_context(pick, current, reason),
                 )
                 try:
                     result = manager.submit_exit(order, exit_reason=reason)

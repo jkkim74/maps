@@ -22,12 +22,12 @@ import numpy as np
 import pandas as pd
 
 from maps.backtest.cost_model import VOL_MULTIPLIER_MAP, CostModel, Trade
-from maps.backtest.engine import _ATR_STOP_MULTIPLIER, _compute_atr14
+from maps.backtest.engine import _compute_atr14, backtest_stop_price
 from maps.backtest.position_exit import evaluate_position_exit
 from maps.common.exceptions import BacktestError
 from maps.common.sizing import risk_based_qty
 from maps.strategy.base import BaseStrategy
-from maps.strategy.live_rules import atr_stop_price, stop_loss_price
+from maps.strategy.live_rules import stop_loss_price
 
 logger = logging.getLogger(__name__)
 
@@ -310,20 +310,20 @@ class PortfolioReplayEngine:
         그 함수를 그대로 쓰지 않는 이유는 백테스트에만 있는 입력 두 가지 때문이다.
         전략이 신호와 함께 낸 ``stop_price`` 를 우선 쓰고, 미등록 전략에 대해서는
         ``_ATR_STOP_MULTIPLIER`` 로 폴백한다. 실거래 경로에는 둘 다 없다.
+
+        그 두 가지를 뺀 나머지는 :func:`backtest_stop_price` 가 단일 전략
+        백테스트와 공유한다 — 손절폭 상한 포함.
         """
         default_stop = entry_price * 0.95
         stop_from_signal = _safe_float(p.stop_src.get(dt, default_stop))
         if not np.isfinite(stop_from_signal) or stop_from_signal <= 0:
             stop_from_signal = stop_loss_price(strategy_id, entry_price) or default_stop
-        atr_val = _safe_float(p.atr_src.get(dt, 0.0))
-        atr_stop = (
-            atr_stop_price(strategy_id, entry_price, atr_val)
-            if atr_val and atr_val > 0
-            else (entry_price - _ATR_STOP_MULTIPLIER * atr_val if atr_val > 0 else None)
+        return backtest_stop_price(
+            strategy_id,
+            entry_price,
+            stop_from_signal=stop_from_signal,
+            atr14=_safe_float(p.atr_src.get(dt, 0.0)),
         )
-        if atr_stop and atr_stop > 0:
-            return min(stop_from_signal, atr_stop)
-        return stop_from_signal
 
     def _close_position(
         self,

@@ -347,8 +347,10 @@ def test_holding_stop_uses_entry_atr_recorded_on_the_buy_order(db, monkeypatch) 
       1. 보유 중 ATR 이 커지면 손절가가 밀려 사이징이 가정한 위험을 넘는다.
       2. 화면(예전 20봉)과 청산 판정(400봉)이 서로 다른 ATR 을 써서 표시가 거짓이 된다.
 
-    pullback_v3 · 진입 36,600 · ATR 1,874.4 → 36,600 − 2×1,874.4 = 32,851.2
-    → 호가 50원 내림 32,850. 고정 5%(34,770)보다 넓으므로 ATR 이 이긴다.
+    pullback_v3 · 진입 36,600 · ATR 1,874.4 → 36,600 − 2×1,874.4 = 32,851.2.
+    고정 5%(34,770)보다 넓으므로 ATR 이 이기지만, 손절폭이 10.24% 라 **상한
+    10%(32,940)에 걸린다** → 호가 50원 내림 32,900.
+    (상한 도입 전에는 32,850 이었다. 이 종목이 실제로 상한을 스치는 경계 사례다.)
     """
     db.add(OrderLog(
         order_id="filled-089860",
@@ -383,7 +385,7 @@ def test_holding_stop_uses_entry_atr_recorded_on_the_buy_order(db, monkeypatch) 
     holdings, _max_exposure, _count, status, _error = risk._broker_holdings(db)
 
     assert status == "ok"
-    assert holdings[0].stop_price == 32_850.0
+    assert holdings[0].stop_price == 32_900.0
 
 
 def test_broker_holdings_unavailable_without_fallback_records(db, monkeypatch) -> None:

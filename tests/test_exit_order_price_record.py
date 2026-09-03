@@ -155,11 +155,13 @@ def test_fallback_price_does_not_trigger_a_stop(monkeypatch) -> None:
 
 # ── 진입 시점 ATR 고정 ────────────────────────────────────────────────────────
 #
-# pullback_v3: 고정 5%, ATR × 2.0. 진입가 10,000 기준
+# pullback_v3: 고정 5%, ATR × 2.0, 손절폭 상한 10%. 진입가 10,000 기준
 #   고정 손절            9,500
-#   진입 ATR 300  → 손절 9,400   (ATR 이 이긴다)
-#   오늘 ATR 600  → 손절 8,800
-# 현재가 9,000 은 9,400 아래이므로 **진입 ATR 기준이면 손절**, 오늘 ATR 기준이면 아니다.
+#   진입 ATR 300  → 손절 9,400   (ATR 이 이긴다, 상한 이내)
+#   오늘 ATR 600  → 손절 8,800 → **상한 9,000 에 걸린다**
+# 현재가 9,100 은 9,400 아래이므로 **진입 ATR 기준이면 손절**, 오늘 ATR 기준이면 아니다.
+# (상한 도입 전에는 현재가 9,000 으로 갈렸다. 이제 9,000 은 상한과 같아 둘 다 손절이
+#  되므로 판별 지점을 9,100 으로 올렸다.)
 
 def test_exit_uses_entry_atr_not_todays(monkeypatch) -> None:
     """손절 판정은 진입 시점 ATR 로 한다 — 보유 중 ATR 이 커져도 손절선이 안 밀린다.
@@ -170,7 +172,7 @@ def test_exit_uses_entry_atr_not_todays(monkeypatch) -> None:
     """
     pipeline, db, broker, manager, engine = _setup(
         monkeypatch, exit_signal=False,
-        current_price=9_000.0, entry_atr=300.0, today_atr=600.0,
+        current_price=9_100.0, entry_atr=300.0, today_atr=600.0,
     )
     try:
         submitted, _skipped, tickers = pipeline._submit_exit_orders(
@@ -188,13 +190,48 @@ def test_exit_falls_back_to_todays_atr_when_entry_atr_missing(monkeypatch) -> No
     """진입 ATR 기록이 없는 옛 주문은 기존대로 오늘 ATR 로 판정한다."""
     pipeline, db, broker, manager, engine = _setup(
         monkeypatch, exit_signal=False,
-        current_price=9_000.0, entry_atr=None, today_atr=600.0,
+        current_price=9_100.0, entry_atr=None, today_atr=600.0,
     )
     try:
         submitted, _skipped, _tickers = pipeline._submit_exit_orders(
             db=db, broker=broker, manager=manager, ref_date=dt.date(2026, 5, 5),
         )
-        assert submitted == 0          # 오늘 ATR 기준 손절 8,800 < 현재가 9,000
+        assert submitted == 0          # 오늘 ATR 기준 손절 9,000(상한) < 현재가 9,100
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+# ── 손절 근거 기록 ────────────────────────────────────────────────────────────
+
+
+def test_exit_records_the_stop_rule_that_fired(monkeypatch) -> None:
+    """손절 청산은 손절가와 그 근거를 함께 남긴다.
+
+    2026-09-03 조사에서 손절 3건(419080·189330·475150)의 손절가를 OHLCV 와 ATR 로
+    전부 역산해야 했다. `decision_context` 가 비어 있어 "이 손절선이 고정%인지
+    ATR 인지 상한인지" 를 사후에 알 수 없었다.
+    """
+    pipeline, db, broker, manager, engine = _setup(
+        monkeypatch, exit_signal=False,
+        current_price=9_000.0, entry_atr=300.0,
+    )
+    try:
+        submitted, _skipped, _tickers = pipeline._submit_exit_orders(
+            db=db, broker=broker, manager=manager, ref_date=dt.date(2026, 5, 5),
+        )
+        assert submitted == 1
+
+        sell = db.query(OrderLog).filter(OrderLog.side == OrderSide.SELL.value).one()
+        ctx = sell.decision_context
+        assert ctx is not None
+        assert ctx["reason"] == "stop_loss"
+        assert ctx["stop_price"] == 9_400        # pullback_v3: ATR 이 고정 5% 보다 넓다
+        assert ctx["rule"] == "atr"
+        assert ctx["atr14"] == 300.0
+        assert ctx["entry_price"] == _ENTRY_PRICE
+        assert ctx["current_price"] == 9_000.0
     finally:
         db.close()
         Base.metadata.drop_all(engine)

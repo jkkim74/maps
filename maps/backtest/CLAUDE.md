@@ -102,8 +102,13 @@ run(strategy, params, data, universe=None, market_cap=0.0, is_etf=False) → Bac
 (`PortfolioConfig`, `PortfolioTrade`, `PortfolioResult`).
 
 > ⚠️ 손절가는 원칙적으로 `strategy/live_rules.effective_stop_price()` 하나로만 구한다.
-> **`_resolve_stop` 만 유일한 예외로 별도 구현을 유지한다** — 전략 신호의 `stop_price` 와
-> 미등록 전략 폴백이라는 백테스트 전용 입력이 있기 때문이다. 다른 곳에 복제하지 않는다.
+> 백테스트 전용 입력 두 가지(전략 신호의 `stop_price`, 미등록 전략 폴백) 때문에
+> **`engine.backtest_stop_price()` 를 따로 두고, 단일전략 엔진과 `_resolve_stop` 이
+> 그 하나를 공유한다.** 다른 곳에 복제하지 않는다.
+>
+> `_ATR_STOP_MULTIPLIER`(2.0)는 이제 **미등록 전략 폴백 전용**이다. 이 상수를 전
+> 전략에 쓰던 동안 `ath_breakout_v1`(실거래 2.5)을 2.0 으로 검증했다 — 승격 심사가
+> 실제보다 좁은 손절을 가정했다(2026-09-03 확인). 손절폭 상한도 실거래와 같이 적용한다.
 
 ## kostolany_driver.py / kostolany_comparison.py — 전환 효과 검증
 

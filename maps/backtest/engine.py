@@ -19,6 +19,7 @@ from maps.common.constants import GAIN_TO_PAIN_CAP
 from maps.common.exceptions import BacktestError
 from maps.common.sizing import risk_based_qty
 from maps.strategy.base import BaseStrategy
+from maps.strategy.live_rules import atr_stop_price, max_stop_price, stop_loss_price
 
 logger = logging.getLogger(__name__)
 
@@ -26,8 +27,54 @@ logger = logging.getLogger(__name__)
 ACCOUNT_RISK_PER_TRADE = 0.005   # 계좌 위험 0.5%
 MAX_SINGLE_EXPOSURE = 0.10       # 단일 종목 노출 10% 상한
 
-# ATR 기반 손절 배율 (변동성 적응형)
-_ATR_STOP_MULTIPLIER = 2.0       # 손절 = 진입가 - ATR(14) × 2.0
+# ATR 기반 손절 배율 — **미등록 전략 폴백 전용**이다.
+# 등록 전략은 `live_rules._ATR_MULTIPLIERS` 의 전략별 배수를 쓴다. 이 상수를
+# 전 전략에 쓰던 동안 `ath_breakout_v1`(실거래 2.5)을 2.0 으로 검증했다 —
+# 승격 심사가 실제보다 좁은 손절을 가정한 셈이다(2026-09-03 확인).
+_ATR_STOP_MULTIPLIER = 2.0
+
+
+def backtest_stop_price(
+    strategy_id: str | None,
+    entry_price: float,
+    *,
+    stop_from_signal: float | None = None,
+    atr14: float | None = None,
+) -> float:
+    """백테스트 손절가 — 실거래와 **같은 규칙**에 백테스트 전용 입력을 더한다.
+
+    규칙은 :func:`maps.strategy.live_rules.effective_stop_price` 와 같다:
+    고정%와 ATR 중 넓은 쪽을 고르고, 손절폭 상한으로 자른다. 그 함수를 그대로
+    쓰지 않는 이유는 실거래 경로에 없는 입력 두 가지 때문이다.
+
+    * ``stop_from_signal`` — 전략이 신호와 함께 낸 손절가. 있으면 고정% 대신 쓴다.
+    * 미등록 전략 폴백 — 백테스트는 카탈로그에 없는 임의 전략도 돌린다.
+
+    호가 정렬은 하지 않는다. 백테스트는 체결가를 실수로 다루고, 정렬하면
+    실거래에만 있는 1틱 차이가 지표에 섞인다.
+
+    :param strategy_id: 전략 ID.
+    :param entry_price: 진입 체결가.
+    :param stop_from_signal: 전략 신호의 손절가. ``None`` 이면 고정%를 쓴다.
+    :param atr14: ATR(14) 값.
+    :return: 손절가. 항상 유한한 양수다.
+    """
+    fixed = stop_from_signal
+    if fixed is None or not np.isfinite(fixed) or fixed <= 0:
+        fixed = stop_loss_price(strategy_id, entry_price) or entry_price * 0.95
+
+    atr_stop: float | None = None
+    if atr14 and atr14 > 0:
+        atr_stop = atr_stop_price(strategy_id, entry_price, atr14)
+        if atr_stop is None:   # 미등록 전략 — 기존 고정 배수로 폴백
+            atr_stop = entry_price - _ATR_STOP_MULTIPLIER * atr14
+
+    chosen = min(fixed, atr_stop) if atr_stop and atr_stop > 0 else fixed
+    # 상한은 실거래와 같은 값을 쓴다. 빠뜨리면 백테스트만 상한 없이 남는다.
+    cap = max_stop_price(strategy_id, entry_price)
+    if cap is not None and cap > chosen:
+        chosen = cap
+    return float(chosen)
 
 
 def _compute_atr14(df: pd.DataFrame, period: int = 14) -> pd.Series:
@@ -284,18 +331,16 @@ class BacktestEngine:
             # 같은 봉에서 손절 청산 후 즉시 재진입하지 않는다 (exited_this_bar 가드).
             if not position and not exited_this_bar and bool(entry_fill.get(dt, False)):
                 entry_price = bar_open
-                default_stop = entry_price * 0.95
-                stop_from_signal = float(stop_src.get(dt, default_stop))
-                if not np.isfinite(stop_from_signal):
-                    stop_from_signal = default_stop
-                # ATR 기반 손절: 변동성 장세에서 고정% 손절보다 넓은 쪽을 선택
+                stop_from_signal = float(stop_src.get(dt, entry_price * 0.95))
+                # 고정%와 ATR 중 넓은 쪽 → 손절폭 상한으로 클램프.
                 # 넓은 손절 → 포지션 크기 자동 감소 (계좌 위험 0.5% 고정 원칙 유지)
                 atr_val = float(atr_src.get(dt, 0.0) or 0.0)
-                if atr_val > 0:
-                    atr_stop = entry_price - _ATR_STOP_MULTIPLIER * atr_val
-                    stop_price = min(stop_from_signal, atr_stop)  # 더 낮은(넓은) 손절 선택
-                else:
-                    stop_price = stop_from_signal
+                stop_price = backtest_stop_price(
+                    strategy.strategy_id,
+                    entry_price,
+                    stop_from_signal=stop_from_signal,
+                    atr14=atr_val,
+                )
                 qty = self._sizer.calc_qty(equity, entry_price, stop_price)
                 if qty > 0 and entry_price * qty <= equity:
                     position = {

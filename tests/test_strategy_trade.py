@@ -837,3 +837,33 @@ def test_stale_bought_pick_still_takes_profit(env):
     submitted, closed = _run(pipeline, broker, manager, db, [pick], {"005930": 81000})
     assert (submitted, closed) == (0, 1)
     assert pick.exit_reason == "take_profit"
+
+
+def test_bought_pick_stop_records_its_decision_context(env):
+    """분석 픽 손절도 근거를 남긴다 — 이 경로의 손절가는 LLM 이 낸 절대가다.
+
+    전략 손절(고정%·ATR·상한)과 달리 여기서는 `pick.stop_price` 하나만 본다.
+    어느 경로가 청산했는지 사후에 구별되지 않으면 손실 원인을 못 가른다
+    (2026-09-03 조사).
+    """
+    pipeline, broker, manager, db = env
+    pick = _pick(db, buy=70_000, target=80_000, stop=66_000, qty=10)
+    _run(pipeline, broker, manager, db, [pick], {"005930": 69_000})   # 진입
+    _run(pipeline, broker, manager, db, [pick], {"005930": 69_000})   # 체결 정산
+    assert pick.state == "BOUGHT"
+
+    _run(pipeline, broker, manager, db, [pick], {"005930": 65_000})   # 손절
+
+    sell = (
+        db.query(OrderLog)
+        .filter(OrderLog.side == OrderSide.SELL.value, OrderLog.ticker == "005930")
+        .one()
+    )
+    assert sell.exit_reason == "stop_loss"
+    ctx = sell.decision_context
+    assert ctx is not None
+    assert ctx["source"] == "analysis_pick"
+    assert ctx["stop_price"] == 66_000
+    assert ctx["target_price"] == 80_000
+    assert ctx["current_price"] == 65_000
+    assert ctx["reason"] == "stop_loss"
