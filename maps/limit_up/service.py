@@ -118,16 +118,31 @@ class LimitUpService:
         # 마지막으로 관측한 단조 시각. 늦은 체결을 되살릴 때 시간 원점으로 쓴다.
         self.monotonic_hint = 0.0
 
-    def watch_candidate(self, candidate: Candidate, *, now_kst: dt.datetime) -> bool:
-        """Start watching an eligible +25% common-share candidate in entry hours."""
-        if self.mode is LimitUpMode.OFF or self.manual_lock or not candidate.eligible:
-            return False
-        if candidate.market not in {"KOSPI", "KOSDAQ"} or candidate.change_rate < 25.0:
-            return False
+    def watch_candidate(
+        self, candidate: Candidate, *, now_kst: dt.datetime
+    ) -> str | None:
+        """Start watching an eligible +25% common-share candidate in entry hours.
+
+        Returns ``None`` when the watch started, otherwise a short reason the
+        scanner can count — the same polarity as
+        :meth:`automatic_mode_blocked_reason`. A bare ``False`` made every gate
+        look identical in the logs, so a rejected scan and an empty one could
+        not be told apart after the fact.
+        """
+        if self.mode is LimitUpMode.OFF:
+            return "mode_off"
+        if self.manual_lock:
+            return "manual_lock"
+        if not candidate.eligible:
+            return "ineligible"
+        if candidate.market not in {"KOSPI", "KOSDAQ"}:
+            return "market"
+        if candidate.change_rate < 25.0:
+            return "below_trigger"
         if not dt.time(9, 10) <= now_kst.timetz().replace(tzinfo=None) <= dt.time(14, 30):
-            return False
+            return "outside_hours"
         if candidate.ticker in self._machines:
-            return False
+            return "already_watching"
         session = self.repository.create_or_get_session(
             ref_date=now_kst.date(),
             ticker=candidate.ticker,
@@ -138,7 +153,7 @@ class LimitUpService:
             execution_mode=self.mode.value,
         )
         if session.state != LimitUpState.WATCHING.value:
-            return False
+            return "session_not_watching"
         machine = LimitUpMachine(
             candidate.ticker,
             upper_limit_price=candidate.upper_limit_price,
@@ -150,7 +165,7 @@ class LimitUpService:
         self._last_prices[candidate.ticker] = candidate.current_price
         self.repository.db.commit()
         notify.watch_started(session)
-        return True
+        return None
 
     def on_trade(self, trade: FeedTrade, *, now_kst: dt.datetime) -> None:
         """Process one normalized trade without database I/O in the tape callback path."""
@@ -275,6 +290,13 @@ class LimitUpService:
         self._persist_guard()
         if not latched:
             return
+        high = self.guard.kosdaq_high or value
+        logger.warning(
+            "상한가 진입 차단 — kosdaq_drawdown 래치 (고점 %.2f → 현재 %.2f, %.2f%%)",
+            high,
+            value,
+            (value - high) / high * 100,
+        )
         for ticker, machine in list(self._machines.items()):
             commands = machine.on_market_halt(at=at)
             self._handle_commands(ticker, commands, now_kst=now)

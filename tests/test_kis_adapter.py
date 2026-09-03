@@ -336,8 +336,9 @@ def test_limit_up_candidate_scan_uses_rank_then_broker_quote(
 
     monkeypatch.setattr(broker, "_request", fake_request)
 
-    rows = broker.get_limit_up_candidates()
+    rows, ranked_count = broker.get_limit_up_candidates()
 
+    assert ranked_count == 2
     assert rows == [
         {
             "ticker": "005930",

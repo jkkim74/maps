@@ -500,3 +500,139 @@ def test_overnight_cap_is_not_latched_to_one_pass() -> None:
     cap_call = source[source.index("apply_overnight_cap")::]
     assert "if wall.date() not in self._overnight_capped" not in source[:source.index("apply_overnight_cap")][-300:]
     assert cap_call  # 캡은 매 회차 멱등하게 돈다
+
+
+def _scan_row(ticker: str, *, halted: bool = False) -> dict:
+    """Build one broker candidate row shaped like the KIS scan response."""
+    return {
+        "ticker": ticker,
+        "market": "KOSDAQ",
+        "upper_limit_price": 1_300,
+        "total_listed_shares": 10_000_000,
+        "current_price": 1_250,
+        "change_rate": 29.9,
+        "trading_halted": halted,
+    }
+
+
+def _scan_runtime(db, rows: list[dict], ranked_count: int, listed: set[str]):
+    """Build a scan-only runtime over the real service and its real gates."""
+    from maps.limit_up.domain import LimitUpConfig
+    from maps.limit_up.repository import LimitUpRepository
+    from maps.limit_up.runtime import KISIntradayRuntime
+    from maps.limit_up.service import LimitUpMode, LimitUpService
+
+    for ticker in listed:
+        db.add(
+            SecurityMetadata(
+                ticker=ticker,
+                name=f"테스트{ticker}",
+                market="KOSDAQ",
+                security_type="STOCK",
+                listing_date=dt.date(2020, 1, 1),
+            )
+        )
+    db.commit()
+
+    class _Adapter:
+        def get_limit_up_candidates(self):
+            return list(rows), ranked_count
+
+    runtime = object.__new__(KISIntradayRuntime)
+    runtime.db = db
+    runtime.adapter = _Adapter()
+    runtime.service = LimitUpService(
+        mode=LimitUpMode.RECOMMEND_ONLY,
+        config=LimitUpConfig(),
+        repository=LimitUpRepository(db),
+        worker=None,
+    )
+    runtime._subscription_queue = asyncio.Queue()
+    runtime._last_scan_summary = None
+    runtime.wall_now = lambda: dt.datetime(2026, 8, 28, 10, 0, tzinfo=KST)
+
+    async def _call_service(callable_, *args: object, **kwargs: object) -> object:
+        kwargs.pop("priority", None)
+        return callable_(*args, **kwargs)
+
+    runtime._call_service = _call_service
+    return runtime
+
+
+async def test_scan_reports_the_rank_size_and_every_reject_reason(db, caplog) -> None:
+    """A quiet scan must say whether it saw nothing or rejected everything.
+
+    Without the rank count and the per-gate tally, "no stock rose 25% today"
+    and "the scan pipeline is broken" produce identical silence.
+    """
+    rows = [_scan_row("111111"), _scan_row("222222"), _scan_row("333333", halted=True)]
+    runtime = _scan_runtime(db, rows, 42, listed={"111111", "333333"})
+
+    with caplog.at_level("INFO", logger="maps.limit_up.runtime"):
+        accepted = await runtime.scan_once()
+
+    assert accepted == 1
+    message = caplog.messages[-1]
+    assert "순위 42건" in message
+    assert "후보 3건" in message
+    assert "신규감시 1건" in message
+    assert "탈락 2건" in message
+    assert "ineligible_security=1" in message
+    assert "halted=1" in message
+
+
+async def test_scan_summary_is_logged_once_until_it_changes(db, caplog) -> None:
+    """A 5s scan loop must not repeat an unchanged summary 4,000 times a day."""
+    runtime = _scan_runtime(db, [_scan_row("111111")], 7, listed=set())
+
+    with caplog.at_level("INFO", logger="maps.limit_up.runtime"):
+        await runtime.scan_once()
+        first = len(caplog.messages)
+        await runtime.scan_once()
+
+    assert first == 1
+    assert len(caplog.messages) == 1
+
+
+async def test_scan_reports_an_empty_rank_response(db, caplog) -> None:
+    """Zero ranked rows is the signature of a broken scan, not a quiet market."""
+    runtime = _scan_runtime(db, [], 0, listed=set())
+
+    with caplog.at_level("INFO", logger="maps.limit_up.runtime"):
+        await runtime.scan_once()
+
+    assert "순위 0건" in caplog.messages[-1]
+    assert "후보 0건" in caplog.messages[-1]
+
+
+async def test_scan_outside_entry_hours_logs_nothing(db, caplog) -> None:
+    """The closed-hours early return must not blank out the day's last summary."""
+    runtime = _scan_runtime(db, [_scan_row("111111")], 7, listed={"111111"})
+    runtime.wall_now = lambda: dt.datetime(2026, 8, 28, 15, 0, tzinfo=KST)
+
+    with caplog.at_level("INFO", logger="maps.limit_up.runtime"):
+        assert await runtime.scan_once() == 0
+
+    assert caplog.messages == []
+    assert runtime._last_scan_summary is None
+
+
+def test_a_real_runtime_starts_with_no_scan_summary(db) -> None:
+    """The scan tally lives on the runtime, so its constructor must seed it.
+
+    Every other scan test builds the runtime with ``object.__new__``, which
+    skips ``__init__`` — this is the only place a missing initializer shows up
+    as a failure instead of a production AttributeError on the first scan.
+    """
+    from types import SimpleNamespace
+
+    from maps.limit_up.runtime import KISIntradayRuntime
+
+    runtime = KISIntradayRuntime(
+        settings=SimpleNamespace(maps_limit_up_healthchecks_ping_url=""),
+        db=db,
+        adapter=object(),
+        service=object(),
+    )
+
+    assert runtime._last_scan_summary is None

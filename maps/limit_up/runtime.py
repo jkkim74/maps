@@ -8,6 +8,7 @@ import itertools
 import json
 import logging
 import time
+from collections import Counter
 from collections.abc import Callable
 from typing import Any
 
@@ -226,6 +227,7 @@ class KISIntradayRuntime:
         self._quotes: dict[str, FeedQuote] = {}
         self._feed_connected = False
         self._last_scan_at = 0.0
+        self._last_scan_summary: tuple | None = None
         self._last_index_at = 0.0
         self._last_deadman_at = 0.0
         self._eod_reviewed: set[tuple[dt.date, str]] = set()
@@ -370,16 +372,18 @@ class KISIntradayRuntime:
         now = self.wall_now()
         if not dt.time(9, 10) <= now.time().replace(tzinfo=None) <= dt.time(14, 30):
             return 0
-        rows = await asyncio.to_thread(self.adapter.get_limit_up_candidates)
+        rows, ranked_count = await asyncio.to_thread(
+            self.adapter.get_limit_up_candidates
+        )
         accepted = 0
+        rejected: Counter[str] = Counter()
         for row in rows:
             ticker = str(row["ticker"])
             # 같은 ORM 세션을 펌프 스레드가 쓰고 있다. 이벤트 루프에서 직접 조회하면
             # 스캔과 주문 처리가 겹치는 순간 동시 사용이 된다.
             security = await self._call_service(self._load_security, ticker)
-            eligible = is_v1_eligible_security(security, as_of=now.date()) and not bool(
-                row.get("trading_halted", False)
-            )
+            security_ok = is_v1_eligible_security(security, as_of=now.date())
+            halted = bool(row.get("trading_halted", False))
             candidate = Candidate(
                 ticker=ticker,
                 market=str(row["market"]),
@@ -387,14 +391,45 @@ class KISIntradayRuntime:
                 total_listed_shares=int(row["total_listed_shares"]),
                 current_price=int(row["current_price"]),
                 change_rate=float(row["change_rate"]),
-                eligible=eligible,
+                eligible=security_ok and not halted,
             )
-            if await self._call_service(
+            reason = await self._call_service(
                 self.service.watch_candidate, candidate, now_kst=now
-            ):
+            )
+            if reason is None:
                 accepted += 1
                 await self._subscription_queue.put(ticker)
+                continue
+            # 서비스는 두 사유를 ``ineligible`` 하나로 본다. 어느 쪽인지는 여기서만
+            # 알 수 있고, 둘의 대응이 다르다 — 상장 자격은 영구, 정지는 그날뿐이다.
+            if reason == "ineligible":
+                reason = "ineligible_security" if not security_ok else "halted"
+            rejected[reason] += 1
+        self._log_scan_summary(ranked_count, len(rows), accepted, rejected)
         return accepted
+
+    def _log_scan_summary(
+        self, ranked_count: int, candidates: int, accepted: int, rejected: Counter[str]
+    ) -> None:
+        """Log one scan tally, but only when it differs from the last one.
+
+        The scan runs every 5s, so an unconditional line would bury the day in
+        ~4,000 identical records. Logging only on change keeps a quiet day to a
+        single line while still proving the scanner ran at all.
+        """
+        summary = (ranked_count, candidates, accepted, tuple(sorted(rejected.items())))
+        if summary == self._last_scan_summary:
+            return
+        self._last_scan_summary = summary
+        detail = ", ".join(f"{name}={count}" for name, count in sorted(rejected.items()))
+        logger.info(
+            "상한가 스캔 — 순위 %d건 → 후보 %d건, 신규감시 %d건, 탈락 %d건%s",
+            ranked_count,
+            candidates,
+            accepted,
+            sum(rejected.values()),
+            f" ({detail})" if detail else "",
+        )
 
     def dispatch_message(self, raw: str, *, received_at: float | None = None) -> int:
         """Normalize one WebSocket frame and dispatch it to the shared FSM.

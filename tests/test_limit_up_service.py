@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+from dataclasses import replace
 
 import pytest
 
@@ -150,7 +151,7 @@ def test_automatic_trigger_submits_exactly_two_grid_orders(db) -> None:
     broker = ServiceBroker()
     service = _service(db, LimitUpMode.AUTOMATIC, broker)
     now = dt.datetime(2026, 8, 28, 10, 0, tzinfo=KST)
-    assert service.watch_candidate(_candidate(), now_kst=now)
+    assert service.watch_candidate(_candidate(), now_kst=now) is None
 
     service.on_trade(_trade(1.0, 99_600), now_kst=now)
     service.on_trade(_trade(2.0, 99_700), now_kst=now)
@@ -303,7 +304,7 @@ def test_recommend_only_recover_ignores_foreign_holdings_on_shared_account(
     assert service.status()["unknown_positions"] == []
     assert kis_like_broker.submitted == []
     now = dt.datetime(2026, 8, 28, 10, 0, tzinfo=KST)
-    assert service.watch_candidate(_candidate(), now_kst=now) is True
+    assert service.watch_candidate(_candidate(), now_kst=now) is None
 
 
 def test_recover_locks_orphan_holding_with_limit_up_buy_trace(db, kis_like_broker) -> None:
@@ -1108,7 +1109,7 @@ def test_watch_and_trigger_are_announced_to_the_operator(db, monkeypatch) -> Non
     service = _service(db, LimitUpMode.RECOMMEND_ONLY)
     now = dt.datetime(2026, 8, 28, 10, 0, tzinfo=KST)
 
-    assert service.watch_candidate(_candidate(), now_kst=now)
+    assert service.watch_candidate(_candidate(), now_kst=now) is None
     service.on_trade(_trade(1.0, 99_600), now_kst=now)
     service.on_trade(_trade(2.0, 99_700), now_kst=now)
     service.on_trade(_trade(3.0, 99_800), now_kst=now)
@@ -1118,3 +1119,91 @@ def test_watch_and_trigger_are_announced_to_the_operator(db, monkeypatch) -> Non
     assert "005930" in trigger
     # 그리드가 붙지 않으면 "무엇을 얼마에 사라" 가 빠져 추천이 실행 불가능해진다.
     assert "주 @" in trigger
+
+
+def test_watch_candidate_returns_no_reason_when_watching_starts(db) -> None:
+    """An accepted candidate must report the absence of a reject reason."""
+    service = _service(db, LimitUpMode.RECOMMEND_ONLY)
+    now = dt.datetime(2026, 8, 28, 10, 0, tzinfo=KST)
+
+    assert service.watch_candidate(_candidate(), now_kst=now) is None
+
+
+def test_watch_candidate_names_the_gate_that_rejected_it(db) -> None:
+    """Seven silent Falses must become seven distinct, loggable reasons.
+
+    Without this a quiet scan is indistinguishable from a broken one — the
+    engine can be rejecting every candidate for a fixable reason and look
+    exactly like a day with no upper-limit stocks.
+    """
+    now = dt.datetime(2026, 8, 28, 10, 0, tzinfo=KST)
+
+    off = _service(db, LimitUpMode.OFF)
+    assert off.watch_candidate(_candidate(), now_kst=now) == "mode_off"
+
+    locked = _service(db, LimitUpMode.RECOMMEND_ONLY)
+    locked.manual_lock = True
+    assert locked.watch_candidate(_candidate(), now_kst=now) == "manual_lock"
+
+    service = _service(db, LimitUpMode.RECOMMEND_ONLY)
+    assert (
+        service.watch_candidate(replace(_candidate(), eligible=False), now_kst=now)
+        == "ineligible"
+    )
+    assert (
+        service.watch_candidate(replace(_candidate(), market="KONEX"), now_kst=now)
+        == "market"
+    )
+    assert (
+        service.watch_candidate(replace(_candidate(), change_rate=24.9), now_kst=now)
+        == "below_trigger"
+    )
+    assert (
+        service.watch_candidate(
+            _candidate(), now_kst=dt.datetime(2026, 8, 28, 15, 0, tzinfo=KST)
+        )
+        == "outside_hours"
+    )
+
+
+def test_watch_candidate_reports_a_ticker_it_already_watches(db) -> None:
+    """Re-seeing a watched ticker every 5s is normal, not a failure to explain."""
+    service = _service(db, LimitUpMode.RECOMMEND_ONLY)
+    now = dt.datetime(2026, 8, 28, 10, 0, tzinfo=KST)
+
+    assert service.watch_candidate(_candidate(), now_kst=now) is None
+    assert service.watch_candidate(_candidate(), now_kst=now) == "already_watching"
+
+
+def test_watch_candidate_reports_a_session_that_already_left_watching(db) -> None:
+    """A ticker already traded and closed today must say so, not fail blankly."""
+    first = _service(db, LimitUpMode.RECOMMEND_ONLY)
+    now = dt.datetime(2026, 8, 28, 10, 0, tzinfo=KST)
+    assert first.watch_candidate(_candidate(), now_kst=now) is None
+    first._sessions["005930"].state = LimitUpState.CLOSED.value
+    db.commit()
+
+    second = _service(db, LimitUpMode.RECOMMEND_ONLY)
+
+    assert second.watch_candidate(_candidate(), now_kst=now) == "session_not_watching"
+
+
+def test_kosdaq_latch_is_logged_once_with_the_numbers_that_caused_it(db, caplog) -> None:
+    """The latch shuts off every entry for the day and left no log trace at all.
+
+    Only the DB row recorded it, so a quiet log and a halted engine looked the
+    same — 9/3 운영에서 실제로 로그만 보고 "래치 없음" 으로 오판했다.
+    """
+    service = _service(db, LimitUpMode.AUTOMATIC, ServiceBroker())
+    at_kst = dt.datetime(2026, 8, 28, 10, 0, tzinfo=KST)
+
+    with caplog.at_level("WARNING", logger="maps.limit_up.service"):
+        service.on_kosdaq(value=1_000.0, at=1.0, now_kst=at_kst)
+        service.on_kosdaq(value=980.0, at=2.0, now_kst=at_kst)
+        service.on_kosdaq(value=970.0, at=3.0, now_kst=at_kst)
+
+    latched = [m for m in caplog.messages if "kosdaq_drawdown" in m]
+    assert len(latched) == 1
+    assert "1000.00" in latched[0]
+    assert "980.00" in latched[0]
+    assert "-2.00%" in latched[0]

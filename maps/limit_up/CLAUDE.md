@@ -50,6 +50,19 @@ limit_up/
 > `ref_date` 는 KST 거래일이다. `created_at`(UTC naive)으로 계산하면 09:00 KST 이전에
 > 하루씩 어긋난다.
 
+`kosdaq_drawdown` 이 걸리는 순간 `on_kosdaq()` 이 **WARNING 한 줄**을 남긴다. 래치는
+그날 신규 진입을 전부 끊는 가장 결과가 큰 상태 전이인데 기록이 DB 행 하나뿐이라,
+로그만 보면 조용한 날과 구별되지 않았다 (2026-09-03 실제 오판). 전이 시점에만 찍으므로
+초당 관측에도 하루 한 줄이다.
+
+```
+WARNING 상한가 진입 차단 — kosdaq_drawdown 래치 (고점 815.79 → 현재 803.41, -1.52%)
+```
+
+> 나머지 세 래치(`max_attempts`·`pattern_failures`·`daily_loss`)는 아직 발현한 적이
+> 없어 전이 신호를 만들지 않았다. 필요해지는 시점은 `automatic` 이 실제로 주문을 내기
+> 시작한 뒤다.
+
 ### 2. 오버나이트 사이징 — 수학적 보증
 
 ```
@@ -329,6 +342,35 @@ worker 가 **같은 action 이름**으로 `event_exists()` 를 검사하면 항�
 > ORM 객체를 스레드 너머로 넘기지 않는 이유이기도 하다.
 
 발송 실패는 삼킨다. 알림은 관측 수단이지 안전 장치가 아니다.
+
+## 스캔은 조용할 때도 이유를 남긴다
+
+스캔은 5초마다 돈다. `watch_candidate()` 가 `bool` 을 돌려주던 동안 게이트 7개가 전부
+같은 `False` 였고, 그 값마저 `_control_loop` 이 버렸다 — **"오늘 +25% 종목이 없었다" 와
+"전부 게이트에서 탈락했다" 와 "스캔이 깨져 있다" 가 로그상 완전히 동일**했다.
+`automatic` 에서 이건 엔진이 죽은 채 조용한 것을 못 보는 상태다.
+
+- `watch_candidate()` 는 `None`(감시 시작) 또는 사유 문자열을 돌려준다 —
+  `automatic_mode_blocked_reason()` 과 같은 극성이다. `bool` → `Enum` 이 아니라 이 극성을
+  고른 이유는, 못 고친 호출부가 조용히 통과하지 않고 **반드시 실패**하기 때문이다
+  (Enum 은 언제나 truthy 라 `if reason:` 이 계속 통과한다).
+  사유: `mode_off` · `manual_lock` · `ineligible` · `market` · `below_trigger` ·
+  `outside_hours` · `already_watching` · `session_not_watching`
+- `ineligible` 은 서비스가 구별할 수 없다. `scan_once()` 가 `ineligible_security`(영구)와
+  `halted`(그날뿐)로 쪼갠다 — 둘은 대응이 다르다.
+- `get_limit_up_candidates()` 는 후보 목록과 **거래량순위 원본 행 수**를 함께 돌려준다.
+  이게 없으면 "순위 42건 중 +25% 0건"(정상)과 "순위 0건"(응답이 깨짐)이 구별되지 않는다.
+- `_log_scan_summary()` 는 **직전 회차와 다를 때만** INFO 한 줄을 남긴다. 무조건 찍으면
+  하루 약 4,000줄이 된다. 조용한 날은 하루 한 줄이지만, 그 한 줄이 스캐너가 돌긴 했다는
+  증거다. 진입시간(09:10~14:30) 밖의 조기 반환은 요약 상태를 건드리지 않는다 — 건드리면
+  장 마감 직후 스캔이 그날의 마지막 요약을 지운다.
+
+```
+INFO 상한가 스캔 — 순위 42건 → 후보 8건, 신규감시 1건, 탈락 7건 (already_watching=2, halted=1, ineligible_security=3, session_not_watching=1)
+```
+
+> 이 로그는 `MAPS_LOG_LEVEL` 이 `INFO`(기본) 일 때만 보인다. 운영 `.env` 가 이걸
+> `WARNING` 으로 올리면 관측이 통째로 사라진다.
 
 ## 모드
 

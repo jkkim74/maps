@@ -360,8 +360,13 @@ class KISAdapter(BrokerAdapter):
             raise BrokerAdapterError("KIS KOSDAQ index response had no current value")
         return value
 
-    def get_limit_up_candidates(self) -> list[dict[str, Any]]:
-        """Return +25% KRX volume-rank rows enriched with broker quote facts."""
+    def get_limit_up_candidates(self) -> tuple[list[dict[str, Any]], int]:
+        """Return +25% candidates and the raw volume-rank row count.
+
+        The count is what separates "no stock rose 25% today" from "the rank
+        response came back empty or unparseable" — without it a scanner that
+        silently returns nothing looks exactly like a quiet market.
+        """
         rank_data = self._request(
             "GET",
             _VOLUME_RANK_PATH,
@@ -386,7 +391,8 @@ class KISAdapter(BrokerAdapter):
             },
         )
         candidates: list[dict[str, Any]] = []
-        for ranked in self._as_list(rank_data.get("output")):
+        ranked_rows = self._as_list(rank_data.get("output"))
+        for ranked in ranked_rows:
             ticker = str(
                 ranked.get("mksc_shrn_iscd")
                 or ranked.get("stck_shrn_iscd")
@@ -432,7 +438,7 @@ class KISAdapter(BrokerAdapter):
                     "trading_halted": _quote_is_halted(quote),
                 }
             )
-        return candidates
+        return candidates, len(ranked_rows)
 
     def get_position(self, ticker: str) -> Position | None:
         positions, _balance = self._fetch_positions_and_balance()
