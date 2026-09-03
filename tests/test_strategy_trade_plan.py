@@ -135,3 +135,63 @@ def test_safe_budget_rejects_invalid_tick_and_price_order() -> None:
         "INVALID_TICK",
         "INVALID_PRICE_ORDER",
     }
+
+
+def test_stop_wider_than_the_cap_is_blocked() -> None:
+    """분석 픽 손절폭 상한 — 전략 경로에만 있던 상한을 이 경로에도 건다.
+
+    LLM 이 낸 `stop_price` 를 그대로 쓰던 유일한 진입 경로였다(2026-09-03).
+    """
+    from maps.ops.strategy_trade_plan import validate_trade_plan
+
+    plan = validate_trade_plan(
+        # 1회차 70,000 대비 손절 55,000 = −21.4% > 상한 20%
+        _split_request(stop_price=55_000),
+        account=AccountBalance(
+            cash=12_500_000,
+            positions_value=50_000_000,
+            total_assets=100_000_000,
+        ),
+        settings=_settings(),
+        existing_position_value=0,
+    )
+
+    assert plan.blocked is True
+    assert "STOP_TOO_WIDE" in {item.code for item in plan.blockers}
+
+
+def test_stop_width_is_measured_from_the_first_entry() -> None:
+    """분할 진입은 1회차만 체결되고 끝날 수 있다 — 가장 높은 진입가가 기준이다."""
+    from maps.ops.strategy_trade_plan import validate_trade_plan
+
+    # 평균 단가(≈66,700) 기준이면 −16.9% 로 통과하지만, 1회차 기준은 −20.7%
+    plan = validate_trade_plan(
+        _split_request(stop_price=55_500),
+        account=AccountBalance(
+            cash=12_500_000,
+            positions_value=50_000_000,
+            total_assets=100_000_000,
+        ),
+        settings=_settings(),
+        existing_position_value=0,
+    )
+
+    assert "STOP_TOO_WIDE" in {item.code for item in plan.blockers}
+
+
+def test_stop_inside_the_cap_passes() -> None:
+    """상한 이내는 그대로 통과한다 — 상한은 새 하한이 아니다."""
+    from maps.ops.strategy_trade_plan import validate_trade_plan
+
+    plan = validate_trade_plan(
+        _split_request(stop_price=56_500),   # 1회차 대비 −19.3%
+        account=AccountBalance(
+            cash=12_500_000,
+            positions_value=50_000_000,
+            total_assets=100_000_000,
+        ),
+        settings=_settings(),
+        existing_position_value=0,
+    )
+
+    assert "STOP_TOO_WIDE" not in {item.code for item in plan.blockers}

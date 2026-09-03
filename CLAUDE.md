@@ -171,6 +171,10 @@ SQLite by default (`maps.db`). Switch to PostgreSQL via `MAPS_DB_URL`. All table
    단일전략 엔진과 `portfolio_replay._resolve_stop` 이 그 하나를 공유한다.
    `backtest/engine._ATR_STOP_MULTIPLIER` 는 **미등록 전략 폴백 전용**이다 — 이걸 전
    전략에 쓰던 동안 `ath_breakout_v1`(실거래 2.5)을 2.0 으로 검증했다.
+   분석 워치리스트 픽에는 전략 ID 가 없어 이 함수를 못 쓴다. 대신
+   `live_rules.analysis_pick_max_stop_price()`(고정 20%)가 **무장 시점에 거부**한다 —
+   시스템이 계산한 값이 아니라 사람이 승인한 계획이라 조용히 조이지 않는다.
+   이미 `BOUGHT` 인 픽에는 적용되지 않는다(장중 강제청산이 된다).
 
 8. **pykrx 를 쓰기 전에 `ensure_krx_login_guard()` 를 호출한다.** pykrx 는 요청마다
    재로그인을 시도해서, 자격증명이 만료되면 재시도 누적이 KRX 계정을 잠근다

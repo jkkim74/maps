@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 from maps.market.trading_rules import round_down_krx_price
 
 
@@ -54,6 +56,14 @@ _ATR_MULTIPLIERS: dict[str, float] = {
 # (넓은 손절 → 작은 포지션), 손절폭이 넓을수록 복구에 필요한 상승률이
 # 비선형으로 커진다 — −20% 는 +25%, −26% 는 +36% 를 벌어야 본전이다.
 _MAX_STOP_WIDTH_MULTIPLE = 2.0
+
+# 분석 워치리스트 픽(`analysis_pick`)의 손절폭 상한.
+# 이 경로에는 전략 ID 가 없다 — 손절가를 LLM 이 절대가로 내므로 고정 손절률이
+# 없고, 따라서 위 배수 상한을 걸 대상도 없다. 2026-09-03 상한 도입 시 전략
+# 경로만 막혀서 이쪽은 −40% 손절도 그대로 통과하는 상태였다.
+# 20% 인 이유: 등록 전략 중 실제로 발동하는 상한이 10%×2 = 20% 이고, 그날
+# 보유 2건(041830·073240)이 모두 이 값으로 잘렸다.
+ANALYSIS_PICK_MAX_STOP_WIDTH_PCT = 0.20
 
 
 def stop_loss_pct(strategy_id: str | None) -> float | None:
@@ -221,3 +231,22 @@ def stop_price_breakdown(
     context["stop_price"] = float(aligned)
     context["rule"] = rule
     return context
+
+
+def analysis_pick_max_stop_price(entry_price: float | None) -> float | None:
+    """분석 워치리스트 픽의 손절가 **하한선** — 이보다 낮으면 무장을 막는다.
+
+    전략 경로의 :func:`max_stop_price` 와 같은 역할이지만 기준이 다르다. 픽에는
+    전략 ID 가 없어 고정 손절률을 못 읽으므로
+    :data:`ANALYSIS_PICK_MAX_STOP_WIDTH_PCT` 를 진입가에 직접 적용한다.
+
+    전략 경로는 시스템이 손절가를 **계산**하므로 상한으로 자르지만, 이 경로는
+    사람이 승인한 계획이라 조용히 조이지 않고 **거부**한다 — 손절가를 바꾸면
+    목표가·손익비·수량이 전부 어긋난 채로 무장된다.
+
+    :param entry_price: 계획된 진입가(분할이면 가장 높은 회차).
+    :return: 허용되는 가장 낮은 손절가. 진입가를 못 쓰면 ``None``.
+    """
+    if entry_price is None or not math.isfinite(entry_price) or entry_price <= 0:
+        return None
+    return entry_price * (1.0 - ANALYSIS_PICK_MAX_STOP_WIDTH_PCT)

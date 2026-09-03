@@ -11,6 +11,10 @@ from pydantic import BaseModel, ConfigDict, field_validator
 from maps.common.settings import MapsSettings
 from maps.execution.broker_adapter import AccountBalance
 from maps.market.trading_rules import round_to_krx_tick
+from maps.strategy.live_rules import (
+    ANALYSIS_PICK_MAX_STOP_WIDTH_PCT,
+    analysis_pick_max_stop_price,
+)
 
 
 class TradePlanLegInput(BaseModel):
@@ -192,6 +196,17 @@ def calculate_trade_limits(
     )
     if not ordered:
         block("INVALID_PRICE_ORDER", "목표가 > 진입가 순서 > 손절가여야 합니다.")
+
+    # 손절폭 상한. 분할이면 **1회차(가장 높은 진입가)** 가 기준이다 — 2·3회차가
+    # 체결되지 않고 끝날 수 있어서, 평균 단가로 재면 실제로 감수하는 폭을 과소평가한다.
+    stop_cap = analysis_pick_max_stop_price(entry_prices[0] if entry_prices else None)
+    if stop_cap is not None and request.stop_price < stop_cap:
+        width = (entry_prices[0] - request.stop_price) / entry_prices[0]
+        block(
+            "STOP_TOO_WIDE",
+            f"손절폭 {width:.1%}가 상한 {ANALYSIS_PICK_MAX_STOP_WIDTH_PCT:.0%}를 넘습니다. "
+            f"손절가는 {stop_cap:,.0f}원 이상이어야 합니다.",
+        )
 
     total_value = max(float(account.total_value), 0.0) if math.isfinite(account.total_value) else 0.0
     broker_cash = max(float(account.cash), 0.0) if math.isfinite(account.cash) else 0.0

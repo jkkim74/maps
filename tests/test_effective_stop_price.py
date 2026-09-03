@@ -394,3 +394,23 @@ def test_portfolio_replay_stop_respects_the_cap():
     stop = replay._resolve_stop("ath_breakout_v1", 16_720.0, prepared, "d")
 
     assert stop == pytest.approx(13_376)   # 상한이 없으면 12,515.5
+
+
+def test_analysis_pick_stop_cap_is_a_flat_percentage():
+    """분석 픽에는 전략 ID 가 없다 — 진입가 기준 고정 비율이 상한이다."""
+    from maps.strategy.live_rules import (
+        ANALYSIS_PICK_MAX_STOP_WIDTH_PCT,
+        analysis_pick_max_stop_price,
+    )
+
+    assert ANALYSIS_PICK_MAX_STOP_WIDTH_PCT == 0.20
+    assert analysis_pick_max_stop_price(10_000.0) == pytest.approx(8_000)
+
+
+def test_analysis_pick_stop_cap_is_none_for_unusable_entry():
+    """진입가가 없거나 0 이하면 상한도 없다 — 다른 검증이 먼저 막는다."""
+    from maps.strategy.live_rules import analysis_pick_max_stop_price
+
+    assert analysis_pick_max_stop_price(None) is None
+    assert analysis_pick_max_stop_price(0.0) is None
+    assert analysis_pick_max_stop_price(float("inf")) is None

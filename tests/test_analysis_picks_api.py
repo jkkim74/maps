@@ -905,3 +905,16 @@ def test_stop_entries_applies_fill_arriving_during_cancel(client, monkeypatch) -
     assert item["state"] == "BOUGHT"
     assert item["legs"][0]["filled_qty"] == 6
     assert item["legs"][0]["remaining_qty"] == item["legs"][0]["planned_qty"] - 6
+
+
+def test_arm_rejects_stop_wider_than_the_cap(client) -> None:
+    """손절폭 상한 — 무장이 실주문으로 이어지는 두 번째 경로도 막는다."""
+    pid = _new_pick(client, buy_price=70000, stop_price=55000, target_price=80000)
+    r = client.post(f"/api/v1/analysis-picks/{pid}/arm")
+    assert r.status_code == 400
+    assert "손절" in r.json()["detail"]
+
+
+def test_arm_allows_stop_inside_the_cap(client) -> None:
+    pid = _new_pick(client, buy_price=70000, stop_price=57000, target_price=80000)
+    assert client.post(f"/api/v1/analysis-picks/{pid}/arm").status_code == 200

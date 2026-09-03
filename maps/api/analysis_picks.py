@@ -47,6 +47,10 @@ from maps.ops.strategy_trade_plan import (
     validate_trade_plan,
 )
 from maps.risk.manager import RiskManager
+from maps.strategy.live_rules import (
+    ANALYSIS_PICK_MAX_STOP_WIDTH_PCT,
+    analysis_pick_max_stop_price,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -553,6 +557,17 @@ def arm_pick(pick_id: int, db: Session = DbDep) -> AnalysisPickItem:
         raise HTTPException(status_code=400, detail="매수가·목표가·손절가가 모두 있어야 무장할 수 있습니다.")
     if not (s < b < t):
         raise HTTPException(status_code=400, detail="가격 정합성 오류: 손절가 < 매수가 < 목표가 여야 합니다.")
+    # 손절폭 상한 — `/arm-plan` 과 같은 규칙이다. 두 경로 모두 무장이 곧 실주문이라
+    # 한쪽만 막으면 다른 쪽으로 그대로 나간다.
+    stop_cap = analysis_pick_max_stop_price(b)
+    if stop_cap is not None and s < stop_cap:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"손절폭 {(b - s) / b:.1%}가 상한 {ANALYSIS_PICK_MAX_STOP_WIDTH_PCT:.0%}를 "
+                f"넘습니다. 손절가는 {stop_cap:,.0f}원 이상이어야 합니다."
+            ),
+        )
     pick.strategy_trade_enabled = True
     pick.state = "ARMED"
     pick.entry_order_id = None
