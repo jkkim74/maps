@@ -263,7 +263,10 @@ class DataCollector:
                 existing.name = m.name
                 existing.market = m.market
                 existing.security_type = m.security_type
-                existing.listing_date = m.listing_date
+                # 상장일은 소스가 알 때만 갱신한다. KRX 조회가 실패한 날 None 으로
+                # 덮어쓰면 전날 값이 사라지고 상한가 자격 판정이 전부 fail-closed 된다.
+                if m.listing_date is not None:
+                    existing.listing_date = m.listing_date
                 existing.delisting_date = m.delisting_date
                 existing.has_adjusted_price = has_adjusted_price
                 if sector is not None:
@@ -283,6 +286,32 @@ class DataCollector:
                     )
                 )
         self._db.commit()
+        self._report_listing_date_gaps()
+
+    def _report_listing_date_gaps(self) -> None:
+        """상장일 결측 비율을 로그로 남긴다.
+
+        2026-09-07 까지 운영 ``listing_date`` 가 전부 NULL 이었지만 아무 신호가 없었다.
+        상한가 V1 자격 판정은 NULL 을 fail-closed 로 막으므로 결측이 절반을 넘으면
+        엔진이 사실상 꺼진 것과 같다 — 그때만 WARNING, 평소엔 INFO 로 건수만 남긴다
+        (상폐 추정 종목 몇 건은 늘 NULL 로 남아 "1건 이상" 기준은 매일 울린다).
+        """
+        base = self._db.query(SecurityMetadata).filter(
+            SecurityMetadata.security_type == "STOCK",
+            SecurityMetadata.delisting_date.is_(None),
+        )
+        total = base.count()
+        if total == 0:
+            return
+        missing = base.filter(SecurityMetadata.listing_date.is_(None)).count()
+        if missing * 2 > total:
+            logger.warning(
+                "종목 메타 상장일 결측 %d/%d — 상한가 자격 판정이 전부 fail-closed 됩니다",
+                missing,
+                total,
+            )
+        else:
+            logger.info("종목 메타 상장일 결측 %d/%d", missing, total)
 
     def _upsert_ohlcv(self, rows) -> int:
         """일봉 OHLCV를 historical_ohlcv 테이블에 upsert한다."""

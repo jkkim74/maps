@@ -577,7 +577,8 @@ async def test_scan_reports_the_rank_size_and_every_reject_reason(db, caplog) ->
     assert "후보 3건" in message
     assert "신규감시 1건" in message
     assert "탈락 2건" in message
-    assert "ineligible_security=1" in message
+    # 222222 는 security_metadata 에 없다 — 사유가 세분화되어야 데이터 공백과 구별된다.
+    assert "ineligible_security:unknown_security=1" in message
     assert "halted=1" in message
 
 
@@ -636,3 +637,109 @@ def test_a_real_runtime_starts_with_no_scan_summary(db) -> None:
     )
 
     assert runtime._last_scan_summary is None
+
+
+# --- 자격 사유 세분화 (2026-09-07) ------------------------------------------------
+#
+# 운영 security_metadata.listing_date 가 전부 NULL 이라 3주간 후보가 전원 탈락했는데,
+# 로그는 ineligible_security 하나였다. "상장일 데이터가 없다" 와 "정말 신규상장/우선주다"
+# 를 같은 키로 세면 데이터 공백이 정상 탈락으로 위장한다.
+
+
+def test_ineligibility_reason_names_each_gate() -> None:
+    from maps.limit_up.runtime import v1_ineligibility_reason
+
+    as_of = dt.date(2026, 9, 7)
+
+    def _sec(**overrides):
+        base = dict(
+            ticker="005930",
+            name="삼성전자",
+            market="KOSPI",
+            security_type="STOCK",
+            listing_date=dt.date(1975, 6, 11),
+        )
+        base.update(overrides)
+        return SecurityMetadata(**base)
+
+    assert v1_ineligibility_reason(None, as_of=as_of) == "unknown_security"
+    assert v1_ineligibility_reason(_sec(market="KONEX"), as_of=as_of) == "not_common_stock"
+    assert v1_ineligibility_reason(_sec(security_type="SPAC"), as_of=as_of) == "not_common_stock"
+    assert v1_ineligibility_reason(_sec(listing_date=None), as_of=as_of) == "listing_unknown"
+    assert v1_ineligibility_reason(_sec(listing_date=as_of - dt.timedelta(days=20)), as_of=as_of) == "too_new"
+    assert v1_ineligibility_reason(_sec(name="삼성전자우"), as_of=as_of) == "preferred"
+    assert v1_ineligibility_reason(_sec(), as_of=as_of) is None
+    # 기존 bool 진입점은 사유 함수의 얇은 포장이어야 한다.
+    assert is_v1_eligible_security(_sec(listing_date=None), as_of=as_of) is False
+
+
+async def test_scan_reports_a_missing_listing_date_as_its_own_reason(db, caplog) -> None:
+    """상장일 NULL 은 정상 탈락이 아니라 데이터 공백이다 — 로그에 그렇게 보여야 한다."""
+    runtime = _scan_runtime(db, [_scan_row("444444")], 30, listed=set())
+    db.add(
+        SecurityMetadata(
+            ticker="444444",
+            name="상장일모름",
+            market="KOSDAQ",
+            security_type="STOCK",
+            listing_date=None,
+        )
+    )
+    db.commit()
+
+    with caplog.at_level("INFO", logger="maps.limit_up.runtime"):
+        accepted = await runtime.scan_once()
+
+    assert accepted == 0
+    assert "ineligible_security:listing_unknown=1" in caplog.messages[-1]
+
+
+async def test_control_loop_absorbs_a_broker_error_from_the_scan(caplog) -> None:
+    """KIS 한도초과(EGW00201) 로 스캔이 깨져도 그 회차의 EOD·폴백은 계속 돈다.
+
+    2026-09-04 09:21 실제 발생 — 지수 폴링은 이미 WARNING 으로 흡수하는데 스캔만
+    바깥 except 로 흘러 ERROR 와 함께 이터레이션 전체를 버렸다.
+    """
+    from maps.common.exceptions import BrokerAdapterError
+
+    wall = dt.datetime(2026, 8, 28, 10, 0, tzinfo=KST)
+    runtime, _adapter, _service = _control_loop_runtime(wall)
+    runtime._last_scan_at = -10.0
+
+    async def _broken_scan() -> int:
+        raise BrokerAdapterError("KIS transient HTTP 500: EGW00201")
+
+    runtime.scan_once = _broken_scan
+
+    with caplog.at_level("WARNING", logger="maps.limit_up.runtime"):
+        await runtime._control_loop()
+
+    assert runtime.daily_actions_iteration == 1
+    assert runtime.deadman.unhealthy == 0
+    warnings = [r for r in caplog.records if r.levelname == "WARNING" and "스캔 실패" in r.getMessage()]
+    assert len(warnings) == 1
+    assert not [r for r in caplog.records if r.levelname == "ERROR"]
+
+
+def test_feed_disconnect_logging_splits_expected_closes_from_faults(caplog) -> None:
+    """정각마다 오는 ConnectionClosed 는 WARNING 한 줄, 설정·네트워크 결함은 ERROR+traceback.
+
+    9/1~9/7 매 거래일 09:00~16:00 정각에 KIS 가 소켓을 닫았고(시간당 1회), 재연결은
+    2~6초 만에 됐는데 로그는 매일 ERROR 8건 + Traceback 이었다.
+    """
+    from websockets.exceptions import ConnectionClosedError
+
+    from maps.limit_up.runtime import _log_feed_disconnect
+
+    with caplog.at_level("WARNING", logger="maps.limit_up.runtime"):
+        _log_feed_disconnect(ConnectionClosedError(None, None), 1.0)
+        _log_feed_disconnect(ConnectionError("upper-limit feed silent past timeout"), 2.0)
+        _log_feed_disconnect(OSError("dns failure"), 4.0)
+        _log_feed_disconnect(TimeoutError("timed out during opening handshake"), 8.0)
+
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    errors = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert len(warnings) == 2
+    assert all(r.exc_info is None and "끊김" in r.getMessage() for r in warnings)
+    assert len(errors) == 2
+    assert all(r.exc_info is not None for r in errors)

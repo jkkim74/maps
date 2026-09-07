@@ -356,8 +356,14 @@ worker 가 **같은 action 이름**으로 `event_exists()` 를 검사하면 항�
   (Enum 은 언제나 truthy 라 `if reason:` 이 계속 통과한다).
   사유: `mode_off` · `manual_lock` · `ineligible` · `market` · `below_trigger` ·
   `outside_hours` · `already_watching` · `session_not_watching`
-- `ineligible` 은 서비스가 구별할 수 없다. `scan_once()` 가 `ineligible_security`(영구)와
-  `halted`(그날뿐)로 쪼갠다 — 둘은 대응이 다르다.
+- `ineligible` 은 서비스가 구별할 수 없다. `scan_once()` 가 `halted`(그날뿐)와
+  `ineligible_security:<사유>` 로 쪼갠다. 사유는 `v1_ineligibility_reason()` 이 돌려주며
+  대응이 다 다르다 — `unknown_security`(메타 행 없음)·`not_common_stock`·`preferred` 는
+  영구, `too_new` 는 상장 100일이 지나면 풀리고, **`listing_unknown` 은 종목의 성질이 아니라
+  데이터 공백**(`security_metadata.listing_date` NULL)이라 수집기를 고쳐야 한다.
+  2026-09-07 까지 운영 상장일이 전부 NULL 이라 3주간 후보가 전원 탈락했는데 키가
+  `ineligible_security` 하나여서 정상 탈락처럼 보였다. 자격 판정은 상장일 NULL 을
+  fail-closed 로 막는다 — 완화하지 말고 데이터를 채운다(`scripts/backfill_listing_dates.py`).
 - `get_limit_up_candidates()` 는 후보 목록과 **거래량순위 원본 행 수**를 함께 돌려준다.
   이게 없으면 "순위 42건 중 +25% 0건"(정상)과 "순위 0건"(응답이 깨짐)이 구별되지 않는다.
 - `_log_scan_summary()` 는 **직전 회차와 다를 때만** INFO 한 줄을 남긴다. 무조건 찍으면
@@ -366,11 +372,20 @@ worker 가 **같은 action 이름**으로 `event_exists()` 를 검사하면 항�
   장 마감 직후 스캔이 그날의 마지막 요약을 지운다.
 
 ```
-INFO 상한가 스캔 — 순위 42건 → 후보 8건, 신규감시 1건, 탈락 7건 (already_watching=2, halted=1, ineligible_security=3, session_not_watching=1)
+INFO 상한가 스캔 — 순위 42건 → 후보 8건, 신규감시 1건, 탈락 7건 (already_watching=2, halted=1, ineligible_security:listing_unknown=2, ineligible_security:preferred=1, session_not_watching=1)
 ```
 
 > 이 로그는 `MAPS_LOG_LEVEL` 이 `INFO`(기본) 일 때만 보인다. 운영 `.env` 가 이걸
 > `WARNING` 으로 올리면 관측이 통째로 사라진다.
+
+- 스캔이 `BrokerAdapterError`(KIS 한도초과 `EGW00201` 등)로 깨지면 `_control_loop` 이
+  WARNING 한 줄로 그 회차만 건너뛴다 — 지수 폴링과 같은 처리다. 바깥 except 로 흘리면
+  EOD 단계·폴백 스윕이 통째로 밀리고 엔진이 죽은 것으로 보고된다(2026-09-04 09:21 실제).
+- KIS 는 상한가 WebSocket 을 **매시 정각**에 닫는다(9/1~9/7 매 거래일 09:00~16:00,
+  `ConnectionClosedError: no close frame received or sent`, 2~6초 내 재연결).
+  `_log_feed_disconnect()` 가 `ConnectionClosed`·`ConnectionError`(무음 타임아웃) 는 WARNING
+  한 줄, 그 외(DNS·핸드셰이크 타임아웃·승인키 거부) 는 ERROR+traceback 으로 남긴다.
+  래치 설정·백오프는 원인과 무관하게 동일하다.
 
 ## 모드
 

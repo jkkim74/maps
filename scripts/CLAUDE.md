@@ -9,6 +9,7 @@
 | `backfill_score_feeds.py` | 수급·피드 백필. 점수 커버리지가 비었을 때 (`--calendar-days N`) |
 | `backfill_market_score.py` | **기존** `market_regime_log` 행의 composite 점수만 재계산 (`--start/--end`, 기본 dry-run, `--apply` 로만 쓰기). 결정 기록(`applied_regime`·`entry_limit_ratio` 등)은 건드리지 않고 커버리지를 낮추지도 않는다 |
 | `backfill_fundamentals_naver.py` | Naver 소스로 펀더멘털 백필 |
+| `backfill_listing_dates.py` | `security_metadata.listing_date` 를 KRX 전종목 기본정보로 채운다 (기본 dry-run, `--apply`). 상장일 컬럼만 갱신 — 장중에 `collect_daily` 를 대신 돌리면 미완성 봉이 들어간다. 2026-09-07 상한가 엔진 전원 탈락 복구용 |
 | `backfill_entry_atr.py` | 과거 주문 행의 진입 ATR 보정 |
 | `normalize_pick_tick_prices.py` | 픽 가격을 KRX 호가 단위로 정규화 |
 | `load_analysis_picks.py` | 분석 픽 적재 |

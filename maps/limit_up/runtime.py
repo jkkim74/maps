@@ -14,6 +14,7 @@ from typing import Any
 
 import requests
 import websockets
+from websockets.exceptions import ConnectionClosed
 from sqlalchemy.orm import Session
 
 from maps.common.exceptions import BrokerAdapterError
@@ -148,19 +149,61 @@ def eod_stage(clock: dt.time) -> str | None:
     return None
 
 
+def v1_ineligibility_reason(
+    security: SecurityMetadata | None, *, as_of: dt.date
+) -> str | None:
+    """Return why a security fails the V1 common-share gate, or ``None`` if it passes.
+
+    The gate is fail-closed, but the *reason* must stay visible: in 2026-09 every
+    ``security_metadata.listing_date`` was NULL for three weeks and the scan log
+    counted the whole market under one ``ineligible_security`` key, so a data gap
+    looked exactly like a market full of new listings. Reasons:
+
+    - ``unknown_security`` — no metadata row (never collected / delisted)
+    - ``not_common_stock`` — market outside KOSPI/KOSDAQ or type not ``STOCK``
+    - ``listing_unknown`` — metadata exists but the listing date is NULL (data gap,
+      fix the collector; not a property of the stock)
+    - ``too_new`` — listed fewer than 100 days before ``as_of``
+    - ``preferred`` — name carries a preferred-share suffix
+
+    Same polarity as ``watch_candidate()``: ``None`` means proceed.
+    """
+    if security is None:
+        return "unknown_security"
+    if security.market not in {"KOSPI", "KOSDAQ"} or security.security_type != "STOCK":
+        return "not_common_stock"
+    if security.listing_date is None:
+        return "listing_unknown"
+    if (as_of - security.listing_date).days < 100:
+        return "too_new"
+    name = security.name.replace(" ", "").upper()
+    preferred_markers = ("우", "우B", "우C", "1우", "2우", "3우")
+    if any(name.endswith(marker.upper()) for marker in preferred_markers):
+        return "preferred"
+    return None
+
+
 def is_v1_eligible_security(
     security: SecurityMetadata | None, *, as_of: dt.date
 ) -> bool:
     """Return the fail-closed V1 common-share and listing-age verdict."""
-    if security is None:
-        return False
-    if security.market not in {"KOSPI", "KOSDAQ"} or security.security_type != "STOCK":
-        return False
-    if security.listing_date is None or (as_of - security.listing_date).days < 100:
-        return False
-    name = security.name.replace(" ", "").upper()
-    preferred_markers = ("우", "우B", "우C", "1우", "2우", "3우")
-    return not any(name.endswith(marker.upper()) for marker in preferred_markers)
+    return v1_ineligibility_reason(security, as_of=as_of) is None
+
+
+def _log_feed_disconnect(exc: BaseException, backoff: float) -> None:
+    """Log one WebSocket loss at the level its cause deserves.
+
+    KIS closes the upper-limit socket on the hour, every hour (observed 9/1–9/7:
+    ``ConnectionClosedError: no close frame received or sent`` at xx:00:01, back
+    within seconds). That and our own silence timeout are expected strategy
+    events — one WARNING line. Anything else (DNS, handshake timeout, rejected
+    approval key) points at configuration or the network and keeps the ERROR
+    with its traceback.
+    """
+    if isinstance(exc, (ConnectionClosed, ConnectionError)):
+        logger.warning("상한가 WebSocket 끊김 — %.0f초 후 재연결: %s", backoff, exc)
+        return
+    logger.exception("Upper-limit WebSocket disconnected")
 
 
 class DeadmanMonitor:
@@ -382,7 +425,7 @@ class KISIntradayRuntime:
             # 같은 ORM 세션을 펌프 스레드가 쓰고 있다. 이벤트 루프에서 직접 조회하면
             # 스캔과 주문 처리가 겹치는 순간 동시 사용이 된다.
             security = await self._call_service(self._load_security, ticker)
-            security_ok = is_v1_eligible_security(security, as_of=now.date())
+            ineligible_reason = v1_ineligibility_reason(security, as_of=now.date())
             halted = bool(row.get("trading_halted", False))
             candidate = Candidate(
                 ticker=ticker,
@@ -391,7 +434,7 @@ class KISIntradayRuntime:
                 total_listed_shares=int(row["total_listed_shares"]),
                 current_price=int(row["current_price"]),
                 change_rate=float(row["change_rate"]),
-                eligible=security_ok and not halted,
+                eligible=ineligible_reason is None and not halted,
             )
             reason = await self._call_service(
                 self.service.watch_candidate, candidate, now_kst=now
@@ -400,10 +443,16 @@ class KISIntradayRuntime:
                 accepted += 1
                 await self._subscription_queue.put(ticker)
                 continue
-            # 서비스는 두 사유를 ``ineligible`` 하나로 본다. 어느 쪽인지는 여기서만
-            # 알 수 있고, 둘의 대응이 다르다 — 상장 자격은 영구, 정지는 그날뿐이다.
+            # 서비스는 이 사유들을 ``ineligible`` 하나로 본다. 어느 쪽인지는 여기서만
+            # 알 수 있고, 대응이 다르다 — 우선주·비상장은 영구, ``too_new`` 는 시간이,
+            # ``listing_unknown`` 은 수집기가 고쳐야 하고, 정지는 그날뿐이다.
+            # 사유를 키에 붙이지 않으면 데이터 공백이 정상 탈락으로 위장한다(2026-09).
             if reason == "ineligible":
-                reason = "ineligible_security" if not security_ok else "halted"
+                reason = (
+                    f"ineligible_security:{ineligible_reason}"
+                    if ineligible_reason is not None
+                    else "halted"
+                )
             rejected[reason] += 1
         self._log_scan_summary(ranked_count, len(rows), accepted, rejected)
         return accepted
@@ -538,7 +587,13 @@ class KISIntradayRuntime:
                 )
                 if now_mono - self._last_scan_at >= 5.0:
                     self._last_scan_at = now_mono
-                    await self.scan_once()
+                    # 스캔의 KIS 호출 한도 초과(EGW00201, 2026-09-04 실제 발생)는 이
+                    # 회차만 건너뛸 일이다 — 지수 폴링과 같은 이유로 바깥 except 에
+                    # 흘리지 않는다. 그 외 예외(코드 결함)는 ERROR 로 남긴다.
+                    try:
+                        await self.scan_once()
+                    except BrokerAdapterError as exc:
+                        logger.warning("상한가 스캔 실패 — 이번 회차 생략: %s", exc)
                 if index_guard_active_at(wall) and now_mono - self._last_index_at >= 1.0:
                     self._last_index_at = now_mono
                     # 지수를 못 읽는 것은 이 이터레이션의 나머지를 포기할 이유가 아니다.
@@ -608,7 +663,7 @@ class KISIntradayRuntime:
                     await self._serve_socket(socket, approval)
             except asyncio.CancelledError:
                 raise
-            except Exception:  # noqa: BLE001 - disconnect is a strategy event
+            except Exception as exc:  # noqa: BLE001 - disconnect is a strategy event
                 if self._feed_connected:
                     await self._call_service(
                         self.service.on_feed_disconnect,
@@ -617,7 +672,7 @@ class KISIntradayRuntime:
                         priority=_PRIORITY_HIGH,
                     )
                 self._feed_connected = False
-                logger.exception("Upper-limit WebSocket disconnected")
+                _log_feed_disconnect(exc, backoff)
                 # 고정 1초 재시도는 자격증명이 만료되면 인증 API 를 초당 한 번씩 때린다.
                 # 2026-07-27 KRX 계정 잠금(하루 158회 재로그인)과 같은 실패 유형이다.
                 await asyncio.sleep(backoff)

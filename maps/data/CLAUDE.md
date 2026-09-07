@@ -69,6 +69,13 @@ KRXAdapterBase (ABC)
 
 - `get_halt_list`: 거래량 0 heuristic + `MAPS_HALTED_TICKERS` 환경변수 override. Phase 5에서 KRX 공시 API로 교체 예정.
 - `get_managed_list`: pykrx 미지원. `MAPS_MANAGED_TICKERS` override만 반영.
+- `get_security_meta`: 멤버십은 `get_market_ticker_list(date)` 가, **상장일은 모듈 함수
+  `fetch_listing_dates()`** 가 정한다 — pykrx 내부 `전종목기본정보().fetch("ALL")`([12005],
+  `LIST_DD`) 1회 요청. ticker-list 엔드포인트는 상장일을 주지 않아 2026-09-07 까지 운영
+  `listing_date` 가 전부 NULL 이었고, 상한가 V1 자격 판정이 fail-closed 라 후보가 한 건도
+  수락되지 않았다. 조회 실패는 WARNING 후 빈 dict(fail-soft) — 수집은 계속되고 값 없는
+  종목은 하류가 막는다. 함수가 스스로 `ensure_krx_login_guard()` 를 부른다(스크립트가
+  어댑터 없이 쓴다). 즉시 채우려면 `scripts/backfill_listing_dates.py --apply`.
 - OHLCV 컬럼명이 버전에 따라 한글/영문이 혼재 → `_OHLCV_COL_MAP`으로 한글 통일.
 
 #### `MockKRXAdapter` 주입 메서드
@@ -105,7 +112,8 @@ DataCollector(krx: KRXAdapterBase, db: Session, broker=None)
 
 | 메서드 | 설명 |
 |---|---|
-| `_upsert_meta(meta_list, adjusted_by_ticker)` | `security_metadata` upsert |
+| `_upsert_meta(meta_list, adjusted_by_ticker)` | `security_metadata` upsert. **`listing_date` 는 소스가 알 때만 갱신** — None 으로 덮어쓰면 KRX 조회가 실패한 날 전날 값이 사라진다. 끝에 `_report_listing_date_gaps()` |
+| `_report_listing_date_gaps()` | 상장(비상폐) STOCK 행의 상장일 결측 비율. 절반 초과면 WARNING(상한가 자격 판정 전원 fail-closed 상태), 그 외 INFO. 상폐 추정 몇 건은 늘 NULL 이라 "1건 이상" 기준은 매일 울린다 |
 | `_upsert_ohlcv(rows)` | `historical_ohlcv` upsert — 유효성 검사(양수 OHLCV) 포함 |
 | `_write_log(ref_date, status, items, note, source)` | `collection_log` 감사 기록 |
 

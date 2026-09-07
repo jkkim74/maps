@@ -33,6 +33,59 @@ def _classify_security_type(name: str) -> str:
     return "STOCK"
 
 
+def _listing_dates_from_frame(frame: pd.DataFrame) -> dict[str, datetime.date]:
+    """KRX [12005] 전종목 기본정보 프레임에서 ``{ticker: 상장일}`` 을 뽑는다.
+
+    ``LIST_DD`` 는 ``YYYY/MM/DD`` 문자열이다. 빈 값·파싱 불가 행은 건너뛴다 —
+    상장일을 모르는 종목은 None 으로 남겨 하류(상한가 자격 판정)가 fail-closed 로
+    막게 두는 편이 잘못된 날짜보다 안전하다.
+
+    :param frame: ``ISU_SRT_CD`` / ``LIST_DD`` 컬럼을 가진 DataFrame.
+    :return: 단축코드 → 상장일.
+    """
+    result: dict[str, datetime.date] = {}
+    if frame is None or frame.empty:
+        return result
+    for _, row in frame.iterrows():
+        ticker = str(row.get("ISU_SRT_CD") or "").strip()
+        raw = row.get("LIST_DD")
+        if not ticker or raw is None:
+            continue
+        try:
+            result[ticker] = datetime.datetime.strptime(str(raw).strip(), "%Y/%m/%d").date()
+        except ValueError:
+            continue
+    return result
+
+
+def fetch_listing_dates() -> dict[str, datetime.date]:
+    """KRX 전종목 기본정보에서 KOSPI·KOSDAQ·KONEX 전 종목의 상장일을 1회 요청으로 받는다.
+
+    pykrx 의 ticker-list 엔드포인트는 상장일을 주지 않아 ``security_metadata.listing_date``
+    가 전부 NULL 이었고(2026-09-07 발견), 상한가 V1 자격 판정이 fail-closed 라 후보가
+    한 건도 수락되지 않았다. ``pykrx.website.krx.market.core.전종목기본정보`` 는 pykrx
+    내부 API 라 어떤 실패도 삼키고 빈 dict 를 돌려준다 — 일일 수집 자체는 깨지지
+    않고, 값이 없는 종목은 하류가 막는다.
+
+    :return: 단축코드 → 상장일. 조회 실패 시 빈 dict.
+    :raises DataCollectionError: pykrx 가 설치되지 않은 경우.
+    """
+    # pykrx 는 요청마다 재로그인을 시도한다 — 회로차단기를 먼저 설치한다(루트 CLAUDE.md 제약 8).
+    ensure_krx_login_guard()
+    try:
+        from pykrx.website.krx.market import core as _krx_core
+    except ImportError as e:
+        raise DataCollectionError("pykrx 라이브러리가 필요합니다: pip install pykrx") from e
+    try:
+        frame = _krx_core.전종목기본정보().fetch("ALL")
+    except Exception as exc:  # noqa: BLE001 - 벤더 내부 API, 수집을 깨뜨리지 않는다
+        logger.warning("KRX 전종목 기본정보 조회 실패 — 상장일 미적재: %s", exc)
+        return {}
+    result = _listing_dates_from_frame(frame)
+    logger.info("KRX 상장일 수집 완료: %d종목", len(result))
+    return result
+
+
 def _env_tickers(name: str) -> set[str]:
     raw = os.getenv(name, "")
     return {item.strip() for item in raw.split(",") if item.strip()}
@@ -258,6 +311,9 @@ class KRXAdapter(KRXAdapterBase):
             raise DataCollectionError("pykrx 라이브러리가 필요합니다: pip install pykrx") from e
 
         date_str = ref_date.strftime("%Y%m%d")
+        # 상장일은 ticker-list 에 없다 — 전종목 기본정보에서 1회 받아 조회 테이블로 쓴다.
+        # 멤버십은 기존대로 날짜 기준 ticker-list 가 정한다(as-of 의미 유지).
+        listing_dates = fetch_listing_dates()
         result: list[SecurityMeta] = []
         for market in ("KOSPI", "KOSDAQ"):
             try:
@@ -272,7 +328,7 @@ class KRXAdapter(KRXAdapterBase):
                         name=name,
                         market=market,
                         security_type=_classify_security_type(name),
-                        listing_date=None,
+                        listing_date=listing_dates.get(ticker),
                         delisting_date=None,
                     ))
             except Exception as exc:
