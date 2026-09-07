@@ -107,3 +107,45 @@ def test_rest_fallback_enforces_500ms_and_exponential_429_backoff() -> None:
     assert limiter.delay(now=10.1) == 2.0
     limiter.record_success()
     assert limiter.delay(now=10.5) == 0.0
+
+
+def _multi_record_message(tr_id: str, rows: list[list[str]]) -> str:
+    flat = [value for row in rows for value in row]
+    return f"0|{tr_id}|{len(rows):03d}|{'^'.join(flat)}"
+
+
+def test_kis_ask_frame_with_trailing_extra_fields_still_parses(caplog) -> None:
+    """KIS appends new columns after STCK_DEAL_CLS_CODE; the first 59 keep their places.
+
+    2026-09-07 12:02 첫 감시 종목(012210) 구독 직후 H0STASP0 가 62필드로 왔고 파서가
+    한 시간에 17,150 프레임을 전부 버렸다 — 잠김·매수벽 판정이 통째로 멈춘 채 ERROR 만
+    쌓였다. NXT·통합 호가(H0NXASP0/H0UNASP0)는 KMID_*/NMID_* 를 뒤에 덧붙이는 것이
+    공식 예제로 확인되므로 KRX 도 같은 방식으로 본다. 뒤에 붙은 값은 무시한다.
+    """
+    def _row(ticker: str, ask1: str, bid_qty1: str) -> list[str]:
+        values = {"MKSC_SHRN_ISCD": ticker, "ASKP1": ask1, "BIDP1": ask1, "BIDP_RSQN1": bid_qty1}
+        base = [values.get(column, "0") for column in KIS_ASK_COLUMNS]
+        return base + [ask1, "77", "1"]  # KMID_PRC, KMID_TOTAL_RSQN, KMID_CLS_CODE
+
+    raw = _multi_record_message("H0STASP0", [_row("012210", "5000", "1200"), _row("005930", "70000", "0")])
+
+    with caplog.at_level("WARNING", logger="maps.limit_up.feed"):
+        quotes = parse_kis_ws_message(raw, received_at=1.0)
+
+    assert [(q.ticker, q.best_ask_price, q.best_bid_qty) for q in quotes] == [
+        ("012210", 5_000, 1_200),
+        ("005930", 70_000, 0),
+    ]
+    # 폭이 달라진 사실은 한 번은 남겨야 사람이 검증할 수 있다 — 프레임마다는 아니다.
+    assert sum("62" in r.getMessage() and "H0STASP0" in r.getMessage() for r in caplog.records) == 1
+    parse_kis_ws_message(raw, received_at=2.0)
+    assert sum("H0STASP0" in r.getMessage() for r in caplog.records) == 1
+
+
+def test_kis_frame_whose_width_is_not_a_whole_record_fails_closed() -> None:
+    """A width that does not divide evenly per record is corruption, not a new column."""
+    row = ["0"] * len(KIS_ASK_COLUMNS)
+    raw = _multi_record_message("H0STASP0", [row + ["1", "2", "3"], row])  # 62 + 59
+
+    with pytest.raises(ValueError, match="field count"):
+        parse_kis_ws_message(raw, received_at=0.0)

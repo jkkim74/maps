@@ -2,8 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 from collections import defaultdict, deque
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
+
+#: (tr_id, 레코드 폭) 조합별로 한 번만 알린다 — 프레임마다 찍으면 시간당 수만 줄이다.
+_WIDTH_NOTICES: set[tuple[str, int]] = set()
 
 
 KIS_TRADE_COLUMNS = (
@@ -89,10 +95,24 @@ def parse_kis_ws_message(raw: str, *, received_at: float) -> list[FeedTrade | Fe
         return []
     values = parts[3].split("^")
     expected = record_count * len(columns)
-    if len(values) != expected:
+    # KIS 는 새 컬럼을 레코드 **뒤에** 덧붙인다(NXT·통합 호가의 KMID_*/NMID_* 가 공식
+    # 예제에서 STCK_DEAL_CLS_CODE 뒤에 온다). 2026-09-07 H0STASP0 가 59→62 로 늘어나
+    # 한 시간에 17,150 프레임이 전부 버려졌다. 레코드 폭이 정확히 나누어지고 우리가
+    # 아는 컬럼 수 이상이면 앞부분만 쓰고 나머지는 무시한다. 폭이 모자라거나 나누어
+    # 떨어지지 않으면 절단·손상이므로 예전처럼 fail-closed.
+    if record_count <= 0 or len(values) % record_count != 0:
         raise ValueError(f"KIS {tr_id} field count {len(values)} != {expected}")
+    width = len(values) // record_count
+    if width < len(columns):
+        raise ValueError(f"KIS {tr_id} field count {len(values)} != {expected}")
+    if width > len(columns) and (tr_id, width) not in _WIDTH_NOTICES:
+        _WIDTH_NOTICES.add((tr_id, width))
+        logger.warning(
+            "KIS %s 레코드 폭 %d > 알려진 컬럼 %d — 뒤의 %d개 필드는 무시한다: %s",
+            tr_id, width, len(columns), width - len(columns), values[len(columns):width],
+        )
     records: list[FeedTrade | FeedQuote] = []
-    for offset in range(0, expected, len(columns)):
+    for offset in range(0, len(values), width):
         row = dict(zip(columns, values[offset:offset + len(columns)], strict=True))
         if tr_id == "H0STCNT0":
             records.append(
