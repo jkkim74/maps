@@ -60,10 +60,18 @@
 >    이상 시 롤백은 `.env` `MAPS_LIMIT_UP_MODE=recommend_only` + restart(코드 롤백 불필요).
 > 2. 🔴 **오늘 16:40 수집 뒤 `listing_date` 가 유지되는지** (`select count(listing_date) from security_metadata` ≈ 2,764),
 >    `종목 메타 상장일 결측` WARNING 이 안 나오는지 — 내일 아침 확인.
-> 3. ~~다음 정각 WebSocket 끊김이 WARNING 1줄로 바뀌었는지~~ → ✅ 13:00:01 WARNING 1줄 확인.
+> 3. ~~다음 정각 WebSocket 끊김이 WARNING 1줄로 바뀌었는지~~ → ✅ 13:00:01·14:00:01 WARNING 1줄 확인.
 > 5. `H0STCNT0`(체결) 도 폭이 늘어나는지 — 늘어나면 같은 WARNING 이 한 번 뜬다. 무시된 값이
 >    가격·수량·코드 모양이 아니면 중간 삽입이므로 `KIS_ASK_COLUMNS`/`KIS_TRADE_COLUMNS` 재검토.
+>    (14:35 점검: 재시작 후 폭 WARNING 은 `H0STASP0` 1회뿐, 파싱 ERROR·시세 적체 0건 — `H0STCNT0` 폭 변화 없음.)
 > 4. 9/3 절 이월: 17:10 `validation` 결과 비교(`e1a196e` ATR 배수 변경 영향) — 아직 미기록.
+>
+> **14:35 점검 메모(재시작 후 12:02~14:35 관측):** 스캔 56회, 신규감시는 12:02 의 1건뿐, `FIRE_NET` 없음.
+> 탈락 사유에 `ineligible_security:unknown_security=1` 이 거의 매 스캔 붙어 있다 — 순위 30 안의 어떤 종목이
+> `security_metadata` 에 없다는 뜻. 어느 종목인지는 아직 안 봤다(아래 표에 추가). 012210 세션이 13:12 재시작
+> 후에도 `watching` 으로 복원됐는지는 그 세션에서 DB 질의가 막혀 못 봤으나, **13:13 별도 세션의 DB 질의로
+> 확인됨** — `limit_up_session #1 012210 watching / automatic / trigger_at NULL`. 13:12 이후 스캔에
+> `already_watching` 이 안 보이는 것은 순위권 이탈(`below_trigger` 12:50) 쪽이다.
 >
 > ### 🔜 차후 확인 (이번 범위 밖)
 >
@@ -73,6 +81,7 @@
 > | R7 | KRX `KIND_STKCERT_TP_NM`(보통주/우선주)을 `security_type` 에 반영 — `api/backtest.py:124` 유니버스가 바뀌어 검증 수치에 영향. 이름 휴리스틱이 우선주를 이미 막는다 |
 > | 한도 | 스캔 `inquire-price`(후보당 1회) + 지수 폴링 1/s 가 모의투자 2 req/s 페이서 안에서 간헐적 `EGW00201`. 빈도를 본 뒤 판단 |
 > | 정각 | KIS 가 매시 정각 소켓을 닫는 이유·회피 여부 |
+> | 미등록 | 스캔마다 `ineligible_security:unknown_security=1` — 순위권 종목 하나가 `security_metadata` 에 없다. 종목 식별 후 신규상장·스팩·ETN 여부에 따라 수집 대상인지 판단 |
 
 ---
 
