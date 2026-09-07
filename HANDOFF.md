@@ -21,7 +21,7 @@
 > 하나로 뭉쳐 데이터 공백이 정상 탈락처럼 보였다. 9/3 절의 "래치 없는 거래일이 와야 검증된다"
 > 는 전제는 틀렸다.
 >
-> ### 수정 (`257f6f5`) — 테스트 `1212 passed` (1191 + 21)
+> ### 수정 (`257f6f5` + `c2bb326`) — 테스트 `1214 passed` (1191 + 23)
 >
 > | | 내용 |
 > |---|---|
@@ -31,10 +31,12 @@
 > | R4 | 매시 정각 KIS WebSocket 끊김(`ConnectionClosedError`, 9/1~9/7 매일 8건)을 ERROR+Traceback → WARNING 1줄 |
 > | R5 | 스캔의 `BrokerAdapterError`(9/4 09:21 `EGW00201`)를 지수 폴링처럼 WARNING 으로 흡수 — 이터레이션을 죽이지 않는다 |
 > | 백필 | `scripts/backfill_listing_dates.py --apply` → **2,764행 갱신**, KRX 에 없는 26(상폐 추정)만 NULL |
+> | R8 (`c2bb326`, 13:12 배포) | **첫 감시 종목(012210, 12:02) 구독 직후 `H0STASP0` 가 59→62 필드**로 와서 한 시간에 17,150 프레임이 전부 버려졌다(ERROR+traceback 프레임마다, 시세 적체 경고). 체결은 멀쩡했지만 잠김·매수벽 판정이 통째로 멈춘 상태. `parse_kis_ws_message` 가 레코드 폭을 프레임에서 구해 앞 59개만 쓰고 뒤는 무시(폭 부족·비정수 폭은 여전히 거부), `(tr_id, 폭)` 별 WARNING 1회. 배포 후 무시된 값 `['10255','0','0']` = 가격·수량·코드 모양(KRX 중간가 `KMID_*`) — 덧붙임 가설과 일치, 새 PID 파싱 오류 0 |
 >
 > 배포 후 운영 DB 로 확인: 삼성전자·삼익제약·SK이터닉스 → 사유 `None`(적격), 삼성전자우 → `preferred`.
-> 재시작 직후 ERROR 0건. 스캔은 정상(`순위 30건 → 후보 0건`) — 배포 시점에 +25% 종목이 없어
-> **첫 수락·첫 실주문은 아직 관측 전**이다.
+> **12:02 첫 후보 수락** — `limit_up_session #1` 012210, `watching`, `automatic`(8/29 가동 후 최초).
+> 이후 스캔 사유가 `halted`·`too_new`·`unknown_security`·`below_trigger`·`already_watching` 으로
+> 분해되어 보인다(수정 실효 증거). **첫 `FIRE_NET` 실주문은 아직 관측 전**(13:12 현재 트리거 없음).
 >
 > ### 통한 것
 >
@@ -58,7 +60,9 @@
 >    이상 시 롤백은 `.env` `MAPS_LIMIT_UP_MODE=recommend_only` + restart(코드 롤백 불필요).
 > 2. 🔴 **오늘 16:40 수집 뒤 `listing_date` 가 유지되는지** (`select count(listing_date) from security_metadata` ≈ 2,764),
 >    `종목 메타 상장일 결측` WARNING 이 안 나오는지 — 내일 아침 확인.
-> 3. 다음 정각(11:00:01 등) WebSocket 끊김이 WARNING 1줄로 바뀌었는지.
+> 3. ~~다음 정각 WebSocket 끊김이 WARNING 1줄로 바뀌었는지~~ → ✅ 13:00:01 WARNING 1줄 확인.
+> 5. `H0STCNT0`(체결) 도 폭이 늘어나는지 — 늘어나면 같은 WARNING 이 한 번 뜬다. 무시된 값이
+>    가격·수량·코드 모양이 아니면 중간 삽입이므로 `KIS_ASK_COLUMNS`/`KIS_TRADE_COLUMNS` 재검토.
 > 4. 9/3 절 이월: 17:10 `validation` 결과 비교(`e1a196e` ATR 배수 변경 영향) — 아직 미기록.
 >
 > ### 🔜 차후 확인 (이번 범위 밖)
