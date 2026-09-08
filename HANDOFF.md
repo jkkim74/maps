@@ -1,6 +1,6 @@
 # HANDOFF
 
-> ## 9/8 세션 요약 — 매매 기록에 "왜 한 종목도 안 샀나" 두 축 추가 (미배포)
+> ## 9/8 세션 요약 — 매매 기록에 "왜 한 종목도 안 샀나" 두 축 추가 (`5f15605`, 22:38 KST 배포)
 >
 > ### 목표
 > 블로그 매매 기록이 상한가 전략·16시 `/analyze` 크론을 전혀 다루지 않았다. 9/8 은 시스템이
@@ -17,7 +17,7 @@
 > | `analyze.md` | `--note` 형식 `"<N>단계 <agent>: <사유>"` 고정. **2단계 선정 전략 0 이면 3~7 건너뛰고 즉시 로더 호출** |
 > | `blog.md` | 3번 섹션에 상한가·분석 파이프라인 단락, 6번에 【 상한가 전략 】【 분석 파이프라인 】 |
 >
-> ### 장마감 텔레그램 리포트 (같은 세션, 미배포) — 테스트 `1229 passed`
+> ### 장마감 텔레그램 리포트 (같은 세션) — 테스트 `1236 passed`
 >
 > | | 내용 |
 > |---|---|
@@ -26,8 +26,9 @@
 > | `TelegramNotifier.send_long()` | 4,000자 줄 경계 분할 — 기존엔 분할이 없어 긴 메시지가 400 으로 조용히 죽었다 |
 > | 문서 카운트 | 운영 설정 61→62개 (`docs/ui-design/maps-auth-screen-design.html`, 테스트가 고정) |
 >
-> **새 파일 5개는 untracked** — `!ship` 은 `git add -u` 라 빠진다. 커밋 전에
-> `git add alembic/versions/0033_limit_up_scan_rejections.py maps/ops/close_report.py tests/test_close_report.py scripts/regime_rule_eval.py tests/test_regime_rule_eval.py`.
+> **배포 완료** — `git pull` → `alembic upgrade head`(`0033_limit_up_scan_rejections`) → restart, 22:38 KST.
+> 기동 로그에 `daily_close_report` 잡 등록 확인, 오류 없음. **첫 확인은 9/9 19:00 텔레그램 수신**이다.
+> 안 오면 배치 모니터 `daily_close_report` 행과 `journalctl -u maps | grep daily_close_report`.
 >
 > ### 장세 판정 분석 (같은 세션) — 규칙은 유지, 평가기만 추가 (`scripts/regime_rule_eval.py`)
 >
