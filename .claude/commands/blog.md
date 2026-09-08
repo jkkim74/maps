@@ -102,6 +102,7 @@ description: 일일 다이제스트로 매매 기록 블로그 글 작성
 1. 오늘의 매매 한눈에
 ────────────────────
 세 문장 이내로 매수·매도 체결 건수, 신규매수 중단 여부, 확인이 필요한 데이터를 요약한다.
+executions 중 strategy_id가 limit_up_v1로 시작하는 체결은 상한가 전략 체결로 함께 센다.
 candidate_incomplete_total이 0보다 크면 데이터 미완성 후보가 순위에서 분리됐다는 사실을
 한 문장으로 알린다.
 말미에서 같은 내용을 다시 요약하지 않는다.
@@ -127,6 +128,30 @@ portfolio가 있으면 계좌 총액·현금·보유 평가액·전일 대비 �
 holdings의 종목별 수량 / 평균단가 / 현재가 / 평가액 / 평가손익을 보존한다.
 data_complete가 false면 상세 보유 데이터가 없어 평가손익을 확인할 수 없다고 경고하며
 holdings 수량만으로 평균단가나 손익을 추정하지 않는다.
+
+시스템이 정상인데 한 종목도 사지 않았다면 그 이유를 아래 두 기록으로 설명한다.
+
+limit_up이 있으면 상한가 전략(상한가 당일매매)의 하루를 쓴다. enabled가 false면 "오늘은 꺼져
+있었다"고 쓰고 이유를 추측하지 않는다. blocked_reason이 있으면 자동매매가 거부된 이유로 쓴다.
+sessions는 종목별로 outcome을 쉬운 말로 푼다. no_trigger는 "상한가 근처까지 올랐지만 진입 신호가
+없었다", daily_guard는 "하루 진입 한도에 걸려 사지 않았다", insufficient_budget은 "예산이 모자라
+사지 않았다", no_fill_timeout은 "주문을 냈지만 체결되지 않아 취소했다", hard_stop과 time_stop은
+"샀다가 손절 규칙으로 팔았다"로 쓴다. 그 밖의 outcome은 end_reason을 그대로 적는다.
+guard.scan_rejections는 "25% 넘게 올랐지만 감시 대상에서 빠진 종목"으로 종목과 사유를 쓴다.
+ineligible_security:preferred는 우선주, ineligible_security:too_new는 상장 100일 미만,
+ineligible_security:listing_unknown은 상장일 데이터가 없는 데이터 공백(종목 문제가 아님),
+halted는 거래정지, outside_hours는 진입 시간 밖, mode_off는 전략이 꺼진 상태다.
+guard.halted_reasons가 있으면 그날 신규 진입이 멈춘 이유로 쓴다. after_hours가 있으면 시간외
+감시 결과(watched / exited / no_trade / bad_data)를 한 문장으로 쓴다. sessions와
+scan_rejections와 halted_reasons가 모두 비면 "상한가 후보 없음"이라고 쓴다.
+
+analysis_run이 있으면 16시 분석 파이프라인(/analyze)의 결과를 쓴다. picks_count가 0이면
+note를 그대로 인용해 어느 단계에서 멈췄는지 쓴다. note가 null이면 "멈춘 이유가 기록되지
+않았습니다"라고 쓴다. status가 failed면 error_message만 쓰고 결과를 해석하지 않는다.
+run_count가 1보다 크면 같은 날 실행 기록이 여러 건이며 최신 기록을 썼다고 밝힌다.
+analysis_run이 null이면 "분석 파이프라인 실행 기록 없음"이라고 쓴다.
+market.entry_block_since가 있으면 "신규매수 한도 0%가 entry_block_since부터
+entry_block_days거래일째"로 연결한다. note와 JSON에 없는 원인을 지어내지 않는다.
 
 ────────────────────
 4. 실제 매수·매도 기록
@@ -185,6 +210,16 @@ liquidity_capped_total 이 0 보다 크면 유동성 축소가 있었다는 사�
 주문은 `유동성 축소` 라고 부르고 원래 계획대로 매수한 것처럼 쓰지 않는다. liquidity_notes 의
 원래 수량과 실제 수량을 함께 보존한다. liquidity_blocked_total 이 0 보다 크면 유동성 때문에
 매수하지 못한 후보가 있었다고 쓴다. 유동성 차단을 현금 부족이라고 바꿔 쓰지 않는다.
+
+【 상한가 전략 】 소제목에 limit_up의 enabled / mode / blocked_reason과 sessions의
+ticker / state / execution_mode / outcome / upper_limit_price / trigger_price / trigger_at /
+first_fill_at / end_reason / filled_quantity / realized_pnl을 보존한다. guard의 attempts /
+pattern_failures / halted_reasons와 scan_rejections의 ticker / reason, after_hours의 카운터를
+그대로 적는다. limit_up이 null이면 "상한가 전략 기록 수집 실패"라고 쓴다.
+
+【 분석 파이프라인 】 소제목에 analysis_run의 status / created_at / regime / strategy_context /
+candidates_count / picks_count / note / error_message / run_count를 보존한다. picks가 있으면
+ticker / buy_price / target_price / stop_price / state를 종목별로 적는다.
 
 주문가·체결가·수량·상태·청산 사유를 보존한다. market_context가 있으면 외부 리포트
 출처를 밝히고 여기에 기록한다. status가 failed인 항목은 excerpt를 인용하지 말고

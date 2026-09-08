@@ -29,11 +29,15 @@ def test_fresh_database_reaches_current_schema(tmp_path, monkeypatch) -> None:
     audit_columns = {
         column["name"] for column in inspector.get_columns("holding_regime_audit")
     }
+    guard_columns = {
+        column["name"] for column in inspector.get_columns("limit_up_daily_guard")
+    }
     with engine.connect() as connection:
         revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
     engine.dispose()
 
-    assert revision == "0032_limit_up_ledger"
+    assert revision == "0033_limit_up_scan_rejections"
+    assert "scan_rejections" in guard_columns
     assert {"trade_mode", "total_budget", "entries_cancelled", "exit_pending_reason"} <= pick_columns
     assert "ai_recommendation" in pick_columns
     assert "holding_details" in portfolio_columns

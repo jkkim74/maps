@@ -45,6 +45,7 @@ _JOBS: list[tuple[str, str, str, int, bool, str]] = [
     ("validation", "검증", "maps_validation_time", 60, True, "pipeline"),
     ("stock_report", "종목 리포트", "maps_stock_report_time", 60, False, "stock_report"),
     ("blog", "블로그 원고 (/blog)", "18:30", 60, False, "blog"),
+    ("daily_close_report", "장마감 리포트", "maps_close_report_time", 30, True, "pipeline"),
 ]
 
 # broker_sync 하트비트가 이보다 오래되면 당일 기준 '끊김'으로 본다

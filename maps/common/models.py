@@ -1052,6 +1052,9 @@ class LimitUpDailyGuard(Base):
     pattern_failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     kosdaq_high: Mapped[float | None] = mapped_column(Float, nullable=True)
     halted_reasons: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # {ticker: reason} — +25% 까지 오르고도 감시에서 빠진 종목의 **첫** 사유. 스캔은 5초마다
+    # 돌므로 갱신하면 노이즈고, 매매 기록이 "어느 종목이 왜" 를 물을 때 이 행이 유일한 답이다.
+    scan_rejections: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     updated_at: Mapped[datetime.datetime] = mapped_column(
         DateTime,
         nullable=False,

@@ -2335,3 +2335,50 @@ def test_after_hours_watch_runs_with_no_carried_sessions() -> None:
     assert run.details["watched"] == 0
     assert run.details["exited"] == 0
     engine.dispose()
+
+
+def test_run_once_daily_close_report_skips_when_telegram_disabled() -> None:
+    """텔레그램이 꺼져 있으면 잡은 성공으로 끝나되 skipped 를 남긴다."""
+    engine, factory, scheduler = _make_scheduler()
+    try:
+        run = scheduler.run_once("daily_close_report")
+
+        assert run.status == "success"
+        assert run.details["skipped"] == "telegram_disabled"
+    finally:
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def test_daily_close_report_sends_and_records(monkeypatch) -> None:
+    """텔레그램이 켜져 있으면 본문을 보내고 job_run_log 에 성공을 남긴다."""
+    import maps.ops.notifications as notifications
+
+    class _Recorder:
+        enabled = True
+
+        def __init__(self) -> None:
+            self.sent: list[str] = []
+
+        def send_long(self, text: str, **_: object) -> bool:
+            self.sent.append(text)
+            return True
+
+    recorder = _Recorder()
+    monkeypatch.setattr(notifications, "get_telegram_notifier", lambda: recorder)
+    engine, factory, scheduler = _make_scheduler()
+    try:
+        run = scheduler.run_once("daily_close_report")
+
+        assert run.status == "success", run.message
+        assert run.details["sent"] is True
+        assert "MAPS 장마감 리포트" in recorder.sent[0]
+        db = factory()
+        try:
+            row = db.query(JobRunLog).filter(JobRunLog.name == "daily_close_report").one()
+            assert row.status == "success"
+        finally:
+            db.close()
+    finally:
+        Base.metadata.drop_all(engine)
+        engine.dispose()

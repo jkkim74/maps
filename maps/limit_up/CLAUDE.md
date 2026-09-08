@@ -394,6 +394,11 @@ INFO 상한가 스캔 — 순위 42건 → 후보 8건, 신규감시 1건, 탈�
 > 이 로그는 `MAPS_LOG_LEVEL` 이 `INFO`(기본) 일 때만 보인다. 운영 `.env` 가 이걸
 > `WARNING` 으로 올리면 관측이 통째로 사라진다.
 
+- 로그는 집계뿐이라 "어느 종목이 왜" 는 답하지 못한다. `scan_once()` 는 **+25% 에 도달한**
+  종목이 탈락하면(`already_watching` 제외) `service.record_scan_rejection()` 으로
+  `limit_up_daily_guard.scan_rejections`(`{ticker: reason}`) 에 **첫 사유**를 남긴다.
+  중복 판정은 DB 행이 하며(재시작해도 덮어쓰지 않음), 매매 기록 다이제스트가 이 행을 읽는다.
+
 - 스캔이 `BrokerAdapterError`(KIS 한도초과 `EGW00201` 등)로 깨지면 `_control_loop` 이
   WARNING 한 줄로 그 회차만 건너뛴다 — 지수 폴링과 같은 처리다. 바깥 except 로 흘리면
   EOD 단계·폴백 스윕이 통째로 밀리고 엔진이 죽은 것으로 보고된다(2026-09-04 09:21 실제).

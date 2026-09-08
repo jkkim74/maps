@@ -260,7 +260,7 @@ def test_broker_sync_stale_heartbeat_today_is_failed(client) -> None:
 
 
 def test_rerunnable_flags_limited_to_pipeline_jobs(client) -> None:
-    """재실행 버튼 대상은 run_once가 지원하는 스케줄러 잡 6개뿐이다."""
+    """재실행 버튼 대상은 run_once가 지원하는 스케줄러 잡 7개뿐이다."""
     tc, _, _ = client
 
     body = tc.get("/api/v1/batch-monitor?days=1").json()
@@ -276,4 +276,5 @@ def test_rerunnable_flags_limited_to_pipeline_jobs(client) -> None:
         "validation": True,
         "stock_report": False,
         "blog": False,
+        "daily_close_report": True,
     }

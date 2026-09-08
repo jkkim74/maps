@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import logging
 import re
 from html.parser import HTMLParser
@@ -23,12 +24,19 @@ from sqlalchemy.orm import Session, selectinload
 
 from maps.api.schemas import (
     DailyDigest,
+    DigestAnalysisPick,
+    DigestAnalysisRun,
     DigestCandidate,
     DigestConditionalEntry,
     DigestExecution,
     DigestFactor,
     DigestHolding,
     DigestHoldingRegimeOverlay,
+    DigestLimitUp,
+    DigestLimitUpAfterHours,
+    DigestLimitUpGuard,
+    DigestLimitUpScanRejection,
+    DigestLimitUpSession,
     DigestMarket,
     DigestPortfolio,
     DigestReportExcerpt,
@@ -38,8 +46,13 @@ from maps.api.schemas import (
 )
 from maps.common.models import (
     AnalysisPick,
+    AnalysisRun,
     CandidateSnapshot,
     HoldingRegimeAudit,
+    JobRunLog,
+    LimitUpDailyGuard,
+    LimitUpOrderLeg,
+    LimitUpSession,
     MarketRegimeLog,
     OrderLog,
     PortfolioSnapshot,
@@ -109,6 +122,30 @@ def _html_to_text(html: str) -> str:
     return parser.text
 
 
+def _entry_block_streak(db: Session, row: MarketRegimeLog) -> dict:
+    """``row`` 로 끝나는 entry_limit_ratio == 0 연속 구간의 시작일과 길이.
+
+    "몇 주째 신규매수 0" 은 하루치 값만으로는 안 보인다. 로그 행이 없는 날(휴장)은
+    건너뛰고, 0 이 아닌 행을 만나면 끊는다. 오늘이 0 이 아니면 빈 dict.
+    """
+    if row.entry_limit_ratio is None or row.entry_limit_ratio != 0:
+        return {}
+    rows = (
+        db.query(MarketRegimeLog.ref_date, MarketRegimeLog.entry_limit_ratio)
+        .filter(MarketRegimeLog.ref_date <= row.ref_date)
+        .order_by(MarketRegimeLog.ref_date.desc())
+        .all()
+    )
+    since = row.ref_date
+    days = 0
+    for day, ratio in rows:
+        if ratio is None or ratio != 0:
+            break
+        since = day
+        days += 1
+    return {"entry_block_since": since.isoformat(), "entry_block_days": days}
+
+
 def _build_market(db: Session, settings: MapsSettings, ref_date: dt.date) -> DigestMarket:
     """장세 섹션. 국면은 영속 로그가 정본, 팩터는 생성 시점에 재계산한다."""
     from maps.market.regime import PlaceholderKostolanyDataProvider, create_regime_analyzer
@@ -172,6 +209,7 @@ def _build_market(db: Session, settings: MapsSettings, ref_date: dt.date) -> Dig
                 else f"partial market score; missing={','.join(missing)}"
             ),
             source="market_regime_log",
+            **_entry_block_streak(db, row),
         )
 
     analyzer = create_regime_analyzer(settings)
@@ -922,6 +960,149 @@ def _build_market_context(db: Session, ref_date: dt.date) -> list[DigestReportEx
     return out
 
 
+def _names_for(db: Session, tickers: set[str]) -> dict[str, str]:
+    """ticker → 종목명. 비면 조회하지 않는다."""
+    if not tickers:
+        return {}
+    return {
+        m.ticker: m.name
+        for m in db.query(SecurityMetadata).filter(SecurityMetadata.ticker.in_(tickers)).all()
+    }
+
+
+def _build_limit_up(db: Session, settings: MapsSettings, ref_date: dt.date) -> DigestLimitUp:
+    """상한가 전략의 하루 — 감시한 종목의 결말, 감시 전 탈락, 가드, 시간외 감시.
+
+    체결은 ``executions`` 에 이미 있으니(strategy_id ``limit_up_v1:*``) 여기선 세지 않는다.
+    꺼져 있던 날도 객체를 돌려준다 — "후보가 없었다" 와 "안 돌았다" 는 다른 사실이다.
+    """
+    from maps.limit_up.service import automatic_mode_blocked_reason
+
+    sessions = (
+        db.query(LimitUpSession)
+        .filter(LimitUpSession.ref_date == ref_date)
+        .order_by(LimitUpSession.id.desc())
+        .all()
+    )
+    guard_row = db.get(LimitUpDailyGuard, ref_date)
+    rejections = dict(guard_row.scan_rejections or {}) if guard_row else {}
+    names = _names_for(db, {s.ticker for s in sessions} | set(rejections))
+
+    filled: dict[int, int] = {}
+    if sessions:
+        for session_id, qty in (
+            db.query(LimitUpOrderLeg.session_id, LimitUpOrderLeg.filled_quantity)
+            .filter(LimitUpOrderLeg.session_id.in_([s.id for s in sessions]))
+            .all()
+        ):
+            filled[session_id] = filled.get(session_id, 0) + int(qty or 0)
+
+    guard = None
+    if guard_row is not None:
+        guard = DigestLimitUpGuard(
+            attempts=guard_row.attempts,
+            pattern_failures=guard_row.pattern_failures,
+            halted_reasons=list(guard_row.halted_reasons or []),
+            scan_rejections=[
+                DigestLimitUpScanRejection(ticker=t, name=names.get(t), reason=r)
+                for t, r in sorted(rejections.items())
+            ],
+        )
+
+    after_hours = None
+    job = (
+        db.query(JobRunLog)
+        .filter(JobRunLog.name == "limit_up_after_hours", JobRunLog.ref_date == ref_date)
+        .order_by(JobRunLog.id.desc())
+        .first()
+    )
+    if job is not None:
+        details = json.loads(job.details_json) if job.details_json else {}
+        after_hours = DigestLimitUpAfterHours(
+            status=job.status,
+            final_round=bool(details.get("final_round", False)),
+            watched=int(details.get("watched", 0)),
+            exited=int(details.get("exited", 0)),
+            no_trade=int(details.get("no_trade", 0)),
+            bad_data=int(details.get("bad_data", 0)),
+            errors=int(details.get("errors", 0)),
+            skipped=details.get("skipped"),
+        )
+
+    return DigestLimitUp(
+        enabled=settings.maps_limit_up_enabled,
+        mode=settings.maps_limit_up_mode,
+        blocked_reason=automatic_mode_blocked_reason(settings),
+        sessions=[
+            DigestLimitUpSession(
+                ticker=s.ticker,
+                name=names.get(s.ticker),
+                market=s.market,
+                state=s.state,
+                execution_mode=s.execution_mode,
+                outcome="no_trigger" if s.net_fired_at is None else (s.end_reason or s.state),
+                upper_limit_price=s.upper_limit_price,
+                trigger_price=s.trigger_price,
+                trigger_at=_utc_to_kst_iso(s.trigger_at) if s.trigger_at else None,
+                first_fill_at=_utc_to_kst_iso(s.first_fill_at) if s.first_fill_at else None,
+                end_reason=s.end_reason,
+                filled_quantity=filled.get(s.id, 0),
+                realized_pnl=s.realized_pnl,
+            )
+            for s in sessions
+        ],
+        guard=guard,
+        after_hours=after_hours,
+    )
+
+
+def _build_analysis_run(db: Session, ref_date: dt.date) -> DigestAnalysisRun | None:
+    """16:00 /analyze 크론의 실행 기록. 행이 없으면 None(미실행·휴장).
+
+    ``analysis_run.ref_date`` 는 unique 가 아니다 — 크론 실패행이 같은 날 뒤에 붙는다.
+    그래서 최신 1행을 정본으로 쓰고 행 수를 같이 드러낸다.
+    """
+    runs = (
+        db.query(AnalysisRun)
+        .filter(AnalysisRun.ref_date == ref_date)
+        .order_by(AnalysisRun.id.desc())
+        .all()
+    )
+    if not runs:
+        return None
+    run = runs[0]
+    picks = (
+        db.query(AnalysisPick)
+        .filter(AnalysisPick.ref_date == ref_date, AnalysisPick.source == "analyze")
+        .order_by(AnalysisPick.id)
+        .all()
+    )
+    return DigestAnalysisRun(
+        status=run.status,
+        source=run.source,
+        created_at=_utc_to_kst_iso(run.created_at) if run.created_at else None,
+        regime=run.regime,
+        strategy_context=run.strategy_context,
+        picks_count=run.picks_count,
+        candidates_count=run.candidates_count,
+        note=run.note,
+        error_message=run.error_message,
+        run_count=len(runs),
+        picks=[
+            DigestAnalysisPick(
+                ticker=p.ticker,
+                name=p.name,
+                buy_price=p.buy_price,
+                target_price=p.target_price,
+                stop_price=p.stop_price,
+                state=p.state,
+                rationale=p.rationale,
+            )
+            for p in picks
+        ],
+    )
+
+
 def build_daily_digest(
     db: Session, settings: MapsSettings, ref_date: dt.date
 ) -> DailyDigest:
@@ -992,4 +1173,8 @@ def build_daily_digest(
     digest.market_context = _section(
         "market_context", lambda: _build_market_context(db, ref_date)
     ) or []
+    digest.limit_up = _section("limit_up", lambda: _build_limit_up(db, settings, ref_date))
+    digest.analysis_run = _section(
+        "analysis_run", lambda: _build_analysis_run(db, ref_date)
+    )
     return digest

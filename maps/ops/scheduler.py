@@ -908,6 +908,27 @@ class OperationalPipeline:
 
         return self._job("eod_cleanup", _run)
 
+    def run_daily_close_report(self, ref_date: dt.date | None = None) -> JobRun:
+        """장마감 텔레그램 리포트 — 다이제스트 + 당일 실패 잡을 한 통으로 보낸다.
+
+        발송 실패는 예외로 올려 잡을 failed 로 남긴다. 조용히 안 오면 아무도 모른다.
+        """
+        from maps.ops.close_report import build_close_report
+        from maps.ops.notifications import get_telegram_notifier
+
+        ref_date = ref_date or dt.date.today()
+
+        def _run(db: Session) -> dict:
+            notifier = get_telegram_notifier()
+            if not notifier.enabled:
+                return {"ref_date": ref_date.isoformat(), "skipped": "telegram_disabled"}
+            text = build_close_report(db, self._settings, ref_date)
+            if not notifier.send_long(text):
+                raise RuntimeError("Telegram send failed for the close report")
+            return {"ref_date": ref_date.isoformat(), "sent": True, "chars": len(text)}
+
+        return self._job("daily_close_report", _run)
+
     def _limit_up_exits_active(self) -> bool:
         """Return whether the evening watch should protect a live position.
 
@@ -4016,6 +4037,7 @@ class MapsOperationalScheduler:
             "order_cycle": self._pipeline.run_order_cycle,
             "broker_sync": self._pipeline.sync_broker_state,
             "eod_cleanup": self._pipeline.run_eod_cleanup,
+            "daily_close_report": self._pipeline.run_daily_close_report,
             "limit_up_after_hours": self._pipeline.run_limit_up_after_hours,
             "limit_up_after_hours_final": lambda: (
                 self._pipeline.run_limit_up_after_hours(final_round=True)
@@ -4065,6 +4087,8 @@ class MapsOperationalScheduler:
             misfire_grace_time=self._settings.maps_broker_sync_interval_seconds * 2,
         )
         self._add_weekday_job("eod_cleanup", self._settings.maps_eod_time)
+        # 블로그 크론(18:30, 최대 15분) 뒤 — 블로그 원고 미생성도 리포트가 잡아낸다.
+        self._add_weekday_job("daily_close_report", self._settings.maps_close_report_time)
         # 시간외 단일가는 16:00~18:00 사이 10분 단위로 체결된다. 17:50 회차가 마지막
         # 실효 회차다 — 거기서 낸 주문이 18:00 최종 체결에 걸린다. second=5 는
         # KRX 매칭 → KIS 반영 지연 버퍼로, 정각에 폴링하면 10분 전 값으로 판정할 수 있다.

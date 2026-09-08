@@ -114,6 +114,25 @@ def test_style_guide_describes_readability_validation() -> None:
     assert "핵심 전문용어의 쉬운 설명 누락까지 검사한다" in STYLE
 
 
+def test_blog_prompt_explains_why_nothing_was_bought() -> None:
+    """상한가 전략·분석 파이프라인의 '왜 안 샀나' 를 JSON 필드로만 쓰게 한다."""
+    prompt = Path(".claude/commands/blog.md").read_text(encoding="utf-8")
+
+    for phrase in (
+        "limit_up",
+        "scan_rejections",
+        "no_trigger",
+        "halted_reasons",
+        "analysis_run",
+        "entry_block_since",
+        "【 상한가 전략 】",
+        "【 분석 파이프라인 】",
+        "상한가 후보 없음",
+        "분석 파이프라인 실행 기록 없음",
+    ):
+        assert phrase in prompt
+
+
 def test_blog_prompt_requires_liquidity_cap_disclosure() -> None:
     """축소된 주문을 원래 계획대로 산 것처럼 쓰지 못하게 한다."""
     prompt = Path(".claude/commands/blog.md").read_text(encoding="utf-8")

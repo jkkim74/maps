@@ -454,6 +454,16 @@ class KISIntradayRuntime:
                     else "halted"
                 )
             rejected[reason] += 1
+            # 매매 기록은 "+25% 까지 갔는데 왜 안 샀나" 만 묻는다. 트리거 미달은 후보가
+            # 아니고, 이미 감시 중인 종목은 세션 행이 답한다. 나머지는 로그 한 줄뿐이라
+            # 그날 가드 행에 종목별 첫 사유를 남긴다.
+            if candidate.change_rate >= 25.0 and reason != "already_watching":
+                await self._call_service(
+                    self.service.record_scan_rejection,
+                    ticker,
+                    reason,
+                    ref_date=now.date(),
+                )
         self._log_scan_summary(ranked_count, len(rows), accepted, rejected)
         return accepted
 

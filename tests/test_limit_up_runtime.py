@@ -743,3 +743,38 @@ def test_feed_disconnect_logging_splits_expected_closes_from_faults(caplog) -> N
     assert all(r.exc_info is None and "끊김" in r.getMessage() for r in warnings)
     assert len(errors) == 2
     assert all(r.exc_info is not None for r in errors)
+
+
+async def test_scan_persists_first_rejection_for_limit_movers_only(db) -> None:
+    """+25% 종목의 탈락 사유는 가드 행에 종목별 첫 사유로 남고, 트리거 미달은 남지 않는다."""
+    from maps.common.models import LimitUpDailyGuard
+
+    preferred = _scan_row("555555")
+    below = {**_scan_row("666666"), "change_rate": 10.0}
+    runtime = _scan_runtime(db, [preferred, below], 30, listed={"666666"})
+    db.add(
+        SecurityMetadata(
+            ticker="555555",
+            name="테스트우",
+            market="KOSDAQ",
+            security_type="STOCK",
+            listing_date=dt.date(2020, 1, 1),
+        )
+    )
+    db.commit()
+
+    assert await runtime.scan_once() == 0
+
+    guard = db.get(LimitUpDailyGuard, dt.date(2026, 8, 28))
+    assert guard is not None
+    assert guard.scan_rejections == {"555555": "ineligible_security:preferred"}
+
+    # 다음 회차에 사유가 바뀌어도(거래정지) 첫 사유가 남는다.
+    runtime.adapter.get_limit_up_candidates = lambda: (
+        [_scan_row("555555", halted=True)], 30
+    )
+    await runtime.scan_once()
+    db.expire_all()
+    assert db.get(LimitUpDailyGuard, dt.date(2026, 8, 28)).scan_rejections == {
+        "555555": "ineligible_security:preferred"
+    }

@@ -68,6 +68,7 @@ class MapsSettings(BaseSettings):
     maps_order_time: str = "08:55"
     maps_eod_time: str = "15:35"
     maps_stock_report_time: str = "15:00"
+    maps_close_report_time: str = "19:00"   # 장마감 텔레그램 리포트 (블로그 크론 18:30 뒤)
     maps_broker_sync_interval_seconds: int = Field(default=60, ge=10)
     maps_order_retry_attempts: int = Field(default=3, ge=1)
     maps_order_retry_backoff_seconds: float = Field(default=0.5, ge=0.0)
@@ -398,6 +399,7 @@ def get_config_status(settings: MapsSettings | None = None) -> list[ConfigSectio
                 _field(s, "maps_scheduler_timezone", "MAPS_SCHEDULER_TIMEZONE", "Scheduler timezone", required=True),
                 _field(s, "maps_broker_sync_interval_seconds", "MAPS_BROKER_SYNC_INTERVAL_SECONDS", "Broker balance/fill sync interval seconds"),
                 _field(s, "maps_stock_report_time", "MAPS_STOCK_REPORT_TIME", "Daily stock report generation time"),
+                _field(s, "maps_close_report_time", "MAPS_CLOSE_REPORT_TIME", "Daily close-of-day Telegram report time"),
                 _field(s, "maps_krx_closed_dates", "MAPS_KRX_CLOSED_DATES", "Additional comma-separated KRX closure dates"),
                 _field(s, "maps_krx_login_guard_enabled", "MAPS_KRX_LOGIN_GUARD_ENABLED", "Circuit breaker that stops KRX login retries after repeated failures"),
                 _field(s, "maps_krx_login_max_failures", "MAPS_KRX_LOGIN_MAX_FAILURES", "Consecutive KRX login failures before the circuit opens"),

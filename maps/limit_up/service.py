@@ -301,6 +301,17 @@ class LimitUpService:
             commands = machine.on_market_halt(at=at)
             self._handle_commands(ticker, commands, now_kst=now)
 
+    def record_scan_rejection(
+        self, ticker: str, reason: str, *, ref_date: dt.date
+    ) -> None:
+        """Persist why a +25% mover was refused a watch — the diary's only source.
+
+        Runs on the serialized worker like every other DB touch. No in-memory
+        dedup: the guard row decides, so a restart cannot re-record a ticker.
+        """
+        if self.repository.record_scan_rejection(ref_date, ticker, reason):
+            self.repository.db.commit()
+
     def on_feed_reconnect(self) -> None:
         """Clear the feed-loss latch once real-time data is flowing again.
 

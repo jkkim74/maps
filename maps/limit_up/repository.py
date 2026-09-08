@@ -133,6 +133,22 @@ class LimitUpRepository:
         row.halted_reasons = sorted(halted_reasons)
         self.db.flush()
 
+    def record_scan_rejection(self, ref_date: dt.date, ticker: str, reason: str) -> bool:
+        """Remember why a +25% mover was not watched today; first reason wins.
+
+        The row is the dedup source so a restarted process cannot overwrite the
+        reason the day actually started with. Returns True when a new ticker was
+        recorded; the caller commits.
+        """
+        row = self.load_guard(ref_date)
+        current = row.scan_rejections or {}
+        if ticker in current:
+            return False
+        # JSON 컬럼은 제자리 수정을 감지하지 못한다 — 새 dict 를 재대입한다.
+        row.scan_rejections = {**current, ticker: reason}
+        self.db.flush()
+        return True
+
     def bought_quantity(self, session: LimitUpSession) -> int:
         """Return cumulative shares bought on this session's own legs.
 

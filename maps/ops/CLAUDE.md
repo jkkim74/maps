@@ -9,6 +9,7 @@
 ops/
 ├── __init__.py             # 빈 패키지 마커
 ├── candidate_selection.py  # AI 모드별 후보 주문 자격 SQL 식
+├── close_report.py         # 장마감 텔레그램 리포트 — 다이제스트 + 당일 실패 잡 렌더
 ├── daily_digest.py         # 하루치 매매 기록 결정적 조립 (블로그 입력)
 ├── liquidity_cap.py        # 주문 수량 유동성 한도 (순수 함수)
 ├── notifications.py        # Slack / Telegram / FCM 알림
@@ -254,6 +255,32 @@ broker sync는 기존 손절·익절·전략 청산을 먼저 처리한 뒤 보�
 | `candidate_total` / `candidate_ready_total` / `candidate_incomplete_total` | 고유 ticker 기준 전체 / 완성 / 미완성 수 |
 
 같은 ticker 가 두 목록에 동시에 들어가지 않는다 — 완성 행이 하나라도 있으면 완성 목록에만 싣는다.
+
+"시스템은 정상인데 왜 한 종목도 안 샀나" 는 세 필드가 답한다.
+
+| 필드 | 출처 | 뜻 |
+|---|---|---|
+| `market.entry_block_since` / `entry_block_days` | `market_regime_log` | `entry_limit_ratio == 0` 연속 구간의 시작일·일수. 오늘이 0 이 아니면 비어 있다 |
+| `limit_up` | `limit_up_session`·`limit_up_daily_guard`·`job_run_log(limit_up_after_hours)` | 감시 종목의 `outcome`(`no_trigger` 또는 `end_reason`), `guard.scan_rejections`(+25% 도달 후 감시 제외 종목·사유), 시간외 감시 카운터. 꺼진 날도 `enabled=false` 로 객체를 돌려준다 |
+| `analysis_run` | `analysis_run` + `analysis_pick(source=analyze)` | 16:00 `/analyze` 실행 기록. `picks_count=0` 이면 `note`(`"<N>단계 <agent>: <사유>"`) 가 멈춘 게이트다 |
+
+> ⚠️ `analysis_run.ref_date` 는 unique 가 아니다 — 크론 실패행이 같은 날 뒤에 붙는다.
+> 다이제스트는 **최신 1행**을 쓰고 `run_count` 로 행 수를 드러낸다.
+> 상한가 체결은 `executions`(`strategy_id` `limit_up_v1:*`) 에 있으므로 `limit_up` 은 다시 세지 않는다.
+
+## close_report.py — 장마감 텔레그램 리포트
+
+`build_close_report(db, settings, ref_date) -> str` — `build_daily_digest` 결과에 당일 `job_run_log`
+실패 행(**전부**, 잡별 마지막 행이 아니라 — 재실행 성공이 실패를 가리면 안 된다)을 얹어 텔레그램 HTML 로
+렌더한다. 스케줄러 잡 `daily_close_report`(`MAPS_CLOSE_REPORT_TIME`, 기본 19:00)가
+`TelegramNotifier.send_long()` 으로 보낸다. 텔레그램이 꺼져 있으면 `skipped=telegram_disabled`,
+발송 실패는 잡 failed.
+
+"확인 필요" 는 규칙으로만 뽑는다(LLM 없음): 실패 잡, `broker_sync` 실패 ≥3, 다이제스트 섹션 오류,
+`entry_block_days ≥ 5`, 미측정 시장 팩터, 상한가 탈락의 `listing_unknown`/`unknown_security`,
+가드 래치, 미완성 후보 30% 초과, 유동성 차단, `analysis_run` 없음/실패, 만료 조건부 진입,
+종목 리포트 실패, 블로그 파일 없음. `stock_report`·`analyze`·`blog` 는 `job_run_log` 에 없으므로
+다이제스트 필드와 블로그 파일 존재로 본다.
 
 > ⚠️ 매매기록·블로그는 `incomplete_candidates` 의 `final_score` 를 **부분 산출값**으로만
 > 부르고 순위 비교에 쓰지 않는다. `missing_components` 가 비면 추정하지 말고

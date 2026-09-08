@@ -252,6 +252,26 @@ class TelegramNotifier:
             payload["reply_markup"] = {"inline_keyboard": buttons}
         return self._call("sendMessage", payload)
 
+    def send_long(self, text: str, *, limit: int = 4000) -> bool:
+        """4096자 한도를 넘는 본문을 줄 경계에서 나눠 여러 메시지로 보낸다.
+
+        한도를 넘는 단일 메시지는 텔레그램이 400 으로 거부하고 ``_call`` 이 삼켜서
+        아무것도 안 온다. 줄 하나가 ``limit`` 를 넘으면 그 줄만 자른다.
+        """
+        chunks: list[str] = []
+        current = ""
+        for line in text.split("\n"):
+            line = line[:limit]
+            candidate = line if not current else f"{current}\n{line}"
+            if len(candidate) > limit:
+                chunks.append(current)
+                current = line
+            else:
+                current = candidate
+        if current:
+            chunks.append(current)
+        return all([self.send_message(chunk) for chunk in chunks])
+
     def answer_callback(self, callback_query_id: str, text: str = "") -> bool:
         """인라인 버튼 콜백에 대한 토스트 응답."""
         payload: dict[str, Any] = {"callback_query_id": callback_query_id}

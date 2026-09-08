@@ -18,9 +18,14 @@ from maps.common.db import Base
 from maps.common.models import (
     AnalysisPick,
     AnalysisPickLeg,
+    AnalysisRun,
     CandidateSnapshot,
     HistoricalOHLCV,
     HoldingRegimeAudit,
+    JobRunLog,
+    LimitUpDailyGuard,
+    LimitUpOrderLeg,
+    LimitUpSession,
     MarketRegimeLog,
     OrderLog,
     PortfolioSnapshot,
@@ -763,3 +768,135 @@ def test_digest_ignores_orders_without_liquidity_cap(db) -> None:
 
     assert digest.liquidity_capped_total == 0
     assert digest.liquidity_notes == []
+
+
+def _limit_up_session(db, ticker: str, **overrides) -> LimitUpSession:
+    row = LimitUpSession(
+        ref_date=REF_DATE,
+        ticker=ticker,
+        market="KOSDAQ",
+        upper_limit_price=1_300,
+        trigger_price=1_290,
+        total_listed_shares=10_000_000,
+        execution_mode="automatic",
+        **overrides,
+    )
+    db.add(row)
+    db.flush()
+    return row
+
+
+def test_limit_up_section_reports_outcomes_scan_rejections_and_after_hours(db, settings) -> None:
+    """감시만 한 종목·가드에 막힌 종목·감시 전 탈락 종목·시간외 결과가 모두 남는다."""
+    db.add(SecurityMetadata(ticker="111111", name="감시만", market="KOSDAQ", security_type="stock"))
+    db.add(SecurityMetadata(ticker="222222", name="가드차단", market="KOSDAQ", security_type="stock"))
+    db.add(SecurityMetadata(ticker="333333", name="우선주", market="KOSDAQ", security_type="stock"))
+    _limit_up_session(db, "111111")                                   # 트리거 미발생
+    guarded = _limit_up_session(
+        db, "222222", state="closed", end_reason="daily_guard",
+        net_fired_at=dt.datetime(2026, 7, 27, 1, 30),
+    )
+    db.add(LimitUpOrderLeg(session_id=guarded.id, name="S", price=1_300, quantity=10,
+                           filled_quantity=0, status="cancelled"))
+    db.add(LimitUpDailyGuard(
+        ref_date=REF_DATE, attempts=1, halted_reasons=["kosdaq_drawdown"],
+        scan_rejections={"333333": "ineligible_security:preferred"},
+    ))
+    db.add(JobRunLog(
+        name="limit_up_after_hours", status="success", ref_date=REF_DATE,
+        started_at=dt.datetime(2026, 7, 27, 9, 0),
+        details_json='{"final_round": true, "watched": 1, "exited": 0, "no_trade": 1, "bad_data": 0, "errors": 0}',
+    ))
+    db.commit()
+
+    digest = build_daily_digest(db, settings, REF_DATE)
+    section = digest.limit_up
+
+    assert section is not None and section.enabled is False
+    outcomes = {s.ticker: s.outcome for s in section.sessions}
+    assert outcomes == {"111111": "no_trigger", "222222": "daily_guard"}
+    assert {s.ticker: s.name for s in section.sessions}["111111"] == "감시만"
+    assert section.guard is not None
+    assert section.guard.halted_reasons == ["kosdaq_drawdown"]
+    assert [(r.ticker, r.name, r.reason) for r in section.guard.scan_rejections] == [
+        ("333333", "우선주", "ineligible_security:preferred")
+    ]
+    assert section.after_hours is not None
+    assert section.after_hours.final_round is True
+    assert section.after_hours.no_trade == 1
+    assert "limit_up" not in " ".join(digest.errors)
+
+
+def test_limit_up_section_exists_on_a_quiet_day(db, settings) -> None:
+    """후보가 없던 날과 엔진이 꺼진 날은 구분돼야 한다 — 빈 객체라도 돌려준다."""
+    digest = build_daily_digest(db, settings, REF_DATE)
+
+    assert digest.limit_up is not None
+    assert digest.limit_up.sessions == []
+    assert digest.limit_up.guard is None
+    assert digest.limit_up.after_hours is None
+    assert digest.analysis_run is None
+
+
+def test_analysis_run_section_uses_latest_row_and_lists_picks(db, settings) -> None:
+    """같은 날 두 행이면 최신(실패) 행이 정본이고, 행 수를 드러낸다."""
+    db.add(AnalysisRun(
+        ref_date=REF_DATE, status="completed", regime="mixed",
+        strategy_context="선정 전략 없음", picks_count=0,
+        note="2단계 strategy-selector: entry_limit_ratio=0.0 (weekly_trend=fail)",
+    ))
+    db.flush()
+    db.add(AnalysisRun(ref_date=REF_DATE, status="failed", error_message="timeout(2700s)"))
+    db.add(AnalysisPick(
+        ref_date=REF_DATE, ticker="005930", name="삼성전자", market="KOSPI",
+        source="analyze", buy_price=70_000, target_price=77_000, stop_price=66_000,
+    ))
+    db.add(AnalysisPick(
+        ref_date=REF_DATE, ticker="000660", name="수동", market="KOSPI", source="manual",
+    ))
+    db.commit()
+
+    digest = build_daily_digest(db, settings, REF_DATE)
+    run = digest.analysis_run
+
+    assert run is not None
+    assert run.status == "failed"
+    assert run.error_message == "timeout(2700s)"
+    assert run.run_count == 2
+    assert [p.ticker for p in run.picks] == ["005930"]
+    assert run.picks[0].target_price == 77_000
+
+
+def test_market_reports_entry_block_streak(db, settings) -> None:
+    """신규매수 한도 0% 가 며칠째인지 — 로그 행이 없는 날(휴장)은 건너뛰고 0 이 아니면 끊는다."""
+    for day, ratio in (
+        (dt.date(2026, 7, 22), 0.5),
+        (dt.date(2026, 7, 23), 0.0),
+        (dt.date(2026, 7, 24), 0.0),
+        (dt.date(2026, 7, 27), 0.0),
+    ):
+        db.add(MarketRegimeLog(
+            ref_date=day, raw_regime="mixed", applied_regime="mixed",
+            weekly_trend="fail", entry_limit_ratio=ratio,
+        ))
+    db.commit()
+
+    market = build_daily_digest(db, settings, REF_DATE).market
+
+    assert market is not None
+    assert market.entry_block_since == "2026-07-23"
+    assert market.entry_block_days == 3
+
+
+def test_market_entry_block_is_empty_when_entries_are_open(db, settings) -> None:
+    db.add(MarketRegimeLog(
+        ref_date=REF_DATE, raw_regime="strong", applied_regime="strong",
+        weekly_trend="pass", entry_limit_ratio=1.0,
+    ))
+    db.commit()
+
+    market = build_daily_digest(db, settings, REF_DATE).market
+
+    assert market is not None
+    assert market.entry_block_since is None
+    assert market.entry_block_days == 0

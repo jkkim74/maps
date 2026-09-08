@@ -50,8 +50,20 @@ strategy-selector가 사람용 문서에서 승격 단계를 추측하지 않도
        --regime <1단계 regime> \
        --context "<2·3단계 선정 전략 / 섹터>" \
        --candidates-count <4단계 스크리닝 후보 수> \
-       --note "<예: 안전마진 14→2, R:R 게이트 2→0 전량 탈락>"
+       --note "<N>단계 <agent>: <사유>"
    ```
+
+   `--note` 는 매매 기록(다이제스트 `analysis_run.note`)이 **그대로 인용**하는 유일한 사유
+   기록이다. 형식을 지킨다:
+   - 반드시 `"<N>단계 <agent>: <사유>"` 로 시작한다. 여러 단계면 `" / "` 로 잇는다.
+     예: `"5단계 margin-of-safety: 14→2 / 7단계 trade-planner: R:R 게이트 2→0"`
+   - 사유는 에이전트가 돌려준 값을 쓴다. 없는 원인을 지어내지 않는다.
+   - 4단계를 돌렸으면 `--candidates-count` 를 반드시 넘긴다.
+
+   **2단계 하드블록**: strategy-selector 가 `selected_strategies: []`(`cash_ratio: 1.0`)
+   를 돌려주면 3~7단계를 건너뛰고 **즉시** 로더를 호출한다. 이 날은 `--context "선정 전략 없음"`,
+   `--note "2단계 strategy-selector: <에이전트 사유 그대로, 예: entry_limit_ratio=0.0 (weekly_trend=fail)>"`,
+   `--candidates-count` 는 생략한다. 사용자 보고에는 어느 단계에서 멈췄는지를 첫 줄에 쓴다.
 
 최종 출력: 종목별 목표가 / 매수가 / 손절가 / 손익비 / 포지션 사이즈 표.
 세 가격(목표가·매수가·손절가)이 모두 있는 종목만 최종 리스트에 포함한다.

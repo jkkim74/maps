@@ -976,6 +976,9 @@ class DigestMarket(BaseModel):
     factors: list[DigestFactor] = []
     reason: str | None = None
     source: str = "market_regime_log"
+    # 신규매수 한도 0% 연속 구간 — "왜 몇 주째 한 종목도 안 샀나" 의 직접 답.
+    entry_block_since: str | None = None    # 연속 0.0 이 시작된 ref_date (오늘이 0 이 아니면 None)
+    entry_block_days: int = 0               # 그 연속 일수 (market_regime_log 행 기준)
 
 
 class DigestSector(BaseModel):
@@ -1138,6 +1141,84 @@ class DigestPortfolio(BaseModel):
     )
 
 
+class DigestLimitUpSession(BaseModel):
+    """상한가 전략이 그날 감시한 종목 하나. 체결 자체는 executions 에 있다."""
+    ticker: str
+    name: str | None = None
+    market: str
+    state: str
+    execution_mode: str
+    # no_trigger(감시만 하고 진입 신호 없음) 또는 end_reason, 그것도 없으면 state
+    outcome: str
+    upper_limit_price: int
+    trigger_price: int
+    trigger_at: str | None = None
+    first_fill_at: str | None = None
+    end_reason: str | None = None
+    filled_quantity: int = 0
+    realized_pnl: float | None = None
+
+
+class DigestLimitUpScanRejection(BaseModel):
+    """+25% 까지 오르고도 감시 대상에서 빠진 종목과 첫 사유."""
+    ticker: str
+    name: str | None = None
+    reason: str
+
+
+class DigestLimitUpGuard(BaseModel):
+    attempts: int = 0
+    pattern_failures: int = 0
+    halted_reasons: list[str] = []
+    scan_rejections: list[DigestLimitUpScanRejection] = []
+
+
+class DigestLimitUpAfterHours(BaseModel):
+    """시간외 감시 잡(job_run_log) 의 마지막 회차 카운터."""
+    status: str
+    final_round: bool = False
+    watched: int = 0
+    exited: int = 0
+    no_trade: int = 0
+    bad_data: int = 0
+    errors: int = 0
+    skipped: str | None = None
+
+
+class DigestLimitUp(BaseModel):
+    enabled: bool
+    mode: str
+    blocked_reason: str | None = None       # automatic 모드가 거부된 이유 (있으면)
+    sessions: list[DigestLimitUpSession] = []
+    guard: DigestLimitUpGuard | None = None
+    after_hours: DigestLimitUpAfterHours | None = None
+
+
+class DigestAnalysisPick(BaseModel):
+    ticker: str
+    name: str | None = None
+    buy_price: float | None = None
+    target_price: float | None = None
+    stop_price: float | None = None
+    state: str
+    rationale: str | None = None
+
+
+class DigestAnalysisRun(BaseModel):
+    """16:00 /analyze 크론의 실행 기록(analysis_run 최신 행)."""
+    status: str
+    source: str
+    created_at: str | None = None
+    regime: str | None = None
+    strategy_context: str | None = None
+    picks_count: int = 0
+    candidates_count: int | None = None
+    note: str | None = None                 # "<N>단계 <agent>: <사유>" — 0종목의 이유
+    error_message: str | None = None
+    run_count: int = 1                      # 같은 날 행 수 (크론 실패행이 뒤에 붙을 수 있다)
+    picks: list[DigestAnalysisPick] = []
+
+
 class DailyDigest(BaseModel):
     ref_date: str
     generated_at: str
@@ -1165,6 +1246,9 @@ class DailyDigest(BaseModel):
     conditional_entries: list[DigestConditionalEntry] = []
     executions: list[DigestExecution] = []
     market_context: list[DigestReportExcerpt] = []
+    # 시스템이 정상인데 왜 한 종목도 안 샀는지 — 상한가 전략과 16시 분석 파이프라인.
+    limit_up: DigestLimitUp | None = None
+    analysis_run: DigestAnalysisRun | None = None
     errors: list[str] = []
 
 

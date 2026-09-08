@@ -376,3 +376,23 @@ def test_webhook_arm_rejects_stale_pick(webhook_client, monkeypatch) -> None:
         assert pick.state == "WATCH"                  # 무장되지 않았다
         assert pick.strategy_trade_enabled is False
     assert rec.answers and "만료" in rec.answers[0][1]
+
+
+def test_send_long_splits_on_line_boundaries(monkeypatch) -> None:
+    """4,000자 넘는 본문은 줄 경계에서 나뉘어 여러 sendMessage 로 나간다."""
+    from maps.ops.notifications import TelegramNotifier
+
+    settings = _settings_with(
+        monkeypatch, TELEGRAM_BOT_TOKEN="t", TELEGRAM_CHAT_ID="c",
+        MAPS_TELEGRAM_ALLOW_NONPROD="true",
+    )
+    http = _FakeHttp()
+    tg = TelegramNotifier(settings=settings, http=http)
+    lines = [f"line {i:04d} " + "x" * 90 for i in range(60)]   # 약 6,000자
+
+    assert tg.send_long("\n".join(lines)) is True
+
+    assert len(http.calls) == 2
+    sent = [c["json"]["text"] for c in http.calls]
+    assert all(len(chunk) <= 4000 for chunk in sent)
+    assert "\n".join(sent).split("\n") == lines               # 줄이 잘리지 않았다

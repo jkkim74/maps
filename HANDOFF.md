@@ -1,5 +1,68 @@
 # HANDOFF
 
+> ## 9/8 세션 요약 — 매매 기록에 "왜 한 종목도 안 샀나" 두 축 추가 (미배포)
+>
+> ### 목표
+> 블로그 매매 기록이 상한가 전략·16시 `/analyze` 크론을 전혀 다루지 않았다. 9/8 은 시스템이
+> 전부 정상인데(모든 잡 성공) 워치리스트 0종목·상한가 진입 0건이었고, 그 이유가 글에 안 남았다.
+>
+> ### 변경 — 테스트 `1221 passed`
+>
+> | | 내용 |
+> |---|---|
+> | 마이그레이션 `0033_limit_up_scan_rejections` | `limit_up_daily_guard.scan_rejections` JSON — +25% 도달 종목이 감시 제외된 **첫 사유** `{ticker: reason}`. `scan_once()` → `service.record_scan_rejection()` (`already_watching`·트리거 미달 제외). 중복 판정은 DB 행 |
+> | 다이제스트 `limit_up` | 감시 세션 `outcome`(`no_trigger` 또는 `end_reason`), 가드 래치·`scan_rejections`, 시간외 감시 `job_run_log` 카운터. 꺼진 날도 `enabled=false` 객체 |
+> | 다이제스트 `analysis_run` | `analysis_run` 최신 1행(+`run_count`) 과 그날 `analysis_pick(source=analyze)`. `note` 가 멈춘 게이트 |
+> | 다이제스트 `market.entry_block_since/_days` | `entry_limit_ratio == 0` 연속 구간 (9/8 기준 8/26 부터) |
+> | `analyze.md` | `--note` 형식 `"<N>단계 <agent>: <사유>"` 고정. **2단계 선정 전략 0 이면 3~7 건너뛰고 즉시 로더 호출** |
+> | `blog.md` | 3번 섹션에 상한가·분석 파이프라인 단락, 6번에 【 상한가 전략 】【 분석 파이프라인 】 |
+>
+> ### 장마감 텔레그램 리포트 (같은 세션, 미배포) — 테스트 `1229 passed`
+>
+> | | 내용 |
+> |---|---|
+> | `maps/ops/close_report.py` (신규) | `build_close_report()` — 다이제스트 + 당일 `job_run_log` 실패 행 **전부**(잡별 마지막 행 아님) → 텔레그램 HTML. 시스템·장세·계좌·매매·상한가·분석 파이프라인·내일 예정·**확인 필요**(규칙 14개, LLM 없음) |
+> | 스케줄러 잡 `daily_close_report` | 평일 KRX 거래일 `MAPS_CLOSE_REPORT_TIME`(기본 19:00). 텔레그램 꺼짐 → `skipped`, 발송 실패 → 잡 failed. 배치 모니터 행 추가 |
+> | `TelegramNotifier.send_long()` | 4,000자 줄 경계 분할 — 기존엔 분할이 없어 긴 메시지가 400 으로 조용히 죽었다 |
+> | 문서 카운트 | 운영 설정 61→62개 (`docs/ui-design/maps-auth-screen-design.html`, 테스트가 고정) |
+>
+> **새 파일 5개는 untracked** — `!ship` 은 `git add -u` 라 빠진다. 커밋 전에
+> `git add alembic/versions/0033_limit_up_scan_rejections.py maps/ops/close_report.py tests/test_close_report.py scripts/regime_rule_eval.py tests/test_regime_rule_eval.py`.
+>
+> ### 장세 판정 분석 (같은 세션) — 규칙은 유지, 평가기만 추가 (`scripts/regime_rule_eval.py`)
+>
+> 운영 `market_regime_log` 47일(7/2~9/8)을 KOSPI 실제(6/22 9,115 → 7/30 5,594 **−39%** → 9/8 6,955)와 대조했다.
+>
+> | 발견 | 근거 |
+> |---|---|
+> | **주간추세 게이트가 거꾸로 작동** — 폭락 내내 PASS(40주선이 상반기 랠리로 한참 아래), 저점 4주 뒤 8/24 FAIL → 이후 KOSPI +3.1% 동안 신규매수 0 | `analysis_run.note` 8/24~9/8 매일 "entry_limit_ratio=0.0 하드블록" |
+> | **변동성 47/47일 HIGH** — 절대 임계 20% 가 폭락장(48~97%)에선 상수. 한도가 상시 한 단계 반감, 1.0 운영 이력 없음 | `vol_regime` 열 |
+> | **8자산 투표가 한국 급락을 못 잡음** — 7/22 strong(6/8) 직후 5일 −16.7%. Korea weak guard 는 8/2 배포라 7월엔 없었음 | `raw_regime`, KOSPI 5주선 아래 8주 연속 |
+> | **mixed(0.25) 가 손실 구간** — 19일 다음날 평균 −1.17%, 상승확률 42%. weak·strong 라벨은 맞았음 | 한도별 익일 수익 표 |
+> | **종합점수가 8/14부터 strong→mixed 하향 중** — 투표 7~8/8 인데 점수 35~54 < 67. 사실상 strong 불가, 고변동성이면 최대 0.25 | `up_count` vs `raw_regime`, `final_market_score` |
+>
+> 오프라인 평가(2024-01~2026-09, 533일, `--replay-log` 로 운영 로그 재현: 주간추세·변동성 100%, raw 87%(종합점수 하향분 설명)):
+>
+> | 규칙 | 노출수익 | 낙폭 | 전환 | 판단 |
+> |---|---|---|---|---|
+> | baseline | 67.5% | −8.7% | 112 | — |
+> | (a) FAIL 한 단계 하향 | 75.0% | −8.7% | 112 | 2025 +7.3%p, 2026 −0.9%p. **strong 일 때만** 효과 — 운영은 종합점수가 strong 을 막고 있어 당장 효과 없음 |
+> | (d) strong 밴드 0.62~0.70 | 66.2% | −8.7% | 81 | 전환 −28%, 수익 ±1%p |
+> | (b) 변동성 백분위 / (c) SOX 교체 / (e) KOSPI 2표 | 67.8 / 59.6 / 54.7 | — | — | 효과 없음·나쁨 |
+>
+> **사용자 결정: 규칙 유지.** 다음 순서는 종합점수 67 임계(strong 불가 구조) 재검토 → 그 뒤 (a)/(d).
+> SOX 는 KOSPI 익일 상관 0.43(S&P 0.35)으로 선행성은 있으나 동일가중 투표에선 효과가 없다 — 넣는다면 `foreign_fx` 팩터 쪽.
+>
+> ### 배포 시
+> **`alembic upgrade head` 필수**, 16:00~16:45 KST 회피. 배포 다음 거래일 18:30 블로그 산출물에서
+> 3번 섹션 단락 확인, 19:00 텔레그램 리포트 수신 확인. 상한가 체결은 기존 `executions`(`limit_up_v1:*`) 에 있어 `limit_up` 은 다시 세지 않는다.
+> 로컬에서 본문만 보려면 `MAPS_TELEGRAM_ALLOW_NONPROD` 없이도 `build_close_report()` 를 직접 호출하면 된다.
+>
+> ### 9/8 운영 로그 점검 (별건)
+> 전 잡 성공. KIS 모의서버 타임아웃 15:10~15:29(broker_sync 8회 실패, 15:34 자동 회복),
+> 17:23~17:28 non-JSON 2회 + `403 EGW00103 AppKey` 1회(1분 뒤 정상 — 재발 시 AppKey 확인).
+> stock_report 의 `NanumGothic` 폰트 없음 경고 수백 줄 — 서버에 `fonts-nanum` 설치하면 사라진다.
+
 > ## 9/7 세션 요약 — 새 컨텍스트로 이어받는 사람이 먼저 읽을 것
 >
 > ### 목표

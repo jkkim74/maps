@@ -31,6 +31,7 @@
 | `evaluate_pullback_v3_3.py` | 청산 조합 × 강세 3구간 감사 평가 |
 | `evaluate_ai_scoring_models.py` | AI 스코어링 모델 비교 |
 | `regime_conditional_performance.py` | 장세 조건부 성과 |
+| `regime_rule_eval.py` | 장세 규칙 오프라인 평가 — 현행 판정을 과거 매일 재생(`--replay-log` 로 운영 로그와 대조)하고 대안 규칙(주간추세 FAIL 한 단계 하향·변동성 백분위·SOX 교체·strong 밴드·KOSPI 2표)을 한도 가중 노출 성과·전환 횟수·게이트 반응 일수로 비교. 운영 데이터를 바꾸지 않는다 |
 | `run_kostolany_backtest.py` | 코스톨라니 백테스트 실행 |
 | `portfolio_replay_run.py` | 포트폴리오 리플레이 실행 |
 | `build_stock_analysis_ui_ppt.py` | 화면설계서 PPT 생성 (`pillow`, `python-pptx`) |
