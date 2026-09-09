@@ -21,7 +21,10 @@
 > 다시 오면 `start_watch` 가 `already_watching` 으로 거부해 **그날 상한가로 새 세션을 못 만든다**. ③ 9/7 상한가
 > 기준 트리거를 가진 낡은 머신이 시세를 계속 받으므로 `on_trade` 가 날짜·시간 게이트 없이 `FIRE_NET` 을 낼 수 있다
 > (미검증 — 코드 경로만 확인).
-> **✅ 수정(미커밋·미배포):** `service.expire_untriggered_watches(before)` 신설 — `ref_date < before` 이고 매수 체결
+> **✅ 수정·배포 완료 (`ad01782`, 9/9 14:42 KST restart):** 재시작 직후 `recover()` 가 로그 `상한가 감시 만료 — … 012210`
+> 을 남겼고 DB 는 `#1 012210 closed / no_trigger / state_version 1`, 이벤트 `watch_expired` 1행. `/health` 200.
+> 같은 시각 **오늘(9/9) 세션 `#2 010580 watching`** 이 새로 있었고 당일분이라 유지됐다 — 첫 `automatic` 실주문 관측은 계속.
+> `service.expire_untriggered_watches(before)` 신설 — `ref_date < before` 이고 매수 체결
 > 없는 WATCHING 세션을 `closed/no_trigger`(이벤트 `watch_expired`)로 닫고 `_machines` 등에서 제거. `recover()` 끝과
 > `runtime._run_daily_actions` 08:59:30 블록(일 1회 래치 `_watches_expired`)에서 호출. TDD: 서비스 3건 + 런타임 1건
 > RED→GREEN, `.venv` 로 전체 `1240 passed`. 마이그레이션 없음. 배포 후 재시작 시 `recover()` 가 012210 을 즉시
