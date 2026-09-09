@@ -1,5 +1,36 @@
 # HANDOFF
 
+> ## 9/9 09:15 점검 메모 — 열린 항목 실측 (코드 변경 없음)
+>
+> | 항목 | 결과 |
+> |---|---|
+> | 운영 HEAD | `5f15605`(기능) — `origin/master` 는 문서 커밋 `e6ad3d5` 하나 위. `active`, alembic `0033` head |
+> | 9/7 ① 첫 `automatic` 실주문 | **아직 없음.** `limit_up_session` 은 9/7 #1 012210 한 행뿐이고 여전히 `watching`/`trigger_at NULL`/`end_reason NULL`. `limit_up_order_leg` 0건. 9/8 은 `kosdaq_drawdown` 래치, 9/9 09:10 스캔은 후보 1건 `halted`(046970, `scan_rejections` 에 기록됨 — `0033` 실효) |
+> | 9/7 ② `listing_date` 유지 | ✅ 위 항목에 반영 |
+> | 9/8 장마감 리포트 | 9/8 23:21 수동 실행 `sent=true` 1,417자. **정규 19:00 첫 수신은 오늘(9/9)** — 아직 미확인 |
+> | 9/8 `analyze` 크론 | run 52 `completed`, note "2단계 하드블록 entry_limit_ratio=0.0" — 8/24 부터 이어지는 신규매수 0 구간 계속 |
+> | 잡 실패 | `broker_sync` 9/9 09:07 KIS 500 1회 → 09:16 정상(`sync_errors=0`). 9/8 실패는 HANDOFF 9/8 절과 동일(15:05~15:23·17:23~17:28) |
+> | 9/3 이월 ④ validation 비교 | 여전히 미기록 |
+>
+> **012210 이 이틀째 `watching` 인 이유(9/9 조사, 코드 정본):** 트리거 없이 끝난 WATCHING 세션을 닫는 전이가
+> **없다.** 종료 경로는 NET_OPEN 이후(취소·보호청산·`review_eod` 는 LOCKED 만·`next_open` 은 OVERNIGHT 만·시간외)뿐이고
+> 15:35 장 마감 스윕도 없다. 게다가 `service.recover()` 가 `state != closed` 행을 **날짜 무관**하게 되살려
+> 9/8 22:38 재시작 때 `_machines` 에 복원됐고, `watched_tickers()` 가 `_machines` 전체라 매 정각 재연결마다
+> 012210 을 다시 구독한다(`limit_up_event` 행 0건 — 감시 시작·복원은 이벤트를 안 남긴다).
+> 영향: ① `_active_count` 는 WATCHING 을 안 세므로 동시 슬롯은 안 막힌다. ② 같은 종목이 다른 날 +25% 에
+> 다시 오면 `start_watch` 가 `already_watching` 으로 거부해 **그날 상한가로 새 세션을 못 만든다**. ③ 9/7 상한가
+> 기준 트리거를 가진 낡은 머신이 시세를 계속 받으므로 `on_trade` 가 날짜·시간 게이트 없이 `FIRE_NET` 을 낼 수 있다
+> (미검증 — 코드 경로만 확인).
+> **✅ 수정(미커밋·미배포):** `service.expire_untriggered_watches(before)` 신설 — `ref_date < before` 이고 매수 체결
+> 없는 WATCHING 세션을 `closed/no_trigger`(이벤트 `watch_expired`)로 닫고 `_machines` 등에서 제거. `recover()` 끝과
+> `runtime._run_daily_actions` 08:59:30 블록(일 1회 래치 `_watches_expired`)에서 호출. TDD: 서비스 3건 + 런타임 1건
+> RED→GREEN, `.venv` 로 전체 `1240 passed`. 마이그레이션 없음. 배포 후 재시작 시 `recover()` 가 012210 을 즉시
+> 닫는다 — 로그 `상한가 감시 만료 — … 012210` 과 `limit_up_session #1 state=closed, end_reason=no_trigger` 로 확인.
+> ⚠️ 이 PC 의 PATH `python` 은 전역(`C:/Python312`)이라 pykrx 에 `전종목기본정보` 가 없어 `test_krx_adapter` 2건이
+> 거짓 실패한다 — 테스트는 반드시 `.venv/Scripts/python.exe -m pytest` 로.
+
+---
+
 > ## 9/8 세션 요약 — 매매 기록에 "왜 한 종목도 안 샀나" 두 축 추가 (`5f15605`, 22:38 KST 배포)
 >
 > ### 목표
@@ -122,8 +153,8 @@
 > 1. 🔴 **첫 후보 수락·첫 `automatic` 실주문 관측.** 이제 자격 게이트가 열렸다. 스캔 요약에
 >    `신규감시 ≥1`, `limit_up_session` 행, `FIRE_NET` → `limit_up_order_leg`·`order_log`·텔레그램.
 >    이상 시 롤백은 `.env` `MAPS_LIMIT_UP_MODE=recommend_only` + restart(코드 롤백 불필요).
-> 2. 🔴 **오늘 16:40 수집 뒤 `listing_date` 가 유지되는지** (`select count(listing_date) from security_metadata` ≈ 2,764),
->    `종목 메타 상장일 결측` WARNING 이 안 나오는지 — 내일 아침 확인.
+> 2. ~~🔴 오늘 16:40 수집 뒤 `listing_date` 가 유지되는지~~ → **✅ 9/9 09:15 확인.** 9/8 16:40 수집 뒤
+>    `count(listing_date)` = 2,765 / 2,791 유지, 로그는 INFO `상장일 결측 20/2715`(WARNING 아님).
 > 3. ~~다음 정각 WebSocket 끊김이 WARNING 1줄로 바뀌었는지~~ → ✅ 13:00:01·14:00:01 WARNING 1줄 확인.
 > 5. `H0STCNT0`(체결) 도 폭이 늘어나는지 — 늘어나면 같은 WARNING 이 한 번 뜬다. 무시된 값이
 >    가격·수량·코드 모양이 아니면 중간 삽입이므로 `KIS_ASK_COLUMNS`/`KIS_TRADE_COLUMNS` 재검토.

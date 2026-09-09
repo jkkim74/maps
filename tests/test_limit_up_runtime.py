@@ -778,3 +778,35 @@ async def test_scan_persists_first_rejection_for_limit_movers_only(db) -> None:
     assert db.get(LimitUpDailyGuard, dt.date(2026, 8, 28)).scan_rejections == {
         "555555": "ineligible_security:preferred"
     }
+
+
+async def test_daily_actions_expire_yesterdays_watches_once_per_day() -> None:
+    """The process runs for weeks; a stale watch must not wait for a restart."""
+    runtime = _pump_runtime()
+    runtime._eod_reviewed = set()
+    runtime._overnight_capped = set()
+    runtime._overnight_confirmed = set()
+    runtime._overnight_forced = set()
+    runtime._opening_submitted = set()
+    runtime._watches_expired = set()
+    calls: list[dt.date] = []
+
+    class _Service:
+        def overnight_tickers(self, *, before):
+            return []
+
+        def expire_untriggered_watches(self, *, before):
+            calls.append(before)
+            return []
+
+    async def _inline(fn, *args, priority=0, **kwargs):
+        return fn(*args, **kwargs)
+
+    runtime.service = _Service()
+    runtime._call_service = _inline
+
+    await runtime._run_daily_actions(dt.datetime(2026, 9, 9, 9, 5, tzinfo=KST))
+    await runtime._run_daily_actions(dt.datetime(2026, 9, 9, 9, 6, tzinfo=KST))
+    await runtime._run_daily_actions(dt.datetime(2026, 9, 10, 9, 5, tzinfo=KST))
+
+    assert calls == [dt.date(2026, 9, 9), dt.date(2026, 9, 10)]

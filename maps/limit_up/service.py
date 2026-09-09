@@ -776,6 +776,9 @@ class LimitUpService:
             ):
                 row.state = LimitUpState.RECONCILING.value
         self.repository.db.commit()
+        # 미종료 행을 날짜 무관하게 되살리는 위 질의는 감시만 하다 끝난 행까지 딸려
+        # 온다 — 그런 행은 종료 전이가 없어 재시작마다 부활한다(2026-09-07 012210).
+        self.expire_untriggered_watches(before=ref_date)
         self._resubmit_interrupted_exits(wall)
 
     def _retry_stuck_exit(self, ticker: str, owned_quantity: int) -> None:
@@ -966,6 +969,44 @@ class LimitUpService:
             session.state = LimitUpState.CLOSED.value
             session.end_reason = "next_open"
         self.repository.db.commit()
+
+    def expire_untriggered_watches(self, *, before: dt.date) -> list[str]:
+        """Close prior-day WATCHING sessions that never fired and forget them.
+
+        Nothing else ends a watch that never triggers: every exit path starts at
+        NET_OPEN or later. Left alone, the row is revived by every ``recover()``,
+        re-subscribed on every reconnect, and its stale ``upper_limit_price``
+        both blocks a fresh watch (``already_watching``) and can still fire the
+        net on a later day's tape.
+
+        Args:
+            before: Sessions dated strictly earlier than this KST date expire.
+
+        Returns:
+            Tickers closed, sorted.
+        """
+        closed: list[str] = []
+        for ticker, machine in list(self._machines.items()):
+            session = self._sessions[ticker]
+            if (
+                machine.state is not LimitUpState.WATCHING
+                or session.ref_date >= before
+                or machine.filled_quantity > 0
+                or self.repository.bought_quantity(session) > 0
+            ):
+                continue
+            machine.state = LimitUpState.CLOSED
+            session.end_reason = "no_trigger"
+            self.repository.transition(
+                session, state=LimitUpState.CLOSED, action="watch_expired"
+            )
+            for table in (self._machines, self._sessions, self._candidates, self._last_prices):
+                table.pop(ticker, None)
+            closed.append(ticker)
+        if closed:
+            self.repository.db.commit()
+            logger.info("상한가 감시 만료 — 트리거 없이 끝난 전일 세션 종료: %s", ", ".join(closed))
+        return sorted(closed)
 
     def _close_virtual(self, ticker: str, reason: str, ref_date: dt.date) -> None:
         """Close a paper position in its durable ledger without broker I/O."""

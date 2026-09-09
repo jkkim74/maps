@@ -1207,3 +1207,63 @@ def test_kosdaq_latch_is_logged_once_with_the_numbers_that_caused_it(db, caplog)
     assert "1000.00" in latched[0]
     assert "980.00" in latched[0]
     assert "-2.00%" in latched[0]
+
+
+def test_untriggered_watch_from_a_prior_day_closes_as_no_trigger(db) -> None:
+    """A watch that never fired has no exit path, so it survives forever.
+
+    2026-09-07 의 012210 세션이 이틀 뒤에도 ``watching`` 이었다 — 종료 전이는 전부
+    진입 이후에만 있고, 같은 종목이 다른 날 +25% 에 다시 오면 ``already_watching``
+    으로 거부돼 그날 상한가 기준의 새 세션을 만들지 못했다.
+    """
+    service = _service(db, LimitUpMode.RECOMMEND_ONLY)
+    service.watch_candidate(_candidate(), now_kst=dt.datetime(2026, 9, 7, 12, 2, tzinfo=KST))
+    stale = service._sessions["005930"]
+
+    closed = service.expire_untriggered_watches(before=dt.date(2026, 9, 9))
+
+    assert closed == ["005930"]
+    assert stale.state == LimitUpState.CLOSED.value
+    assert stale.end_reason == "no_trigger"
+    assert service.watched_tickers() == ()
+    # the same ticker can be watched afresh with today's upper limit
+    assert (
+        service.watch_candidate(_candidate(), now_kst=dt.datetime(2026, 9, 9, 10, 0, tzinfo=KST))
+        is None
+    )
+    assert service._sessions["005930"].ref_date == dt.date(2026, 9, 9)
+
+
+def test_expiring_watches_keeps_today_and_anything_that_fired(db) -> None:
+    """Only a *previous* day's untriggered watch is stale; live work stays."""
+    service = _service(db, LimitUpMode.RECOMMEND_ONLY)
+    today = dt.datetime(2026, 9, 9, 10, 0, tzinfo=KST)
+    service.watch_candidate(_candidate(), now_kst=today)
+    fired = service.repository.create_or_get_session(
+        ref_date=dt.date(2026, 9, 8), ticker="000660", market="KOSPI",
+        upper_limit_price=100_000, trigger_price=99_700,
+        execution_mode=LimitUpMode.RECOMMEND_ONLY.value,
+    )
+    fired.state = LimitUpState.LOCKED.value
+    db.commit()
+    service.recover(ref_date=dt.date(2026, 9, 9), now_monotonic=100.0)
+
+    assert service.expire_untriggered_watches(before=dt.date(2026, 9, 9)) == []
+    assert set(service.watched_tickers()) == {"005930", "000660"}
+
+
+def test_recover_closes_a_prior_day_watch_instead_of_reviving_it(db) -> None:
+    """Restarting revived every non-closed row regardless of date (9/8 22:38 restart)."""
+    service = _service(db, LimitUpMode.RECOMMEND_ONLY)
+    row = service.repository.create_or_get_session(
+        ref_date=dt.date(2026, 9, 7), ticker="012210", market="KOSPI",
+        upper_limit_price=10_000, trigger_price=9_970,
+        execution_mode=LimitUpMode.AUTOMATIC.value,
+    )
+    db.commit()
+
+    service.recover(ref_date=dt.date(2026, 9, 9), now_monotonic=100.0)
+
+    assert row.state == LimitUpState.CLOSED.value
+    assert row.end_reason == "no_trigger"
+    assert service.watched_tickers() == ()

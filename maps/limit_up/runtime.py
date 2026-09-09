@@ -278,6 +278,7 @@ class KISIntradayRuntime:
         self._overnight_confirmed: set[dt.date] = set()
         self._overnight_forced: set[dt.date] = set()
         self._opening_submitted: set[tuple[dt.date, str]] = set()
+        self._watches_expired: set[dt.date] = set()
         self._fallback_limiter = RestFallbackLimiter(min_interval_seconds=0.5)
         self._last_frame_at = 0.0
         self._feed_tasks: set[asyncio.Future] = set()
@@ -846,6 +847,15 @@ class KISIntradayRuntime:
         # 전일 오버나이트 보유를 그대로 들고 하루를 보낸다.
         # before= 가 없으면 15:18 에 막 넘긴 당일 세션을 같은 패스가 곧바로 팔아버린다.
         if clock >= dt.time(8, 59, 30):
+            # 프로세스는 몇 주씩 돈다 — 전일 미트리거 감시를 재시작(recover)에만
+            # 맡기면 그 사이 낡은 상한가 기준 머신이 시세를 계속 받는다.
+            if wall.date() not in self._watches_expired:
+                await self._call_service(
+                    self.service.expire_untriggered_watches,
+                    before=wall.date(),
+                    priority=_PRIORITY_HIGH,
+                )
+                self._watches_expired.add(wall.date())
             due = await self._call_service(
                 self.service.overnight_tickers,
                 before=wall.date(),

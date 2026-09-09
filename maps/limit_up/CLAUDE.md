@@ -115,6 +115,20 @@ overnight_budget = (1,000,000 − max(0, 당일 실현손실)) / 0.30
 실패 유형이다 — CLAUDE.md 제약 8번 참고. 재연결은 지수 백오프(1초 → 최대 60초)이고
 연결에 성공하면 리셋한다.
 
+## 트리거 없이 끝난 감시는 `expire_untriggered_watches()` 가 닫는다
+
+종료 전이는 전부 NET_OPEN 이후에만 있다 — 취소·보호청산·`review_eod`(LOCKED)·`next_open`(OVERNIGHT)·
+시간외. 그래서 +25% 에 감시만 걸리고 트리거를 못 만난 세션은 스스로 안 끝난다. 게다가 `recover()` 는
+미종료 행을 **날짜 무관**하게 되살리고 `watched_tickers()` 는 `_machines` 전체를 재구독하므로, 그 세션은
+재시작마다 부활해 (a) 같은 종목이 다른 날 다시 +25% 에 오면 `already_watching` 으로 새 세션을 막고
+(b) 낡은 상한가 기준 트리거로 `on_trade` 가 `FIRE_NET` 을 낼 수 있었다 (2026-09-07 012210, 이틀간 `watching`).
+
+`service.expire_untriggered_watches(before=오늘)` 이 `ref_date < before` 이고 매수 체결이 없는 WATCHING 세션을
+`closed / end_reason=no_trigger` (이벤트 `watch_expired`) 로 닫고 메모리에서 지운다. 호출 지점은 둘이다 —
+`recover()` 끝(재시작)과 `runtime._run_daily_actions` 의 08:59:30 블록(하루 1회 래치, 장기 실행 프로세스용).
+당일 세션과 체결이 있는 세션은 건드리지 않는다. 다이제스트의 `no_trigger` 는 `net_fired_at IS NULL` 로
+파생하므로 이 종료 사유와 같은 뜻이다.
+
 ## 브로커가 정본이다 — 반환값을 버리지 말 것
 
 취소는 `CancelBuysResult`, 청산은 `ReconcileResult` 를 돌려준다. `position_quantity` 는 **계좌 전체**이고 세션 소유분은 `owned_quantity`(= min(계좌, bought − exited)) 다.
