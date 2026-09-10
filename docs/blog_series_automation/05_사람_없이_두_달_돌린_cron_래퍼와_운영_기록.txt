@@ -1,0 +1,463 @@
+제목: [AI 블로그 자동화 #5] 사람 없이 두 달 돌린 cron 래퍼 전문과 운영하며 생긴 일들
+
+안녕하세요 :)
+
+마지막 편입니다.
+1~4편의 부품을 매 거래일 저녁 사람 없이 돌리는 셸 스크립트 하나와,
+원고를 꺼내 보는 화면, 그리고 두 달 운영하면서 실제로 있었던 일들입니다.
+
+셸 스크립트는 전문을 붙입니다. 이것만 있으면 나머지는 조립입니다.
+
+
+────────────────────
+1. cron 등록
+────────────────────
+
+  /etc/cron.d/maps-blog
+
+  # MAPS: 매 거래일(월-금) 18:30 KST에 그날의 매매 기록 블로그 글 생성
+  #       → /opt/maps/blog/YYYY-MM-DD.txt (네이버 붙여넣기용 평문)
+  # stock_report(18:00) 완료 후에 돌아야 시장 맥락 발췌가 채워진다.
+  # 휴장일은 래퍼 내부 거래일 가드가 즉시 종료.
+  # 인증은 ubuntu 사용자의 claude OAuth 재사용.
+  SHELL=/bin/bash
+  MAILTO=""
+  30 18 * * 1-5 ubuntu bash /opt/maps/scripts/run_blog_cron.sh
+
+여섯 번째 칸이 실행 사용자입니다. 1편에서 말한 대로 claude 로그인을 한 ubuntu 여야 합니다.
+공휴일은 cron으로 거를 수 없으니 스크립트 안에서 거릅니다.
+
+
+────────────────────
+2. 래퍼 스크립트 전문
+────────────────────
+
+▶ 파일: scripts/run_blog_cron.sh
+
+  #!/usr/bin/env bash
+  # run_blog_cron.sh, 매 거래일 저녁 그날의 매매 기록 블로그 글을 무인 생성한다.
+  #
+  # 2단계 구조:
+  #   1) maps.ops.daily_digest 가 DB에서 하루치 JSON(digest)을 만든다. 수치의 유일한 출처
+  #   2) claude -p /blog 가 그 JSON만 읽고 원고를 쓴다. DB 조회 권한 없음
+  #      출력은 마크다운이 아니라 네이버 스마트에디터 붙여넣기용 평문(.txt)이다.
+  #   3) verify_blog_numbers.py 가 글의 숫자를 다이제스트와 대조해 보고한다
+  #
+  # 2단계의 도구 제한이 핵심이지만 그것만 믿지는 않는다. 실측 결과:
+  #   - --allowedTools Read Write 만으로는 Bash 가 막히지 않는다(자동승인 목록일 뿐).
+  #   - --disallowedTools Bash 만 걸면 ToolSearch 로 Monitor 를 불러와 셸을 우회한다.
+  # 그래서 실행·조회 계열을 전부 명시적으로 차단한다. 차단 목록은 본질적으로
+  # 빈틈이 생길 수 있으므로 3단계 검증을 함께 둔다.
+  set -uo pipefail
+  umask 077
+
+  APP_DIR="${MAPS_APP_DIR:-/opt/maps}"
+  SECRETS_FILE="${MAPS_ANTHROPIC_ENV:-/etc/maps/anthropic.env}"
+  CLAUDE_BIN="${CLAUDE_BIN:-claude}"
+  LOG_DIR="$APP_DIR/logs"
+  BLOG_DIR="${MAPS_BLOG_DIR:-$APP_DIR/blog}"
+  TS="$(date '+%Y%m%d_%H%M%S')"
+  LOG="$LOG_DIR/blog_cron_${TS}.log"
+
+  # cron 의 PATH 는 최소다. claude 가 ~/.local/bin 이나 npm 전역에 있으면 못 찾는다.
+  export PATH="${HOME:-/home/ubuntu}/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
+
+  mkdir -p "$LOG_DIR" "$BLOG_DIR"
+  cd "$APP_DIR" || { echo "APP_DIR 없음: $APP_DIR" >&2; exit 1; }
+
+  log() { echo "[$(date '+%F %T %Z')] $*" | tee -a "$LOG"; }
+
+  log "blog cron 시작 (APP_DIR=$APP_DIR, BLOG_DIR=$BLOG_DIR)"
+
+  # 중복 실행 방지. 직전 실행(또는 행)이 안 끝났으면 이번 회차는 건너뛴다.
+  exec 9>"${MAPS_BLOG_LOCK:-/tmp/maps_blog.lock}"
+  if ! flock -n 9; then
+    log "직전 blog 실행이 진행 중, 이번 회차 건너뜀"; exit 0
+  fi
+
+  if ! source "$APP_DIR/.venv/bin/activate"; then
+    log "venv 활성화 실패: $APP_DIR/.venv"; exit 1
+  fi
+
+  # 거래일 가드. 주말/공휴일이면 토큰 낭비 없이 종료
+  if ! python -c "import datetime; from maps.market.trading_rules import is_krx_closed_date; raise SystemExit(1 if is_krx_closed_date(datetime.date.today()) else 0)"; then
+    log "오늘은 KRX 휴장, 블로그 생성 건너뜀"; exit 0
+  fi
+
+  REF_DATE="${MAPS_BLOG_REF_DATE:-$(date '+%F')}"
+  DIGEST="$LOG_DIR/digest_${REF_DATE}.json"
+
+  # 1단계: 결정적 다이제스트 생성
+  log "다이제스트 생성 시작 (ref_date=$REF_DATE) → $DIGEST"
+  if ! python -c "
+  import datetime, json, sys
+  from maps.common.db import SessionLocal
+  from maps.common.settings import get_settings
+  from maps.ops.daily_digest import build_daily_digest
+
+  ref = datetime.date.fromisoformat('$REF_DATE')
+  db = SessionLocal()
+  try:
+      digest = build_daily_digest(db, get_settings(), ref)
+  finally:
+      db.close()
+  with open('$DIGEST', 'w', encoding='utf-8') as fh:
+      json.dump(digest.model_dump(), fh, ensure_ascii=False, indent=2, default=str)
+  for err in digest.errors:
+      print(f'  [섹션 실패] {err}', file=sys.stderr)
+  print(f'  후보={digest.candidate_total} 체결={len(digest.executions)} 오류={len(digest.errors)}')
+  " 2>&1 | tee -a "$LOG"; then
+    log "다이제스트 생성 실패, 블로그 생성 중단"; exit 1
+  fi
+
+  # 2단계: 글쓰기
+  # Read/Write 만 남기고 실행·조회·위임 계열을 전부 차단한다.
+  BLOG_DENY=(
+    Bash Edit Agent Task Skill ToolSearch Workflow
+    Monitor WebFetch WebSearch Glob Grep NotebookEdit
+    ScheduleWakeup ReportFindings
+  )
+  if [ -f "$SECRETS_FILE" ]; then
+    set -a
+    source "$SECRETS_FILE"
+    set +a
+    log "시크릿 파일 로드: $SECRETS_FILE"
+  fi
+
+  if ! command -v "$CLAUDE_BIN" >/dev/null 2>&1; then
+    log "claude CLI 없음 (CLAUDE_BIN=$CLAUDE_BIN), npm i -g @anthropic-ai/claude-code"; exit 1
+  fi
+
+  # 로그에 비밀값이 남지 않게 마스킹 필터를 먼저 점검한다.
+  redact_args=(--env-file "$APP_DIR/.env")
+  if [ -f "$SECRETS_FILE" ]; then
+    redact_args+=(--env-file "$SECRETS_FILE")
+  fi
+  if ! python "$APP_DIR/scripts/redact_stream_secrets.py" "${redact_args[@]}" --check; then
+    log "비밀 마스킹 초기화 실패, 블로그 생성 중단"; exit 1
+  fi
+
+  BLOG_TIMEOUT="${BLOG_TIMEOUT:-900}"
+  RAW_LOG="$LOG_DIR/blog_cron_${TS}.jsonl"
+  OUT="$BLOG_DIR/${REF_DATE}.txt"
+
+  log "claude -p /blog 실행 시작 (timeout ${BLOG_TIMEOUT}s, raw=$RAW_LOG)"
+  timeout "${BLOG_TIMEOUT}s" "$CLAUDE_BIN" -p "/blog $DIGEST $OUT" \
+      --allowedTools Read Write \
+      --disallowedTools "${BLOG_DENY[@]}" \
+      --verbose --output-format stream-json 2>>"$LOG" |
+    python "$APP_DIR/scripts/redact_stream_secrets.py" "${redact_args[@]}" |
+    tee -a "$RAW_LOG" |
+    python "$APP_DIR/scripts/analyze_stream_to_log.py" "$LOG"
+  pipeline_status=("${PIPESTATUS[@]}")
+  rc=${pipeline_status[0]}
+  if [ "${pipeline_status[1]}" -ne 0 ]; then
+    log "비밀 마스킹 스트림 실패, 로그 저장 중단"; rc=70
+  elif [ "${pipeline_status[2]}" -ne 0 ] || [ "${pipeline_status[3]}" -ne 0 ]; then
+    log "blog 로그 파이프라인 실패"; rc=74
+  fi
+
+  if [ "$rc" -ne 0 ]; then
+    if [ "$rc" -eq 124 ]; then
+      log "blog cron 시간초과(${BLOG_TIMEOUT}s), claude 강제종료. 로그: $LOG"
+    else
+      log "blog cron 실패 (claude exit=$rc), 로그 확인: $LOG"
+    fi
+    exit "$rc"
+  fi
+
+  if [ ! -s "$OUT" ]; then
+    log "claude는 성공했으나 글이 비어 있음: $OUT"; exit 1
+  fi
+
+  # 3단계: 숫자 대조
+  python "$APP_DIR/scripts/verify_blog_numbers.py" "$DIGEST" "$OUT" 2>&1 | tee -a "$LOG"
+
+  # 4단계: 네이버 포맷·문체 검사
+  python "$APP_DIR/scripts/check_naver_format.py" "$OUT" 2>&1 | tee -a "$LOG"
+
+  log "blog cron 완료, $OUT ($(wc -c <"$OUT") bytes)"
+  exit 0
+
+
+────────────────────
+3. 스크립트에서 눈여겨볼 것
+────────────────────
+
+▶ flock
+
+같은 스크립트가 겹쳐 돌면 같은 파일에 두 프로세스가 씁니다.
+9번 파일 디스크립터에 잠금을 걸고, 못 얻으면 이번 회차를 건너뜁니다.
+AI 호출이 15분 timeout 이라 겹칠 일은 거의 없지만, 수동 실행과 cron이 겹친 적이 한 번 있습니다.
+
+▶ 거래일 가드
+
+매매 시스템이 이미 갖고 있는 휴장일 판정 함수를 그대로 부릅니다.
+새로 만들지 않습니다. 매매 시스템이 쉬는 날 블로그도 쉬어야 하니 같은 함수여야 합니다.
+
+▶ timeout 900초
+
+AI 호출은 가끔 멈춥니다. 응답이 안 오는데 프로세스는 살아 있는 상태.
+timeout 이 없으면 다음 날 저녁까지 매달려 있고 flock 때문에 다음 회차도 건너뜁니다.
+종료 코드 124가 timeout 입니다. 따로 로그를 남깁니다.
+
+▶ stream-json 과 PIPESTATUS
+
+--output-format stream-json 을 켜면 AI가 도구를 부를 때마다 JSON 이벤트가 한 줄씩 나옵니다.
+기본 text 출력은 마지막 답변만 나와서 중간에 뭘 읽고 썼는지 안 보입니다.
+
+그 스트림을 세 단계 파이프로 흘립니다.
+
+  claude → 비밀 마스킹 → tee (원본 jsonl 보존) → 진행 로그 변환
+
+파이프에서 앞 명령의 종료 코드는 $? 로 안 잡힙니다. 마지막 명령 것만 나옵니다.
+PIPESTATUS 배열을 복사해 두고 자리별로 봅니다. 이걸 빼먹고 일주일을 돌렸는데
+그동안 claude 가 실패해도 "완료"로 찍히고 있었습니다.
+
+▶ 비밀 마스킹
+
+원본 jsonl 에는 AI가 읽은 파일 내용이 들어갑니다.
+다이제스트에 비밀값은 없지만, 이 래퍼는 다른 배치(장 마감 후 분석)와 구조가 같고
+그쪽은 AI가 Bash 를 씁니다. .env 의 값이 로그에 남을 수 있습니다.
+그래서 .env 와 시크릿 파일에서 값을 읽어 스트림에서 지우는 필터를 tee 앞에 둡니다.
+
+▶ 파일: scripts/redact_stream_secrets.py (발췌)
+
+  _MIN_SECRET_LENGTH = 8
+  _SENSITIVE_KEY_MARKERS = (
+      "PASSWORD", "SECRET", "TOKEN", "API_KEY",
+      "APP_KEY", "DB_URL", "ACCOUNT_NO", "WEBHOOK",
+  )
+
+  def _is_sensitive_key(key: str) -> bool:
+      upper = key.upper()
+      return any(marker in upper for marker in _SENSITIVE_KEY_MARKERS)
+
+키 이름에 저 단어가 들어간 값을 전부 모아서 스트림에서 치환합니다.
+값 자체는 이 모듈이 절대 출력하지 않습니다.
+
+▶ 진행 로그 변환
+
+stream-json 이벤트를 사람이 읽는 한 줄로 바꿉니다. 3편에서 본 그 로그입니다.
+
+▶ 파일: scripts/analyze_stream_to_log.py (발췌)
+
+  def _describe_tool(name, tool_input):
+      """tool_use 블록을 사람이 읽을 수 있는 한 줄로 요약한다."""
+      if name == "Task":
+          agent = tool_input.get("subagent_type", "?")
+          desc = tool_input.get("description") or _clip(str(tool_input.get("prompt", "")), 80)
+          return f"▶ 에이전트 호출: {agent}, {desc}"
+      if name == "Bash":
+          cmd = _clip(str(tool_input.get("command", "")), 160)
+          return f"▶ Bash: {cmd}"
+      if name in ("Read", "Write", "Edit"):
+          return f"▶ {name}: {tool_input.get('file_path', '?')}"
+      return f"▶ {name}"
+
+result 이벤트에서 duration_ms 와 total_cost_usd 를 뽑아 마지막 줄에 찍습니다.
+비용이 매일 로그에 남으니 한 달치 grep 한 번이면 청구서 예측이 됩니다.
+
+
+────────────────────
+4. 원고를 꺼내 보는 화면
+────────────────────
+
+서버에 파일로만 있으면 매번 ssh 로 들어가야 합니다.
+대시보드에 화면 하나를 붙였습니다. 날짜 고르고 전체 복사.
+
+▶ 파일: maps/api/blog.py
+
+  router = APIRouter(prefix="/api/v1/blog", tags=["Daily Blog"])
+
+  # 신규는 .txt(네이버 평문), 구 원고는 .md. 앞쪽이 정본이다.
+  _SUFFIXES = (".txt", ".md")
+
+
+  def _post_path(date: str) -> Path:
+      """검증된 날짜 문자열로만 경로를 조립한다. 경로 순회(../) 차단."""
+      try:
+          ref_date = dt.date.fromisoformat(date)
+      except ValueError as exc:
+          raise HTTPException(status_code=400, detail=f"invalid date: {date}") from exc
+      stem = ref_date.isoformat()
+      directory = Path(get_settings().maps_blog_dir)
+      for suffix in _SUFFIXES:
+          candidate = directory / f"{stem}{suffix}"
+          if candidate.is_file():
+              return candidate
+      return directory / f"{stem}{_SUFFIXES[0]}"
+
+
+  @router.get("", response_model=BlogListResponse)
+  def list_posts() -> BlogListResponse:
+      """생성된 글 목록을 최신순으로 반환한다."""
+      ...
+
+
+  @router.get("/{date}", response_model=BlogPostResponse)
+  def get_post(date: str) -> BlogPostResponse:
+      """해당 날짜 글 본문을 원문 그대로 반환한다."""
+      path = _post_path(date)
+      if not path.is_file():
+          raise HTTPException(status_code=404, detail=f"no post for {date}")
+      return BlogPostResponse(date=date, content=path.read_text(encoding="utf-8"))
+
+날짜 문자열을 그대로 파일명에 붙이면 ../ 로 다른 파일을 읽을 수 있습니다.
+fromisoformat 을 통과한 값만 isoformat 으로 되돌려 씁니다.
+
+화면 쪽은 한 가지만 신경 썼습니다. 원문을 가공하지 않는 것.
+
+▶ 파일: templates/blog.html (발췌)
+
+  <div class="strat-guide-head">
+    <span class="strat-rule-head">네이버 블로그 붙여넣기용 원고</span>
+    <button class="btn-copy" onclick="copyGuideText(this, 'blog-text')">전체 복사</button>
+  </div>
+  <div class="strat-guide-text" id="blog-text"></div>
+
+  <style>
+    /* 원고는 스마트에디터에 그대로 붙여넣는 평문이다. 화면에서 가공하면
+       복사한 내용과 발행될 내용이 달라지므로 pre-wrap 으로 원문만 보여준다. */
+    #blog-text { max-height: none; }
+  </style>
+
+  <script>
+  async function loadPost(date) {
+    const res = await fetch('/api/v1/blog/' + encodeURIComponent(date));
+    const data = await res.json();
+    document.getElementById('blog-text').textContent = data.content;
+  }
+  </script>
+
+innerHTML 이 아니라 textContent 입니다.
+마크다운 렌더러를 붙이고 싶은 유혹이 있는데, 그러면 화면에서 보는 것과 복사되는 것이 달라집니다.
+높이 제한도 풀었습니다. 잘린 영역도 복사 대상이라 스크롤로 확인해야 합니다.
+
+발행 절차는 이렇습니다.
+
+  ① 저녁에 텔레그램으로 배치 완료 알림 (앱 스케줄러가 보냄)
+  ② 대시보드 매매 기록 화면에서 오늘 날짜 선택
+  ③ 검증 로그의 미확인 숫자 목록을 훑고, 가독성 위반이 있으면 원고에서 확인
+  ④ 전체 복사 → 스마트에디터 붙여넣기
+  ⑤ 제목 줄과 태그 줄을 각 입력란으로 옮기고 본문에서 지움
+  ⑥ 굵게 처리하고 싶은 【 】 부분만 손으로 지정
+  ⑦ 발행
+
+10분 안팎입니다.
+
+
+────────────────────
+5. 두 달 운영하며 생긴 일
+────────────────────
+
+▶ 비용과 시간
+
+9월 첫 주 4일치입니다.
+
+  9/1   269초   $2.36
+  9/2   303초   $2.47
+  9/3   284초   $2.74
+  9/4   314초   $2.65
+
+원고 길이는 1만 8천~2만 4천 바이트. 다이제스트가 커진 8월 말부터 시간과 비용이 20%쯤 올랐습니다.
+7월 말에는 편당 1.5달러 안팎이었습니다.
+
+▶ 원고를 두 곳에 남기게 됐다 (8월 16일)
+
+처음엔 /opt/maps/blog/ 한 곳이었습니다.
+그런데 로컬 PC에서 수동으로 /blog 를 돌리는 날도 있고(배치가 실패한 날), 그러면 원고가 PC에만 남았습니다.
+프롬프트 출력 절에 "서버 /opt/maps/diary/ 에도 올려라"를 넣었습니다.
+서버 위에서 돌 때는 AI가 알아서 scp 대신 직접 씁니다. 3편 로그의 마지막 Write 가 그겁니다.
+
+두 경로의 파일명 규칙이 다릅니다. blog/ 는 2026-08-16.txt, diary/ 는 20260816.txt.
+처음부터 통일했어야 했는데 이미 화면이 앞쪽 형식을 읽고 있어서 그냥 둡니다.
+프롬프트에 경고를 적어 두는 것으로 때웠습니다.
+
+▶ 교정한 날의 원고는 다시 생성하지 않는다 (8월 25일)
+
+8월 24일 매수 한 건의 주문 근거가 잘못 기록된 걸 나중에 발견했습니다.
+DB를 고치고 다이제스트를 다시 만들어 원고를 다시 뽑고 싶었습니다.
+
+안 했습니다.
+
+다이제스트는 "그 시점에 어떤 데이터로 판단했나"를 설명하는 문서입니다.
+DB를 고친 뒤에 다시 만들면 판단 시점이 아니라 교정 후 값을 설명하게 됩니다.
+그래서 교정본은 별도 파일(digest_2026-08-24-p1.json)로 만들고
+원본 원고는 .bak 으로 남긴 채 교정 원고를 따로 썼습니다.
+서버에는 지금도 2026-08-25.txt 와 2026-08-25.txt.pre-correction-20260826 이 나란히 있습니다.
+
+▶ 18:00 에서 18:30 으로
+
+처음엔 18:00 이었습니다. 외부 종목 리포트 배치도 18:00 이었습니다.
+리포트가 끝나기 전에 다이제스트가 만들어져서 market_context 가 매일 비었습니다.
+30분 뒤로 밀었습니다. 시간 의존성이 있는 배치는 순서를 파일에 주석으로 박아 두는 게 좋습니다.
+위 cron.d 파일 두 번째 줄이 그겁니다.
+
+▶ 배치가 실패한 날
+
+두 달 동안 원고가 안 나온 날이 며칠 있습니다. 원인은 전부 1단계였습니다.
+다이제스트를 만들다 외부 API(KRX 로그인)가 막힌 날.
+AI 쪽이 실패한 날은 timeout 한 번 말고는 없었습니다.
+
+실패한 날은 다음 날 아침에 로컬 PC에서 날짜를 지정해 수동으로 돌립니다.
+
+  MAPS_BLOG_REF_DATE=2026-08-25 bash scripts/run_blog_cron.sh
+
+환경변수 하나로 날짜를 넘길 수 있게 해 둔 게 이럴 때 씁니다.
+
+
+────────────────────
+6. 자동 발행을 안 하는 이유
+────────────────────
+
+여기까지 읽으면 "붙여넣기까지 자동으로 하지 왜"라는 생각이 드실 겁니다.
+두 가지 이유입니다.
+
+네이버 블로그는 개인 계정에 열린 발행 API가 없습니다.
+브라우저 자동화로 우회할 수는 있지만 계정 제재 위험이 있고, 에디터가 바뀌면 깨집니다.
+
+더 큰 이유는 검증 단계에 사람이 있어야 한다는 겁니다.
+3편의 숫자 대조와 4편의 포맷 검사는 "보고"만 합니다. 판정하지 않습니다.
+그 목록을 읽고 발행 버튼을 누르는 10분이 이 시스템에서 유일하게 사람이 하는 일이고,
+투자 글이라면 그 10분은 남겨 둬야 한다고 생각합니다.
+
+AI가 쓴 글에 제 이름이 붙어 나갑니다. 숫자가 틀리면 제가 틀린 겁니다.
+
+
+────────────────────
+7. 따라 만드실 분을 위한 순서
+────────────────────
+
+  ① 글에 들어갈 데이터를 JSON 스키마로 먼저 고정한다 (2편)
+     데이터가 없는 필드는 null, 실측이 아닌 값은 measured=false
+  ② 그 JSON을 만드는 파이썬 함수를 쓴다. 섹션별로 예외를 격리한다
+  ③ 프롬프트를 .claude/commands/ 아래 파일로 둔다 (3편)
+     "이 JSON이 유일한 사실 출처다"를 첫 줄에 쓴다
+  ④ claude -p 로 돌리되 --disallowedTools 에 ToolSearch 까지 넣는다
+  ⑤ 결과물의 숫자를 JSON과 대조하는 스크립트를 만든다
+  ⑥ 발행 대상에 실제로 한 번 붙여넣어 보고 나서 포맷 규약을 정한다 (4편)
+  ⑦ 규약을 검사기로 만들고, 검사기와 프롬프트를 테스트로 묶는다
+  ⑧ cron 래퍼에 flock, 휴장일 가드, timeout, PIPESTATUS 를 넣는다 (5편)
+  ⑨ 로그에 비용을 남긴다
+  ⑩ 발행 버튼은 사람이 누른다
+
+순서가 중요합니다. 저는 ③부터 시작해서 ①로 돌아왔습니다.
+프롬프트를 먼저 쓰면 AI가 잘 쓰는 것처럼 보여서 데이터 구조를 미루게 됩니다.
+그러다 어느 날 없는 숫자가 글에 나옵니다.
+
+다섯 편 읽어 주셔서 감사합니다.
+이 시리즈의 소스는 전부 제 매매 시스템 저장소에 있고, 원고 자체도 같은 배치가 만든 규약으로 썼습니다.
+이 글도 check_naver_format.py 를 통과시키고 올렸습니다.
+
+
+────────────────────
+투자 유의사항
+────────────────────
+
+이 시리즈에 나오는 매매 기록은 KIS 모의투자 계좌의 운용 결과이며 실제 자금 운용이 아닙니다.
+특정 종목의 매수·매도를 권유하지 않습니다.
+투자 판단과 결과의 책임은 투자자 본인에게 있습니다.
+
+
+태그: AI블로그자동화 ClaudeCode cron 셸스크립트 리눅스 운영자동화 FastAPI 네이버블로그 매매일지 LLM비용

@@ -1,0 +1,470 @@
+제목: 2026년 8월 28일 매매 기록, 체결 0건으로 끝난 금요일
+
+────────────────────
+1. 오늘의 매매 한눈에
+────────────────────
+
+매수도 매도도 없었습니다. 체결 0건입니다.
+
+오늘 허용된 최대 신규매수 비율(entry limit)이 0이라
+여덟 개 전략이 전부 차단됐습니다.
+
+후보 477개 중 122개는 점수 계산에 필요한 데이터가
+덜 채워져 순위에서 분리했습니다.
+이 122개는 매수 후보로 다루지 않았습니다.
+
+────────────────────
+2. 오늘 시장은 어땠나요?
+────────────────────
+
+상승과 하락 신호가 섞인 시장(MIXED)이었습니다.
+원본 판정도 MIXED로 같았습니다.
+한국 시장이 더 약해서 등급을 낮추는 보정(korea weak guard)과
+최소 MIXED를 적용하는 보정(floor)은 둘 다 걸리지 않았습니다.
+
+주간 추세 점검은 실패(fail)였습니다.
+KOSPI가 5주 이동평균 위에는 있지만
+10주 이동평균 아래에 있습니다.
+어제와 같은 상태입니다.
+
+가격 움직임은 평소보다 큰 상태(HIGH 변동성)였습니다.
+
+오르는 종목의 비율(Breadth)은 62.56%,
+관측 대상 8개 자산 중 7개가 올랐습니다.
+
+시장 종합점수는 41.78입니다.
+다섯 개 팩터가 모두 실제 측정값으로 채워졌습니다.
+추세 53.1, 변동성 25.0, 유동성 29.24,
+외국인·환율 60.0, 심리 45.38.
+
+시스템이 남긴 판정 사유는 이렇습니다.
+구방식 판정은 STRONG이었으나 유동성이 약해
+등급이 내려갔다(strong trend downgraded by weak liquidity).
+어제 43.84였던 유동성 점수가 29.24로 떨어졌습니다.
+
+그래서 오늘 허용된 최대 신규매수 비율은 0.0입니다.
+
+────────────────────
+3. 시스템은 왜 이렇게 움직였나요?
+────────────────────
+
+활성화된 전략은 하나도 없습니다.
+
+여덟 개 중 여섯 개는 주간 추세 실패(weekly_trend_fail)로
+막혔습니다. 눌림목 전략 두 개, 모멘텀 전략 두 개,
+다중자산 추세 전략, 역발상 가치 전략입니다.
+
+나머지 둘, 돌파형 전략(ath_breakout_v1과 ath_breakout_v2)은
+차단 이유가 다릅니다. 이 전략들은 상승 흐름이 뚜렷한
+시장(STRONG)에서만 도는데 오늘은 MIXED였습니다.
+선호 국면 불일치입니다.
+
+계좌 상황은 이렇습니다.
+
+  총 평가금액 : 101,090,618원
+  현금        : 57,980,371원
+  보유 평가액 : 43,110,247원
+  전일 대비   : +1.40%
+
+현금은 어제와 같습니다. 매매가 없었으니 당연합니다.
+평가액만 움직였습니다.
+
+보유 종목은 12개입니다.
+수량 / 평균단가 / 현재가 / 평가액 / 평가손익 순으로 적습니다.
+
+▸ 0015N0 아로마티카 · 308주 · 9,400원 · 10,110원
+  · 3,113,880원 · +218,680원 (+7.55%)
+▸ 006800 미래에셋증권 · 182주 · 36,500원 · 36,150원
+  · 6,579,300원 · -63,700원 (-0.96%)
+▸ 034020 두산에너빌리티 · 49주 · 76,312.244원 · 88,200원
+  · 4,321,800원 · +582,500원 (+15.58%)
+▸ 038680 에스넷 · 914주 · 4,225원 · 4,155원
+  · 3,797,670원 · -63,980원 (-1.66%)
+▸ 041830 인바디 · 35주 · 69,200원 · 60,300원
+  · 2,110,500원 · -311,500원 (-12.86%)
+▸ 051900 LG생활건강 · 12주 · 317,000원 · 318,000원
+  · 3,816,000원 · +12,000원 (+0.32%)
+▸ 073240 금호타이어 · 270주 · 7,880원 · 7,360원
+  · 1,987,200원 · -140,400원 (-6.60%)
+▸ 189330 씨이랩 · 118주 · 16,720원 · 12,730원
+  · 1,502,140원 · -470,820원 (-23.86%)
+▸ 195990 루트K · 2,323주 · 1,358.709원 · 1,359원
+  · 3,156,957원 · +676원 (+0.02%)
+▸ 241710 코스메카코리아 · 24주 · 108,400원 · 153,900원
+  · 3,693,600원 · +1,092,000원 (+41.97%)
+▸ 282330 BGF리테일 · 25주 · 150,700원 · 147,000원
+  · 3,675,000원 · -92,500원 (-2.46%)
+▸ 300720 한일시멘트 · 316주 · 15,660원 · 16,950원
+  · 5,356,200원 · +407,640원 (+8.24%)
+
+이익 6개, 손실 6개입니다.
+씨이랩이 -23.86%로 가장 나쁘고
+코스메카코리아가 +41.97%로 가장 좋습니다.
+어제 손실 구간이 8개였는데 오늘 6개로 줄었습니다.
+
+보유 종목 중 10개에 대해 시장 국면 점검(regime overlay)이
+돌았고 전부 hold 판정입니다. 다만 판정 이유는
+진입 당시 시장 상태가 기록에 없다(ENTRY_CONTEXT_UNAVAILABLE)는
+것이고, 모드도 실제 매도로 이어지지 않는 관측 모드(shadow)입니다.
+이 판정으로 매도한 종목은 없습니다.
+미래에셋증권과 두산에너빌리티는 점검 기록 자체가 null입니다.
+
+────────────────────
+4. 실제 매수·매도 기록
+────────────────────
+
+체결 없음.
+
+executions 배열이 비어 있습니다.
+매수는 전략이 전부 꺼져 있어서 나가지 않았고,
+매도는 익절선이나 손절선에 닿은 종목이 없었습니다.
+
+────────────────────
+5. 내일 예정된 행동
+────────────────────
+
+다음 거래일은 2026년 8월 31일입니다.
+
+매수 예정 종목 없음. 주문 목록이 비어 있습니다.
+
+주문 가능 상태로 등록된 전략은 ath_breakout_v1과
+donchian_v2 둘이지만, 신규매수 한도가 0이고
+주간 추세가 여전히 fail이라 실제 주문으로 이어지지 않았습니다.
+최대 주문 건수는 3건에서 실효 1건으로 줄어 있습니다.
+데이터는 오늘 날짜 기준으로 정상입니다.
+
+【 사람이 무장한 조건부 진입 】
+
+▸ 034020 두산에너빌리티 · pick 9 · 분할 매수(split)
+  3회 중 2회 체결, 다음 3회차 예정가 71,000원,
+  남은 수량 36주, 상태 entries_cancelled,
+  사유 expired
+
+픽이 만료되어 남은 조건부 주문이 취소된 상태 그대로입니다.
+내일 새로 나갈 주문이 아닙니다.
+이미 체결된 49주는 계속 보유 중이고 오늘 +15.58%입니다.
+
+────────────────────
+6. 상세 기록
+────────────────────
+
+【 시장 】
+
+  원시 국면      : mixed
+  적용 국면      : mixed
+  정책 국면      : mixed
+  주간 추세      : fail
+  변동성 국면    : high
+  시장 모드      : NORMAL
+  시장폭         : 62.55707762557078%
+  상승/전체      : 7 / 8
+  신규매수 한도  : 0.0
+  종합 점수      : 41.78
+  KOSPI TS       : 53.1
+  MA5주 상회     : true
+  MA10주 상회    : false
+  floor_applied  : false
+  korea_weak_guard_applied : false
+  점수 커버리지  : 1.0 (complete)
+
+팩터별 점수와 출처.
+price_trend 53.1 (market.weekly_price),
+volatility 25.0 (market.kospi_realized_volatility),
+liquidity 29.24 (krx.ohlcv+pykrx.investor_flow),
+foreign_fx 60.0 (market.usdkrw_weekly_trend),
+psychology 45.38 (krx.internals+naver.news+bedrock).
+다섯 개 모두 measured=true, 미측정 팩터 없음.
+breadth_label은 null입니다.
+판정 출처는 market_regime_log입니다.
+
+【 섹터 】
+
+관측 전용, 후보 선정에는 적용되지 않음.
+selector가 legacy라 복합 점수가 아니라
+기간 수익률 순위만 사용했습니다.
+score, momentum_60d, turnover_growth, overheat_warning은
+모두 데이터 없음(null)입니다.
+중립값으로 채운 입력(placeholder_inputs)은 없습니다.
+
+  종이·목재     momentum_20d 0.40620369056517047
+  비금속        momentum_20d 0.2738226255886462
+  운송장비·부품 momentum_20d 0.2525764749707997
+  건설          momentum_20d 0.19102382974504964
+  보험          momentum_20d 0.18858763844627424
+
+watchlist, overheated, excluded는 비어 있습니다.
+
+【 전략 8종 전체 】
+
+▸ pullback_v3 · PULLBACK · research · 선호 mixed,strong
+  · active=false · weekly_trend_fail · orderable=false
+▸ pullback_v2 · PULLBACK · research · 선호 mixed,strong
+  · active=false · weekly_trend_fail · orderable=false
+▸ ath_breakout_v1 · BREAKOUT · mock_candidate · 선호 strong
+  · active=false · preferred_regime_mismatch:mixed
+  · orderable=true · entry_limit_ratio=null
+▸ ath_breakout_v2 · BREAKOUT · research · 선호 strong
+  · active=false · preferred_regime_mismatch:mixed
+  · orderable=false · entry_limit_ratio=null
+▸ multi_asset_trend_v1 · MULTI_ASSET_TREND · research
+  · 선호 mixed,weak,strong · active=false
+  · weekly_trend_fail · orderable=false
+▸ donchian_v1 · MOMENTUM · research · 선호 mixed,strong
+  · active=false · weekly_trend_fail · orderable=false
+▸ donchian_v2 · MOMENTUM · mock_candidate · 선호 mixed,strong
+  · active=false · weekly_trend_fail · orderable=true
+▸ contrarian_quality_accumulation_v1 · CONTRARIAN_QUALITY
+  · research · 선호 mixed,weak · active=false
+  · weekly_trend_fail · orderable=false
+
+【 후보 집계 】
+
+  전체 후보        : 477
+  완성 후보        : 355
+  데이터 미완성    : 122
+  제외             : 29
+
+미완성 비율은 477개 중 122개, 25.6%입니다.
+제외는 477개 중 29개, 6.1%입니다.
+어제(381개 중 103개)보다 후보 수 자체가 늘었습니다.
+
+유니버스는 2,767종목 중 1,369종목을 남기고
+1,398종목을 걸렀습니다. 탈락 비율 0.5052403324900614.
+
+유동성 축소 0건, 유동성 차단 0건, 관련 기록 없음.
+
+【 완성된 매매 후보 순위 】
+
+아래는 score_status=complete, 커버리지 1.0인 후보 상위 12개입니다.
+전부 pullback_v2 후보이고 excluded_reason은 모두 null,
+ai_technical_score와 ai_analysis_memo는 기록되지 않았습니다.
+가격은 모두 price_source=rule, 즉 규칙이 만든 값입니다.
+AI가 내린 결론이 아닙니다.
+역발상 의견(ai_contrarian_opinion / thesis / anti_thesis)은
+전 종목 null입니다.
+
+① 039310 세중 · KOSDAQ · 99.58 · TS 41.11 · S3
+  support_quality=98.6×0.30, volume_cooling=100.0×0.20,
+  trend_preservation=100.0×0.20, supply_demand=100.0×0.15,
+  valuation_margin=100.0×0.15
+  매수 1,400 / 손절 1,182 / 목표 1,836
+  밸류에이션 100.0: pbr=100.0(PBR 0.25)
+
+② 136490 선진 · KOSPI · 99.02 · TS 33.12 · S2
+  support_quality=96.8×0.30, volume_cooling=100.0×0.20,
+  trend_preservation=100.0×0.20, supply_demand=100.0×0.15,
+  valuation_margin=99.9×0.15
+  매수 10,360 / 손절 9,510 / 목표 12,060
+  밸류에이션 99.86: historical_band=99.4(밴드 1),
+  valuation_multiple=100.0(PER 2.0), pbr=100.0(PBR 0.43),
+  roe=100.0(ROE 21.1)
+
+③ 099190 아이센스 · KOSDAQ · 95.05 · TS 34.61 · S2
+  support_quality=99.1×0.30, volume_cooling=100.0×0.20,
+  trend_preservation=100.0×0.20, supply_demand=100.0×0.15,
+  valuation_margin=68.9×0.15
+  매수 18,300 / 손절 16,540 / 목표 21,800
+  밸류에이션 68.86: pbr=68.9(PBR 1.59)
+
+④ 054950 제이브이엠 · KOSDAQ · 94.9 · TS 26.53 · S2
+  support_quality=96.2×0.30, volume_cooling=100.0×0.20,
+  trend_preservation=100.0×0.20, supply_demand=100.0×0.15,
+  valuation_margin=73.7×0.15
+  매수 24,300 / 손절 22,650 / 목표 27,600
+  밸류에이션 73.68: historical_band=69.5(밴드 31),
+  valuation_multiple=84.1(PER 9.8), pbr=80.6(PBR 1.18),
+  roe=60.6(ROE 12.1)
+
+⑤ 038540 상상인 · KOSDAQ · 94.47 · TS 21.24 · S2
+  support_quality=99.1×0.30, volume_cooling=100.0×0.20,
+  trend_preservation=73.8×0.20, supply_demand=100.0×0.15,
+  valuation_margin=100.0×0.15
+  매수 2,100 / 손절 1,906 / 목표 2,490
+  밸류에이션 100.0: pbr=100.0(PBR 0.30)
+
+⑥ 000210 DL · KOSPI · 94.41 · TS 39.24 · S2
+  support_quality=88.8×0.30, volume_cooling=100.0×0.20,
+  trend_preservation=88.8×0.20, supply_demand=100.0×0.15,
+  valuation_margin=100.0×0.15
+  매수 50,500 / 손절 45,050 / 목표 61,400
+  밸류에이션 100.0: pbr=100.0(PBR 0.28)
+
+⑦ 092460 한라IMS · KOSDAQ · 93.52 · TS 39.75 · S2
+  support_quality=91.3×0.30, volume_cooling=100.0×0.20,
+  trend_preservation=100.0×0.20, supply_demand=100.0×0.15,
+  valuation_margin=74.3×0.15
+  매수 17,870 / 손절 16,150 / 목표 21,300
+  밸류에이션 74.3: historical_band=83.7(밴드 16),
+  valuation_multiple=77.6(PER 11.7), pbr=70.9(PBR 1.52),
+  roe=65.0(ROE 13.0)
+
+⑧ 023590 다우기술 · KOSPI · 92.88 · TS 46.4 · S3
+  support_quality=84.5×0.30, volume_cooling=100.0×0.20,
+  trend_preservation=94.8×0.20, supply_demand=100.0×0.15,
+  valuation_margin=90.5×0.15
+  매수 39,850 / 손절 36,400 / 목표 46,750
+  밸류에이션 90.55: historical_band=88.9(밴드 11),
+  valuation_multiple=100.0(PER 3.4), pbr=100.0(PBR 0.49),
+  roe=73.3(ROE 14.7)
+
+⑨ 016380 KG스틸 · KOSPI · 92.53 · TS 30.41 · S2
+  support_quality=96.8×0.30, volume_cooling=100.0×0.20,
+  trend_preservation=84.8×0.20, supply_demand=100.0×0.15,
+  valuation_margin=76.9×0.15
+  매수 5,680 / 손절 5,230 / 목표 6,580
+  밸류에이션 76.91: historical_band=74.9(밴드 25),
+  valuation_multiple=100.0(PER 4.0), pbr=100.0(PBR 0.26),
+  roe=32.8(ROE 6.6)
+
+⑩ 403850 더핑크퐁컴퍼니 · KOSDAQ · 92.03 · TS 26.59 · S2
+  support_quality=87.8×0.30, volume_cooling=100.0×0.20,
+  trend_preservation=90.9×0.20, supply_demand=100.0×0.15,
+  valuation_margin=83.3×0.15
+  매수 11,580 / 손절 10,470 / 목표 13,800
+  밸류에이션 83.26: historical_band=97.8(밴드 2),
+  valuation_multiple=90.2(PER 7.9), pbr=88.9(PBR 0.89),
+  roe=56.2(ROE 11.2)
+
+⑪ 003380 하림지주 · KOSDAQ · 91.96 · TS 43.5 · S3
+  support_quality=81.3×0.30, volume_cooling=100.0×0.20,
+  trend_preservation=100.0×0.20, supply_demand=100.0×0.15,
+  valuation_margin=83.7×0.15
+  매수 11,170 / 손절 9,970 / 목표 13,570
+  밸류에이션 83.71: historical_band=98.6(밴드 1),
+  valuation_multiple=100.0(PER 4.7), pbr=100.0(PBR 0.34),
+  roe=36.2(ROE 7.2)
+
+⑫ 101400 엔시트론 · KOSDAQ · 91.91 · TS 37.56 · S2
+  support_quality=96.5×0.30, volume_cooling=100.0×0.20,
+  trend_preservation=100.0×0.20, supply_demand=55.5×0.15,
+  valuation_margin=97.4×0.15
+  매수 1,879 / 손절 1,565 / 목표 2,505
+  밸류에이션 97.43: pbr=97.4(PBR 0.59)
+
+점수 산출에 쓰인 데이터 출처는 12종목 모두 같습니다.
+support_quality=ohlcv.ma20_distance,
+volume_cooling=ohlcv.volume_5d_vs_20d,
+trend_preservation=ohlcv.ma20_ma60,
+supply_demand_score=pykrx.investor_flow_5d,
+valuation_margin_score=fundamentals.valuation_margin.
+missing_components는 전 종목 비어 있습니다.
+
+수급 점수가 100 미만인 것은 엔시트론(55.5) 하나입니다.
+나머지 열한 개는 전부 100.0입니다.
+
+【 데이터 미완성 후보 】
+
+아래 값은 부분 산출값입니다. 순위 비교 금지.
+100점 만점 후보나 상위 후보로 읽으면 안 됩니다.
+매수 후보도 아닙니다.
+전부 contrarian_quality_accumulation_v1 소속이며
+score_status=partial, score_coverage_ratio=0.3,
+score_ready=false입니다.
+누락 항목은 12건 모두 동일하게
+earnings_revision_score, crowd_neglect_score,
+accumulation_flow_score, technical_bottom_score입니다.
+즉 다섯 개 구성요소 중 밸류에이션 하나만 계산됐습니다.
+가격은 모두 price_source=rule입니다.
+
+▸ 000490 대동 · KOSPI · 부분 산출값 100.0 · TS 59.98 · S3
+  매수 8,000 / 손절 6,490 / 목표 11,020
+  valuation 100.0: pbr=100.0(PBR 0.44)
+▸ 001740 SK네트웍스 · KOSPI · 부분 산출값 39.0 · TS 11.19 · S1
+  제외 사유 valuation_margin_below_contrarian_threshold
+  매수 6,760 / 손절 5,420 / 목표 9,440
+  valuation 54.2: historical_band=78.6(밴드 21),
+  PER 26.0, PBR 0.64, ROE 2.5
+▸ 002020 코오롱 · KOSPI · 부분 산출값 100.0 · TS 35.56 · S2
+  매수 26,250 / 손절 19,940 / 목표 38,850
+  valuation 100.0: pbr=100.0(PBR 0.20)
+▸ 002070 비비안 · KOSPI · 부분 산출값 100.0 · TS 2.79 · S1
+  매수 4,905 / 손절 2,205 / 목표 10,300
+  valuation 100.0: pbr=100.0(PBR 0.18)
+▸ 002210 동성제약 · KOSPI · 부분 산출값 70.29 · TS 16.83 · S1
+  매수 1,487 / 손절 902 / 목표 2,655
+  valuation 70.29: pbr=70.3(PBR 1.54)
+▸ 002220 한일철강 · KOSPI · 부분 산출값 100.0 · TS 0.0 · S1
+  매수 2,960 / 손절 2,115 / 목표 4,650
+  valuation 100.0: pbr=100.0(PBR 0.43)
+▸ 003680 한성기업 · KOSPI · 부분 산출값 39.0 · TS 0.0 · S1
+  제외 사유 valuation_margin_below_contrarian_threshold
+  매수 4,985 / 손절 3,210 / 목표 8,540
+  valuation 42.16: historical_band=67.4(밴드 33),
+  PER 164.5, PBR 0.41, ROE 0.2
+▸ 004020 현대제철 · KOSPI · 부분 산출값 100.0 · TS 76.25 · S4
+  매수 31,350 / 손절 26,150 / 목표 41,750
+  valuation 100.0: pbr=100.0(PBR 0.21)
+▸ 004170 신세계 · KOSPI · 부분 산출값 35.52 · TS 38.47 · S2
+  제외 사유 valuation_margin_below_contrarian_threshold
+  매수 410,000 / 손절 311,000 / 목표 608,000
+  valuation 35.52: historical_band=49.1(밴드 51),
+  PER 255.0, PBR 0.80, ROE 0.3
+▸ 004990 롯데지주 · KOSPI · 부분 산출값 100.0 · TS 47.58 · S3
+  매수 24,400 / 손절 21,800 / 목표 29,600
+  valuation 100.0: pbr=100.0(PBR 0.31)
+▸ 005010 휴스틸 · KOSPI · 부분 산출값 100.0 · TS 47.41 · S3
+  매수 3,900 / 손절 3,345 / 목표 5,010
+  valuation 100.0: pbr=100.0(PBR 0.21)
+▸ 005360 모나미 · KOSPI · 부분 산출값 100.0 · TS 6.43 · S1
+  매수 1,382 / 손절 789 / 목표 2,570
+  valuation 100.0: pbr=100.0(PBR 0.32)
+
+【 체결 원시값 】
+
+executions 배열이 비어 있습니다. 기록할 주문이 없습니다.
+
+【 익일 주문 파라미터 】
+
+  다음 거래일    : 2026-08-31
+  가정 총자산    : 101,090,618원
+  가정 현금      : 57,980,371원
+  최대 주문 건수 : 3 (실효 1)
+  슬리피지       : 0.01
+  최대 갭 허용   : 0.02
+  주문 항목      : 없음
+  데이터 신선도  : 정상 (data_stale=false)
+
+【 외부 리포트 】
+
+아래는 외부 stock-report 도구가 만든 리포트 발췌이며
+MAPS의 매매 판단에 직접 쓰이지 않습니다.
+네 건 모두 status=completed, 오류 없음.
+
+프리미엄 리포트(v4, 20260828)는 돌파 기준을 충족한
+추천 대상 종목이 없다고 적었습니다.
+프리미엄 조건 충족 종목은 실리콘투 53,300원(+8.4%),
+우리기술투자 6,490원(+5.7%) 두 건입니다.
+관심 종목으로 코스맥스 303,000원(+7.1%),
+에이피알 461,500원(+6.2%), 금호건설 17,020원(+12.3%)이
+올라 있습니다.
+
+갭 리스크 리포트(v7.2, 18:00:08 KST)는 KOSPI 급등 점수 11,
+급락 위험 0, KOSDAQ은 양쪽 다 0으로 평가했습니다.
+근거로 VIX9D 12.10, MOVE 69.9, 원화 강세(전일 대비 -12.41원)를
+들었습니다.
+
+마켓 서머리(v10.8, 18:00:11 KST)는 KOSPI Composite 2.62로 중립,
+KOSDAQ Composite 19.8로 약한 상승이라고 적었습니다.
+KOSPI 종가 6,788.88, 전일 대비 -1.79%,
+수급 강도 -7.22, 추세 강도 -12.31,
+외부 환경 41.84, 시장 건강도 -14.90.
+어제 24.48이던 KOSPI Composite가 2.62로 떨어졌습니다.
+
+외부 리포트의 중립·혼조 판정과 MAPS 내부 판정(MIXED, 신규매수 0)이
+오늘은 방향이 어긋나지 않았습니다. 어제와 다른 점입니다.
+
+수급 리포트(Rev9.1)는 선취매 1순위로 삼화콘덴서 110,200원
+(선취매 100.0점), 스윙 관점으로 헥토파이낸셜 23,400원(+10.38%),
+중장기 관심으로 HPSP를 꼽았습니다.
+GS건설 37,150원은 선취매 88.3점입니다.
+
+────────────────────
+7. 투자 유의사항
+────────────────────
+
+이 기록은 KIS 모의투자 계좌의 운용 결과이며
+실제 자금 운용이 아닙니다.
+특정 종목의 매수·매도를 권유하지 않습니다.
+투자 판단과 결과의 책임은 투자자 본인에게 있습니다.
+
+태그: MAPS 자동매매 매매일지 퀀트투자 주식자동매매 시스템트레이딩 모의투자 리스크관리 신규매수차단 유동성지표

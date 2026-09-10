@@ -1,0 +1,234 @@
+제목: 2026년 8월 13일 매매 기록, 시장 점수가 미완성이라 내일 주문 10건을 전부 보류했습니다
+
+────────────────────
+1. 오늘의 매매 한눈에
+────────────────────
+
+오늘 체결된 매수와 매도는 없습니다.
+
+내일 주문 후보로 올라온 10건은 전부 제외됐습니다. 사유는 모두 같습니다. 시장 점수 계산에 필요한 입력 두 개가 비어 있어서 주문 단계가 스스로 멈췄습니다.
+
+확인이 필요한 데이터는 유동성(liquidity)과 투자심리(psychology)입니다.
+
+────────────────────
+2. 오늘 시장은 어땠나요?
+────────────────────
+
+시장 국면은 상승 흐름이 뚜렷한 시장(STRONG)이었습니다. 원본 판정과 최종 적용 판정이 모두 STRONG으로 같습니다. 한국 시장 흐름을 반영한 최소 국면 보정(floor)도, 해외 신호보다 한국이 약할 때 국면을 낮추는 보정(korea weak guard)도 오늘은 적용되지 않았습니다.
+
+주간 추세는 통과(pass)였고, 가격 움직임은 평소보다 큰 상태(HIGH 변동성)였습니다.
+
+오르는 종목의 비율(Breadth)은 84.94%입니다. 관측 대상 8개 중 7개가 올랐습니다.
+
+오늘 허용된 최대 신규매수 비율(entry limit)은 0.5였습니다.
+
+문제는 시장 점수 쪽입니다.
+
+시장 점수는 다섯 개 항목을 모아 계산하는데 오늘은 세 개만 측정됐습니다. 측정된 항목은 가격 추세 56.7점, 변동성 25.0점, 외국인·환율 60.0점입니다. 유동성과 투자심리는 현재 연결된 데이터가 없어 확인하지 못했습니다.
+
+측정 범위는 65%, 상태는 부분 측정(partial)이고 점수 준비 완료 여부는 false입니다. 최종 점수 47.71은 측정된 세 항목만으로 계산된 값입니다.
+
+MAPS는 이 상태에서 신규 진입을 허용하지 않습니다. 점수가 낮아서가 아니라 점수가 완성되지 않았기 때문입니다.
+
+────────────────────
+3. 시스템은 왜 이렇게 움직였나요?
+────────────────────
+
+오늘 실제 주문을 낼 수 있는 단계까지 올라온 전략은 두 개였습니다. 사상 최고가 돌파 전략(ath_breakout_v1)과 채널 돌파 전략(donchian_v2)입니다. 둘 다 모의 후보(mock_candidate) 단계입니다.
+
+나머지 활성 전략은 연구(research) 단계라 신호를 만들어도 주문으로 넘어가지 않습니다.
+
+역발상 저평가 전략(contrarian_quality_accumulation_v1)은 아예 비활성이었습니다. 이 전략이 선호하는 국면은 MIXED와 WEAK인데 오늘은 STRONG이라 국면 불일치로 차단됐습니다.
+
+그래서 오늘 후보 목록 상위를 차지한 종목들은 모두 오늘 매매에 쓰이지 않는 전략의 것입니다. 점수가 100점이어도 마찬가지입니다.
+
+────────────────────
+4. 실제 매수·매도 기록
+────────────────────
+
+체결 없음.
+
+매수도 매도도 없었습니다.
+
+────────────────────
+5. 내일 예정된 행동
+────────────────────
+
+다음 거래일은 2026-08-14입니다.
+
+매수 예정 종목은 없습니다. 후보 10건이 모두 주문 제외 처리됐고 제외 사유는 전부 market_score_incomplete, 즉 시장 점수 미완성입니다. 예상 수량과 예상 금액은 모두 0입니다.
+
+제외된 10건은 전부 사상 최고가 돌파 전략(ath_breakout_v1)에서 나온 신호입니다.
+
+  ▸ 181710 · NHN · 지정가 67,400원
+  ▸ 013700 · 까뮤이앤씨 · 지정가 1,868원
+  ▸ 192820 · 코스맥스 · 지정가 251,500원
+  ▸ 094800 · 맵스리얼티 · 지정가 7,020원
+  ▸ 005090 · SGC에너지 · 지정가 62,500원
+  ▸ 049430 · 코메론 · 지정가 21,400원
+  ▸ 044820 · 코스맥스비티아이 · 지정가 27,450원
+  ▸ 092730 · 네오팜 · 지정가 24,650원
+  ▸ 096530 · 씨젠 · 지정가 32,250원
+  ▸ 078935 · GS우 · 지정가 61,900원
+
+10건 모두 신호일 종가와 현재 종가가 같아 갭 초과(gap_exceeded)는 없었습니다. 데이터가 오래됐다는 경고(data_stale)도 없습니다. 가격이나 갭 때문에 막힌 것이 아니라 시장 점수 단계에서 막혔습니다.
+
+조건 대기 항목은 없습니다.
+
+────────────────────
+6. 상세 기록
+────────────────────
+
+【 시장 】
+
+  raw_regime : strong
+  regime : strong
+  policy_regime : strong
+  weekly_trend : pass
+  vol_regime : high
+  market_mode : TREND_FOLLOWING
+  entry_limit_ratio : 0.5
+  breadth_pct : 0.8494459304547192
+  up_count / total_assets : 7 / 8
+  kospi_above_ma5w : true
+  kospi_above_ma10w : false
+  kospi_ts : 56.7
+  floor_applied : false
+  korea_weak_guard_applied : false
+  final_market_score : 47.71
+  score_coverage_ratio : 0.65
+  score_status : partial
+  score_ready : false
+
+측정된 팩터는 price_trend 56.7(market.weekly_price), volatility 25.0(market.kospi_realized_volatility), foreign_fx 60.0(market.usdkrw_weekly_trend)입니다. liquidity와 psychology는 measured=false이며 note는 "decision-time input was missing"입니다. 두 항목은 점수 없이 제외됐습니다.
+
+reason 원문: legacy=strong, final=47.7, price_trend=56.7, volatility=25.0, foreign_fx=60.0; 미측정 제외: liquidity,psychology
+source: market_regime_log
+
+【 섹터 】
+
+관측 전용, 후보 선정에는 적용되지 않음(applied_to_trading=false).
+
+selector는 legacy입니다. 복합 점수가 아니라 기간 수익률 순위만 사용했습니다. score, momentum_60d, turnover_growth, overheat_warning은 모두 null입니다. placeholder_inputs는 비어 있습니다.
+
+  ▸ IT 서비스 · momentum_20d 0.1117
+  ▸ 전기·전자 · momentum_20d 0.0831
+  ▸ 음식료·담배 · momentum_20d 0.0726
+  ▸ 화학 · momentum_20d 0.0722
+  ▸ 기타제조 · momentum_20d 0.0677
+
+reason: 기간 수익률 상위 N개 (관측 전용, 매매 미적용)
+
+watchlist, overheated, excluded는 모두 비어 있습니다.
+
+【 전략 】
+
+  ▸ pullback_v3 · PULLBACK · research · active · orderable=false
+  ▸ pullback_v2 · PULLBACK · research · active · orderable=false
+  ▸ ath_breakout_v1 · BREAKOUT · mock_candidate · active · orderable=true
+  ▸ ath_breakout_v2 · BREAKOUT · research · active · orderable=false
+  ▸ multi_asset_trend_v1 · MULTI_ASSET_TREND · research · active · orderable=false
+  ▸ donchian_v1 · MOMENTUM · research · active · orderable=false
+  ▸ donchian_v2 · MOMENTUM · mock_candidate · active · orderable=true
+  ▸ contrarian_quality_accumulation_v1 · CONTRARIAN_QUALITY · research · inactive · block_reason=preferred_regime_mismatch:strong
+
+활성 7개 전략의 entry_limit_ratio는 0.5, 비활성 전략은 null입니다.
+
+【 유니버스와 후보 】
+
+  universe_total : 2763
+  universe_kept : 1317
+  universe_excluded : 1446
+  universe_rejection_ratio : 0.5233441910966341
+  candidate_total : 323
+  candidate_excluded : 8
+
+후보 323개 중 8개가 제외됐습니다. 제외 비율은 약 2.5%입니다.
+
+다이제스트에 실린 후보 12개는 전부 contrarian_quality_accumulation_v1 소속이며 final_score는 모두 100.0, excluded_reason은 모두 null입니다. score_status는 partial, score_coverage_ratio는 0.3, score_ready와 market_score_ready는 false입니다.
+
+score_reason 공통 원문: contrarian_quality: valuation_margin_score=100.0×0.30 = 100.00; partial coverage=0.30; missing=earnings_revision_score,crowd_neglect_score,accumulation_flow_score,technical_bottom_score
+
+즉 다섯 개 구성요소 중 밸류에이션 여유 하나만 측정된 상태의 점수입니다.
+
+  ▸ 037400 · 우리엔터프라이즈 · KOSDAQ · TS 40.38 · S3 · PBR 0.11
+  ▸ 011170 · 롯데케미칼 · KOSPI · TS 52.54 · S3 · PBR 0.19
+  ▸ 000210 · DL · KOSPI · TS 66.36 · S4 · PBR 0.29
+  ▸ 058730 · 다스코 · KOSPI · TS 42.75 · S3 · PBR 0.46
+  ▸ 900300 · 오가닉티코스메틱 · KOSDAQ · TS 100.0 · S5 · PBR 0.07
+  ▸ 011330 · 유니켐 · KOSPI · TS 92.31 · S5 · PBR 0.34
+  ▸ 361610 · SK아이이테크놀로지 · KOSPI · TS 92.82 · S5 · PBR 0.50
+  ▸ 004990 · 롯데지주 · KOSPI · TS 55.15 · S3 · PBR 0.30
+  ▸ 005360 · 모나미 · KOSPI · TS 21.2 · S2 · PBR 0.42
+  ▸ 051915 · LG화학우 · KOSPI · TS 65.45 · S4 · PBR 0.32
+  ▸ 193250 · 링크드 · KOSDAQ · TS 96.34 · S5 · PBR 0.50
+  ▸ 002020 · 코오롱 · KOSPI · TS 61.93 · S4 · PBR 0.21
+
+valuation_margin_score는 12종목 모두 100.0이고 valuation_margin_reason은 pbr=100.0 형식입니다. component_sources는 fundamentals.valuation_margin 하나뿐입니다.
+
+price_source는 12종목 전부 rule입니다. AI가 낸 결론이 아니라 규칙이 만든 가격입니다. ai_technical_score, ai_analysis_memo, ai_contrarian_opinion, ai_contrarian_thesis, ai_contrarian_anti_thesis는 모두 null이라 기록된 내용이 없습니다.
+
+규칙이 만든 매수·손절·목표 가격은 다음과 같습니다.
+
+  ▸ 037400 · 639 / 484 / 949
+  ▸ 011170 · 58,000 / 48,900 / 76,200
+  ▸ 000210 · 51,500 / 42,050 / 70,400
+  ▸ 058730 · 3,735 / 2,245 / 6,720
+  ▸ 900300 · 3,030 / 2,015 / 5,060
+  ▸ 011330 · 4,905 / 2,845 / 9,020
+  ▸ 361610 · 16,040 / 13,160 / 21,800
+  ▸ 004990 · 23,750 / 21,000 / 29,250
+  ▸ 005360 · 1,801 / 961 / 3,480
+  ▸ 051915 · 125,400 / 106,700 / 162,800
+  ▸ 193250 · 2,315 / 1,746 / 3,455
+  ▸ 002020 · 28,700 / 20,550 / 45,000
+
+holding_type과 estimated_qty는 전부 null입니다.
+
+【 내일 주문 계산 전제 】
+
+  next_trading_day : 2026-08-14
+  as_of_date : 2026-08-13
+  assumed_total_value : 100,319,850원
+  assumed_cash : 80,313,570원
+  max_orders : 3
+  max_orders_effective : 2
+  slippage_pct : 0.01
+  max_gap_pct : 0.02
+  eligible_strategies : ath_breakout_v1, donchian_v2
+  data_available : true
+  data_stale : false
+  stale_reason : null
+  latest_ohlcv_date : null
+
+10건 모두 signal_date 2026-08-13, gap_pct 0.0, gap_exceeded false, skipped true, skip_reason market_score_incomplete, live_eligible true입니다. 신호 종가는 순서대로 66,700 / 1,849 / 249,000 / 6,950 / 61,800 / 21,150 / 27,150 / 24,400 / 31,900 / 61,200원이며 현재 종가와 같습니다.
+
+【 체결 】
+
+executions 배열이 비어 있습니다. 주문가, 체결가, 수량, 상태, 청산 사유로 기록할 내용이 없습니다.
+
+【 오류 】
+
+errors 배열이 비어 있습니다. 수집 실패는 없었습니다.
+
+【 외부 리포트 발췌 】
+
+아래는 외부 리포트에서 가져온 내용이며 MAPS의 매매 판단에는 쓰이지 않았습니다.
+
+AI 기반 프리미엄 추천 종목 리포트 v4(기준일 20260813): 시가총액 5000억 이상, 등락률 5% 이상, 거래대금 1000억 이상 종목만 분석. 오늘의 추천주로 금호타이어(종가 8,140원, 등락률 9.7%, 강한 돌파, AI 예상 상승 확률 88)와 지엔씨에너지(종가 55,400원, 등락률 14.9%, 완만한 돌파, 73)가 올랐습니다. 리포트 자체가 통계적 추천일 뿐 보장이 아니라고 밝히고 있습니다.
+
+Gap Up & Down Risk Report v7.2(2026-08-13 18:00:09 KST): KOSPI 급등 가능성 점수 6, 급락 위험 점수 8. KOSDAQ 급등 0, 급락 6. 급등 요인으로 VIX9D 11.09 안정과 MOVE 72.1을 들었고, 급락 요인으로 원화 급약세(10.51원)를 들었습니다. 영향 지속은 0~1일로 예상했습니다.
+
+Market Summary v10.8(2026-08-13 18:00:12 KST): KOSPI Composite 20.2로 상승 우위, 수급 강도 100.0%, 추세 강도 -67.5%, 외부 환경 영향 50.3%, 시장 건강도 -70.4%. KOSDAQ Composite 35.5로 상승 우위, 수급 강도 39.9%, 추세 강도 38.5%, 외부 환경 영향 50.2%, 시장 건강도 17.5%.
+
+기관·외국인 수급 리포트 Rev9.1(기준일 2026-08-13): 프리미엄 1순위 GS건설(선취매 100.0점, 3일 연속 매수), Fast 스윙 지엔씨에너지, 중장기 관심 지엔씨에너지.
+
+────────────────────
+7. 투자 유의사항
+────────────────────
+
+이 기록은 KIS 모의투자 계좌의 운용 결과이며 실제 자금 운용이 아닙니다.
+특정 종목의 매수·매도를 권유하지 않습니다.
+투자 판단과 결과의 책임은 투자자 본인에게 있습니다.
+
+태그: MAPS 자동매매 퀀트투자 시장국면 매매기록 모의투자 리스크관리 시장점수 돌파전략
