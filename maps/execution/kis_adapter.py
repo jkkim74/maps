@@ -152,11 +152,14 @@ def _quote_is_halted(quote: dict[str, Any]) -> bool:
     for key in ("temp_stop_yn", "tr_stop_yn", "trht_yn"):
         if str(quote.get(key) or "").strip().upper() == "Y":
             return True
-    # 종목상태구분코드: 정상(00) 외에는 관리·경고·정지 등 비정상이다.
+    # 종목상태구분코드 — 00 그외, 51 관리, 52 투자위험, 53 투자경고, 54 투자주의,
+    # 55 신용가능, 57 증거금 100%, 58 거래정지, 59 단기과열.
+    # 57 은 신용 조건이지 정지·경고가 아니다. 상한가 소형주는 거의 다 57 이라
+    # (2026-09-11 +25% 후보 7건 중 5건, 아모텍 포함) 이걸 막으면 전략이 사실상 꺼진다.
     status = str(
         quote.get("iscd_stat_cls_code") or quote.get("iscd_stat_cls_cd") or ""
     ).strip()
-    return bool(status) and status not in {"00", "55"}
+    return bool(status) and status not in {"00", "55", "57"}
 
 
 class KISAdapter(BrokerAdapter):

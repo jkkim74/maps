@@ -747,6 +747,10 @@ def test_halted_and_flagged_stocks_are_marked_for_the_scanner() -> None:
     assert _quote_is_halted({"temp_stop_yn": "Y"})
     assert _quote_is_halted({"trht_yn": "Y"})
     assert _quote_is_halted({"iscd_stat_cls_code": "51"})  # 관리종목
+    assert _quote_is_halted({"iscd_stat_cls_code": "58"})  # 거래정지
+    # 증거금 100% 는 신용 조건이지 정지·경고가 아니다. 2026-09-11 +25% 후보 7건 중 5건
+    # (아모텍 포함)이 57 이라 전원 halted 로 탈락했다.
+    assert not _quote_is_halted({"iscd_stat_cls_code": "57"})
     assert not _quote_is_halted({"temp_stop_yn": "N", "iscd_stat_cls_code": "00"})
     # 알 수 없는 응답은 기존 동작(정지 아님)을 유지한다 — 게이트를 조이기만 한다
     assert not _quote_is_halted({})
