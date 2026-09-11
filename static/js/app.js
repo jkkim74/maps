@@ -2177,6 +2177,58 @@ function _luRenderSessions(sessions) {
     </div>`;
 }
 
+// 원장 created_at 은 UTC naive 라 'Z' 를 붙여 파싱하고 KST 로 찍는다.
+// sv-SE 로케일은 'YYYY-MM-DD HH:MM:SS' 를 그대로 준다.
+function _luKst(iso) {
+  return new Date(iso.slice(0, 19) + 'Z')
+    .toLocaleString('sv-SE', { timeZone: 'Asia/Seoul' });
+}
+
+const _LU_ACTION = {
+  trigger_gate_failed: '진입 보류', fire_net: '그물 진입', submit_buy: '매수 제출',
+  first_fill: '첫 체결', late_fill_adopted: '지연 체결 인수', locked: '상한가 잠김',
+  cancel_no_fill: '매수 취소', cancel_buy: '매수 취소 제출', watch_expired: '감시 만료',
+  eod_hold: 'EOD 보유', eod_sell: 'EOD 매도', market_sell: '시장가 매도',
+  overnight_trim: '오버나이트 트림', overnight_trim_sell: '트림 매도 제출',
+  overnight_trim_filled: '트림 체결', next_open_sell: '익일 시가 매도',
+  after_hours_filled: '시간외 체결', after_hours_exit: '시간외 탈출',
+};
+const _LU_REASON = {
+  hard_stop: '손절', time_stop: '시간청산', no_fill_timeout: '미체결 시간초과',
+  locked: '상한가 잠김', market_halt: '거래정지', upper_limit_without_fill: '체결 없이 상한가',
+  next_open: '익일 시가', eod_review_fail: 'EOD 심사 탈락', daily_guard: '일일 가드',
+  insufficient_budget: '예산 부족', no_trigger: '트리거 없음',
+};
+const _eok = v => v == null ? '—' : Math.round(v / 1e8).toLocaleString('ko-KR') + '억';
+
+// payload 를 사람이 읽는 한 줄로. 원본 JSON 은 셀 title 에 남는다.
+function _luDescribe(action, p) {
+  p = p || {};
+  const reason = _LU_REASON[p.reason] || p.reason;
+  const qty = p.quantity == null ? '' : `${p.quantity.toLocaleString('ko-KR')}주`;
+  switch (action) {
+    case 'trigger_gate_failed': {
+      const why = (p.failed || '').split(',').map(f =>
+        f === 'turnover' ? `거래대금 ${_eok(p.turnover)} (${_eok(p.min_turnover)} 미달)`
+        : f === 'strength' ? `체결강도 ${p.strength} (${p.min_strength} 미달)`
+        : f === 'not_buy_initiated' ? '매수체결 아님' : f);
+      return `트리거 ${fmt.krw(p.trigger_price)} 재돌파 @ ${fmt.krw(p.price)} — ${why.join(', ')}`;
+    }
+    case 'fire_net':
+      return `거래대금 ${_eok(p.turnover)} · 체결강도 ${p.strength} · 레그 ${(p.grid || []).length}개`;
+    case 'first_fill': case 'late_fill_adopted': return qty || '—';
+    case 'cancel_no_fill': return reason || '—';
+    case 'market_sell': return [reason, qty].filter(Boolean).join(' · ') || '—';
+    case 'overnight_trim': return `허용 ${p.allowed}주, 초과 ${p.excess}주 매도`;
+    case 'submit_buy': case 'overnight_trim_sell': case 'after_hours_exit':
+      return `${qty} @ ${fmt.krw(p.price)}`;
+    case 'cancel_buy': return `주문 ${p.broker_order_id || '—'}`;
+    default:
+      return Object.entries(p).map(([k, v]) =>
+        `${k}=${typeof v === 'object' ? JSON.stringify(v) : v}`).join(' · ') || '—';
+  }
+}
+
 function _luRenderEvents(sessions) {
   const events = [];
   sessions.forEach(s => s.events.forEach(e => events.push({ ...e, ticker: s.ticker })));
@@ -2186,15 +2238,16 @@ function _luRenderEvents(sessions) {
   }
   events.sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
   const rows = events.slice(0, 200).map(e => `<tr>
-    <td class="mono" style="font-size:0.72rem">${esc(e.created_at.replace('T', ' ').slice(0, 19))}</td>
+    <td class="mono" style="font-size:0.72rem">${esc(_luKst(e.created_at))}</td>
     <td class="mono">${esc(e.ticker)}</td>
-    <td>${esc(e.action)}${e.leg ? ` <span class="text-muted">(${esc(e.leg)})</span>` : ''}</td>
-    <td class="mono text-muted" style="font-size:0.72rem">${
-      e.payload ? esc(JSON.stringify(e.payload)) : '—'}</td>
+    <td>${esc(_LU_ACTION[e.action] || e.action)}${e.leg ? ` <span class="text-muted">(${esc(e.leg)})</span>` : ''}<br>
+      <span class="mono text-muted" style="font-size:0.68rem">${esc(e.action)}</span></td>
+    <td style="font-size:0.78rem" title="${e.payload ? esc(JSON.stringify(e.payload)) : ''}">${
+      esc(_luDescribe(e.action, e.payload))}</td>
   </tr>`).join('');
   document.getElementById('lu-events').innerHTML = `
     <div style="overflow-x:auto"><table>
-      <thead><tr><th>시각(UTC)</th><th>종목</th><th>이벤트</th><th>payload</th></tr></thead>
+      <thead><tr><th>시각(KST)</th><th>종목</th><th>이벤트</th><th>내용</th></tr></thead>
       <tbody>${rows}</tbody>
     </table></div>`;
 }
