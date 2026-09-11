@@ -1157,6 +1157,8 @@ class DigestLimitUpSession(BaseModel):
     end_reason: str | None = None
     filled_quantity: int = 0
     realized_pnl: float | None = None
+    # 트리거를 재돌파했는데 막힌 첫 게이트(turnover / strength / not_buy_initiated). 없으면 재돌파 자체가 없었다
+    gate_failed: str | None = None
 
 
 class DigestLimitUpScanRejection(BaseModel):

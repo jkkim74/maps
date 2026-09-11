@@ -101,6 +101,9 @@ class CommandKind(str, Enum):
     FIRE_NET = "fire_net"
     CANCEL_BUYS = "cancel_buys"
     MARKET_SELL = "market_sell"
+    # 트리거를 재돌파했는데 게이트에 막힌 첫 순간. 주문이 아니라 기록 요청이다 —
+    # 이게 없으면 "왜 안 샀나" 가 로그·DB 어디에도 없다 (2026-09-11 아모텍).
+    GATE_FAILED = "gate_failed"
 
 
 @dataclass(frozen=True)
@@ -390,6 +393,7 @@ class LimitUpMachine:
         self.filled_quantity = 0
         self.pattern_failure_pending = False
         self.market_halted = False
+        self.gate_failure_reported = False
 
     def fire_net(self, *, at: float) -> None:
         """Record one net attempt before the command worker submits orders."""
@@ -416,13 +420,22 @@ class LimitUpMachine:
             previous is not None
             and previous < trigger_price(self.upper_limit_price) <= event.price
         )
-        gates_pass = (
-            event.buy_initiated
-            and event.cumulative_turnover_krw >= self.config.min_turnover_krw
-            and event.execution_strength >= self.config.min_execution_strength
-        )
-        if not crossed or not gates_pass:
+        if not crossed:
             return []
+        failed = [
+            name
+            for name, ok in (
+                ("not_buy_initiated", event.buy_initiated),
+                ("turnover", event.cumulative_turnover_krw >= self.config.min_turnover_krw),
+                ("strength", event.execution_strength >= self.config.min_execution_strength),
+            )
+            if not ok
+        ]
+        if failed:
+            if self.gate_failure_reported:
+                return []
+            self.gate_failure_reported = True
+            return [MachineCommand(CommandKind.GATE_FAILED, ",".join(failed))]
         self.fire_net(at=event.at)
         return [MachineCommand(CommandKind.FIRE_NET, "three_tick_upward_cross")]
 

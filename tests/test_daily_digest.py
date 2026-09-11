@@ -24,6 +24,7 @@ from maps.common.models import (
     HoldingRegimeAudit,
     JobRunLog,
     LimitUpDailyGuard,
+    LimitUpEvent,
     LimitUpOrderLeg,
     LimitUpSession,
     MarketRegimeLog,
@@ -791,7 +792,12 @@ def test_limit_up_section_reports_outcomes_scan_rejections_and_after_hours(db, s
     db.add(SecurityMetadata(ticker="111111", name="감시만", market="KOSDAQ", security_type="stock"))
     db.add(SecurityMetadata(ticker="222222", name="가드차단", market="KOSDAQ", security_type="stock"))
     db.add(SecurityMetadata(ticker="333333", name="우선주", market="KOSDAQ", security_type="stock"))
-    _limit_up_session(db, "111111")                                   # 트리거 미발생
+    gated = _limit_up_session(db, "111111")                           # 트리거 미발생
+    db.add(LimitUpEvent(
+        session_id=gated.id, state_version=0, action="trigger_gate_failed",
+        idempotency_key=f"{gated.id}:trigger_gate_failed:-:0",
+        payload={"failed": "turnover", "turnover": 35_500_000_000},
+    ))
     guarded = _limit_up_session(
         db, "222222", state="closed", end_reason="daily_guard",
         net_fired_at=dt.datetime(2026, 7, 27, 1, 30),
@@ -816,6 +822,9 @@ def test_limit_up_section_reports_outcomes_scan_rejections_and_after_hours(db, s
     outcomes = {s.ticker: s.outcome for s in section.sessions}
     assert outcomes == {"111111": "no_trigger", "222222": "daily_guard"}
     assert {s.ticker: s.name for s in section.sessions}["111111"] == "감시만"
+    assert {s.ticker: s.gate_failed for s in section.sessions} == {
+        "111111": "turnover", "222222": None,
+    }
     assert section.guard is not None
     assert section.guard.halted_reasons == ["kosdaq_drawdown"]
     assert [(r.ticker, r.name, r.reason) for r in section.guard.scan_rejections] == [

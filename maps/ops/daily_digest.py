@@ -51,6 +51,7 @@ from maps.common.models import (
     HoldingRegimeAudit,
     JobRunLog,
     LimitUpDailyGuard,
+    LimitUpEvent,
     LimitUpOrderLeg,
     LimitUpSession,
     MarketRegimeLog,
@@ -989,6 +990,7 @@ def _build_limit_up(db: Session, settings: MapsSettings, ref_date: dt.date) -> D
     names = _names_for(db, {s.ticker for s in sessions} | set(rejections))
 
     filled: dict[int, int] = {}
+    gate_failed: dict[int, str] = {}
     if sessions:
         for session_id, qty in (
             db.query(LimitUpOrderLeg.session_id, LimitUpOrderLeg.filled_quantity)
@@ -996,6 +998,16 @@ def _build_limit_up(db: Session, settings: MapsSettings, ref_date: dt.date) -> D
             .all()
         ):
             filled[session_id] = filled.get(session_id, 0) + int(qty or 0)
+        # 트리거 재돌파가 게이트에 막힌 세션 — "no_trigger" 를 재돌파 없음과 구별한다.
+        for session_id, payload in (
+            db.query(LimitUpEvent.session_id, LimitUpEvent.payload)
+            .filter(
+                LimitUpEvent.session_id.in_([s.id for s in sessions]),
+                LimitUpEvent.action == "trigger_gate_failed",
+            )
+            .all()
+        ):
+            gate_failed.setdefault(session_id, str((payload or {}).get("failed") or ""))
 
     guard = None
     if guard_row is not None:
@@ -1048,6 +1060,7 @@ def _build_limit_up(db: Session, settings: MapsSettings, ref_date: dt.date) -> D
                 end_reason=s.end_reason,
                 filled_quantity=filled.get(s.id, 0),
                 realized_pnl=s.realized_pnl,
+                gate_failed=gate_failed.get(s.id) or None,
             )
             for s in sessions
         ],

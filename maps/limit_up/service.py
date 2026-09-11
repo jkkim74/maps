@@ -1102,6 +1102,37 @@ class LimitUpService:
         for command in commands:
             session = self._sessions[ticker]
             machine = self._machines[ticker]
+            if command.kind is CommandKind.GATE_FAILED:
+                # 스캔 탈락은 scan_rejections 에 남는데 트리거 탈락은 아무 데도 없었다.
+                # 멱등키(세션·상태버전)가 세션당 1행으로 막고, 알림 화이트리스트 밖이라 조용하다.
+                payload = {
+                    "failed": command.reason,
+                    "price": trade.price if trade else None,
+                    "trigger_price": session.trigger_price,
+                    "turnover": trade.cumulative_turnover_krw if trade else None,
+                    "strength": trade.execution_strength if trade else None,
+                    "buy_initiated": trade.buy_initiated if trade else None,
+                    "min_turnover": self.config.min_turnover_krw,
+                    "min_strength": self.config.min_execution_strength,
+                }
+                self.repository.append_event(
+                    session,
+                    action="trigger_gate_failed",
+                    state_version=session.state_version,
+                    payload=payload,
+                )
+                self.repository.db.commit()
+                logger.warning(
+                    "상한가 진입 보류 — %s 트리거 %s 재돌파, 게이트 미달(%s): "
+                    "거래대금 %.0f억 / 체결강도 %s / 매수체결 %s",
+                    ticker,
+                    f"{session.trigger_price:,}",
+                    command.reason,
+                    (payload["turnover"] or 0) / 1e8,
+                    payload["strength"],
+                    payload["buy_initiated"],
+                )
+                continue
             if command.kind is CommandKind.FIRE_NET:
                 self._refresh_daily_pnl(now_kst.date())
                 if not self.guard.can_enter(active_sessions=self._active_count(exclude=ticker)):

@@ -7,6 +7,7 @@ import pytest
 from maps.limit_up.domain import (
     DAILY_LOSS_LIMIT_KRW,
     CommandKind,
+    MachineCommand,
     DailyGuard,
     LimitUpConfig,
     LimitUpMachine,
@@ -84,7 +85,11 @@ def test_entry_requires_buy_led_upward_cross_and_both_numeric_gates() -> None:
     machine = LimitUpMachine("005930", upper_limit_price=13_000, config=_config())
 
     assert machine.on_trade(_trade(1.0, 12_960)) == []
-    assert machine.on_trade(_trade(2.0, 12_970, buy_initiated=False)) == []
+    # 첫 재돌파 실패는 어느 게이트에 막혔는지 한 번만 알린다 — 2026-09-11 아모텍이
+    # 거래대금 355억으로 트리거를 재돌파하고도 아무 흔적 없이 무산됐다.
+    assert machine.on_trade(_trade(2.0, 12_970, buy_initiated=False)) == [
+        MachineCommand(CommandKind.GATE_FAILED, "not_buy_initiated")
+    ]
     assert machine.on_trade(_trade(3.0, 12_960)) == []
     assert machine.on_trade(_trade(4.0, 12_970, turnover=49_999_999_999)) == []
     assert machine.on_trade(_trade(5.0, 12_960)) == []

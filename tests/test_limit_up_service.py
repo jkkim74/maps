@@ -1267,3 +1267,33 @@ def test_recover_closes_a_prior_day_watch_instead_of_reviving_it(db) -> None:
     assert row.state == LimitUpState.CLOSED.value
     assert row.end_reason == "no_trigger"
     assert service.watched_tickers() == ()
+
+
+def test_first_gated_trigger_cross_is_recorded_once_per_session(db, caplog) -> None:
+    """트리거를 재돌파했는데 게이트에 막힌 첫 순간은 이벤트 1행 + WARNING 1줄로 남는다.
+
+    2026-09-11 아모텍이 11:04 트리거를 재돌파했지만 거래대금 355억 < 500억 으로
+    무산됐고, 로그·DB 어디에도 흔적이 없어 "왜 안 샀나" 를 답할 수 없었다.
+    """
+    from maps.common.models import LimitUpEvent
+
+    service = _service(db, LimitUpMode.RECOMMEND_ONLY)
+    now = dt.datetime(2026, 9, 11, 11, 4, tzinfo=KST)
+    assert service.watch_candidate(_candidate(), now_kst=now) is None
+
+    def _thin(at: float, price: int) -> FeedTrade:
+        return replace(_trade(at, price), cumulative_turnover_krw=35_500_000_000)
+
+    with caplog.at_level("WARNING", logger="maps.limit_up.service"):
+        service.on_trade(_thin(1.0, 99_600), now_kst=now)
+        service.on_trade(_thin(2.0, 99_800), now_kst=now)   # 트리거 99,800 재돌파
+        service.on_trade(_thin(3.0, 99_600), now_kst=now)
+        service.on_trade(_thin(4.0, 99_800), now_kst=now)   # 두 번째 실패는 조용히
+
+    events = db.query(LimitUpEvent).filter(LimitUpEvent.action == "trigger_gate_failed").all()
+    assert len(events) == 1
+    assert events[0].payload["failed"] == "turnover"
+    assert events[0].payload["turnover"] == 35_500_000_000
+    assert events[0].payload["price"] == 99_800
+    assert sum("진입 보류" in r.message for r in caplog.records) == 1
+    assert service._sessions["005930"].state == LimitUpState.WATCHING.value
