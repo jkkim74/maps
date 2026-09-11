@@ -314,11 +314,17 @@ def test_limit_up_candidate_scan_uses_rank_then_broker_quote(
 
     def fake_request(method, path, *, tr_id, params=None, **kwargs):
         calls.append((path, tr_id))
-        if path.endswith("/volume-rank"):
+        if path.endswith("/ranking/fluctuation"):
+            # 2026-09-11 운영 실측값. 정렬 코드는 문서의 "0000" 이 아니라 "0" 이어야
+            # 하고(길이 오류), 구간 하한만 주면 0행이 온다 — 셋 중 하나라도 어긋나면
+            # 조용히 후보 0건이 된다.
+            assert params["FID_RANK_SORT_CLS_CODE"] == "0"
+            assert params["FID_RSFL_RATE1"] == "25"
+            assert params["FID_RSFL_RATE2"] == "100"
             return {
                 "output": [
-                    {"mksc_shrn_iscd": "005930", "prdy_ctrt": "25.10"},
-                    {"mksc_shrn_iscd": "000660", "prdy_ctrt": "24.99"},
+                    {"stck_shrn_iscd": "005930", "prdy_ctrt": "25.10"},
+                    {"stck_shrn_iscd": "000660", "prdy_ctrt": "24.99"},
                 ]
             }
         assert params["FID_INPUT_ISCD"] == "005930"
@@ -353,7 +359,7 @@ def test_limit_up_candidate_scan_uses_rank_then_broker_quote(
         }
     ]
     assert calls == [
-        ("/uapi/domestic-stock/v1/quotations/volume-rank", "FHPST01710000"),
+        ("/uapi/domestic-stock/v1/ranking/fluctuation", "FHPST01700000"),
         ("/uapi/domestic-stock/v1/quotations/inquire-price", "FHKST01010100"),
     ]
 

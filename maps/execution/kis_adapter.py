@@ -51,7 +51,7 @@ _CANCEL_PATH = "/uapi/domestic-stock/v1/trading/order-rvsecncl"
 _BALANCE_PATH = "/uapi/domestic-stock/v1/trading/inquire-balance"
 _DAILY_CCLD_PATH = "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
 _PRICE_PATH = "/uapi/domestic-stock/v1/quotations/inquire-price"
-_VOLUME_RANK_PATH = "/uapi/domestic-stock/v1/quotations/volume-rank"
+_FLUCTUATION_RANK_PATH = "/uapi/domestic-stock/v1/ranking/fluctuation"
 _INDEX_TIME_PRICE_PATH = "/uapi/domestic-stock/v1/quotations/inquire-index-timeprice"
 _INDEX_TIME_INTERVAL_SECONDS = "60"
 _WS_APPROVAL_PATH = "/oauth2/Approval"
@@ -66,7 +66,7 @@ _PRICE_TR_ID = "FHKST01010100"
 # **가정값**이다. 틀리면 주문이 거부되거나 정규장 주문으로 나가므로, 확정 전에는
 # AUTOMATIC 모드로 시간외 탈출을 신뢰하지 말 것.
 _AFTER_HOURS_ORD_DVSN = "21"
-_VOLUME_RANK_TR_ID = "FHPST01710000"
+_FLUCTUATION_RANK_TR_ID = "FHPST01700000"
 _INDEX_TIME_PRICE_TR_ID = "FHPUP02110200"
 
 _TR_IDS = {
@@ -361,41 +361,48 @@ class KISAdapter(BrokerAdapter):
         return value
 
     def get_limit_up_candidates(self) -> tuple[list[dict[str, Any]], int]:
-        """Return +25% candidates and the raw volume-rank row count.
+        """Return +25% candidates and the row count of the +25% band query.
 
-        The count is what separates "no stock rose 25% today" from "the rank
-        response came back empty or unparseable" — without it a scanner that
-        silently returns nothing looks exactly like a quiet market.
+        Source is the KIS fluctuation ranking filtered to the +25%~+100% band,
+        not the volume ranking. The volume ranking caps at 30 rows dominated by
+        ETF/ETN/inverse funds (30th place needed 2.9M shares on 2026-09-11) and
+        a stock that locks limit-up early trades too little to appear — 아모텍
+        (052710) hit +29.98% on 1.8M shares and was never seen. The band filter
+        is mandatory: the unfiltered ranking is not sorted by rate and dropped a
+        +29.89% stock. Both band bounds must be sent (lower bound alone → 0 rows)
+        and the sort code is "0", not the documented "0000" (length error).
+
+        The count no longer distinguishes "no stock rose 25%" from an empty
+        response — a broken reply with rt_cd != 0 still raises. The ranking is
+        capped at 30 rows, so a day with more than 30 limit movers is truncated.
         """
         rank_data = self._request(
             "GET",
-            _VOLUME_RANK_PATH,
-            tr_id=_VOLUME_RANK_TR_ID,
+            _FLUCTUATION_RANK_PATH,
+            tr_id=_FLUCTUATION_RANK_TR_ID,
             params={
                 "FID_COND_MRKT_DIV_CODE": "J",
-                "FID_COND_SCR_DIV_CODE": "20171",
+                "FID_COND_SCR_DIV_CODE": "20170",
                 "FID_INPUT_ISCD": "0000",
-                "FID_DIV_CLS_CODE": "0",
-                "FID_BLNG_CLS_CODE": "0",
-                "FID_TRGT_CLS_CODE": "111111111",
-                "FID_TRGT_EXLS_CLS_CODE": "0000000000",
-                "FID_INPUT_PRICE_1": "",
-                "FID_INPUT_PRICE_2": "",
-                "FID_VOL_CNT": "",
-                "FID_INPUT_DATE_1": "",
                 "FID_RANK_SORT_CLS_CODE": "0",
                 "FID_INPUT_CNT_1": "0",
                 "FID_PRC_CLS_CODE": "0",
-                "FID_INPUT_PRICE_3": "",
-                "FID_INPUT_PRICE_4": "",
+                "FID_INPUT_PRICE_1": "",
+                "FID_INPUT_PRICE_2": "",
+                "FID_VOL_CNT": "",
+                "FID_TRGT_CLS_CODE": "0",
+                "FID_TRGT_EXLS_CLS_CODE": "0",
+                "FID_DIV_CLS_CODE": "0",
+                "FID_RSFL_RATE1": "25",
+                "FID_RSFL_RATE2": "100",
             },
         )
         candidates: list[dict[str, Any]] = []
         ranked_rows = self._as_list(rank_data.get("output"))
         for ranked in ranked_rows:
             ticker = str(
-                ranked.get("mksc_shrn_iscd")
-                or ranked.get("stck_shrn_iscd")
+                ranked.get("stck_shrn_iscd")
+                or ranked.get("mksc_shrn_iscd")
                 or ranked.get("code")
                 or ""
             )
