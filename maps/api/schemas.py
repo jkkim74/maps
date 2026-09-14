@@ -1159,6 +1159,13 @@ class DigestLimitUpSession(BaseModel):
     realized_pnl: float | None = None
     # 트리거를 재돌파했는데 막힌 첫 게이트(turnover / strength / not_buy_initiated). 없으면 재돌파 자체가 없었다
     gate_failed: str | None = None
+    # 감시 중 실제로 본 것. 미발동 세션의 사유를 여기서 바로 읽는다.
+    # tick_count 0 = 시세가 안 들어옴(구독·피드 장애).
+    # cross_count 0 인데 low_price >= trigger_price = 트리거 아래로 내려온 적이 없음(상한가 잠김).
+    observed_tick_count: int = 0
+    observed_low_price: int | None = None
+    trigger_cross_count: int = 0
+    max_turnover_krw: int | None = None
 
 
 class DigestLimitUpScanRejection(BaseModel):

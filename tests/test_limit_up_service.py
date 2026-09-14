@@ -1297,3 +1297,76 @@ def test_first_gated_trigger_cross_is_recorded_once_per_session(db, caplog) -> N
     assert events[0].payload["price"] == 99_800
     assert sum("진입 보류" in r.message for r in caplog.records) == 1
     assert service._sessions["005930"].state == LimitUpState.WATCHING.value
+
+
+def _watch_trade(at: float, price: int, *, turnover: int = 20_000_000_000) -> FeedTrade:
+    """One gate-failing trade, so the watch stays WATCHING while ticks accumulate."""
+    return FeedTrade(
+        ticker="005930",
+        price=price,
+        cumulative_turnover_krw=turnover,
+        execution_strength=90.0,
+        buy_initiated=True,
+        received_at=at,
+    )
+
+
+def test_watch_observations_reach_the_session_row(db) -> None:
+    """A watched session must answer "why no trade" from its own row.
+
+    Before this, a session that never triggered carried nothing but its state,
+    so the only way to tell a locked ticker from a dead subscription was to
+    reconstruct the day from journald — which is exactly what 2026-09-14
+    101730 cost.
+    """
+    service = _service(db, LimitUpMode.RECOMMEND_ONLY)
+    now = dt.datetime(2026, 8, 28, 10, 0, tzinfo=KST)
+    service.watch_candidate(_candidate(), now_kst=now)
+
+    service.on_trade(_watch_trade(1.0, 99_000), now_kst=now)
+    service.on_trade(_watch_trade(2.0, 99_800, turnover=30_000_000_000), now_kst=now)
+    service.tick(now_monotonic=100.0, now_kst=now)
+
+    session = db.query(LimitUpSession).filter_by(ticker="005930").one()
+    assert session.observed_tick_count == 2
+    assert session.observed_low_price == 99_000
+    assert session.observed_high_price == 99_800
+    assert session.trigger_cross_count == 1
+    assert session.max_turnover_krw == 30_000_000_000
+    assert session.state == LimitUpState.WATCHING.value
+
+
+def test_recover_keeps_observations_a_restart_would_otherwise_zero(db) -> None:
+    """A mid-day restart must not blank the record it exists to preserve."""
+    service = _service(db, LimitUpMode.RECOMMEND_ONLY)
+    now = dt.datetime(2026, 8, 28, 10, 0, tzinfo=KST)
+    service.watch_candidate(_candidate(), now_kst=now)
+    service.on_trade(_watch_trade(1.0, 99_000), now_kst=now)
+    service.tick(now_monotonic=100.0, now_kst=now)
+
+    restarted = _service(db, LimitUpMode.RECOMMEND_ONLY)
+    restarted.recover(ref_date=now.date(), now_monotonic=200.0, now_kst=now)
+    assert restarted._machines["005930"].observed_tick_count == 1
+
+    restarted.tick(now_monotonic=400.0, now_kst=now)
+
+    session = db.query(LimitUpSession).filter_by(ticker="005930").one()
+    assert session.observed_tick_count == 1
+    assert session.observed_low_price == 99_000
+
+
+def test_expired_watch_persists_its_final_observation(db) -> None:
+    """Expiry is the row's last write, and it is the row operators will read."""
+    service = _service(db, LimitUpMode.RECOMMEND_ONLY)
+    now = dt.datetime(2026, 8, 28, 10, 0, tzinfo=KST)
+    service.watch_candidate(_candidate(), now_kst=now)
+    service.on_trade(_watch_trade(1.0, 99_900), now_kst=now)
+
+    closed = service.expire_untriggered_watches(before=dt.date(2026, 8, 29))
+
+    session = db.query(LimitUpSession).filter_by(ticker="005930").one()
+    assert closed == ["005930"]
+    assert session.end_reason == "no_trigger"
+    assert session.observed_tick_count == 1
+    assert session.observed_low_price == 99_900
+    assert session.trigger_cross_count == 0

@@ -1061,6 +1061,10 @@ def _build_limit_up(db: Session, settings: MapsSettings, ref_date: dt.date) -> D
                 filled_quantity=filled.get(s.id, 0),
                 realized_pnl=s.realized_pnl,
                 gate_failed=gate_failed.get(s.id) or None,
+                observed_tick_count=s.observed_tick_count or 0,
+                observed_low_price=s.observed_low_price,
+                trigger_cross_count=s.trigger_cross_count or 0,
+                max_turnover_krw=s.max_turnover_krw,
             )
             for s in sessions
         ],

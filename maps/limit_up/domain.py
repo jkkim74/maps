@@ -394,6 +394,14 @@ class LimitUpMachine:
         self.pattern_failure_pending = False
         self.market_halted = False
         self.gate_failure_reported = False
+        # 관측 전용 카운터. 진입 판정에는 절대 쓰지 않는다 — 미발동 세션의 사유를
+        # 나중에 재구성하기 위한 기록이다. 서비스가 주기적으로 세션 행에 옮긴다.
+        self.observed_tick_count = 0
+        self.observed_low_price: int | None = None
+        self.observed_high_price: int | None = None
+        self.trigger_cross_count = 0
+        self.max_turnover_krw: int | None = None
+        self.max_strength: float | None = None
 
     def fire_net(self, *, at: float) -> None:
         """Record one net attempt before the command worker submits orders."""
@@ -402,8 +410,30 @@ class LimitUpMachine:
         self.state = LimitUpState.NET_OPEN
         self.net_fired_at = at
 
+    def observe(self, event: TradeEvent) -> None:
+        """Record one tick for diagnostics only, never for entry decisions.
+
+        Every tick counts, including those that arrive after the session leaves
+        WATCHING: the question these answer is "what did this machine actually
+        see today", and a tick the machine saw is a tick it saw. Keeping it
+        unconditional also means a feed outage shows up as a flat count instead
+        of being hidden behind a state check.
+        """
+        self.observed_tick_count += 1
+        if self.observed_low_price is None or event.price < self.observed_low_price:
+            self.observed_low_price = event.price
+        if self.observed_high_price is None or event.price > self.observed_high_price:
+            self.observed_high_price = event.price
+        turnover = event.cumulative_turnover_krw
+        if self.max_turnover_krw is None or turnover > self.max_turnover_krw:
+            self.max_turnover_krw = turnover
+        strength = event.execution_strength
+        if self.max_strength is None or strength > self.max_strength:
+            self.max_strength = strength
+
     def on_trade(self, event: TradeEvent) -> list[MachineCommand]:
         """Apply an execution event and return ordered side-effect intents."""
+        self.observe(event)
         if self._hard_stop_crossed(event.price):
             return self._protective_exit("hard_stop")
 
@@ -422,6 +452,11 @@ class LimitUpMachine:
         )
         if not crossed:
             return []
+        # 래치(gate_failure_reported)는 이벤트 행과 로그만 억제한다. 교차 횟수는
+        # 그와 무관하게 전부 센다 — 세션당 첫 교차만 남기면 표본이 "장 초반"으로
+        # 쏠려, 누적거래대금 하한이 실제보다 훨씬 빡빡해 보인다(2026-09-14 실측
+        # 10건 전부 첫 교차였고, 그중 411080 은 그날 780억까지 갔다).
+        self.trigger_cross_count += 1
         failed = [
             name
             for name, ok in (

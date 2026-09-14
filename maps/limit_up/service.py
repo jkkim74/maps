@@ -34,6 +34,9 @@ logger = logging.getLogger(__name__)
 _UTC = dt.timezone.utc
 # 연결이 살아나면 풀려야 하는 래치 — DB 에 남기면 재시작이 되살린다.
 _TRANSIENT_LATCHES = frozenset({"feed_disconnected"})
+# 관측치를 틱마다 쓰면 상한가 종목 하나가 초당 수십 UPDATE 를 만든다.
+# 30초면 프로세스가 죽어도 그날 관측을 거의 다 남기면서 DB 는 조용하다.
+_OBSERVATION_FLUSH_SECONDS = 30.0
 
 
 def automatic_mode_blocked_reason(settings: "MapsSettings") -> str | None:
@@ -109,6 +112,7 @@ class LimitUpService:
         self._virtual_filled_legs: dict[str, set[str]] = {}
         self._last_prices: dict[str, int] = {}
         self._last_reconcile_at: dict[str, float] = {}
+        self._last_observation_flush_at: dict[str, float] = {}
         self.manual_lock = False
         self.unknown_positions: list[str] = []
         # 주문을 **낼 수 있는가**(실행 능력)와 새로 **진입할 것인가**(정책)는 다른 질문이다.
@@ -272,6 +276,74 @@ class LimitUpService:
                         self._retry_stuck_exit(ticker, result.owned_quantity)
             commands = machine.on_timer(now_monotonic)
             self._handle_commands(ticker, commands, now_kst=wall)
+        if self._flush_observations(now_monotonic=now_monotonic):
+            self.repository.db.commit()
+
+    def _flush_observations(self, *, now_monotonic: float) -> bool:
+        """Copy machine tick observations onto session rows; report if any changed.
+
+        Diagnostics only — nothing here feeds an entry or exit decision. The
+        caller commits, so one tick flushes many sessions in a single write.
+        Session ends write their own final copy directly, so this only has to
+        keep the row roughly current while the watch is alive.
+
+        Args:
+            now_monotonic: Monotonic clock used for the per-ticker throttle.
+
+        Returns:
+            Whether at least one session row was modified.
+        """
+        dirty = False
+        for ticker, machine in list(self._machines.items()):
+            session = self._sessions.get(ticker)
+            if session is None:
+                continue
+            last = self._last_observation_flush_at.get(ticker, float("-inf"))
+            if now_monotonic - last < _OBSERVATION_FLUSH_SECONDS:
+                continue
+            self._last_observation_flush_at[ticker] = now_monotonic
+            dirty = self._copy_observation(session, machine) or dirty
+        return dirty
+
+    @staticmethod
+    def _copy_observation(session: LimitUpSession, machine: LimitUpMachine) -> bool:
+        """Write one machine's observation counters onto its session row.
+
+        Args:
+            session: Row to update in place.
+            machine: Live machine holding the counters.
+
+        Returns:
+            Whether the row actually changed.
+        """
+        if session.observed_tick_count == machine.observed_tick_count:
+            return False
+        session.observed_tick_count = machine.observed_tick_count
+        session.observed_low_price = machine.observed_low_price
+        session.observed_high_price = machine.observed_high_price
+        session.trigger_cross_count = machine.trigger_cross_count
+        session.max_turnover_krw = machine.max_turnover_krw
+        session.max_strength = machine.max_strength
+        return True
+
+    @staticmethod
+    def _seed_observation(machine: LimitUpMachine, session: LimitUpSession) -> None:
+        """Restore counters from a recovered row so a restart does not zero them.
+
+        Without this, ``recover()`` builds a fresh machine at zero and the next
+        flush writes that zero over a full morning of observations — the record
+        would then lie in exactly the situation it exists to explain.
+
+        Args:
+            machine: Newly built machine for a recovered session.
+            session: Row it was rebuilt from.
+        """
+        machine.observed_tick_count = session.observed_tick_count or 0
+        machine.observed_low_price = session.observed_low_price
+        machine.observed_high_price = session.observed_high_price
+        machine.trigger_cross_count = session.trigger_cross_count or 0
+        machine.max_turnover_krw = session.max_turnover_krw
+        machine.max_strength = session.max_strength
 
     def on_kosdaq(
         self, *, value: float, at: float, now_kst: dt.datetime | None = None
@@ -717,6 +789,7 @@ class LimitUpService:
                 config=self.config,
             )
             machine.state = LimitUpState(row.state)
+            self._seed_observation(machine, row)
             # 계좌 보유를 그대로 세션 보유로 삼으면 공유 계좌에서 남의 물량을 V1 이
             # 산 것으로 장부에 올린다. 세션 자신의 레그 체결과의 min 이 소유분이다.
             position_qty = actual.get(row.ticker, 0)
@@ -997,6 +1070,9 @@ class LimitUpService:
                 continue
             machine.state = LimitUpState.CLOSED
             session.end_reason = "no_trigger"
+            # 만료가 이 세션의 마지막 쓰기다. 여기서 안 옮기면 마지막 30초 관측이
+            # 사라지고, 하필 "왜 안 샀나" 를 묻게 되는 세션이 바로 이것들이다.
+            self._copy_observation(session, machine)
             self.repository.transition(
                 session, state=LimitUpState.CLOSED, action="watch_expired"
             )
