@@ -340,3 +340,65 @@ def test_late_fill_adoption_anchors_stop_to_average_entry() -> None:
     machine.adopt_late_fill(at=2.0, cumulative_quantity=20, avg_price=90_000.0)
 
     assert machine.hard_stop_price == 85_500
+
+
+def test_watch_records_ticks_even_when_the_trigger_is_never_crossed() -> None:
+    """A locked upper-limit watch must still prove the feed was alive.
+
+    2026-09-14 위메이드맥스(101730)는 13:53 감시 시작 시점에 이미 상한가에 붙어 있어
+    트리거(상한가 −3틱) 아래 체결이 한 번도 없었고, 세션은 이벤트 0행으로 끝났다.
+    그 기록만 보고는 "잠겨서 못 산 것"과 "시세를 못 받은 것"을 구분할 수 없었다.
+    """
+    machine = LimitUpMachine("101730", upper_limit_price=13_000, config=_config())
+
+    for index in range(3):
+        assert machine.on_trade(_trade(float(index), 13_000)) == []
+
+    assert machine.observed_tick_count == 3
+    assert machine.trigger_cross_count == 0
+    assert machine.observed_low_price == 13_000
+    assert machine.observed_low_price >= trigger_price(13_000)
+
+
+def test_no_tick_at_all_is_distinguishable_from_a_locked_watch() -> None:
+    """Zero ticks is the subscription/feed failure signature, not a quiet tape."""
+    machine = LimitUpMachine("101730", upper_limit_price=13_000, config=_config())
+
+    assert machine.observed_tick_count == 0
+    assert machine.observed_low_price is None
+    assert machine.max_turnover_krw is None
+
+
+def test_every_trigger_cross_is_counted_though_only_one_is_reported() -> None:
+    """The single gate-failure report must not bias the cross sample.
+
+    Reporting once keeps the ledger quiet, but a count of one per session makes
+    every observation land at the day's earliest cross — exactly when cumulative
+    turnover is smallest — and the 500억 floor then looks far tighter than it is.
+    """
+    machine = LimitUpMachine("005930", upper_limit_price=13_000, config=_config())
+
+    first = machine.on_trade(_trade(1.0, 12_960))
+    reported = machine.on_trade(_trade(2.0, 12_970, turnover=10_000_000_000))
+    machine.on_trade(_trade(3.0, 12_960))
+    silent = machine.on_trade(_trade(4.0, 12_970, turnover=30_000_000_000))
+
+    assert first == []
+    assert reported == [MachineCommand(CommandKind.GATE_FAILED, "turnover")]
+    assert silent == []
+    assert machine.trigger_cross_count == 2
+    assert machine.state is LimitUpState.WATCHING
+
+
+def test_observation_keeps_the_peak_turnover_and_strength_of_the_day() -> None:
+    """The gate study needs the day's best reading, not the one at first cross."""
+    machine = LimitUpMachine("005930", upper_limit_price=13_000, config=_config())
+
+    machine.on_trade(_trade(1.0, 12_900, turnover=10_000_000_000, strength=90.0))
+    machine.on_trade(_trade(2.0, 12_950, turnover=40_000_000_000, strength=120.0))
+    machine.on_trade(_trade(3.0, 12_940, turnover=39_000_000_000, strength=80.0))
+
+    assert machine.max_turnover_krw == 40_000_000_000
+    assert machine.max_strength == 120.0
+    assert machine.observed_low_price == 12_900
+    assert machine.observed_high_price == 12_950

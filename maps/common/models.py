@@ -1026,6 +1026,17 @@ class LimitUpSession(Base):
     pattern_failure_counted: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False
     )
+    # 감시했는데 안 산 세션의 사유를 나중에 재구성할 수 있게 남기는 관측치다.
+    # 이게 없으면 "트리거 아래로 내려온 적이 없다"(정상)와 "체결 틱을 못 받았다"
+    # (구독·피드 장애)를 구분할 방법이 전혀 없다 — 2026-09-14 101730 조사에 하루가
+    # 걸린 이유이고, 그날 세션은 limit_up_event 0행이라 아무것도 답하지 못했다.
+    # 진입 판정에는 쓰지 않는다. 순수 관측 기록이다.
+    observed_tick_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    observed_low_price: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    observed_high_price: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    trigger_cross_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_turnover_krw: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    max_strength: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc)
     )
