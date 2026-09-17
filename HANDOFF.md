@@ -1,5 +1,65 @@
 # HANDOFF
 
+> ## 9/14 세션 요약 — 위메이드맥스(101730) 미매매 조사 → 감시 세션 관측 컬럼 추가 (`1de0edb`, 9/17 기록)
+>
+> ### 목표
+> "101730 은 거래대금 500억을 넘었는데 왜 안 샀나" — 감시했는데 안 산 세션이 **아무 기록도 남기지 않아**
+> 사유를 journald 로 재구성하는 데 하루가 걸렸다. 다음부터는 세션 행 하나로 답하게 만든다.
+>
+> ### 진단 — 두 겹의 오해
+>
+> | 관측 | 값 |
+> |---|---|
+> | 101730 감시 시작 | 13:53, 이미 상한가 잠김 상태 → 트리거 재돌파 없음 → `limit_up_event` 0행 (추정 — 당시 기록이 없어 확정 못 함) |
+> | "545억" 의 정체 | 네이버 화면값 = **시간외 포함**(거래량 11,221,156주). 정규장은 **약 200~234억**(4,504,002주). KRX 수집·네이버 **일봉 API** 가 정규장과 일치 |
+> | 게이트가 읽는 값 | 재돌파 체결 프레임의 `ACML_TR_PBMN` = **정규장 누적**. 재돌파했어도 탈락이었다 |
+> | 9/11~9/14 재돌파 10건 | 500억 통과 **0건**(최대 391억). 단 411080 은 09:10 교차 때 233억 → 그날 **780억**, 072950 은 12:40 291억 → 651억 |
+>
+> 마지막 행이 핵심: 하한이 도달 불가능한 게 아니라 **재는 시점이 이르다**. 게다가 `gate_failure_reported` 래치가
+> 세션당 첫 교차만 남겨 표본이 장 초반으로 쏠린다 — **이 표본으로 500억 하한을 내리면 안 된다.**
+>
+> ### 수정 — `1de0edb`(머지 `18e3dba`), 마이그레이션 `0034_limit_up_watch_observation`
+>
+> | | 내용 |
+> |---|---|
+> | 컬럼 6개 (`limit_up_session`) | `observed_tick_count`·`trigger_cross_count`(NOT NULL, default 0), `observed_low_price`·`observed_high_price`·`max_turnover_krw`(BigInteger)·`max_strength` |
+> | 수집 | `LimitUpMachine.observe()` 가 **모든 체결 틱**에서 갱신, `service._flush_observations()` 가 30초마다(만료 시 강제) 행에 반영. 진입 판정 불변 — 기존 `on_trade` 테스트 전량으로 증명 |
+> | `trigger_cross_count` | `gate_failed` 1회 보고 래치와 **무관하게 전부** 센다(편향 제거 목적) |
+> | 재시작 | `recover()` → `_seed_observation()` 으로 행 값을 머신에 복원. 안 하면 다음 flush 가 0 으로 덮는다 |
+> | 다이제스트 | 세션에 `observed_tick_count`·`observed_low_price`·`trigger_cross_count`·`max_turnover_krw` |
+> | 문서 | `maps/limit_up/CLAUDE.md` — 정규장 거래대금 경고, 관측 컬럼 읽는 법 |
+>
+> 읽는 법: `observed_tick_count == 0` → **시세 미수신**(구독·피드 장애) · `trigger_cross_count == 0` 이고
+> `observed_low_price >= trigger_price` → **잠긴 채 안 내려옴** · `trigger_cross_count > 0` → 재돌파했고 게이트에 막힘.
+>
+> ### 배포 — ✅ 확인(9/17 SSH 실측)
+> 운영 HEAD `18e3dba`, alembic `0034_limit_up_watch_observation (head)`, `active`, 기동 **9/14 18:11:01 KST** 이후 재시작 없음.
+>
+> ### 실효 — 9/16 매매일지(`docs/diary/20260916.txt`)에 값이 찍힌다
+> 감시 13건 전부 `no_trigger`. 교차 > 0 은 4건 — 406820(41회)·049080(31회)·232830(1회)·088800(10회), 전부 `gate_failed turnover,strength`.
+> 나머지 9건 교차 0. **072950 빛샘전자는 최대 거래대금 1,837억인데 교차 0**(저가 12,700 < 트리거 13,880 이므로
+> 감시 시작 전에 이미 올라갔거나 틱 사이 건너뛴 것 — 미확인). 406820 교차 41회 최대 113억, 049080 31회 286억.
+> 제외 4건(001770·035290·084180·288980) 전부 `halted` — 코드 51~54·59 라벨 오분류 가능성 있음(9/11 기록만 항목).
+>
+> ### 통한 것
+> - 네이버 **일봉 API**·`historical_ohlcv` 로 정규장 수치를 대조해 "수집 데이터 오류" 가설을 죽였다.
+> - 새 컬럼을 NOT NULL 로 붙이되 `server_default` 를 둬서 기존 세션 행에서 마이그레이션이 깨지지 않게 했다.
+>
+> ### 막다른 길 — 반복하지 말 것
+> 1. 🔴 **네이버·HTS 화면 거래대금으로 게이트를 판단하지 말 것.** `m.stock.naver.com/api/stock/<t>/integration` 의
+>    `accumulatedTradingValue` 와 `price` API 당일 행도 장중·장후 조회 시 시간외를 포함한다.
+> 2. `trigger_gate_failed` 이벤트 분포(세션당 첫 교차)만 보고 하한 완화를 판단하지 말 것 — 장 초반 편향.
+>
+> ### 다음 할 일
+> 1. 🔴 **관측 컬럼 10거래일 이상 축적**(9/15 부터 → 대략 9/29 이후 판단). `max_turnover_krw ≥ 500억` 이면서
+>    `trigger_cross_count > 0` 인 세션이 잦으면 답은 **하한 인하가 아니라 재평가**(트리거 위에 머무는 동안
+>    누적이 하한을 넘으면 발동)다. 하한을 바꾼다면 `domain.MIN_TURNOVER_FLOOR_KRW` 와 `LimitUpConfig.__post_init__`
+>    검증을 **함께** 내려야 한다(의도적 안전장치). 결정은 사람.
+> 2. 072950 같은 "거래대금 크고 교차 0" 세션이 감시 시작 지연 때문인지 — `limit_up_session.created_at` vs 상한가 도달 시각.
+> 3. 9/11 절 "다음 확인" 2·4·5·6(30행 잘림 · validation 비교 · 기동 지연 · `EGW00201`) 그대로 이월.
+
+---
+
 > ## 9/11 세션 요약 — 아모텍(052710) 상한가 감시 미선정 → 후보 소스 교체
 >
 > ### 목표
