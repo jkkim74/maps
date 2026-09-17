@@ -217,3 +217,84 @@ def test_enrich_measures_liquidity_and_psychology_with_partial_investor_nulls(mo
     assert result.coverage_ratio == 1.0
     assert result.score_ready is True
     assert result.missing_factors == ()
+
+
+def _seed_ohlcv(db, ref_date: dt.date, *, days: int = 25) -> None:
+    """ref_date 로 끝나는 ``days`` 일치 두 종목 일봉을 넣는다."""
+    from maps.common.models import HistoricalOHLCV
+
+    for offset in range(days):
+        date = ref_date - dt.timedelta(days=offset)
+        for ticker, base in (("000001", 10_000.0), ("000002", 20_000.0)):
+            db.add(HistoricalOHLCV(
+                date=date, ticker=ticker,
+                open=base, high=base, low=base,
+                close=base + offset, volume=1_000,
+            ))
+    db.commit()
+
+
+def _price_row_selects(engine, fn) -> int:
+    """``fn`` 실행 중 일봉 가격 행(close 컬럼)을 읽은 SELECT 수를 센다."""
+    from sqlalchemy import event
+
+    seen: list[str] = []
+
+    def _record(conn, cursor, statement, parameters, context, executemany) -> None:  # noqa: ANN001
+        lowered = statement.lower()
+        if lowered.lstrip().startswith("select") and "historical_ohlcv.close" in lowered and "sum(" not in lowered:
+            seen.append(statement)
+
+    event.listen(engine, "before_cursor_execute", _record)
+    try:
+        fn()
+    finally:
+        event.remove(engine, "before_cursor_execute", _record)
+    return len(seen)
+
+
+def test_market_observations_reuses_result_while_price_data_is_unchanged() -> None:
+    """같은 기준일·같은 데이터면 수십만 행을 파이썬으로 다시 읽지 않는다.
+
+    2026-09-14 13:16 주문 예정 화면 조회 한 번이 이 계산(운영 671,643행)으로 GIL 을 3~4초
+    잡아 같은 프로세스의 상한가 시세 펌프가 멈췄다. 08:55 order_cycle 도 매일 같은 일을 했다.
+    """
+    from maps.market.feeds import _market_observations
+
+    ref_date = dt.date(2026, 8, 13)
+    factory = _memory_db()
+    db = factory()
+    _seed_ohlcv(db, ref_date)
+    engine = db.get_bind()
+
+    first = _market_observations(db, ref_date)
+    second: list[object] = []
+    reads = _price_row_selects(engine, lambda: second.append(_market_observations(db, ref_date)))
+
+    assert first is not None
+    assert second == [first]
+    assert reads == 0
+    db.close()
+
+
+def test_market_observations_recomputes_when_price_data_changes() -> None:
+    """16:40 수집이 진행 중이던 기준일 행이 채워지면 캐시된 낡은 값을 돌려주면 안 된다."""
+    from maps.common.models import HistoricalOHLCV
+    from maps.market.feeds import _market_observations
+
+    ref_date = dt.date(2026, 8, 13)
+    factory = _memory_db()
+    db = factory()
+    _seed_ohlcv(db, ref_date)
+
+    before = _market_observations(db, ref_date)
+    db.add(HistoricalOHLCV(
+        date=ref_date, ticker="000003",
+        open=5_000.0, high=5_000.0, low=5_000.0, close=5_000.0, volume=9_000_000,
+    ))
+    db.commit()
+    after = _market_observations(db, ref_date)
+
+    assert before is not None and after is not None
+    assert after["total_turnover"] == before["total_turnover"] + 5_000.0 * 9_000_000
+    db.close()

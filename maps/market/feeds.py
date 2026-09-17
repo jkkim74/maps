@@ -7,6 +7,7 @@ import html
 import json
 import logging
 import re
+import threading
 import urllib.parse
 import urllib.request
 from dataclasses import replace
@@ -26,6 +27,14 @@ from maps.common.settings import MapsSettings, get_settings
 
 logger = logging.getLogger(__name__)
 _TAG_RE = re.compile(r"<[^>]+>")
+
+# 시장 내부지표 캐시. 계산은 253거래일×전 종목(운영 약 67만 행)을 파이썬으로 도는데, 같은
+# 프로세스의 상한가 시세 펌프가 그동안 GIL 을 못 얻어 3~4초 멈췄다(2026-09-14~17, 08:55
+# order_cycle 과 장중 주문 예정 화면 조회). 키는 DB 가 계산하는 창 집계라 데이터가 바뀌면
+# 저절로 빗나가고, 같은 키면 입력이 같으므로 결과도 같다 — 무효화 규칙이 따로 필요 없다.
+_MARKET_OBSERVATION_CACHE: dict[tuple[object, ...], dict[str, float] | None] = {}
+_MARKET_OBSERVATION_CACHE_LOCK = threading.Lock()
+_MARKET_OBSERVATION_CACHE_SIZE = 8
 
 
 def _clamp(value: float) -> float:
@@ -53,6 +62,31 @@ def _market_observations(db: Session, ref_date: dt.date) -> dict[str, float] | N
     ]
     if len(dates) < 20 or dates[0] != ref_date:
         return None
+    stamp = (
+        db.query(
+            func.count(),
+            func.sum(HistoricalOHLCV.volume),
+            func.sum(HistoricalOHLCV.close),
+        )
+        .filter(HistoricalOHLCV.date.in_(dates))
+        .one()
+    )
+    key = (ref_date, dates[-1], len(dates), *(stamp or ()))
+    with _MARKET_OBSERVATION_CACHE_LOCK:
+        if key in _MARKET_OBSERVATION_CACHE:
+            return _MARKET_OBSERVATION_CACHE[key]
+    result = _compute_market_observations(db, ref_date, dates)
+    with _MARKET_OBSERVATION_CACHE_LOCK:
+        _MARKET_OBSERVATION_CACHE[key] = result
+        while len(_MARKET_OBSERVATION_CACHE) > _MARKET_OBSERVATION_CACHE_SIZE:
+            _MARKET_OBSERVATION_CACHE.pop(next(iter(_MARKET_OBSERVATION_CACHE)))
+    return result
+
+
+def _compute_market_observations(
+    db: Session, ref_date: dt.date, dates: list[dt.date]
+) -> dict[str, float] | None:
+    """Scan every ticker in the date window and derive the internals (CPU heavy)."""
     rows = (
         db.query(
             HistoricalOHLCV.date,

@@ -121,6 +121,12 @@ pykrx(국내) + yfinance(해외) 통합 주봉 종가 제공.
 > 전면 차단된다**(2026-08-12~14 실제 사고). 같은 의미론을 `ops/scheduler.py` 의
 > `_build_ticker_contexts` 수급 합산도 공유한다.
 >
+> 🔴 **시장 내부지표(`_market_observations`)는 프로세스 캐시를 거친다.** 계산이 253거래일×전 종목
+> (운영 약 67만 행)을 파이썬으로 돌아 GIL 을 3~4초 잡는다 — 같은 프로세스의 상한가 시세 펌프가
+> 그동안 멈췄다(2026-09-14~17, 08:55 `order_cycle` 과 장중 주문 예정 화면 조회). 키는 DB 가 계산하는
+> 창 집계(`count`·`sum(volume)`·`sum(close)`)라 수집·보정으로 데이터가 바뀌면 저절로 다시 계산한다.
+> 날짜별 무효화 규칙을 따로 두지 말 것 — 키가 곧 입력이다. 최근 8개 키만 보관한다.
+>
 > ⚠️ 뉴스 검색은 **Naver API Hub**(`naverapihub.apigw.ntruss.com`, `X-NCP-APIGW-*` 헤더)를
 > 쓴다. 설정 변수명은 `NAVER_CLIENT_ID`/`NAVER_CLIENT_SECRET` 이지만 값은 **NCP API Hub 키**다.
 > 구 `openapi.naver.com` 키는 동작하지 않는다.
