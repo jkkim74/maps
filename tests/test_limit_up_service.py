@@ -23,7 +23,12 @@ from maps.limit_up.feed import FeedQuote, FeedTrade
 from maps.limit_up.repository import LimitUpRepository
 from maps.common.exceptions import BrokerAdapterError
 from maps.common.models import LimitUpSession, LimitUpTape, OrderLog, PortfolioSnapshot
-from maps.limit_up.service import Candidate, LimitUpMode, LimitUpService
+from maps.limit_up.service import (
+    OBSERVE_ONLY_EXECUTION_MODE,
+    Candidate,
+    LimitUpMode,
+    LimitUpService,
+)
 from maps.limit_up.worker import LimitUpCommandWorker
 from maps.risk.manager import RiskManager
 
@@ -1353,6 +1358,48 @@ def test_recover_keeps_observations_a_restart_would_otherwise_zero(db) -> None:
     session = db.query(LimitUpSession).filter_by(ticker="005930").one()
     assert session.observed_tick_count == 1
     assert session.observed_low_price == 99_000
+
+
+def test_observe_only_candidate_is_watched_but_never_ordered(db) -> None:
+    """A too_new mover must produce a record, not a trade — even in automatic mode.
+
+    2026-09-21 스카이랩스(386380)는 상장 17일차라 세션조차 못 만들었는데, 그날 거래대금
+    하한 500억을 넘긴 유일한 후보였다(2,041억). 매매는 막되 기록은 남겨야 나중에 답한다.
+    """
+    broker = ServiceBroker()
+    service = _service(db, LimitUpMode.AUTOMATIC, broker)
+    now = dt.datetime(2026, 8, 28, 10, 0, tzinfo=KST)
+    candidate = replace(_candidate(), ticker="386380", observe_only=True)
+
+    assert service.watch_candidate(candidate, now_kst=now) is None
+
+    trade = replace(_trade(1.0, 99_600), ticker="386380")
+    service.on_trade(trade, now_kst=now)
+    service.on_trade(replace(trade, price=99_800, received_at=2.0), now_kst=now)
+
+    session = db.query(LimitUpSession).filter_by(ticker="386380").one()
+    assert session.execution_mode == OBSERVE_ONLY_EXECUTION_MODE
+    assert broker.orders == []
+    assert session.state == LimitUpState.WATCHING.value
+    assert service.machine("386380").trigger_cross_count == 1
+    # 게이트를 통과한 교차였다는 사실이 남아야 "샀다면 어땠을까" 에 답할 수 있다.
+    assert service.machine("386380").cross_samples[0]["failed"] == ""
+    assert service.can_place_exit_for("386380") is False
+
+
+def test_observe_only_survives_a_restart_as_observe_only(db) -> None:
+    """The row is the source of truth; a restart must not promote it to automatic."""
+    broker = ServiceBroker()
+    service = _service(db, LimitUpMode.AUTOMATIC, broker)
+    now = dt.datetime(2026, 8, 28, 10, 0, tzinfo=KST)
+    service.watch_candidate(
+        replace(_candidate(), ticker="386380", observe_only=True), now_kst=now
+    )
+
+    restarted = _service(db, LimitUpMode.AUTOMATIC, ServiceBroker())
+    restarted.recover(ref_date=now.date(), now_monotonic=200.0, now_kst=now)
+
+    assert restarted.machine("386380").observe_only is True
 
 
 def test_gate_failure_leaves_the_tape_a_never_firing_engine_never_had(db) -> None:

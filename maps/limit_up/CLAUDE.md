@@ -386,10 +386,30 @@ worker 가 **같은 action 이름**으로 `event_exists()` 를 검사하면 항�
   (Enum 은 언제나 truthy 라 `if reason:` 이 계속 통과한다).
   사유: `mode_off` · `manual_lock` · `ineligible` · `market` · `below_trigger` ·
   `outside_hours` · `already_watching` · `session_not_watching`
+
+  > 🟡 **`too_new` 는 탈락이 아니라 관측 전용 감시다.** 세션을 만들되
+  > `execution_mode="observe_only"`(`service.OBSERVE_ONLY_EXECUTION_MODE`)로 두고,
+  > 머신의 `observe_only` 가 **게이트를 통과해도 그물을 던지지 않는다**. 통과 사실은
+  > `cross_samples` 의 `failed == ""` 가 남긴다. 발사하면 가상 세션이 동시 슬롯(2개)과
+  > 시도 횟수(5회 래치)를 먹어 **실매매를 막는다** — 관측하려다 막으려던 것을 막는 셈이다.
+  > 정본은 후보가 아니라 **세션 행**이다(`watch_candidate` 도 `recover()` 도 행에서 읽는다) —
+  > 재기동이나 같은 날 재감시에서 성격이 바뀌면 안 된다. 주문 경로는 전부
+  > `execution_mode == "automatic"` 비교라 이 값은 자동으로 fail-closed 이고,
+  > `LimitUpMode` Enum 에는 **넣지 않는다**(설정으로 고를 수 있으면 전 종목을 조용히
+  > 관측 전용으로 돌려 놓고 도는 줄 아는 상태가 만들어진다).
+  >
+  > 왜: 이 엔진의 입력은 전부 실시간(상한가·상장주식수·누적거래대금·체결강도)이고
+  > 하드스톱은 ATR 없이 고정 5% 라 **100일치 이력이 필요한 계산이 하나도 없다**.
+  > `100` 은 `universe_filter.MIN_LISTING_DAYS`(일봉 지표·백테스트용)에서 온 관행이고
+  > 상한가 설계서에는 근거가 없다. 그런데 2026년 +25% 일봉에서 상장 100일 미만은
+  > **81% 가 거래대금 500억 초과**(자격군 24%, 중앙값 1,179억 대 97억)라, 유동성 하한이
+  > 가장 잘 통과시킬 종목군을 이 게이트가 정확히 잘라낸다. 2026-09-21 스카이랩스(386380)가
+  > 그날 하한을 넘긴 **유일한** 후보였는데(2,041억) 상장 17일차라 세션조차 못 만들었다.
+  > 완화의 근거도 반대의 근거도 없어, 위험 없이 관측해서 데이터로 답하게 했다.
 - `ineligible` 은 서비스가 구별할 수 없다. `scan_once()` 가 `halted`(그날뿐)와
   `ineligible_security:<사유>` 로 쪼갠다. 사유는 `v1_ineligibility_reason()` 이 돌려주며
   대응이 다 다르다 — `unknown_security`(메타 행 없음)·`not_common_stock`·`preferred` 는
-  영구, `too_new` 는 상장 100일이 지나면 풀리고, **`listing_unknown` 은 종목의 성질이 아니라
+  영구, `too_new` 는 관측 전용 감시로 넘어가고(위 🟡), **`listing_unknown` 은 종목의 성질이 아니라
   데이터 공백**(`security_metadata.listing_date` NULL)이라 수집기를 고쳐야 한다.
   2026-09-07 까지 운영 상장일이 전부 NULL 이라 3주간 후보가 전원 탈락했는데 키가
   `ineligible_security` 하나여서 정상 탈락처럼 보였다. 자격 판정은 상장일 NULL 을

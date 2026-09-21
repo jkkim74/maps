@@ -64,6 +64,13 @@ def automatic_mode_blocked_reason(settings: "MapsSettings") -> str | None:
     return None
 
 
+#: 세션 한 건에만 붙는 실행모드. ``LimitUpMode`` 에 넣지 않는 이유는 이것이 **엔진 모드가
+#: 아니기** 때문이다 — ``MAPS_LIMIT_UP_MODE`` 로 고를 수 있게 되면 전 종목을 조용히
+#: 관측 전용으로 돌려 놓고 돈다고 믿는 상태가 만들어진다. 주문 경로는 전부
+#: ``== AUTOMATIC`` 비교라 이 값은 자동으로 fail-closed 다.
+OBSERVE_ONLY_EXECUTION_MODE = "observe_only"
+
+
 class LimitUpMode(str, Enum):
     """Upper-limit V1 execution modes."""
 
@@ -83,6 +90,8 @@ class Candidate:
     current_price: int
     change_rate: float
     eligible: bool = True
+    #: 감시·기록만 하고 주문은 내지 않는다. 스캐너가 ``too_new`` 에 세운다.
+    observe_only: bool = False
 
 
 class LimitUpService:
@@ -154,7 +163,11 @@ class LimitUpService:
             upper_limit_price=candidate.upper_limit_price,
             trigger_price=trigger_price(candidate.upper_limit_price),
             total_listed_shares=candidate.total_listed_shares,
-            execution_mode=self.mode.value,
+            execution_mode=(
+                OBSERVE_ONLY_EXECUTION_MODE
+                if candidate.observe_only
+                else self.mode.value
+            ),
         )
         if session.state != LimitUpState.WATCHING.value:
             return "session_not_watching"
@@ -162,6 +175,9 @@ class LimitUpService:
             candidate.ticker,
             upper_limit_price=candidate.upper_limit_price,
             config=self.config,
+            # 후보가 아니라 **행**이 정본이다. 같은 날 재감시·재기동에서 후보 플래그가
+            # 달라져도 이미 만들어진 세션의 성격이 바뀌면 안 된다.
+            observe_only=session.execution_mode == OBSERVE_ONLY_EXECUTION_MODE,
         )
         self._sessions[candidate.ticker] = session
         self._machines[candidate.ticker] = machine
@@ -792,6 +808,7 @@ class LimitUpService:
                 row.ticker,
                 upper_limit_price=row.upper_limit_price,
                 config=self.config,
+                observe_only=row.execution_mode == OBSERVE_ONLY_EXECUTION_MODE,
             )
             machine.state = LimitUpState(row.state)
             self._seed_observation(machine, row)

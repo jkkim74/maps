@@ -780,6 +780,59 @@ async def test_scan_persists_first_rejection_for_limit_movers_only(db) -> None:
     }
 
 
+async def test_new_listing_is_watched_for_the_record_but_marked_observe_only(db) -> None:
+    """상장 100일 미만은 세션을 만들되 주문 모드로 만들지 않는다.
+
+    2026-09-21 스카이랩스(386380)는 상장 17일차라 ``ineligible_security:too_new`` 로
+    스캔 단계에서 빠졌는데, 그날 거래대금 하한 500억을 넘긴 유일한 후보였다(2,041억).
+    완화의 근거도 반대의 근거도 없으니 위험 없이 관측해서 데이터로 답한다.
+    """
+    from maps.common.models import LimitUpDailyGuard, LimitUpSession
+    from maps.limit_up.service import OBSERVE_ONLY_EXECUTION_MODE
+
+    runtime = _scan_runtime(db, [_scan_row("386380")], 30, listed=set())
+    db.add(
+        SecurityMetadata(
+            ticker="386380",
+            name="스카이랩스",
+            market="KOSDAQ",
+            security_type="STOCK",
+            listing_date=dt.date(2026, 8, 20),
+        )
+    )
+    db.commit()
+
+    assert await runtime.scan_once() == 1
+
+    session = db.query(LimitUpSession).filter_by(ticker="386380").one()
+    assert session.execution_mode == OBSERVE_ONLY_EXECUTION_MODE
+    # 탈락이 아니므로 가드의 탈락 원장에는 남지 않는다 — 세션 행이 사유를 답한다.
+    guard = db.get(LimitUpDailyGuard, dt.date(2026, 8, 28))
+    assert guard is None or "386380" not in (guard.scan_rejections or {})
+
+
+async def test_a_halted_new_listing_is_still_reported_as_halted(db) -> None:
+    """too_new 가 통과 사유가 된 뒤에도 정지가 상장일 탓으로 기록되면 안 된다."""
+    from maps.common.models import LimitUpDailyGuard
+
+    runtime = _scan_runtime(db, [_scan_row("386380", halted=True)], 30, listed=set())
+    db.add(
+        SecurityMetadata(
+            ticker="386380",
+            name="스카이랩스",
+            market="KOSDAQ",
+            security_type="STOCK",
+            listing_date=dt.date(2026, 8, 20),
+        )
+    )
+    db.commit()
+
+    assert await runtime.scan_once() == 0
+
+    guard = db.get(LimitUpDailyGuard, dt.date(2026, 8, 28))
+    assert guard.scan_rejections == {"386380": "halted"}
+
+
 async def test_daily_actions_expire_yesterdays_watches_once_per_day() -> None:
     """The process runs for weeks; a stale watch must not wait for a restart."""
     runtime = _pump_runtime()

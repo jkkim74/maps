@@ -427,6 +427,15 @@ class KISIntradayRuntime:
             # 스캔과 주문 처리가 겹치는 순간 동시 사용이 된다.
             security = await self._call_service(self._load_security, ticker)
             ineligible_reason = v1_ineligibility_reason(security, as_of=now.date())
+            # ``too_new`` 는 매매를 막되 **감시까지 막지는 않는다.** 이 엔진의 입력은
+            # 전부 실시간(상한가·상장주식수·누적거래대금·체결강도)이고 하드스톱은 ATR
+            # 없이 고정 5% 라 100일치 이력이 필요한 계산이 하나도 없다. 그런데 2026년
+            # +25% 일봉에서 상장 100일 미만은 **81% 가 거래대금 500억 초과**(자격군은
+            # 24%, 중앙값 1,179억 대 97억)라, 유동성 하한이 가장 잘 통과시킬 종목군을
+            # 이 게이트가 정확히 잘라낸다. 2026-09-21 스카이랩스(386380)가 그날 하한을
+            # 넘긴 유일한 후보였는데 상장 17일차라 세션조차 못 만들었다.
+            # 완화의 근거도 반대의 근거도 없으니 **위험 없이 관측**해서 데이터로 답한다.
+            observe_only = ineligible_reason == "too_new"
             halted = bool(row.get("trading_halted", False))
             candidate = Candidate(
                 ticker=ticker,
@@ -435,7 +444,8 @@ class KISIntradayRuntime:
                 total_listed_shares=int(row["total_listed_shares"]),
                 current_price=int(row["current_price"]),
                 change_rate=float(row["change_rate"]),
-                eligible=ineligible_reason is None and not halted,
+                eligible=(ineligible_reason is None or observe_only) and not halted,
+                observe_only=observe_only,
             )
             reason = await self._call_service(
                 self.service.watch_candidate, candidate, now_kst=now
@@ -449,9 +459,12 @@ class KISIntradayRuntime:
             # ``listing_unknown`` 은 수집기가 고쳐야 하고, 정지는 그날뿐이다.
             # 사유를 키에 붙이지 않으면 데이터 공백이 정상 탈락으로 위장한다(2026-09).
             if reason == "ineligible":
+                # ``too_new`` 는 더 이상 탈락 사유가 아니다. 그대로 두면 정지 종목이
+                # 상장일 때문에 빠진 것처럼 기록돼 원장이 거짓말을 한다.
+                blocking = None if observe_only else ineligible_reason
                 reason = (
-                    f"ineligible_security:{ineligible_reason}"
-                    if ineligible_reason is not None
+                    f"ineligible_security:{blocking}"
+                    if blocking is not None
                     else "halted"
                 )
             rejected[reason] += 1

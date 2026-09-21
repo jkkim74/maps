@@ -391,6 +391,7 @@ class LimitUpMachine:
         *,
         upper_limit_price: int,
         config: LimitUpConfig,
+        observe_only: bool = False,
     ) -> None:
         """Create an untriggered WATCHING session."""
         if not ticker or upper_limit_price <= 0:
@@ -398,6 +399,9 @@ class LimitUpMachine:
         self.ticker = ticker
         self.upper_limit_price = upper_limit_price
         self.config = config
+        # 그물을 아예 던지지 않는 세션. 슬롯·시도횟수·주문 어느 것도 건드리지 않고
+        # 게이트 판정만 기록한다 — "샀다면 어땠을까" 를 위험 없이 모으기 위한 것이다.
+        self.observe_only = observe_only
         # 정본 함수는 **진입가** 기준이다. 체결 전에는 진입가를 모르므로 가능한 최고
         # 진입가(상한가)로 두고, 첫 체결에서 실제 평균가로 **넓히기만** 한다 — 좁히면
         # 제약 7 이 경고하는 "손절이 조여지는" 방향이다.
@@ -495,6 +499,10 @@ class LimitUpMachine:
             self.gate_failure_reports += 1
             self.gate_failure_reported_at = event.at
             return [MachineCommand(CommandKind.GATE_FAILED, ",".join(failed))]
+        if self.observe_only:
+            # 통과 사실은 방금 적은 표본의 ``failed == ""`` 가 남긴다. 여기서 발사하면
+            # 가상 세션이 동시 슬롯(2개)과 시도 횟수(5회 래치)를 먹어 **실매매를 막는다**.
+            return []
         self.fire_net(at=event.at)
         return [MachineCommand(CommandKind.FIRE_NET, "three_tick_upward_cross")]
 

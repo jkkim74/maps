@@ -438,6 +438,40 @@ def test_gate_failure_reports_are_spread_instead_of_bunched() -> None:
     assert len(machine.cross_samples) == 5
 
 
+def test_observe_only_records_the_passing_cross_without_firing() -> None:
+    """A watch-only session must not spend a slot or an attempt to be measured.
+
+    상장 100일 미만은 매매를 막되 감시는 한다. 여기서 그물을 던지면 가상 세션이
+    동시 슬롯(2개)과 시도 횟수(5회 래치)를 먹어 **실매매를 막는다** — 관측하려다
+    막으려던 것을 막는 셈이다. 통과 사실은 표본의 ``failed == ""`` 가 남긴다.
+    """
+    machine = LimitUpMachine(
+        "386380", upper_limit_price=13_000, config=_config(), observe_only=True
+    )
+
+    machine.on_trade(_trade(1.0, 12_960))
+    commands = machine.on_trade(_trade(2.0, 12_970))
+
+    assert commands == []
+    assert machine.state is LimitUpState.WATCHING
+    assert machine.net_fired_at is None
+    assert machine.trigger_cross_count == 1
+    assert machine.cross_samples[0]["failed"] == ""
+
+
+def test_a_normal_watch_still_fires_on_the_same_cross() -> None:
+    """The observe-only guard must not disarm the ordinary entry path."""
+    machine = LimitUpMachine("005930", upper_limit_price=13_000, config=_config())
+
+    machine.on_trade(_trade(1.0, 12_960))
+    commands = machine.on_trade(_trade(2.0, 12_970))
+
+    assert commands == [
+        MachineCommand(CommandKind.FIRE_NET, "three_tick_upward_cross")
+    ]
+    assert machine.state is LimitUpState.NET_OPEN
+
+
 def test_cross_samples_stop_at_the_cap_and_keep_the_earliest() -> None:
     """One 2026-09-17 session crossed 90 times; the row must not grow forever.
 
