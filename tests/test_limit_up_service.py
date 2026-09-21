@@ -22,7 +22,7 @@ from maps.limit_up.domain import LimitUpConfig, LimitUpState
 from maps.limit_up.feed import FeedQuote, FeedTrade
 from maps.limit_up.repository import LimitUpRepository
 from maps.common.exceptions import BrokerAdapterError
-from maps.common.models import LimitUpSession, OrderLog, PortfolioSnapshot
+from maps.common.models import LimitUpSession, LimitUpTape, OrderLog, PortfolioSnapshot
 from maps.limit_up.service import Candidate, LimitUpMode, LimitUpService
 from maps.limit_up.worker import LimitUpCommandWorker
 from maps.risk.manager import RiskManager
@@ -1353,6 +1353,44 @@ def test_recover_keeps_observations_a_restart_would_otherwise_zero(db) -> None:
     session = db.query(LimitUpSession).filter_by(ticker="005930").one()
     assert session.observed_tick_count == 1
     assert session.observed_low_price == 99_000
+
+
+def test_gate_failure_leaves_the_tape_a_never_firing_engine_never_had(db) -> None:
+    """Every other dump point sits after the gate, so limit_up_tape stayed at 0 rows.
+
+    가동 이후 실주문이 0건이라 TRIGGER·FIRST_FILL·LOCKED·CLOSED·EOD_DECISION 이 한 번도
+    오지 않았고, 임계값을 바꿔 보고 재생할 틱 증거가 하나도 쌓이지 않았다.
+    """
+    service = _service(db, LimitUpMode.RECOMMEND_ONLY)
+    now = dt.datetime(2026, 8, 28, 10, 0, tzinfo=KST)
+    service.watch_candidate(_candidate(), now_kst=now)
+    service.on_trade(_watch_trade(1.0, 99_000), now_kst=now)
+    service.on_trade(_watch_trade(2.0, 99_800, turnover=30_000_000_000), now_kst=now)
+
+    tapes = db.query(LimitUpTape).all()
+
+    assert [tape.transition for tape in tapes] == ["GATE_FAILED"]
+    assert tapes[0].payload
+
+
+def test_cross_samples_reach_the_row_and_survive_a_restart(db) -> None:
+    """The calibration record must not be a memory-only artifact."""
+    service = _service(db, LimitUpMode.RECOMMEND_ONLY)
+    now = dt.datetime(2026, 8, 28, 10, 0, tzinfo=KST)
+    service.watch_candidate(_candidate(), now_kst=now)
+    service.on_trade(_watch_trade(1.0, 99_000), now_kst=now)
+    service.on_trade(_watch_trade(2.0, 99_800, turnover=30_000_000_000), now_kst=now)
+    service.tick(now_monotonic=100.0, now_kst=now)
+
+    session = db.query(LimitUpSession).filter_by(ticker="005930").one()
+    assert [sample["turnover"] for sample in session.cross_samples] == [30_000_000_000]
+    # 단조시계는 재시작을 넘으면 뜻을 잃는다 — 몇 시의 교차였는지는 이 각인이 답한다.
+    assert session.cross_samples[0]["kst"] == "10:00:00"
+
+    restarted = _service(db, LimitUpMode.RECOMMEND_ONLY)
+    restarted.recover(ref_date=now.date(), now_monotonic=200.0, now_kst=now)
+
+    assert len(restarted._machines["005930"].cross_samples) == 1
 
 
 def test_expired_watch_persists_its_final_observation(db) -> None:

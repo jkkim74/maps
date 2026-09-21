@@ -197,6 +197,7 @@ class LimitUpService:
                 buy_initiated=trade.buy_initiated,
                 cumulative_turnover_krw=trade.cumulative_turnover_krw,
                 execution_strength=trade.execution_strength,
+                at_kst=now_kst.strftime("%H:%M:%S"),
             )
         )
         self._handle_commands(trade.ticker, commands, now_kst=now_kst, trade=trade)
@@ -324,6 +325,9 @@ class LimitUpService:
         session.trigger_cross_count = machine.trigger_cross_count
         session.max_turnover_krw = machine.max_turnover_krw
         session.max_strength = machine.max_strength
+        # 새 리스트로 대입해야 ORM 이 JSON 변경을 알아챈다 — 같은 객체를 제자리에서
+        # 늘리면 flush 가 그냥 지나가고, 기록이 존재 이유인 바로 그 상황에서 빈다.
+        session.cross_samples = list(machine.cross_samples)
         return True
 
     @staticmethod
@@ -344,6 +348,7 @@ class LimitUpService:
         machine.trigger_cross_count = session.trigger_cross_count or 0
         machine.max_turnover_krw = session.max_turnover_krw
         machine.max_strength = session.max_strength
+        machine.cross_samples = list(session.cross_samples or [])
 
     def on_kosdaq(
         self, *, value: float, at: float, now_kst: dt.datetime | None = None
@@ -1197,6 +1202,10 @@ class LimitUpService:
                     state_version=session.state_version,
                     payload=payload,
                 )
+                # 직전 60초 체결·호가를 남긴다. 기존 덤프 지점은 전부 게이트를 통과한
+                # 뒤의 전이라, 한 번도 통과하지 못한 전략은 limit_up_tape 가 0행이었다 —
+                # 임계값을 바꿔 보고 재생할 증거가 없다는 뜻이다.
+                self._dump_tape(ticker, "GATE_FAILED")
                 self.repository.db.commit()
                 logger.warning(
                     "상한가 진입 보류 — %s 트리거 %s 재돌파, 게이트 미달(%s): "

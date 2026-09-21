@@ -427,9 +427,22 @@ INFO 상한가 스캔 — 순위 42건 → 후보 8건, 신규감시 1건, 탈�
   11:04 트리거 15,100 을 재돌파했는데 거래대금 355억이라 무산됐고, 그날 감시 10종목 중 9종목이
   같은 이유였는데 로그·DB 어디에도 없었다. 이제 첫 실패 재돌파에 `CommandKind.GATE_FAILED` 가
   나오고 서비스가 `limit_up_event(action=trigger_gate_failed, payload={failed, price, turnover,
-  strength, buy_initiated, min_*})` 1행 + WARNING `상한가 진입 보류` 1줄을 남긴다. 세션당 1회
-  (머신 플래그 + 멱등키), 알림 화이트리스트 밖이라 텔레그램은 조용하다. 다이제스트 세션의
-  `gate_failed` 가 이 행을 읽어 "재돌파 없음"과 "재돌파했지만 막힘"을 가른다.
+  strength, buy_initiated, min_*})` 1행 + WARNING `상한가 진입 보류` 1줄 + 직전 60초
+  `limit_up_tape(transition="GATE_FAILED")` 1행을 남긴다. 알림 화이트리스트 밖이라 텔레그램은
+  조용하다. 다이제스트 세션의 `gate_failed` 가 이 행을 읽어 "재돌파 없음"과 "재돌파했지만
+  막힘"을 가른다.
+
+  보고는 **세션당 최대 3회, 최소 5분 간격**이다(`_GATE_REPORT_LIMIT` /
+  `_GATE_REPORT_MIN_GAP_SECONDS`). 1회로 묶었던 동안 기록된 35건이 **전부 첫 교차**라 표본이
+  장 초반(누적거래대금이 가장 작은 때)에 쏠렸다. 간격을 두는 이유는 같은 수 초 안에 세 번
+  찍으면 1회와 같은 정보이기 때문이다. 이벤트 행은 멱등키(세션·상태버전)가 여전히 1행으로
+  묶으므로 늘어나는 것은 WARNING 과 테이프뿐이다.
+
+  > 🔴 **테이프 덤프 지점이 게이트 뒤에만 있으면 안 된다.** `TRIGGER`·`FIRST_FILL`·`LOCKED`·
+  > `CLOSED`·`EOD_DECISION` 은 전부 게이트를 통과한 뒤의 전이라, 한 번도 통과하지 못한
+  > 엔진은 `limit_up_tape` 가 **0행**이었다 — 임계값을 바꿔 보고 재생할 증거가 하나도
+  > 없다는 뜻이다(2026-09-21 실측, 가동 이후 전 기간).
+
   거래대금 500억은 여전히 확정 위험 요구다 — 완화는 이 기록의 분포를 본 뒤 사람이 정한다.
 
 - ⚠️ **게이트의 "거래대금" 은 정규장 누적이다. 화면의 거래대금과 다르다.**
@@ -443,18 +456,29 @@ INFO 상한가 스캔 — 순위 42건 → 후보 8건, 신규감시 1건, 탈�
 
 - **감시했는데 안 산 세션은 자기 행으로 사유를 답한다.** `limit_up_session` 의
   `observed_tick_count` / `observed_low_price` / `observed_high_price` /
-  `trigger_cross_count` / `max_turnover_krw` / `max_strength` 는 `LimitUpMachine.observe()`
-  가 **모든 체결 틱**에서 모으고, `service._flush_observations()` 가 30초마다(만료 시점에는
+  `trigger_cross_count` / `max_turnover_krw` / `max_strength` / `cross_samples` 는
+  `LimitUpMachine.observe()` 와 `_record_cross_sample()` 이 **모든 체결 틱**에서 모으고, `service._flush_observations()` 가 30초마다(만료 시점에는
   강제로) 세션 행에 옮긴다. 진입 판정에는 쓰지 않는 순수 관측치다. 읽는 법:
   `observed_tick_count == 0` 이면 **시세가 안 들어온 것**(구독·피드 장애),
   `trigger_cross_count == 0` 이고 `observed_low_price >= trigger_price` 면
   **트리거 아래로 내려온 적이 없는 것**(상한가 잠김 — 2026-09-14 101730 이 이 경우로 추정된다.
   그날은 이 기록이 없어 확정하지 못했다), `trigger_cross_count > 0` 이면 재돌파는 했고
   게이트에 막힌 것이다(`trigger_gate_failed` 행이 첫 건을 설명한다).
-  `trigger_cross_count` 는 **세션당 1회인 `gate_failed` 보고와 무관하게 전부 센다** —
+  `trigger_cross_count` 와 `cross_samples` 는 **`gate_failed` 보고와 무관하게 전부 쌓는다** —
   첫 교차만 세면 표본이 장 초반으로 쏠려 누적거래대금 하한이 실제보다 빡빡해 보인다.
+
   재시작 시 `recover()` 가 `_seed_observation()` 으로 행의 값을 머신에 되돌려 놓는다.
   안 하면 다음 flush 가 0 으로 덮어, 기록이 존재 이유인 바로 그 상황에서 거짓말을 한다.
+
+  > ⚠️ **최댓값 컬럼으로 임계값을 정할 수 없다.** `max_turnover_krw` 와 `max_strength` 는
+  > 서로 **다른 시각**에 찍히는데 게이트는 교차 그 순간의 두 값을 함께 본다. 2026-09-21
+  > 실측에서 최댓값 기준으로는 66세션 중 2건이 두 조건을 만족했지만 실제 동시 통과는
+  > 재돌파 481회 중 **0회**였다. 그래서 `cross_samples` 가 교차마다
+  > `{at, kst, price, turnover, strength, buy, failed}` 를 한 건씩 남긴다(최대 200건,
+  > 넘으면 **버린다** — 앞을 밀어내면 장 후반으로 도로 치우친다). `at` 은 단조시계라
+  > 재시작을 넘으면 뜻을 잃으므로 `kst`(KST `HH:MM:SS`)를 함께 각인한다.
+  > JSON 은 **새 리스트로 대입**해야 ORM 이 변경을 알아챈다 — 제자리에서 늘리면 flush 가
+  > 그냥 지나간다.
 - 스캔이 `BrokerAdapterError`(KIS 한도초과 `EGW00201` 등)로 깨지면 `_control_loop` 이
   WARNING 한 줄로 그 회차만 건너뛴다 — 지수 폴링과 같은 처리다. 바깥 except 로 흘리면
   EOD 단계·폴백 스윕이 통째로 밀리고 엔진이 죽은 것으로 보고된다(2026-09-04 09:21 실제).

@@ -27,6 +27,20 @@ LIMIT_DOWN_RATIO = 0.30
 # *우선순위*만 정하고 체결가는 그 회차 단일가로 난다.
 AFTER_HOURS_FLOOR_RATIO = 0.90
 
+# 게이트 탈락 관측의 상한. 순수 기록이고 진입 판정에는 쓰지 않는다.
+#
+# 세션당 1회만 보고하면 표본이 그날 **첫 교차** — 누적거래대금이 가장 작은 장 초반 —
+# 에만 쏠린다(2026-09-21 실측: 기록된 35건이 전부 첫 교차, 09:10~09:5x 편중).
+# 그 표본으로 하한을 정하면 실제보다 빡빡해 보인다. 그래서 보고를 세 번까지 열되
+# **최소 간격**을 둔다 — 같은 수 초 안에 세 번 찍으면 1회와 같은 정보이기 때문이다.
+_GATE_REPORT_LIMIT = 3
+_GATE_REPORT_MIN_GAP_SECONDS = 300.0
+
+# 교차별 스칼라 표본의 상한. 한 세션이 하루 90회 넘게 교차한 적이 있어(2026-09-17
+# 478340) 무제한이면 JSON 행이 계속 커진다. 상한을 넘으면 **버린다** — 앞쪽을 밀어내면
+# 장 초반 편향을 없애려고 만든 기록이 도로 장 후반으로 치우친다.
+_CROSS_SAMPLE_LIMIT = 200
+
 # 청산 주문의 전략 ID. **사유마다 달라야 한다.**
 # OrderManager._raise_if_duplicate_active_order 는 같은 날 같은 strategy_id+ticker+side 가
 # pending/partially_filled/**filled** 로 있으면 거부한다. 청산 전부가 한 ID 를 쓰면
@@ -141,6 +155,10 @@ class TradeEvent:
     buy_initiated: bool
     cumulative_turnover_krw: int
     execution_strength: float
+    # 관측 기록용 벽시계(KST "HH:MM:SS"). 상태기계는 단조시계로만 판단하므로
+    # 판정에는 쓰지 않는다. 단조시계 값은 재시작을 넘으면 뜻을 잃어서, 나중에
+    # 분포를 볼 때 "몇 시의 교차였나" 를 답하려면 이 각인이 필요하다.
+    at_kst: str | None = None
 
 
 @dataclass(frozen=True)
@@ -393,7 +411,8 @@ class LimitUpMachine:
         self.filled_quantity = 0
         self.pattern_failure_pending = False
         self.market_halted = False
-        self.gate_failure_reported = False
+        self.gate_failure_reports = 0
+        self.gate_failure_reported_at: float | None = None
         # 관측 전용 카운터. 진입 판정에는 절대 쓰지 않는다 — 미발동 세션의 사유를
         # 나중에 재구성하기 위한 기록이다. 서비스가 주기적으로 세션 행에 옮긴다.
         self.observed_tick_count = 0
@@ -402,6 +421,9 @@ class LimitUpMachine:
         self.trigger_cross_count = 0
         self.max_turnover_krw: int | None = None
         self.max_strength: float | None = None
+        # 교차 **전부**의 게이트 입력값. 보고 래치와 무관하게 쌓는다 — 이게 없으면
+        # 481회 평가 중 35회만 흔적이 남아 임계값을 데이터로 정할 수가 없다.
+        self.cross_samples: list[dict] = []
 
     def fire_net(self, *, at: float) -> None:
         """Record one net attempt before the command worker submits orders."""
@@ -452,7 +474,7 @@ class LimitUpMachine:
         )
         if not crossed:
             return []
-        # 래치(gate_failure_reported)는 이벤트 행과 로그만 억제한다. 교차 횟수는
+        # 래치(_may_report_gate_failure)는 이벤트 행과 로그만 억제한다. 교차 횟수는
         # 그와 무관하게 전부 센다 — 세션당 첫 교차만 남기면 표본이 "장 초반"으로
         # 쏠려, 누적거래대금 하한이 실제보다 훨씬 빡빡해 보인다(2026-09-14 실측
         # 10건 전부 첫 교차였고, 그중 411080 은 그날 780억까지 갔다).
@@ -466,13 +488,56 @@ class LimitUpMachine:
             )
             if not ok
         ]
+        self._record_cross_sample(event, failed)
         if failed:
-            if self.gate_failure_reported:
+            if not self._may_report_gate_failure(event.at):
                 return []
-            self.gate_failure_reported = True
+            self.gate_failure_reports += 1
+            self.gate_failure_reported_at = event.at
             return [MachineCommand(CommandKind.GATE_FAILED, ",".join(failed))]
         self.fire_net(at=event.at)
         return [MachineCommand(CommandKind.FIRE_NET, "three_tick_upward_cross")]
+
+    def _record_cross_sample(self, event: TradeEvent, failed: list[str]) -> None:
+        """Append one gate reading for later threshold calibration.
+
+        Diagnostics only. Every cross lands here regardless of the report latch,
+        because the latch exists to keep the ledger quiet and a quiet ledger is
+        exactly what left the 500억 floor unmeasurable for three weeks.
+
+        Args:
+            event: Execution that crossed the trigger upward.
+            failed: Gate names that rejected it, empty when the gate passed.
+        """
+        if len(self.cross_samples) >= _CROSS_SAMPLE_LIMIT:
+            return
+        self.cross_samples.append(
+            {
+                "at": round(event.at, 3),
+                "kst": event.at_kst,
+                "price": event.price,
+                "turnover": event.cumulative_turnover_krw,
+                "strength": event.execution_strength,
+                "buy": event.buy_initiated,
+                "failed": ",".join(failed),
+            }
+        )
+
+    def _may_report_gate_failure(self, at: float) -> bool:
+        """Decide whether this failing cross earns a ledger row and a tape dump.
+
+        Args:
+            at: Monotonic timestamp of the failing cross.
+
+        Returns:
+            Whether the report budget and the minimum spacing both allow it.
+        """
+        if self.gate_failure_reports >= _GATE_REPORT_LIMIT:
+            return False
+        previous = self.gate_failure_reported_at
+        if previous is not None and at - previous < _GATE_REPORT_MIN_GAP_SECONDS:
+            return False
+        return True
 
     def on_quote(self, event: QuoteEvent) -> list[MachineCommand]:
         """Track continuous upper-limit locking and quote-driven hard stops."""

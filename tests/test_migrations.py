@@ -39,7 +39,7 @@ def test_fresh_database_reaches_current_schema(tmp_path, monkeypatch) -> None:
         revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
     engine.dispose()
 
-    assert revision == "0034_limit_up_watch_observation"
+    assert revision == "0035_limit_up_cross_samples"
     assert "scan_rejections" in guard_columns
     assert {
         "observed_tick_count",
@@ -48,6 +48,7 @@ def test_fresh_database_reaches_current_schema(tmp_path, monkeypatch) -> None:
         "trigger_cross_count",
         "max_turnover_krw",
         "max_strength",
+        "cross_samples",
     } <= limit_up_session_columns
     assert {"trade_mode", "total_budget", "entries_cancelled", "exit_pending_reason"} <= pick_columns
     assert "ai_recommendation" in pick_columns

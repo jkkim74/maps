@@ -390,6 +390,71 @@ def test_every_trigger_cross_is_counted_though_only_one_is_reported() -> None:
     assert machine.state is LimitUpState.WATCHING
 
 
+def test_every_cross_records_its_gate_reading_for_calibration() -> None:
+    """The peak columns cannot answer what the gate actually saw.
+
+    2026-09-21 실측: 감시 66세션에서 재돌파 481회가 전부 판정을 받았는데 기록은 35회
+    (7%) 뿐이었다. 게다가 게이트는 최댓값이 아니라 **교차 그 순간**의 값을 보는데,
+    거래대금과 체결강도는 서로 다른 시각에 최대가 된다 — 최댓값 기준으로는 두 조건을
+    만족하는 세션이 있어도 동시 통과는 0회였다. 그래서 교차마다 한 건을 남긴다.
+    """
+    machine = LimitUpMachine("005930", upper_limit_price=13_000, config=_config())
+
+    machine.on_trade(_trade(1.0, 12_960))
+    machine.on_trade(_trade(2.0, 12_970, turnover=10_000_000_000, strength=180.0))
+    machine.on_trade(_trade(3.0, 12_960))
+    machine.on_trade(_trade(4.0, 12_970, turnover=90_000_000_000, strength=110.0))
+
+    assert machine.trigger_cross_count == 2
+    assert [
+        (sample["turnover"], sample["strength"], sample["failed"])
+        for sample in machine.cross_samples
+    ] == [
+        (10_000_000_000, 180.0, "turnover"),
+        (90_000_000_000, 110.0, "strength"),
+    ]
+
+
+def test_gate_failure_reports_are_spread_instead_of_bunched() -> None:
+    """Three reports in the same second carry the information of one.
+
+    보고를 세션당 1회로 묶으면 표본이 그날 첫 교차 — 누적거래대금이 가장 작은 때 —
+    에만 쏠린다. 그래서 세 번까지 열되 최소 5분 간격을 둔다.
+    """
+    machine = LimitUpMachine("005930", upper_limit_price=13_000, config=_config())
+
+    def cross(at: float) -> list[MachineCommand]:
+        machine.on_trade(_trade(at, 12_960))
+        return machine.on_trade(_trade(at + 1.0, 12_970, turnover=10_000_000_000))
+
+    assert cross(1.0) != []
+    assert cross(10.0) == []
+    assert cross(400.0) != []
+    assert cross(800.0) != []
+    assert cross(1_200.0) == []
+
+    assert machine.gate_failure_reports == 3
+    assert machine.trigger_cross_count == 5
+    assert len(machine.cross_samples) == 5
+
+
+def test_cross_samples_stop_at_the_cap_and_keep_the_earliest() -> None:
+    """One 2026-09-17 session crossed 90 times; the row must not grow forever.
+
+    앞쪽을 밀어내지 않는 이유는, 장 초반 편향을 없애려고 만든 기록이 도로 장 후반으로
+    치우치기 때문이다. 상한을 넘으면 버린다.
+    """
+    machine = LimitUpMachine("005930", upper_limit_price=13_000, config=_config())
+
+    for index in range(250):
+        machine.on_trade(_trade(index * 2.0, 12_960))
+        machine.on_trade(_trade(index * 2.0 + 1.0, 12_970, turnover=10_000_000_000))
+
+    assert machine.trigger_cross_count == 250
+    assert len(machine.cross_samples) == 200
+    assert machine.cross_samples[0]["at"] == 1.0
+
+
 def test_observation_keeps_the_peak_turnover_and_strength_of_the_day() -> None:
     """The gate study needs the day's best reading, not the one at first cross."""
     machine = LimitUpMachine("005930", upper_limit_price=13_000, config=_config())

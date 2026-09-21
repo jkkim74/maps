@@ -1037,6 +1037,12 @@ class LimitUpSession(Base):
     trigger_cross_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     max_turnover_krw: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     max_strength: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # 재돌파 **전부**의 게이트 입력값 목록. 최댓값 컬럼은 "그날 어디까지 갔나"를 답하지만
+    # 게이트는 최댓값이 아니라 **교차 그 순간**의 값을 본다 — 두 수치가 서로 다른 시각에
+    # 찍히므로, 최댓값만으로는 임계값을 정할 수 없다(2026-09-21 실측: 최댓값 기준으로는
+    # 66세션 중 2건이 두 조건을 만족하지만 실제 동시 통과는 481회 중 0회였다).
+    # {at, kst, price, turnover, strength, buy, failed} 를 교차당 한 건, 최대 200건.
+    cross_samples: Mapped[list | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc)
     )
