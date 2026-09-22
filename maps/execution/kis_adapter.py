@@ -34,6 +34,7 @@ from maps.execution.broker_adapter import (
     OrderType,
     PendingOrder,
     Position,
+    PositionSnapshot,
     SameDayBuy,
     raw_broker_order_id,
 )
@@ -120,7 +121,10 @@ _TOKEN_CACHE_LOCK = threading.Lock()
 # 모의투자 초당 호출한도(EGW00201)를 넘는 것을 막는다. 주문·취소 직후에는
 # 포지션이 바뀌므로 무효화한다. 어댑터가 호출마다 새로 생성되므로 모듈 레벨로 공유한다.
 _BALANCE_CACHE_TTL_SEC = 5.0
-_BALANCE_CACHE: dict[tuple[str, str, str, bool], tuple[float, dict[str, Any]]] = {}
+# 값: (monotonic 관측시각, 응답 payload, UTC 관측시각). UTC 는 화면의 "n초 전 잔고" 표시용.
+_BALANCE_CACHE: dict[
+    tuple[str, str, str, bool], tuple[float, dict[str, Any], dt.datetime]
+] = {}
 _BALANCE_CACHE_LOCK = threading.Lock()
 
 
@@ -540,7 +544,7 @@ class KISAdapter(BrokerAdapter):
 
     def get_same_day_buys(self) -> dict[str, SameDayBuy]:
         """Return quantities bought today from the KIS balance response."""
-        data = self._fetch_balance_data()
+        data, _observed_at = self._fetch_balance_data()
         buys: dict[str, SameDayBuy] = {}
         for row in self._as_list(data.get("output1")):
             ticker = str(row.get("pdno") or "")
@@ -586,8 +590,25 @@ class KISAdapter(BrokerAdapter):
             return False
         return _MARKET_OPEN <= now.time() <= _MARKET_CLOSE
 
+    def get_position_snapshot(self, max_age_seconds: float) -> PositionSnapshot:
+        """`max_age_seconds` 이내의 잔고 캐시가 있으면 KIS 를 부르지 않고 그 값을 돌려준다.
+
+        장중에는 상한가 엔진이 KIS 요청 레인(`_pace_request`, 모의서버 0.5초 간격)을
+        상시 점유해 화면의 잔고 조회가 수 초씩 줄을 선다(2026-09-22 실측 2~9초).
+        `broker_sync` 가 60초마다 캐시를 데우므로 조회 전용 화면은 이걸로 충분하다.
+        주문 경로는 기본 TTL(5초)의 `_fetch_positions_and_balance` 를 그대로 쓴다.
+        """
+        data, observed_at = self._fetch_balance_data(max_age_seconds=max_age_seconds)
+        positions, balance = self._parse_balance_data(data)
+        return PositionSnapshot(positions=positions, balance=balance, as_of=observed_at)
+
     def _fetch_positions_and_balance(self) -> tuple[dict[str, Position], AccountBalance]:
-        data = self._fetch_balance_data()
+        data, _observed_at = self._fetch_balance_data()
+        return self._parse_balance_data(data)
+
+    def _parse_balance_data(
+        self, data: dict[str, Any]
+    ) -> tuple[dict[str, Position], AccountBalance]:
         positions: dict[str, Position] = {}
         for row in self._as_list(data.get("output1")):
             qty = self._to_int(row.get("hldg_qty") or row.get("ord_psbl_qty") or 0)
@@ -625,12 +646,20 @@ class KISAdapter(BrokerAdapter):
             total_assets=total_assets,
         )
 
-    def _fetch_balance_data(self) -> dict[str, Any]:
+    def _fetch_balance_data(
+        self, *, max_age_seconds: float | None = None
+    ) -> tuple[dict[str, Any], dt.datetime]:
+        """잔고 payload 와 그 관측 시각(UTC)을 반환한다.
+
+        `max_age_seconds` 를 주면 그 나이까지의 캐시를 허용한다(조회 전용 화면).
+        주지 않으면 기본 TTL(`_BALANCE_CACHE_TTL_SEC`)만 허용한다(주문 경로).
+        """
+        ttl = _BALANCE_CACHE_TTL_SEC if max_age_seconds is None else max(0.0, max_age_seconds)
         now = time.monotonic()
         with _BALANCE_CACHE_LOCK:
             cached = _BALANCE_CACHE.get(self._token_cache_key)
-            if cached and now - cached[0] < _BALANCE_CACHE_TTL_SEC:
-                return cached[1]
+            if cached and now - cached[0] < ttl:
+                return cached[1], cached[2]
         params = {
             "CANO": self._account_prefix,
             "ACNT_PRDT_CD": self._account_product_code,
@@ -645,9 +674,10 @@ class KISAdapter(BrokerAdapter):
             "CTX_AREA_NK100": "",
         }
         data = self._fetch_paged(_BALANCE_PATH, tr_id=self._tr_id("balance"), params=params)
+        observed_at = dt.datetime.now(dt.timezone.utc)
         with _BALANCE_CACHE_LOCK:
-            _BALANCE_CACHE[self._token_cache_key] = (time.monotonic(), data)
-        return data
+            _BALANCE_CACHE[self._token_cache_key] = (time.monotonic(), data, observed_at)
+        return data, observed_at
 
     def _fetch_paged(
         self,

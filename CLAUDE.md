@@ -220,6 +220,7 @@ Promotion thresholds: `mock_candidate=60`, `live_candidate=75` (fixed, independe
 | `MAPS_ORDER_MAX_GAP_PCT` | `0.02` | Cancel order if gap-up from signal price exceeds this |
 | `MAPS_STOCK_REPORT_PATH` | `/opt/stock_report` | Path to external stock-report source tree |
 | `MAPS_ANALYSIS_PICK_MAX_AGE_TRADING_DAYS` | `5` | 분석 워치리스트 픽의 유효 기간(KRX 거래일). `ref_date` 가 이보다 오래되면 무장·진입 차단 |
+| `MAPS_SCREEN_BALANCE_MAX_AGE_SECONDS` | `120` | 리스크·대시보드 화면이 허용하는 잔고 캐시 나이(초). 장중 KIS 요청 레인을 상한가 엔진이 점유해 실조회가 2~9초 걸리므로(2026-09-22) 화면은 `broker_sync`(60초)가 데운 캐시를 읽는다. 주문 경로는 영향 없음 |
 | `MAPS_KRX_LOGIN_GUARD_ENABLED` | `true` | KRX 로그인 회로차단기. 끄면 자격증명 만료 시 재시도 누적으로 계정이 잠긴다 |
 | `MAPS_KRX_LOGIN_MAX_FAILURES` | `3` | 연속 실패 몇 회에 회로를 열지 (치명 코드는 1회에 즉시 차단) |
 | `MAPS_KRX_LOGIN_COOLDOWN_SECONDS` | `1800` | 최초 차단 시간. 재차단마다 2배 |

@@ -70,6 +70,9 @@ class MapsSettings(BaseSettings):
     maps_stock_report_time: str = "15:00"
     maps_close_report_time: str = "19:00"   # 장마감 텔레그램 리포트 (블로그 크론 18:30 뒤)
     maps_broker_sync_interval_seconds: int = Field(default=60, ge=10)
+    # 조회 전용 화면(리스크·대시보드)이 허용하는 잔고 캐시 나이(초). broker_sync 주기의 2배.
+    # 장중 KIS 요청 레인이 상한가 엔진으로 붐벼 실조회가 수 초 걸리는 것을 피한다.
+    maps_screen_balance_max_age_seconds: float = Field(default=120.0, ge=0.0)
     maps_order_retry_attempts: int = Field(default=3, ge=1)
     maps_order_retry_backoff_seconds: float = Field(default=0.5, ge=0.0)
     maps_kis_timeout: float = Field(default=30.0, ge=1.0)  # KIS API read timeout (초). 모의서버 지연 대응
@@ -398,6 +401,7 @@ def get_config_status(settings: MapsSettings | None = None) -> list[ConfigSectio
                 _field(s, "maps_scheduler_enabled", "MAPS_SCHEDULER_ENABLED", "Enable APScheduler jobs inside the API process"),
                 _field(s, "maps_scheduler_timezone", "MAPS_SCHEDULER_TIMEZONE", "Scheduler timezone", required=True),
                 _field(s, "maps_broker_sync_interval_seconds", "MAPS_BROKER_SYNC_INTERVAL_SECONDS", "Broker balance/fill sync interval seconds"),
+                _field(s, "maps_screen_balance_max_age_seconds", "MAPS_SCREEN_BALANCE_MAX_AGE_SECONDS", "Max balance cache age (sec) that read-only screens accept"),
                 _field(s, "maps_stock_report_time", "MAPS_STOCK_REPORT_TIME", "Daily stock report generation time"),
                 _field(s, "maps_close_report_time", "MAPS_CLOSE_REPORT_TIME", "Daily close-of-day Telegram report time"),
                 _field(s, "maps_krx_closed_dates", "MAPS_KRX_CLOSED_DATES", "Additional comma-separated KRX closure dates"),

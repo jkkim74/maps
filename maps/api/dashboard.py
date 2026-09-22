@@ -14,6 +14,7 @@ from maps.api.schemas import AlertItem, DashboardResponse, DailyPnlResponse, Dai
 from maps.common.account_history import clamp_history_start_date
 from maps.common.constants import STRATEGY_GROUP_MAP
 from maps.common.exceptions import BrokerAdapterError
+from maps.common.settings import get_settings
 from maps.common.models import (
     CandidateSnapshot,
     HistoricalOHLCV,
@@ -21,7 +22,7 @@ from maps.common.models import (
     PortfolioSnapshot,
     PromotionHistory,
 )
-from maps.execution.broker_adapter import get_broker
+from maps.execution.broker_adapter import get_broker, screen_position_snapshot
 
 router = APIRouter(prefix="/api/v1/dashboard", tags=["SCR-01 Dashboard"])
 
@@ -43,7 +44,12 @@ def get_dashboard(db: Session = Depends(get_db)) -> DashboardResponse:
     ]
 
     latest_ohlcv_date = db.query(func.max(HistoricalOHLCV.date)).scalar()
-    total_assets, broker_alert = _broker_total_assets(db)
+    total_assets, broker_alert, balance_as_of = _broker_total_assets(db)
+    balance_age = (
+        max(0.0, (dt.datetime.now(dt.timezone.utc) - balance_as_of).total_seconds())
+        if balance_as_of is not None
+        else None
+    )
     metrics = _portfolio_metrics(db, total_assets)
     live_count, mock_count = _active_strategy_counts(strategy_ids, latest_promotions)
     alerts = _dashboard_alerts(db, latest_ohlcv_date)
@@ -66,6 +72,8 @@ def get_dashboard(db: Session = Depends(get_db)) -> DashboardResponse:
         live_count=live_count,
         mock_count=mock_count,
         last_updated=latest_ohlcv_date.isoformat() if latest_ohlcv_date else "데이터 없음",
+        balance_as_of=balance_as_of.isoformat() if balance_as_of is not None else None,
+        balance_age_seconds=balance_age,
         contributions=contributions,
         alerts=alerts,
     )
@@ -89,17 +97,26 @@ def _latest_promotions(db: Session) -> dict[str, PromotionHistory]:
     return latest
 
 
-def _broker_total_assets(db: Session) -> tuple[float, AlertItem | None]:
+def _broker_total_assets(
+    db: Session,
+) -> tuple[float, AlertItem | None, dt.datetime | None]:
+    """총자산과 잔고 관측 시각을 반환한다.
+
+    `screen_position_snapshot` 으로 최근 캐시를 허용한다 — 이유는 `api/risk._broker_holdings` 와 같다.
+    """
     try:
-        balance = get_broker().get_account_balance()
+        snapshot = screen_position_snapshot(
+            get_broker(), get_settings().maps_screen_balance_max_age_seconds
+        )
+        balance = snapshot.balance
         _upsert_portfolio_snapshot(db, _today(), balance.total_value, balance.cash, balance.positions_value)
-        return balance.total_value, None
+        return balance.total_value, None, snapshot.as_of
     except (BrokerAdapterError, NotImplementedError, ValueError) as exc:
         return 0.0, AlertItem(
             level="WARN",
             message=f"Broker account balance unavailable: {exc}",
             timestamp="",
-        )
+        ), None
 
 
 def _today() -> dt.date:

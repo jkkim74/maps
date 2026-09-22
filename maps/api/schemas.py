@@ -48,6 +48,8 @@ class DashboardResponse(BaseModel):
     last_updated: str
     contributions: list[StrategyContribution]
     alerts: list[AlertItem]
+    balance_as_of: str | None = None
+    balance_age_seconds: float | None = None
 
 
 # ── SCR-02 Strategies ─────────────────────────────────────────────────────────
@@ -326,6 +328,8 @@ class RiskResponse(BaseModel):
     broker_error: str | None = None
     active_kill_count: int = 0          # 발동 중인 Kill Switch 수 (position_count와 별개)
     active_kills: list[ActiveKillItem] = []
+    balance_as_of: str | None = None     # 잔고 관측 시각 (UTC ISO). 캐시면 실제 응답 시각
+    balance_age_seconds: float | None = None  # 응답 시점 기준 잔고 나이(초)
 
 
 # ── SCR-07 Backtest ───────────────────────────────────────────────────────────

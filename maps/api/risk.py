@@ -22,7 +22,7 @@ from maps.common.models import (
     SecurityMetadata,
 )
 from maps.common.settings import get_settings
-from maps.execution.broker_adapter import get_broker
+from maps.execution.broker_adapter import get_broker, screen_position_snapshot
 from maps.strategy.live_rules import effective_stop_price
 
 router = APIRouter(prefix="/api/v1/risk", tags=["SCR-06 Risk"])
@@ -113,8 +113,13 @@ def get_risk(db: Session = Depends(get_db)) -> RiskResponse:
 
     # long_term_risk: 전략 중 가장 높은 MDD p95/limit 비율
     max_ratio = max((g.ratio for g in gauges), default=0.0)
-    holdings, max_exposure_pct, broker_position_count, broker_status, broker_error = (
+    holdings, max_exposure_pct, broker_position_count, broker_status, broker_error, as_of = (
         _broker_holdings(db)
+    )
+    balance_age = (
+        (datetime.datetime.now(datetime.timezone.utc) - as_of).total_seconds()
+        if as_of is not None
+        else None
     )
 
     return RiskResponse(
@@ -132,6 +137,8 @@ def get_risk(db: Session = Depends(get_db)) -> RiskResponse:
         broker_error=broker_error,
         active_kill_count=active_kill_count,
         active_kills=active_kill_items,
+        balance_as_of=as_of.isoformat() if as_of is not None else None,
+        balance_age_seconds=max(0.0, balance_age) if balance_age is not None else None,
     )
 
 
@@ -151,26 +158,27 @@ def _default_strategy_gauges() -> list[RiskGaugeItem]:
     return gauges
 
 
-def _broker_holdings(db: Session) -> tuple[list[HoldingItem], float, int, str, str | None]:
-    """브로커 실시간 보유 내역을 반환한다.
+def _broker_holdings(
+    db: Session,
+) -> tuple[list[HoldingItem], float, int, str, str | None, datetime.datetime | None]:
+    """브로커 보유 내역을 반환한다.
+
+    잔고는 `screen_position_snapshot` 으로 읽는다 — `MAPS_SCREEN_BALANCE_MAX_AGE_SECONDS`
+    이내의 캐시(broker_sync 가 60초마다 데움)를 허용해, 장중 상한가 엔진이 점유한 KIS
+    요청 레인에 화면이 줄 서지 않게 한다(2026-09-22 실측: 장중 2~9초, 장외 0~1초).
 
     Returns:
-        (holdings, max_exposure_pct, position_count, broker_status, broker_error).
-        broker_status: "ok"(실시간) | "fallback"(DB 근사) | "unavailable"(둘 다 실패).
+        (holdings, max_exposure_pct, position_count, broker_status, broker_error, as_of).
+        broker_status: "ok"(브로커) | "fallback"(DB 근사) | "unavailable"(둘 다 실패).
+        as_of: 잔고 관측 시각(UTC). 폴백이면 None.
     """
     try:
         broker = get_broker()
-        balance = broker.get_account_balance()
-        total_value = balance.total_value
-        positions = getattr(broker, "_fetch_positions_and_balance", None)
-        if callable(positions):
-            position_map, _balance = positions()
-        else:
-            position_map = {
-                ticker: broker.get_position(ticker)
-                for ticker, qty in broker.get_positions().items()
-                if qty > 0
-            }
+        snapshot = screen_position_snapshot(
+            broker, get_settings().maps_screen_balance_max_age_seconds
+        )
+        total_value = snapshot.balance.total_value
+        position_map = snapshot.positions
         holdings: list[HoldingItem] = []
         tickers = set(position_map)
         name_map = {
@@ -247,12 +255,12 @@ def _broker_holdings(db: Session) -> tuple[list[HoldingItem], float, int, str, s
                 )
             )
         max_exposure = max((item.exposure_pct for item in holdings), default=0.0)
-        return holdings, max_exposure, len(holdings), "ok", None
+        return holdings, max_exposure, len(holdings), "ok", None, snapshot.as_of
     except (BrokerAdapterError, NotImplementedError, ValueError) as exc:
         logger.warning("Risk broker holdings unavailable: %s", exc)
         fallback = _fallback_holdings(db)
         status = "fallback" if fallback else "unavailable"
-        return fallback, 0.0, len(fallback), status, str(exc)
+        return fallback, 0.0, len(fallback), status, str(exc), None
 
 
 def _fallback_holdings(db: Session) -> list[HoldingItem]:

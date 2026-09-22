@@ -754,3 +754,40 @@ def test_halted_and_flagged_stocks_are_marked_for_the_scanner() -> None:
     assert not _quote_is_halted({"temp_stop_yn": "N", "iscd_stat_cls_code": "00"})
     # 알 수 없는 응답은 기존 동작(정지 아님)을 유지한다 — 게이트를 조이기만 한다
     assert not _quote_is_halted({})
+
+
+def test_position_snapshot_reuses_cache_within_max_age(
+    settings: MapsSettings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """조회 전용 화면은 max_age 이내의 잔고 캐시를 KIS 호출 없이 재사용한다.
+
+    장중에는 상한가 엔진이 KIS 요청 레인을 점유해 실조회가 수 초 걸린다(2026-09-22).
+    broker_sync 가 60초마다 데운 캐시를 화면이 읽으면 줄을 서지 않는다.
+    """
+    clock = [1000.0]
+    monkeypatch.setattr(kis_adapter.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(kis_adapter.time, "sleep", lambda _s: None)
+    http = FakeSession()
+    broker = KISAdapter(settings, http=http)
+
+    def balance_calls() -> list[dict[str, Any]]:
+        return [c for c in http.calls if c["url"].endswith("/inquire-balance")]
+
+    broker.get_account_balance()  # broker_sync 역할 — 캐시를 데운다
+    assert len(balance_calls()) == 1
+
+    clock[0] += 60.0  # 기본 TTL(5초)은 지났지만 화면 허용치(120초) 이내
+    snapshot = broker.get_position_snapshot(120.0)
+    assert len(balance_calls()) == 1
+    assert "005930" in snapshot.positions
+    assert snapshot.balance.cash == 300_000
+    assert snapshot.as_of.tzinfo is not None
+
+    # 주문 경로는 여전히 기본 TTL 을 따른다 — 낡은 잔고로 주문 판단을 하지 않는다
+    broker.get_account_balance()
+    assert len(balance_calls()) == 2
+
+    clock[0] += 130.0  # 허용치 초과 → 실조회
+    later = broker.get_position_snapshot(120.0)
+    assert len(balance_calls()) == 3
+    assert later.as_of >= snapshot.as_of

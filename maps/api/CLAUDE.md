@@ -111,7 +111,7 @@ DbDep = Depends(get_db)                    # 라우터 함수 파라미터로 �
 | `analysis_picks.py` | 안전한도 → preview → `arm-plan`. **최종 arm 에서 잔고·게이트·중복을 다시 검증한다**. 목록은 소유자로 걸러진다(`owner_user_id IS NULL` = 운영자 픽) |
 | `mobile.py` | 운영자 계좌·포지션을 반환하므로 **관리자 전용**이다. 일반 사용자 로그인은 403 |
 | `telegram.py` | 웹훅 URL 은 텔레그램 서버에 저장된다. 도메인 변경 시 `scripts/setup_telegram_webhook.py` 재실행 필요 |
-| `risk.py` | Kill Switch 발동·해제·청산 승인 |
+| `risk.py` | Kill Switch 발동·해제·청산 승인. 보유 내역은 `screen_position_snapshot` 으로 읽는다 — `MAPS_SCREEN_BALANCE_MAX_AGE_SECONDS` 이내 캐시 허용, 응답에 `balance_as_of`/`balance_age_seconds`. `dashboard.py` 총자산도 같은 경로 |
 | `scheduler.py` | 잡 수동 실행 — 운영에서 파이프라인을 돌리는 창구 |
 
 > ⚠️ DB 의 UTC naive 시각을 그대로 내보내면 브라우저 KST 표시가 9시간 어긋난다.

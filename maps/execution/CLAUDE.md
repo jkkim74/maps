@@ -48,6 +48,17 @@ execution/
 선택적 메서드 (기본 `NotImplementedError`):
 `get_open_orders()`, `get_daily_order_results()`, `get_same_day_buys()`, `update_prices(prices)`
 
+`get_position_snapshot(max_age_seconds) → PositionSnapshot(positions, balance, as_of)` —
+**조회 전용 화면용**. `max_age_seconds` 이내의 잔고 캐시가 있으면 브로커를 부르지 않는다
+(KIS 구현; 기본 구현은 항상 실조회). 라우터는 `screen_position_snapshot(broker, max_age)`
+헬퍼로 부른다 — 테스트 대역처럼 메서드가 없는 객체도 받는다.
+**주문 경로는 이걸 쓰지 않는다** — 주문 직후 판단에 낡은 잔고가 들어가면 안 된다.
+
+> 🔴 **KIS REST 는 계정당 한 레인으로 직렬화된다** (`_pace_request`, 모의서버 0.5초·실서버
+> 0.05초 간격, 프로세스 전역). 장중에는 상한가 엔진(지수 1초·스캔 5초·후보당 현재가)이
+> 이 레인을 상시 점유해 **다른 호출은 줄을 선다** — 2026-09-22 실측으로 리스크·대시보드
+> 화면의 잔고 조회가 장중 2~9초, 장외 0~1초였다. 화면이 실조회를 하게 만들지 말 것.
+
 ### `get_broker(mode?, **kwargs) → BrokerAdapter`
 
 팩토리 함수. `mode`: `"mock"` | `"kis"` | `"kiwoom"`. 설정에서 자동 결정.

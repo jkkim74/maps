@@ -28,7 +28,7 @@ pandas>=2.2.0
 numpy>=1.26.0
 requests>=2.31.0
 boto3>=1.34.0
-pykrx>=1.0.45
+pykrx>=1.2.8  # 전종목기본정보(상장일)는 1.2.x 부터
 yfinance>=0.2.40
 
 # Testing

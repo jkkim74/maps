@@ -207,7 +207,7 @@ def test_broker_holdings_expose_quantity_and_market_value(db, monkeypatch) -> No
 
     monkeypatch.setattr(risk, "get_broker", lambda: FakeBroker())
 
-    holdings, _max_exposure, _count, status, _error = risk._broker_holdings(db)
+    holdings, _max_exposure, _count, status, _error, _as_of = risk._broker_holdings(db)
 
     assert status == "ok"
     assert holdings[0].quantity == 113
@@ -246,7 +246,7 @@ def test_broker_holdings_infers_strategy_from_matching_buy_order(db, monkeypatch
 
     monkeypatch.setattr(risk, "get_broker", lambda: FakeBroker())
 
-    holdings, _max_exposure, count, status, error = risk._broker_holdings(db)
+    holdings, _max_exposure, count, status, error, _as_of = risk._broker_holdings(db)
 
     assert count == 1
     assert status == "ok"
@@ -288,7 +288,7 @@ def test_broker_holdings_includes_stop_triggered_position_when_still_held(db, mo
 
     monkeypatch.setattr(risk, "get_broker", lambda: FakeBroker())
 
-    holdings, max_exposure, count, _status, _error = risk._broker_holdings(db)
+    holdings, max_exposure, count, _status, _error, _as_of = risk._broker_holdings(db)
 
     assert count == 1
     assert max_exposure == 7_252_000 / 8_152_000
@@ -323,7 +323,7 @@ def test_broker_holdings_falls_back_to_bought_picks_when_broker_unavailable(db, 
 
     monkeypatch.setattr(risk, "get_broker", lambda: _FailingBroker())
 
-    holdings, max_exposure, count, status, error = risk._broker_holdings(db)
+    holdings, max_exposure, count, status, error, _as_of = risk._broker_holdings(db)
 
     assert status == "fallback"
     assert "connection refused" in error
@@ -382,7 +382,7 @@ def test_holding_stop_uses_entry_atr_recorded_on_the_buy_order(db, monkeypatch) 
     # OHLCV 기반 폴백이 쓰이면 즉시 드러나도록 다른 값을 돌려주게 만든다.
     monkeypatch.setattr(risk, "_atr14_for_ticker", lambda *a, **k: 9_999.0)
 
-    holdings, _max_exposure, _count, status, _error = risk._broker_holdings(db)
+    holdings, _max_exposure, _count, status, _error, _as_of = risk._broker_holdings(db)
 
     assert status == "ok"
     assert holdings[0].stop_price == 32_900.0
@@ -391,10 +391,41 @@ def test_holding_stop_uses_entry_atr_recorded_on_the_buy_order(db, monkeypatch) 
 def test_broker_holdings_unavailable_without_fallback_records(db, monkeypatch) -> None:
     monkeypatch.setattr(risk, "get_broker", lambda: _FailingBroker())
 
-    holdings, max_exposure, count, status, error = risk._broker_holdings(db)
+    holdings, max_exposure, count, status, error, _as_of = risk._broker_holdings(db)
 
     assert holdings == []
     assert count == 0
     assert max_exposure == 0.0
     assert status == "unavailable"
     assert "KIS request failed" in error
+
+
+def test_risk_reports_balance_age_from_snapshot(ctx, monkeypatch) -> None:
+    """응답은 잔고 관측 시각과 나이를 싣는다 — 화면이 '실시간' 이 아니라 'n초 전' 임을 표시한다."""
+    from maps.execution.broker_adapter import PositionSnapshot
+
+    observed = dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=90)
+    requested_age: list[float] = []
+
+    class SnapshotBroker:
+        def get_position_snapshot(self, max_age_seconds: float) -> PositionSnapshot:
+            requested_age.append(max_age_seconds)
+            return PositionSnapshot(
+                positions={
+                    "005930": Position(
+                        "005930", 2, 50_000, name="삼성전자",
+                        current_price=52_000, evaluation_value=104_000,
+                    )
+                },
+                balance=AccountBalance(cash=900_000, positions_value=100_000),
+                as_of=observed,
+            )
+
+    monkeypatch.setattr(risk, "get_broker", lambda: SnapshotBroker())
+
+    data = ctx.get("/api/v1/risk").json()
+
+    assert requested_age == [120.0]  # MAPS_SCREEN_BALANCE_MAX_AGE_SECONDS 기본값
+    assert data["holdings"][0]["ticker"] == "005930"
+    assert data["balance_as_of"] == observed.isoformat()
+    assert 89.0 <= data["balance_age_seconds"] <= 95.0

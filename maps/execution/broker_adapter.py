@@ -11,6 +11,7 @@ import datetime
 import hashlib
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Any
 
 from maps.common.settings import get_settings
 
@@ -180,6 +181,19 @@ class SameDayBuy:
     avg_price: float | None = None
 
 
+@dataclass
+class PositionSnapshot:
+    """계좌 포지션·잔고와 그 관측 시각.
+
+    `as_of` 는 UTC aware. 캐시에서 온 값이면 실제 브로커 응답 시각이고,
+    방금 조회한 값이면 지금이다. 조회 전용 화면이 "몇 초 전 잔고" 를 표시하는 근거다.
+    """
+
+    positions: dict[str, Position]
+    balance: AccountBalance
+    as_of: datetime.datetime
+
+
 class BrokerAdapter(abc.ABC):
     """브로커 추상 인터페이스.
 
@@ -247,6 +261,19 @@ class BrokerAdapter(abc.ABC):
             if quantity > 0 and (position := self.get_position(ticker)) is not None
         }
 
+    def get_position_snapshot(self, max_age_seconds: float) -> PositionSnapshot:
+        """포지션·잔고를 반환하되 `max_age_seconds` 이내의 캐시가 있으면 브로커를 부르지 않는다.
+
+        조회 전용 화면(리스크·대시보드)용이다. 주문 경로는 이 메서드를 쓰지 않는다 —
+        주문 직후 판단에 낡은 잔고가 들어가면 안 된다. 기본 구현은 항상 실조회한다.
+        """
+        del max_age_seconds
+        return PositionSnapshot(
+            positions=self.get_position_details(),
+            balance=self.get_account_balance(),
+            as_of=datetime.datetime.now(datetime.timezone.utc),
+        )
+
     def get_balance(self) -> float:
         """현금 잔고 (하위 호환)."""
         return self.get_account_balance().cash
@@ -286,6 +313,32 @@ class BrokerAdapter(abc.ABC):
         기본 구현은 no-op. MockBroker는 내부 price_feed를 갱신한다.
         KIS/Kiwoom 어댑터는 자체 실시간 API를 사용하므로 브로커별로 구현한다.
         """
+
+
+def screen_position_snapshot(broker: Any, max_age_seconds: float) -> PositionSnapshot:
+    """조회 전용 화면이 쓰는 포지션 스냅샷. 브로커가 캐시를 지원하면 그 나이까지 허용한다.
+
+    `BrokerAdapter` 가 아닌 객체(테스트 대역·옛 어댑터)도 받는다 — 있는 메서드로
+    최대한 조립하고 관측 시각은 지금으로 둔다.
+    """
+    getter = getattr(broker, "get_position_snapshot", None)
+    if callable(getter):
+        return getter(max_age_seconds)
+    now = datetime.datetime.now(datetime.timezone.utc)
+    fetch = getattr(broker, "_fetch_positions_and_balance", None)
+    if callable(fetch):
+        positions, balance = fetch()
+        return PositionSnapshot(positions=positions, balance=balance, as_of=now)
+    balance = broker.get_account_balance()
+    positions: dict[str, Position] = {}
+    try:
+        quantities = broker.get_positions()
+    except (NotImplementedError, AttributeError):
+        quantities = {}
+    for ticker, qty in quantities.items():
+        if qty > 0 and (position := broker.get_position(ticker)) is not None:
+            positions[ticker] = position
+    return PositionSnapshot(positions=positions, balance=balance, as_of=now)
 
 
 def get_broker(mode: str | None = None, **kwargs) -> BrokerAdapter:

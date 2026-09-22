@@ -122,7 +122,7 @@ async function loadDashboard() {
     // KPI
     document.getElementById('kpi-area').innerHTML = `
       <div class="kpi-grid">
-        <div class="kpi-card"><div class="kpi-label">총 자산</div><div class="kpi-value">${fmt.krw(d.total_assets)}</div><div class="kpi-sub">${fmt.pct(d.total_assets_mom_pct)} MoM</div></div>
+        <div class="kpi-card"><div class="kpi-label">총 자산</div><div class="kpi-value">${fmt.krw(d.total_assets)}</div><div class="kpi-sub">${fmt.pct(d.total_assets_mom_pct)} MoM${d.balance_age_seconds != null ? ` · ${balanceAgeLabel(d)}` : ''}</div></div>
         <div class="kpi-card"><div class="kpi-label">YTD CAGR</div><div class="kpi-value">${fmt.pct(d.ytd_cagr)}</div><div class="kpi-sub">목표 20% 대비</div></div>
         <div class="kpi-card ${d.current_mdd < -0.2 ? 'warn' : ''}"><div class="kpi-label">현재 MDD</div><div class="kpi-value">${fmt.pct(d.current_mdd)}</div><div class="kpi-sub">한도 28% 대비</div></div>
         <div class="kpi-card"><div class="kpi-label">Sharpe (1Y)</div><div class="kpi-value">${fmt.num2(d.sharpe_1y)}</div><div class="kpi-sub">목표 1.0 이상</div></div>
@@ -583,6 +583,14 @@ function changeCandidateStrategy(val) {
   loadCandidates();
 }
 
+// 잔고 관측 시각 표시. 조회 전용 화면은 broker_sync(60초)가 데운 캐시를 읽으므로
+// "실시간" 이 아니라 "n초 전" 임을 드러낸다.
+function balanceAgeLabel(d) {
+  const age = Math.round(d.balance_age_seconds);
+  const at = d.balance_as_of ? new Date(d.balance_as_of).toLocaleTimeString('ko-KR') : '';
+  return `잔고 기준 ${age}초 전${at ? ` (${at})` : ''}`;
+}
+
 // ── SCR-06 리스크 · 모니터 ───────────────────────────────────────────────────
 async function loadRisk() {
   loading('risk-kpi');
@@ -638,6 +646,9 @@ async function loadRisk() {
     }
 
     let brokerNotice = '';
+    if (d.balance_age_seconds != null) {
+      brokerNotice += `<div class="kpi-sub">${balanceAgeLabel(d)}</div>`;
+    }
     if (d.broker_status && d.broker_status !== 'ok') {
       const noticeText = d.broker_status === 'fallback'
         ? '브로커 연결 실패 — DB 기록 기반 근사 보유 내역입니다 (실시간 아님, 비중 미계산)'
