@@ -190,6 +190,11 @@ def _upsert_log(
         row.breadth_pct = breadth_pct
     row.kospi_above_ma5w = result.kospi_above_ma5w
     row.kospi_above_ma10w = result.kospi_above_ma10w
+    # 빈 리스트도 그대로 남긴다(스텁·오버라이드 결과). NULL 과 구별돼야 화면 폴백 판단이 선다.
+    row.asset_trends = [
+        {"name": asset.name, "direction": asset.direction, "value": asset.value}
+        for asset in result.assets
+    ]
     composite = result.composite
     if composite is not None:
         row.final_market_score = composite.final_market_score

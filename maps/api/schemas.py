@@ -142,6 +142,8 @@ class MarketResponse(BaseModel):
     factor_sources: dict[str, str] = {}
     contrarian_entry_limit_ratio: float | None = None
     reason: str | None = None
+    source: str = "live"               # regime_log(스케줄러 판정 이력) | live(실시간 계산 폴백)
+    ref_date: str | None = None         # 이력 기준일 (source=regime_log 일 때)
 
 
 # ── SCR-04 Candidates ─────────────────────────────────────────────────────────

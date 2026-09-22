@@ -35,11 +35,13 @@ def test_fresh_database_reaches_current_schema(tmp_path, monkeypatch) -> None:
     limit_up_session_columns = {
         column["name"] for column in inspector.get_columns("limit_up_session")
     }
+    regime_columns = {column["name"] for column in inspector.get_columns("market_regime_log")}
     with engine.connect() as connection:
         revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
     engine.dispose()
 
-    assert revision == "0035_limit_up_cross_samples"
+    assert revision == "0036_market_regime_asset_trends"
+    assert "asset_trends" in regime_columns
     assert "scan_rejections" in guard_columns
     assert {
         "observed_tick_count",

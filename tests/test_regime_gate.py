@@ -249,3 +249,23 @@ def test_korea_weak_guard_entry_effects(db) -> None:
 
     assert result.entry_limit_ratio == 0.0
     assert result.market_mode().value == "CASH_DEFENSE"
+
+
+def test_hysteresis_log_keeps_asset_trends_for_the_market_screen(db) -> None:
+    """이력 행에 자산별 방향이 남아야 /api/v1/market 이 실시간 계산 없이 화면을 그린다."""
+    from maps.market.regime import AssetTrendInfo
+
+    today = dt.date(2026, 9, 22)
+    raw = _raw_result(RegimeLabel.MIXED, up_count=4)
+    raw.assets = [
+        AssetTrendInfo(name="KOSPI", direction="up", value=3400.0, above_ma5w=True),
+        AssetTrendInfo(name="WTI", direction="flat"),
+    ]
+
+    apply_hysteresis(db, raw, today)
+
+    row = db.query(MarketRegimeLog).filter(MarketRegimeLog.ref_date == today).one()
+    assert row.asset_trends == [
+        {"name": "KOSPI", "direction": "up", "value": 3400.0},
+        {"name": "WTI", "direction": "flat", "value": None},
+    ]

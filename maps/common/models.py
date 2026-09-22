@@ -975,6 +975,9 @@ class MarketRegimeLog(Base):
     factor_sources: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     measured_factors: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     missing_factors: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    # 자산별 주봉 방향 [{name, direction, value}]. 화면(/api/v1/market)이 실시간 계산 대신
+    # 이 행을 읽는 근거. NULL = 컬럼 추가 이전 행 → 화면은 실시간 계산으로 폴백한다.
+    asset_trends: Mapped[list | None] = mapped_column(JSON, nullable=True)
     source: Mapped[str] = mapped_column(String(32), nullable=False, default="scheduler")
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc)

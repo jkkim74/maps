@@ -365,7 +365,7 @@ async function loadMarket() {
         <div class="kpi-card">
           <div class="kpi-label">Updated</div>
           <div class="kpi-value">${fmt.date(d.updated_at)}</div>
-          <div class="kpi-sub">KRX index weekly</div>
+          <div class="kpi-sub">${d.source === 'regime_log' ? `기준일 ${d.ref_date ?? '—'} · 스케줄러 판정` : '실시간 계산'}</div>
         </div>
       </div>`;
 

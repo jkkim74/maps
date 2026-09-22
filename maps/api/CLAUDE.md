@@ -21,7 +21,7 @@ api/
 ├── data_quality.py        # SCR-14 유니버스 품질 로그
 ├── limit_up.py            # 상한가 V1 상태 조회·비상정지·설정 (관리자)
 ├── live_monitor.py        # SCR-13 계좌·포지션·주문 상태
-├── market.py              # SCR-03 장세/팩터 분석
+├── market.py              # SCR-03 장세/팩터 분석 — market_regime_log 최근 행 우선, 없으면 실시간 계산
 ├── mobile.py              # 모바일 앱 축약 응답
 ├── ops_config.py          # 운영 설정 조회·변경
 ├── orders.py              # SCR-05 주문/체결
@@ -113,6 +113,7 @@ DbDep = Depends(get_db)                    # 라우터 함수 파라미터로 �
 | `telegram.py` | 웹훅 URL 은 텔레그램 서버에 저장된다. 도메인 변경 시 `scripts/setup_telegram_webhook.py` 재실행 필요 |
 | `risk.py` | Kill Switch 발동·해제·청산 승인. 보유 내역은 `screen_position_snapshot` 으로 읽는다 — `MAPS_SCREEN_BALANCE_MAX_AGE_SECONDS` 이내 캐시 허용, 응답에 `balance_as_of`/`balance_age_seconds`. `dashboard.py` 총자산도 같은 경로 |
 | `scheduler.py` | 잡 수동 실행 — 운영에서 파이프라인을 돌리는 창구 |
+| `market.py` | **3일 이내 `market_regime_log` 행이 있으면 그 행만으로 응답**한다(`source=regime_log`, `ref_date`). 정본이 히스테리시스 적용 `applied_regime` 이고, 실시간 `analyze()` 는 KRX·yfinance 10건 + 시장 내부지표로 요청당 6~28초였다(2026-09-22). 행이 없거나 `asset_trends` NULL(컬럼 추가 이전)이면 실시간 폴백(`source=live`) |
 
 > ⚠️ DB 의 UTC naive 시각을 그대로 내보내면 브라우저 KST 표시가 9시간 어긋난다.
 > 응답 직렬화 시 명시적 UTC 로 보정한다.

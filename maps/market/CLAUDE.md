@@ -136,7 +136,7 @@ pykrx(국내) + yfinance(해외) 통합 주봉 종가 제공.
 | 모듈 | 함수·클래스 | 설명 |
 |---|---|---|
 | `breadth.py` | `compute_pct_above_ma()`, `classify_breadth()` | `ref_date` 기준 MA 위 종목 비율 → 시장폭 라벨 |
-| `regime_history.py` | `apply_hysteresis()`, `latest_applied_regime()` | raw 판정에 히스테리시스·Korea weak guard 적용 후 이력 upsert |
+| `regime_history.py` | `apply_hysteresis()`, `latest_applied_regime()` | raw 판정에 히스테리시스·Korea weak guard 적용 후 이력 upsert. 행에 `asset_trends`(자산별 방향)도 남긴다 — `/api/v1/market` 화면이 실시간 계산 대신 이 행을 읽는다 |
 | `sector_selector.py` | `SectorSelector.select_strong_sectors()`, `SectorRegimeSelector.select()` | 최근 N거래일 모멘텀 상위 업종 + 국면별 선호/제외 |
 
 `apply_hysteresis()` 가 **최종 장세의 정본**이다. `MarketRegimeAnalyzer.analyze()` 결과를
