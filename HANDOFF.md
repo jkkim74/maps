@@ -1,5 +1,7 @@
 # HANDOFF
 
+> 📎 **상한가 V1 임계값 재설정용 교차 표본 분석은 `docs/HANDOFF_limit_up_cross_samples.md` 에서 이어간다** (9/22 분리, 재실행 스크립트 `scripts/limit_up_cross_samples_report.py`).
+
 > ## 9/21 세션 요약 — 상한가 미발동 원인 확정(두 게이트가 배타적) → 교차 계측 배포 (`fba03c9`, 배포 완료)
 >
 > ### 목표
