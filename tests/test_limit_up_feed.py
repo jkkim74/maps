@@ -6,7 +6,9 @@ import pytest
 
 from maps.limit_up.feed import (
     KIS_ASK_COLUMNS,
+    KIS_INDEX_COLUMNS,
     KIS_TRADE_COLUMNS,
+    FeedIndex,
     RestFallbackLimiter,
     TapeBuffer,
     parse_kis_ws_message,
@@ -149,3 +151,36 @@ def test_kis_frame_whose_width_is_not_a_whole_record_fails_closed() -> None:
 
     with pytest.raises(ValueError, match="field count"):
         parse_kis_ws_message(raw, received_at=0.0)
+
+
+
+# ── 국내지수 실시간체결(H0UPCNT0) — 코스닥 지수 가드를 REST 폴링에서 WS 로 ─────────
+
+
+def test_index_frame_maps_code_and_current_value() -> None:
+    """공식 필드 순서의 3번째(prpr_nmix)가 현재 지수다 — 한 칸 밀리면 가드가 엉뚱한 값을 본다."""
+    raw = _message(
+        "H0UPCNT0",
+        KIS_INDEX_COLUMNS,
+        {"bstp_cls_code": "1001", "bsop_hour": "101530", "prpr_nmix": "803.41", "nmix_hgpr": "815.79"},
+    )
+
+    [event] = parse_kis_ws_message(raw, received_at=3.0)
+
+    assert event == FeedIndex(code="1001", value=803.41, received_at=3.0)
+
+
+def test_index_frame_tolerates_appended_columns() -> None:
+    raw = _message("H0UPCNT0", KIS_INDEX_COLUMNS, {"bstp_cls_code": "1001", "prpr_nmix": "800.00"})
+    raw += "^EXTRA^EXTRA2"
+
+    [event] = parse_kis_ws_message(raw, received_at=1.0)
+
+    assert event.value == 800.0
+
+
+def test_truncated_index_frame_fails_closed() -> None:
+    raw = "0|H0UPCNT0|001|1001^101530^803.41"
+
+    with pytest.raises(ValueError):
+        parse_kis_ws_message(raw, received_at=1.0)

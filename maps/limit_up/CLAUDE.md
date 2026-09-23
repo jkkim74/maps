@@ -63,6 +63,19 @@ limit_up/
 WARNING 상한가 진입 차단 — kosdaq_drawdown 래치 (고점 815.79 → 현재 803.41, -1.52%)
 ```
 
+**지수 값의 출처 (2026-09-23 변경).** 예전엔 `_control_loop` 이 REST(`inquire-index-timeprice`)를
+**매초** 조회했는데, 모의 계좌 KIS 호출 예산(실측상 사실상 초당 1건)을 이것 하나가 다 썼다.
+
+| 경로 | 조건 | 주기 |
+|---|---|---|
+| WebSocket `H0UPCNT0` (`1001`, 필드 `prpr_nmix`) | `MAPS_LIMIT_UP_INDEX_WS_ENABLED=true` 이고 최근 10초 안에 프레임이 왔을 때 | 틱마다 수신, 가드에는 **초당 최대 1회** (`_on_ws_index`) |
+| REST 폴링 (폴백·기본) | WS 가 꺼졌거나 10초 넘게 끊겼을 때 (`_index_rest_poll_due`) | `MAPS_LIMIT_UP_INDEX_POLL_SECONDS`(기본 **5초**) |
+
+> ⚠️ 5초 폴링은 래치 반응이 **최대 5초 늦는다**는 뜻이다(매매 가드 변경, 2026-09-23 승인).
+> ⚠️ **모의 서버가 `H0UPCNT0` 을 주는지는 미확인**이라 WS 는 기본 OFF 다. 켠 뒤 로그로 판정한다:
+> `코스닥 지수 WS 구독 응답: …`(성공/오류), `코스닥 지수 WS 수신 시작`, 끊기면
+> `코스닥 지수 WS 가 10초 넘게 끊김 — REST 폴백`. 프레임이 안 오거나 소켓 끊김이 반복되면 끈다.
+
 > 나머지 세 래치(`max_attempts`·`pattern_failures`·`daily_loss`)는 아직 발현한 적이
 > 없어 전이 신호를 만들지 않았다. 필요해지는 시점은 `automatic` 이 실제로 주문을 내기
 > 시작한 뒤다.
@@ -113,7 +126,7 @@ overnight_budget = (1,000,000 − max(0, 당일 실현손실)) / 0.30
 그 밖에는 30초 간격으로 잠들고 브로커를 부르지 않는다. 두 창(08:59:30 익일 시가 청산,
 15:18~15:28 오버나이트 심사)을 모두 감싼다.
 
-게이트가 없으면 `_control_loop` 이 **초당 코스닥 지수 조회 + 5초마다 후보 스캔** 을
+게이트가 없으면 `_control_loop` 이 **코스닥 지수 조회(5초, 설정) + 5초마다 후보 스캔** 을
 24시간 돌고, `_websocket_loop` 이 실패할 때마다 **1초 간격으로 인증 API 를 무한 재시도**한다.
 이는 2026-07-27 실제 사고(pykrx 재로그인 누적으로 KRX 계정 잠김, 하루 158회)와 같은
 실패 유형이다 — CLAUDE.md 제약 8번 참고. 재연결은 지수 백오프(1초 → 최대 60초)이고
@@ -158,7 +171,8 @@ overnight_budget = (1,000,000 − max(0, 당일 실현손실)) / 0.30
 ## 🔴 청산 전략 ID 는 사유마다 다르다
 
 `OrderManager._raise_if_duplicate_active_order` 는 같은 날 같은
-`strategy_id+ticker+side` 가 `pending/partially_filled/**filled**` 로 있으면 거부한다.
+`strategy_id+ticker+side` 가 `pending/partially_filled/**filled**/unknown` 으로 있으면 거부한다
+(`unknown` = 응답 전 timeout 으로 결과를 확정 못 한 매수, `execution/CLAUDE.md`).
 청산이 전부 한 ID 를 쓰면 **15:18 트림이 체결된 순간 15:28 강제청산·하드스톱·시간외 탈출이
 전부 막힌다** — 오버나이트 절대상한 보증이 조용히 깨진다(실행으로 재현됨).
 

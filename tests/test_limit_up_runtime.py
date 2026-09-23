@@ -135,8 +135,16 @@ def test_engine_hours_cover_both_daily_action_windows() -> None:
     assert engine_active_at(dt.datetime(2026, 8, 28, 15, 28, tzinfo=KST))
 
 
-def _control_loop_runtime(wall: dt.datetime, index_error: Exception | None = None):
+def _control_loop_runtime(
+    wall: dt.datetime,
+    index_error: Exception | None = None,
+    *,
+    settings=None,  # noqa: ANN001
+    last_index_at: float = -100.0,
+    last_ws_index_at: float | None = None,
+):
     """Build one controlled control-loop iteration without broker I/O."""
+    from maps.common.settings import MapsSettings
     from maps.limit_up.runtime import KISIntradayRuntime
 
     class _Adapter:
@@ -178,7 +186,10 @@ def _control_loop_runtime(wall: dt.datetime, index_error: Exception | None = Non
     runtime._stop = asyncio.Event()
     runtime.monotonic = lambda: 2.0
     runtime._last_scan_at = 2.0
-    runtime._last_index_at = 0.0
+    runtime._last_index_at = last_index_at
+    runtime.settings = settings or MapsSettings()
+    runtime._last_ws_index_at = last_ws_index_at
+    runtime._ws_index_live = last_ws_index_at is not None
     runtime._last_deadman_at = 2.0
 
     # A failing iteration must still terminate the test, so cap the loop here
@@ -863,3 +874,124 @@ async def test_daily_actions_expire_yesterdays_watches_once_per_day() -> None:
     await runtime._run_daily_actions(dt.datetime(2026, 9, 10, 9, 5, tzinfo=KST))
 
     assert calls == [dt.date(2026, 9, 9), dt.date(2026, 9, 10)]
+
+
+
+# ── 코스닥 지수: REST 폴링 주기 설정화 + WebSocket 지수(H0UPCNT0) 우선 ─────────────
+
+
+def _session_wall() -> dt.datetime:
+    # 평일 거래일 장중. (2026-09-24~26 은 추석 휴장이라 엔진이 비활성 분기로 빠진다.)
+    return dt.datetime(2026, 9, 22, 10, 0, tzinfo=KST)
+
+
+async def test_index_rest_poll_respects_configured_interval() -> None:
+    """매초 REST 지수 조회가 모의 계좌 호출 예산을 다 썼다(2026-09-23) — 주기를 설정으로."""
+    from maps.common.settings import MapsSettings
+
+    settings = MapsSettings(maps_limit_up_index_poll_seconds=5.0)
+    runtime, adapter, _ = _control_loop_runtime(_session_wall(), settings=settings, last_index_at=-2.0)
+    await runtime._control_loop()
+    assert adapter.index_calls == 0  # 4초 전에 조회했다
+
+    runtime, adapter, _ = _control_loop_runtime(_session_wall(), settings=settings, last_index_at=-3.0)
+    await runtime._control_loop()
+    assert adapter.index_calls == 1  # 5초가 지났다
+
+
+async def test_fresh_ws_index_suppresses_rest_polling() -> None:
+    from maps.common.settings import MapsSettings
+
+    settings = MapsSettings(maps_limit_up_index_ws_enabled=True)
+    runtime, adapter, _ = _control_loop_runtime(
+        _session_wall(), settings=settings, last_ws_index_at=1.0,
+    )
+
+    await runtime._control_loop()
+
+    assert adapter.index_calls == 0
+
+
+async def test_stale_ws_index_falls_back_to_rest(caplog) -> None:
+    """WS 지수가 끊기면 가드가 멈추지 않도록 REST 로 되돌아간다."""
+    from maps.common.settings import MapsSettings
+
+    settings = MapsSettings(maps_limit_up_index_ws_enabled=True)
+    runtime, adapter, service = _control_loop_runtime(
+        _session_wall(), settings=settings, last_ws_index_at=-20.0,
+    )
+
+    with caplog.at_level("WARNING"):
+        await runtime._control_loop()
+
+    assert adapter.index_calls == 1
+    assert service.kosdaq_calls == 1
+    assert any("REST 폴백" in r.getMessage() for r in caplog.records)
+
+
+def test_subscription_payload_accepts_index_tr() -> None:
+    payload = json.loads(subscription_payload("approval", "H0UPCNT0", "1001"))
+    assert payload["body"]["input"] == {"tr_id": "H0UPCNT0", "tr_key": "1001"}
+
+
+async def test_index_subscription_is_sent_once_per_connection() -> None:
+    from maps.limit_up.runtime import KISIntradayRuntime
+
+    class _Socket:
+        def __init__(self) -> None:
+            self.sent: list[str] = []
+
+        async def send(self, raw: str) -> None:
+            self.sent.append(raw)
+
+    runtime = object.__new__(KISIntradayRuntime)
+    runtime._subscribed = set()
+    socket = _Socket()
+
+    await runtime._subscribe_index(socket, "approval")
+    await runtime._subscribe_index(socket, "approval")
+
+    assert len(socket.sent) == 1
+    assert json.loads(socket.sent[0])["body"]["input"]["tr_id"] == "H0UPCNT0"
+
+
+def _index_frame(value: str) -> str:
+    from maps.limit_up.feed import KIS_INDEX_COLUMNS
+
+    row = {"bstp_cls_code": "1001", "prpr_nmix": value}
+    return f"0|H0UPCNT0|001|{'^'.join(row.get(c, '0') for c in KIS_INDEX_COLUMNS)}"
+
+
+async def test_ws_index_frames_feed_the_guard_at_most_once_per_second() -> None:
+    """지수 틱이 초당 여러 건 와도 서비스 펌프에는 초당 1건만 넘긴다."""
+    from maps.common.settings import MapsSettings
+    from maps.limit_up.runtime import KISIntradayRuntime
+
+    calls: list[dict] = []
+
+    class _Service:
+        def on_kosdaq(self, **kwargs: object) -> None:
+            calls.append(kwargs)
+
+    runtime = object.__new__(KISIntradayRuntime)
+    runtime.settings = MapsSettings(maps_limit_up_index_ws_enabled=True)
+    runtime.service = _Service()
+    runtime.wall_now = _session_wall
+    runtime.monotonic = lambda: 0.0
+    runtime._feed_tasks = set()
+    runtime._last_ws_index_at = None
+    runtime._last_ws_index_applied_at = None
+    runtime._ws_index_live = False
+
+    async def _call_service(callable_, *args: object, **kwargs: object) -> object:
+        kwargs.pop("priority", None)
+        return callable_(*args, **kwargs)
+
+    runtime._call_service = _call_service
+
+    for at, value in ((10.0, "815.00"), (10.3, "814.00"), (11.1, "803.00")):
+        await runtime.dispatch_message_async(_index_frame(value), received_at=at)
+    await asyncio.sleep(0)
+
+    assert [c["value"] for c in calls] == [815.0, 803.0]
+    assert runtime._last_ws_index_at == 11.1

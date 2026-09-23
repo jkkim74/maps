@@ -53,6 +53,12 @@ class MapsSettings(BaseSettings):
     maps_limit_up_healthchecks_ping_url: str = ""
     # 시간외 붕괴 판정 기준. 0 < x <= 0.02 만 허용 — 느슨하게 열면 갭하락 방어가 늦어진다.
     maps_limit_up_after_hours_drop_pct: float = Field(default=0.02, gt=0.0, le=0.02)
+    # 코스닥 지수 가드(−1.5% 래치)의 REST 조회 주기(초). 매초 조회가 모의 계좌 KIS 호출
+    # 예산(사실상 초당 1건)을 다 썼다(2026-09-23). 대가는 래치 반응이 최대 이만큼 늦어지는 것.
+    maps_limit_up_index_poll_seconds: float = Field(default=5.0, ge=1.0)
+    # 코스닥 지수를 WebSocket(H0UPCNT0 1001)으로 받는다. 모의 서버 지원이 미확인이라 기본 OFF.
+    # 켜도 WS 지수가 10초 넘게 끊기면 REST 폴링으로 자동 복귀한다.
+    maps_limit_up_index_ws_enabled: bool = False
     # 브로커 계좌 재생성·교체 시 현재 계좌의 성과 이력을 시작할 KST 날짜.
     # 이전 주문·스냅샷은 감사용으로 보존하되 성과·mock_months 계산에서는 제외한다.
     maps_account_history_start_date: dt.date | None = None
@@ -431,6 +437,12 @@ def get_config_status(settings: MapsSettings | None = None) -> list[ConfigSectio
                 _field(s, "kis_real_trading", "KIS_REAL_TRADING", "Use KIS live endpoint instead of paper endpoint"),
                 _field(s, "kis_real_base_url", "KIS_REAL_BASE_URL", "KIS live base URL"),
                 _field(s, "kis_paper_base_url", "KIS_PAPER_BASE_URL", "KIS paper base URL"),
+                _field(s, "maps_kis_timeout", "MAPS_KIS_TIMEOUT", "KIS order read timeout (sec); orders are never resent after it"),
+                _field(s, "maps_kis_connect_timeout", "MAPS_KIS_CONNECT_TIMEOUT", "KIS connect timeout (sec)"),
+                _field(s, "maps_kis_read_timeout", "MAPS_KIS_READ_TIMEOUT", "KIS read timeout (sec) for queries"),
+                _field(s, "maps_kis_paper_min_interval_seconds", "MAPS_KIS_PAPER_MIN_INTERVAL_SECONDS", "Minimum spacing (sec) between paper-account KIS REST calls"),
+                _field(s, "maps_limit_up_index_poll_seconds", "MAPS_LIMIT_UP_INDEX_POLL_SECONDS", "Limit-up KOSDAQ index REST poll interval (sec)"),
+                _field(s, "maps_limit_up_index_ws_enabled", "MAPS_LIMIT_UP_INDEX_WS_ENABLED", "Receive the KOSDAQ index over WebSocket (H0UPCNT0), REST as fallback"),
             ],
         ),
         _section(

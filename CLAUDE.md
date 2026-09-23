@@ -223,6 +223,8 @@ Promotion thresholds: `mock_candidate=60`, `live_candidate=75` (fixed, independe
 | `MAPS_SCREEN_BALANCE_MAX_AGE_SECONDS` | `120` | 리스크·대시보드 화면이 허용하는 잔고 캐시 나이(초). 장중 KIS 요청 레인을 상한가 엔진이 점유해 실조회가 2~9초 걸리므로(2026-09-22) 화면은 `broker_sync`(60초)가 데운 캐시를 읽는다. 주문 경로는 영향 없음 |
 | `MAPS_KIS_CONNECT_TIMEOUT` / `MAPS_KIS_READ_TIMEOUT` | `3` / `8` | KIS **조회** timeout(초). 주문은 `MAPS_KIS_TIMEOUT`(30)을 쓰고 **응답 전 timeout 이면 재전송하지 않는다**(결과 불명 → 당일 주문 조회로 확정, `execution/CLAUDE.md`) |
 | `MAPS_KIS_PAPER_MIN_INTERVAL_SECONDS` | `0.55` | 모의투자 KIS REST 최소 간격. 한도에 마진을 둔다 — 한도 초과 빈도는 `KIS req summary` 로그·장마감 리포트 `KIS 요청` 줄 |
+| `MAPS_LIMIT_UP_INDEX_POLL_SECONDS` | `5` | 상한가 엔진 코스닥 지수 가드(−1.5% 래치)의 REST 조회 주기. 예전엔 매초라 모의 호출 예산을 다 썼다 — 대가는 래치 반응 최대 5초 지연 |
+| `MAPS_LIMIT_UP_INDEX_WS_ENABLED` | `false` | 코스닥 지수를 WebSocket(`H0UPCNT0`)으로 받는다. 모의 지원 미확인이라 기본 OFF, 끊기면 REST 로 자동 복귀 (`maps/limit_up/CLAUDE.md`) |
 | `MAPS_KRX_LOGIN_GUARD_ENABLED` | `true` | KRX 로그인 회로차단기. 끄면 자격증명 만료 시 재시도 누적으로 계정이 잠긴다 |
 | `MAPS_KRX_LOGIN_MAX_FAILURES` | `3` | 연속 실패 몇 회에 회로를 열지 (치명 코드는 1회에 즉시 차단) |
 | `MAPS_KRX_LOGIN_COOLDOWN_SECONDS` | `1800` | 최초 차단 시간. 재차단마다 2배 |

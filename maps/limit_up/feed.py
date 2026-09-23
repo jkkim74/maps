@@ -42,6 +42,18 @@ KIS_ASK_COLUMNS = (
 )
 
 
+# 국내지수 실시간체결(H0UPCNT0) — KIS 공식 예제(examples_llm/domestic_stock/index_ccnl) 순서.
+KIS_INDEX_COLUMNS = (
+    "bstp_cls_code", "bsop_hour", "prpr_nmix", "prdy_vrss_sign", "bstp_nmix_prdy_vrss",
+    "acml_vol", "acml_tr_pbmn", "pcas_vol", "pcas_tr_pbmn", "prdy_ctrt",
+    "oprc_nmix", "nmix_hgpr", "nmix_lwpr", "oprc_vrss_nmix_prpr", "oprc_vrss_nmix_sign",
+    "hgpr_vrss_nmix_prpr", "hgpr_vrss_nmix_sign", "lwpr_vrss_nmix_prpr", "lwpr_vrss_nmix_sign",
+    "prdy_clpr_vrss_oprc_rate", "prdy_clpr_vrss_hgpr_rate", "prdy_clpr_vrss_lwpr_rate",
+    "uplm_issu_cnt", "ascn_issu_cnt", "stnr_issu_cnt", "down_issu_cnt", "lslm_issu_cnt",
+    "qtqt_ascn_issu_cnt", "qtqt_down_issu_cnt", "tick_vrss",
+)
+
+
 @dataclass(frozen=True)
 class FeedTrade:
     """Normalized KRX execution used by the V1 state machine."""
@@ -67,6 +79,15 @@ class FeedQuote:
 
 
 @dataclass(frozen=True)
+class FeedIndex:
+    """One real-time index print (e.g. KOSDAQ composite, code ``1001``)."""
+
+    code: str
+    value: float
+    received_at: float
+
+
+@dataclass(frozen=True)
 class TapeSnapshot:
     """Bounded transition tape ready for an asynchronous DB writer."""
 
@@ -75,8 +96,10 @@ class TapeSnapshot:
     payload: tuple[dict, ...]
 
 
-def parse_kis_ws_message(raw: str, *, received_at: float) -> list[FeedTrade | FeedQuote]:
-    """Parse unencrypted H0STCNT0/H0STASP0 rows and ignore control JSON."""
+def parse_kis_ws_message(
+    raw: str, *, received_at: float
+) -> list[FeedTrade | FeedQuote | FeedIndex]:
+    """Parse unencrypted H0STCNT0/H0STASP0/H0UPCNT0 rows and ignore control JSON."""
     if not raw.startswith("0|"):
         return []
     parts = raw.split("|", 3)
@@ -91,6 +114,8 @@ def parse_kis_ws_message(raw: str, *, received_at: float) -> list[FeedTrade | Fe
         columns = KIS_TRADE_COLUMNS
     elif tr_id == "H0STASP0":
         columns = KIS_ASK_COLUMNS
+    elif tr_id == "H0UPCNT0":
+        columns = KIS_INDEX_COLUMNS
     else:
         return []
     values = parts[3].split("^")
@@ -111,10 +136,18 @@ def parse_kis_ws_message(raw: str, *, received_at: float) -> list[FeedTrade | Fe
             "KIS %s 레코드 폭 %d > 알려진 컬럼 %d — 뒤의 %d개 필드는 무시한다: %s",
             tr_id, width, len(columns), width - len(columns), values[len(columns):width],
         )
-    records: list[FeedTrade | FeedQuote] = []
+    records: list[FeedTrade | FeedQuote | FeedIndex] = []
     for offset in range(0, len(values), width):
         row = dict(zip(columns, values[offset:offset + len(columns)], strict=True))
-        if tr_id == "H0STCNT0":
+        if tr_id == "H0UPCNT0":
+            records.append(
+                FeedIndex(
+                    code=row["bstp_cls_code"],
+                    value=_as_float(row["prpr_nmix"]),
+                    received_at=received_at,
+                )
+            )
+        elif tr_id == "H0STCNT0":
             records.append(
                 FeedTrade(
                     ticker=row["MKSC_SHRN_ISCD"],

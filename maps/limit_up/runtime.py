@@ -22,7 +22,13 @@ from maps.common.models import SecurityMetadata
 from maps.common.settings import MapsSettings
 from maps.execution.kis_adapter import KISAdapter
 from maps.limit_up.domain import LimitUpConfig, LimitUpState
-from maps.limit_up.feed import FeedQuote, FeedTrade, RestFallbackLimiter, parse_kis_ws_message
+from maps.limit_up.feed import (
+    FeedIndex,
+    FeedQuote,
+    FeedTrade,
+    RestFallbackLimiter,
+    parse_kis_ws_message,
+)
 from maps.limit_up.service import (
     Candidate,
     LimitUpMode,
@@ -36,11 +42,18 @@ logger = logging.getLogger(__name__)
 KST = dt.timezone(dt.timedelta(hours=9))
 _TRADE_TR_ID = "H0STCNT0"
 _QUOTE_TR_ID = "H0STASP0"
+# 국내지수 실시간체결. 코스닥 지수 가드를 REST 폴링 대신 받는다(설정으로 켠다).
+_INDEX_TR_ID = "H0UPCNT0"
+_KOSDAQ_INDEX_CODE = "1001"
+# WS 지수가 이보다 오래 안 오면 REST 폴링으로 되돌아간다.
+_INDEX_WS_STALE_SECONDS = 10.0
+# WS 지수 틱은 초당 여러 건 올 수 있다 — 서비스 펌프에는 이 간격으로만 넘긴다.
+_INDEX_WS_APPLY_INTERVAL_SECONDS = 1.0
 
 
 def subscription_payload(approval_key: str, tr_id: str, ticker: str) -> str:
     """Build one official KIS real-time subscription envelope."""
-    if tr_id not in {_TRADE_TR_ID, _QUOTE_TR_ID}:
+    if tr_id not in {_TRADE_TR_ID, _QUOTE_TR_ID, _INDEX_TR_ID}:
         raise ValueError("unsupported upper-limit realtime TR ID")
     return json.dumps(
         {
@@ -272,6 +285,10 @@ class KISIntradayRuntime:
         self._last_scan_at = 0.0
         self._last_scan_summary: tuple | None = None
         self._last_index_at = 0.0
+        # WS 지수(H0UPCNT0) 수신 상태. None = 아직 한 번도 안 왔다.
+        self._last_ws_index_at: float | None = None
+        self._last_ws_index_applied_at: float | None = None
+        self._ws_index_live = False
         self._last_deadman_at = 0.0
         self._eod_reviewed: set[tuple[dt.date, str]] = set()
         self._overnight_capped: set[dt.date] = set()
@@ -536,8 +553,14 @@ class KISIntradayRuntime:
             # 다시 실패의 무한 루프가 된다.
             logger.exception("상한가 실시간 프레임 파싱 실패 — 이 프레임만 버린다")
             return 0
+        if raw.startswith("{") and _INDEX_TR_ID in raw:
+            # 구독 응답(성공/오류). 모의 서버의 지수 TR 지원 여부를 로그로 판정한다.
+            logger.info("코스닥 지수 WS 구독 응답: %s", raw[:300])
         now = self.wall_now()
         for event in events:
+            if isinstance(event, FeedIndex):
+                self._on_ws_index(event, now)
+                continue
             task = asyncio.ensure_future(
                 self._call_service(self._apply_feed_event, event, now)
             )
@@ -618,7 +641,7 @@ class KISIntradayRuntime:
                         await self.scan_once()
                     except BrokerAdapterError as exc:
                         logger.warning("상한가 스캔 실패 — 이번 회차 생략: %s", exc)
-                if index_guard_active_at(wall) and now_mono - self._last_index_at >= 1.0:
+                if index_guard_active_at(wall) and self._index_rest_poll_due(now_mono):
                     self._last_index_at = now_mono
                     # 지수를 못 읽는 것은 이 이터레이션의 나머지를 포기할 이유가 아니다.
                     # KIS 지수 엔드포인트는 1분 봉 단위라 09:00:00 에는 첫 봉이 아직 없어
@@ -684,6 +707,8 @@ class KISIntradayRuntime:
                     )
                     for ticker in self.service.watched_tickers():
                         await self._subscribe(socket, approval, ticker)
+                    if self.settings.maps_limit_up_index_ws_enabled:
+                        await self._subscribe_index(socket, approval)
                     await self._serve_socket(socket, approval)
             except asyncio.CancelledError:
                 raise
@@ -743,6 +768,63 @@ class KISIntradayRuntime:
         await socket.send(subscription_payload(approval, _TRADE_TR_ID, ticker))
         await socket.send(subscription_payload(approval, _QUOTE_TR_ID, ticker))
         self._subscribed.add(ticker)
+
+    async def _subscribe_index(self, socket: Any, approval: str) -> None:
+        """Subscribe the KOSDAQ composite index once per live connection."""
+        key = f"index:{_KOSDAQ_INDEX_CODE}"
+        if key in self._subscribed:
+            return
+        await socket.send(subscription_payload(approval, _INDEX_TR_ID, _KOSDAQ_INDEX_CODE))
+        self._subscribed.add(key)
+
+    def _index_rest_poll_due(self, now_mono: float) -> bool:
+        """REST 지수 조회 차례인가 — WS 지수가 살아 있으면 조회하지 않는다.
+
+        WS 가 켜져 있어도 지수가 ``_INDEX_WS_STALE_SECONDS`` 넘게 안 오면(모의 미지원·끊김)
+        REST 로 되돌아간다. 가드가 멈추는 것보다 호출 예산을 쓰는 편이 낫다.
+        """
+        if now_mono - self._last_index_at < self.settings.maps_limit_up_index_poll_seconds:
+            return False
+        if not self.settings.maps_limit_up_index_ws_enabled:
+            return True
+        last = self._last_ws_index_at
+        if last is not None and now_mono - last < _INDEX_WS_STALE_SECONDS:
+            return False
+        if self._ws_index_live:
+            self._ws_index_live = False
+            logger.warning(
+                "코스닥 지수 WS 가 %.0f초 넘게 끊김 — REST 폴백(%.0f초 주기)",
+                _INDEX_WS_STALE_SECONDS,
+                self.settings.maps_limit_up_index_poll_seconds,
+            )
+        return True
+
+    def _on_ws_index(self, event: FeedIndex, now: dt.datetime) -> None:
+        """WS 지수 한 건을 받아 필요하면 가드로 넘긴다(루프 스레드, 스로틀)."""
+        if event.code != _KOSDAQ_INDEX_CODE or event.value <= 0:
+            return
+        self._last_ws_index_at = event.received_at
+        if not self._ws_index_live:
+            self._ws_index_live = True
+            logger.info("코스닥 지수 WS 수신 시작 — REST 지수 폴링 중단 (값 %.2f)", event.value)
+        if not index_guard_active_at(now):
+            return
+        applied = self._last_ws_index_applied_at
+        if applied is not None and event.received_at - applied < _INDEX_WS_APPLY_INTERVAL_SECONDS:
+            return
+        self._last_ws_index_applied_at = event.received_at
+        task = asyncio.ensure_future(
+            self._call_service(
+                self.service.on_kosdaq,
+                value=event.value,
+                at=event.received_at,
+                now_kst=now,
+                priority=_PRIORITY_HIGH,
+            )
+        )
+        self._feed_tasks.add(task)
+        task.add_done_callback(self._feed_tasks.discard)
+        task.add_done_callback(_log_feed_task_error)
 
     def call_threadsafe(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
         """Run one service call from a non-loop thread (FastAPI) safely.
