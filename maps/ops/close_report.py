@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from maps.api.schemas import DailyDigest
 from maps.common.models import JobRunLog
 from maps.common.settings import MapsSettings
+from maps.execution.kis_request_stats import KIS_REQUEST_STATS, KisDayTotals
 from maps.ops.daily_digest import build_daily_digest
 from maps.ops.notifications import _esc
 
@@ -141,6 +142,7 @@ def _render(
     ref_date: dt.date,
     *,
     blog_written: bool,
+    kis_totals: KisDayTotals | None = None,
 ) -> str:
     lines: list[str] = [
         f"🏁 <b>MAPS 장마감 리포트</b> {ref_date.isoformat()} ({_WEEKDAYS[ref_date.weekday()]})"
@@ -275,6 +277,14 @@ def _render(
                 f" @{i.limit_price:,} ({_esc(i.strategy_id)})"
             )
 
+    if kis_totals is not None:
+        c = kis_totals.counts
+        lines.append(
+            f"🔌 <b>KIS 요청</b> {kis_totals.requests:,}회 (시도 기준, {kis_totals.since:%H:%M} 이후)"
+            f" · 한도초과 {c['rate_limited']} · 응답없음 {c['read_timeout']}"
+            f" · 연결실패 {c['connect_timeout']} · 5xx {c['http_error']}"
+        )
+
     # 확인 필요
     attention = _attention_items(digest, failed_jobs, blog_written=blog_written)
     if attention:
@@ -293,4 +303,10 @@ def build_close_report(db: Session, settings: MapsSettings, ref_date: dt.date) -
         (Path(settings.maps_blog_dir) / f"{ref_date.isoformat()}{suffix}").exists()
         for suffix in (".txt", ".md")
     )
-    return _render(digest, failed_jobs, ref_date, blog_written=blog_written)
+    return _render(
+        digest,
+        failed_jobs,
+        ref_date,
+        blog_written=blog_written,
+        kis_totals=KIS_REQUEST_STATS.totals(ref_date),
+    )

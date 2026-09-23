@@ -8,7 +8,9 @@ from typing import Any
 
 import pytest
 
-from maps.common.exceptions import BrokerAdapterError
+import requests
+
+from maps.common.exceptions import BrokerAdapterError, BrokerOrderUnknownError
 from maps.common.settings import MapsSettings
 from maps.execution.broker_adapter import Order, OrderSide, OrderStatus, OrderType
 from maps.execution import kis_adapter
@@ -71,6 +73,8 @@ class FakeSession:
         self.expire_token_500_next = 0
         # url suffix → 순서대로 소비되는 페이지 응답 큐 (연속조회 테스트용)
         self.paged: dict[str, list[FakeResponse]] = {}
+        # url suffix → 순서대로 던질 네트워크 예외 큐 (timeout 재전송 테스트용)
+        self.raise_queue: dict[str, list[Exception]] = {}
 
     def post(self, url: str, **kwargs: Any) -> FakeResponse:
         self.calls.append({"method": "POST", "url": url, **kwargs})
@@ -88,6 +92,9 @@ class FakeSession:
 
     def request(self, method: str, url: str, **kwargs: Any) -> FakeResponse:
         self.calls.append({"method": method, "url": url, **kwargs})
+        for suffix, errors in self.raise_queue.items():
+            if url.endswith(suffix) and errors:
+                raise errors.pop(0)
         for suffix, queue in self.paged.items():
             if url.endswith(suffix) and queue:
                 return queue.pop(0)
@@ -138,7 +145,7 @@ def settings(tmp_path: Path) -> MapsSettings:
     )
 
 
-@pytest.mark.parametrize("real, expected", [(False, 0.5), (True, 0.05)])
+@pytest.mark.parametrize("real, expected", [(False, 0.55), (True, 0.05)])
 def test_rest_pacing_is_shared_by_account_and_environment(
     settings: MapsSettings,
     monkeypatch: pytest.MonkeyPatch,
@@ -791,3 +798,116 @@ def test_position_snapshot_reuses_cache_within_max_age(
     later = broker.get_position_snapshot(120.0)
     assert len(balance_calls()) == 3
     assert later.as_of >= snapshot.as_of
+
+
+# ── 주문 POST 는 모호한 실패에서 재전송하지 않는다 (중복 주문 방지) ─────────────
+
+
+def _order_calls(http: FakeSession) -> list[dict[str, Any]]:
+    return [call for call in http.calls if call["url"].endswith("/order-cash")]
+
+
+def _limit_buy() -> Order:
+    return Order(
+        strategy_id="s", ticker="005930", side=OrderSide.BUY,
+        order_type=OrderType.LIMIT, quantity=1, limit_price=70_000,
+    )
+
+
+@pytest.fixture
+def no_backoff(settings: MapsSettings) -> MapsSettings:
+    return settings.model_copy(update={"maps_order_retry_backoff_seconds": 0.0})
+
+
+def test_order_read_timeout_is_not_resent(no_backoff: MapsSettings) -> None:
+    """응답 전에 끊긴 주문은 KIS 가 접수했을 수 있다 — 다시 보내면 2주문이 된다."""
+    http = FakeSession()
+    http.raise_queue["/order-cash"] = [requests.ReadTimeout("read timed out")]
+    broker = KISAdapter(no_backoff, http=http)
+
+    with pytest.raises(BrokerOrderUnknownError):
+        broker.place_order(_limit_buy())
+
+    assert len(_order_calls(http)) == 1
+
+
+def test_order_ambiguous_http_500_is_not_resent(no_backoff: MapsSettings) -> None:
+    http = FakeSession()
+    http.paged["/order-cash"] = [
+        FakeResponse({"rt_cd": "1", "msg_cd": "EGW00300", "msg1": "Gateway 라우팅 오류"}, status_code=500),
+    ]
+    broker = KISAdapter(no_backoff, http=http)
+
+    with pytest.raises(BrokerOrderUnknownError):
+        broker.place_order(_limit_buy())
+
+    assert len(_order_calls(http)) == 1
+
+
+@pytest.mark.parametrize("code", ["EGW00201", "EGW00215"])
+def test_order_rate_limit_rejection_is_resent(no_backoff: MapsSettings, code: str) -> None:
+    """한도 거절은 처리되지 않은 요청이 확실하므로 다시 보내도 안전하다."""
+    http = FakeSession()
+    http.paged["/order-cash"] = [
+        FakeResponse({"rt_cd": "1", "msg_cd": code, "msg1": "초당 거래건수"}, status_code=500),
+    ]
+    broker = KISAdapter(no_backoff, http=http)
+
+    result = broker.place_order(_limit_buy())
+
+    assert result.order_id == "12345"
+    assert len(_order_calls(http)) == 2
+
+
+def test_order_connect_timeout_is_resent(no_backoff: MapsSettings) -> None:
+    """연결 자체가 안 된 요청은 KIS 에 닿지 않았다."""
+    http = FakeSession()
+    http.raise_queue["/order-cash"] = [requests.ConnectTimeout("connect timed out")]
+    broker = KISAdapter(no_backoff, http=http)
+
+    result = broker.place_order(_limit_buy())
+
+    assert result.order_id == "12345"
+    assert len(_order_calls(http)) == 2
+
+
+def test_query_read_timeout_is_still_retried(no_backoff: MapsSettings) -> None:
+    """조회는 멱등이라 기존대로 재시도한다."""
+    http = FakeSession()
+    http.raise_queue["/inquire-balance"] = [requests.ReadTimeout("read timed out")]
+    broker = KISAdapter(no_backoff, http=http)
+
+    assert broker.get_account_balance().cash == 300_000
+
+
+def test_query_uses_short_read_timeout(settings: MapsSettings) -> None:
+    """조회는 모의서버가 멈춰도 오래 매달리지 않는다 (2026-09-23: 30초×3회로 화면 92초 정지)."""
+    http = FakeSession()
+    KISAdapter(settings, http=http).get_account_balance()
+
+    call = next(c for c in http.calls if c["url"].endswith("/inquire-balance"))
+    assert call["timeout"] == (settings.maps_kis_connect_timeout, settings.maps_kis_read_timeout)
+
+
+def test_order_waits_for_the_full_read_timeout(settings: MapsSettings) -> None:
+    """주문은 재전송하지 않으므로 짧게 끊으면 접수된 주문이 '불명' 이 될 뿐이다."""
+    http = FakeSession()
+    KISAdapter(settings, http=http).place_order(_limit_buy())
+
+    call = _order_calls(http)[0]
+    assert call["timeout"] == (settings.maps_kis_connect_timeout, settings.maps_kis_timeout)
+
+
+def test_attempt_outcomes_are_counted(no_backoff: MapsSettings, monkeypatch: pytest.MonkeyPatch) -> None:
+    """재시도 중간 실패도 세어야 한도 초과 빈도를 운영에서 볼 수 있다."""
+    from maps.execution.kis_request_stats import KisRequestStats
+
+    stats = KisRequestStats()
+    monkeypatch.setattr(kis_adapter, "KIS_REQUEST_STATS", stats)
+    http = FakeSession()
+    http.fail_next_requests = 1  # EGW00201 한 번 → 재시도 성공
+    KISAdapter(no_backoff, http=http).get_account_balance()
+
+    [totals] = [stats.totals(d) for d in {stats._day.day}]
+    assert totals.counts["rate_limited"] == 1
+    assert totals.counts["ok"] == 1

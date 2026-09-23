@@ -15,6 +15,16 @@ import maps.common.models  # noqa: F401
 from maps.common.db import Base
 
 
+@pytest.fixture(autouse=True)
+def _clear_quote_cache():
+    """시세 캐시는 프로세스 전역이다 — 테스트끼리 같은 티커 가격이 새지 않게 비운다."""
+    from maps.api import analysis_picks
+
+    analysis_picks._QUOTE_CACHE.clear()
+    yield
+    analysis_picks._QUOTE_CACHE.clear()
+
+
 @pytest.fixture
 def client():
     from main import app
@@ -612,7 +622,7 @@ class _PlanBroker:
     def get_position(self, ticker):
         return None
 
-    def get_current_prices(self, tickers):
+    def get_current_prices(self, tickers, *, attempts=None):
         return {}
 
     def get_open_orders(self):
@@ -918,3 +928,95 @@ def test_arm_rejects_stop_wider_than_the_cap(client) -> None:
 def test_arm_allows_stop_inside_the_cap(client) -> None:
     pid = _new_pick(client, buy_price=70000, stop_price=57000, target_price=80000)
     assert client.post(f"/api/v1/analysis-picks/{pid}/arm").status_code == 200
+
+
+class _CountingQuoteBroker:
+    """시세 호출 횟수·인자를 세는 대역. 보유는 없다."""
+
+    def __init__(self, prices: dict[str, float] | None = None, fail: bool = False) -> None:
+        self.prices = prices or {}
+        self.fail = fail
+        self.quote_calls: list[tuple[list[str], int | None]] = []
+
+    def get_position_snapshot(self, max_age_seconds):  # noqa: ANN001, ANN201
+        from maps.execution.broker_adapter import AccountBalance, PositionSnapshot
+
+        return PositionSnapshot(
+            positions={}, balance=AccountBalance(cash=0, positions_value=0),
+            as_of=datetime.datetime.now(datetime.timezone.utc),
+        )
+
+    def get_current_prices(self, tickers, *, attempts=None):  # noqa: ANN001, ANN201
+        from maps.common.exceptions import BrokerAdapterError
+
+        self.quote_calls.append((sorted(tickers), attempts))
+        if self.fail:
+            raise BrokerAdapterError("KIS request failed: read timed out")
+        return {t: self.prices[t] for t in tickers if t in self.prices}
+
+
+def _seed_close(client, ticker: str = "005930", close: int = 71500) -> None:
+    from maps.common.models import HistoricalOHLCV
+
+    with client.session_factory() as s:
+        s.add(HistoricalOHLCV(
+            ticker=ticker, date=datetime.date(2026, 6, 25), open=close, high=close,
+            low=close, close=close, volume=1000,
+        ))
+        s.commit()
+
+
+def test_list_quotes_once_per_minute_with_single_attempt(client, monkeypatch) -> None:
+    """새로고침마다 KIS 에 매달리지 않는다 — 60초 캐시, 화면용은 재시도 없이 1회."""
+    client.post("/api/v1/analysis-picks", json={"picks": [_sample(ticker="005930")]})
+    _seed_close(client)
+    broker = _CountingQuoteBroker({"005930": 73400})
+    monkeypatch.setattr("maps.api.analysis_picks.get_broker", lambda *a, **k: broker)
+
+    first = client.get("/api/v1/analysis-picks").json()["picks"][0]["current_price"]
+    second = client.get("/api/v1/analysis-picks").json()["picks"][0]["current_price"]
+
+    assert first == second == 73400
+    assert broker.quote_calls == [(["005930"], 1)]
+
+
+def test_list_quote_failure_is_cached_and_falls_back_to_close(client, monkeypatch) -> None:
+    """모의서버가 멈춘 동안 실패도 캐시해 다음 새로고침은 즉시 종가로 응답한다."""
+    client.post("/api/v1/analysis-picks", json={"picks": [_sample(ticker="005930")]})
+    _seed_close(client)
+    broker = _CountingQuoteBroker(fail=True)
+    monkeypatch.setattr("maps.api.analysis_picks.get_broker", lambda *a, **k: broker)
+
+    for _ in range(2):
+        item = client.get("/api/v1/analysis-picks").json()["picks"][0]
+        assert item["current_price"] == 71500
+    assert len(broker.quote_calls) == 1
+
+
+def test_list_held_price_reads_screen_snapshot(client, monkeypatch) -> None:
+    """보유가는 화면용 잔고 스냅샷(캐시 허용)에서 읽는다 — 주문용 실조회를 하지 않는다."""
+    from maps.execution.broker_adapter import AccountBalance, Position, PositionSnapshot
+
+    client.post("/api/v1/analysis-picks", json={"picks": [_sample(ticker="005930")]})
+    ages: list[float] = []
+
+    class _SnapshotBroker(_CountingQuoteBroker):
+        def get_position_snapshot(self, max_age_seconds):  # noqa: ANN001, ANN201
+            ages.append(max_age_seconds)
+            return PositionSnapshot(
+                positions={"005930": Position(ticker="005930", quantity=1, avg_price=70000, current_price=72800)},
+                balance=AccountBalance(cash=0, positions_value=72800),
+                as_of=datetime.datetime.now(datetime.timezone.utc),
+            )
+
+        def _fetch_positions_and_balance(self):  # noqa: ANN202
+            raise AssertionError("screen must not force a live balance fetch")
+
+    broker = _SnapshotBroker()
+    monkeypatch.setattr("maps.api.analysis_picks.get_broker", lambda *a, **k: broker)
+
+    item = client.get("/api/v1/analysis-picks").json()["picks"][0]
+
+    assert item["current_price"] == 72800
+    assert ages and ages[0] > 0
+    assert broker.quote_calls == []

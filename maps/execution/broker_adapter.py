@@ -74,6 +74,8 @@ class OrderStatus(str, Enum):
     PARTIALLY_FILLED = "partially_filled"
     CANCELLED = "cancelled"
     REJECTED = "rejected"
+    # 제출 결과를 확정하지 못한 주문(응답 전 timeout). 같은 날 같은 종목 재주문을 막는다.
+    UNKNOWN = "unknown"
 
 
 @dataclass
@@ -299,12 +301,16 @@ class BrokerAdapter(abc.ABC):
         """Return broker-reported same-day buy quantities when supported."""
         raise NotImplementedError
 
-    def get_current_prices(self, tickers: list[str]) -> dict[str, float]:
+    def get_current_prices(
+        self, tickers: list[str], *, attempts: int | None = None
+    ) -> dict[str, float]:
         """미보유 종목 포함 실시간 현재가를 조회한다(지원 브로커만).
 
         보유 종목 시세만 주는 잔고 조회와 달리, 임의 종목의 현재가를 반환한다.
         기본 구현은 no-op(빈 딕셔너리) — 상위에서 일봉 종가로 폴백한다.
+        ``attempts`` 는 종목당 시도 횟수 상한(조회 화면은 1 — 느린 시세에 매달리지 않는다).
         """
+        del attempts
         return {}
 
     def update_prices(self, prices: dict[str, float]) -> None:

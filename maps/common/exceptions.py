@@ -108,6 +108,14 @@ class BrokerAdapterError(MAPSError):
     """브로커 어댑터 오류 (연결 실패, API 오류 등)."""
 
 
+class BrokerOrderUnknownError(BrokerAdapterError):
+    """주문 요청이 브로커에 닿았는지 알 수 없는 실패 (응답 전 timeout, 모호한 5xx).
+
+    브로커가 이미 접수했을 수 있으므로 **같은 주문을 다시 보내면 안 된다.**
+    호출부는 브로커 당일 주문 조회로 결과를 확정한다(`OrderManager`).
+    """
+
+
 # --- 하위 호환 별칭 (구 코드가 참조하는 이름들) ---
 
 class ValidationError(MAPSError):

@@ -108,7 +108,7 @@ DbDep = Depends(get_db)                    # 라우터 함수 파라미터로 �
 | 파일 | 비고 |
 |---|---|
 | `stock_analysis.py` | 분석은 **SSE 스트리밍**. 완료 시 이력을 정확히 한 번 저장하고, 저장만 실패하면 `history_error` 를 함께 내려보낸다. 일반 사용자는 **자기 이력만** 보이고 일일 한도(429)가 적용된다 |
-| `analysis_picks.py` | 안전한도 → preview → `arm-plan`. **최종 arm 에서 잔고·게이트·중복을 다시 검증한다**. 목록은 소유자로 걸러진다(`owner_user_id IS NULL` = 운영자 픽) |
+| `analysis_picks.py` | 안전한도 → preview → `arm-plan`. **최종 arm 에서 잔고·게이트·중복을 다시 검증한다**. 목록은 소유자로 걸러진다(`owner_user_id IS NULL` = 운영자 픽). 목록의 현재가는 보유=`screen_position_snapshot`(캐시 허용), 미보유=시세 1회 시도 + **60초 캐시(실패 포함)** → 일봉 종가 폴백. 실조회였을 땐 장중 2~30초였다(2026-09-23) |
 | `mobile.py` | 운영자 계좌·포지션을 반환하므로 **관리자 전용**이다. 일반 사용자 로그인은 403 |
 | `telegram.py` | 웹훅 URL 은 텔레그램 서버에 저장된다. 도메인 변경 시 `scripts/setup_telegram_webhook.py` 재실행 필요 |
 | `risk.py` | Kill Switch 발동·해제·청산 승인. 보유 내역은 `screen_position_snapshot` 으로 읽는다 — `MAPS_SCREEN_BALANCE_MAX_AGE_SECONDS` 이내 캐시 허용, 응답에 `balance_as_of`/`balance_age_seconds`. `dashboard.py` 총자산도 같은 경로 |

@@ -152,3 +152,81 @@ def test_recommend_only_is_unaffected_by_the_live_switch() -> None:
     assert settings.maps_limit_up_mode == "recommend_only"
     # the gate is only consulted for automatic; recommend_only never reaches it
     assert automatic_mode_blocked_reason(settings) == "live_trading_disabled"
+
+
+# ── 기동 실패 재시도 (2026-09-23: 06:04 자동 업데이트가 PG 와 maps 를 함께 재시작 →
+#    엔진 복구 조회가 끊긴 DB 연결에 걸려 기동 실패, 재시도가 없어 09:21 까지 엔진 부재) ──
+
+
+async def test_start_reports_its_outcome(monkeypatch) -> None:
+    assert await bootstrap.start_limit_up_if_enabled(MapsSettings()) is bootstrap.StartOutcome.DISABLED
+    refused = MapsSettings(maps_limit_up_enabled=True, maps_broker_mode="mock")
+    assert await bootstrap.start_limit_up_if_enabled(refused) is bootstrap.StartOutcome.REFUSED
+
+    def _boom(_settings):
+        raise RuntimeError("SSL connection has been closed unexpectedly")
+
+    monkeypatch.setattr(bootstrap, "build_runtime", _boom)
+    failing = MapsSettings(maps_limit_up_enabled=True, maps_broker_mode="kis")
+    assert await bootstrap.start_limit_up_if_enabled(failing) is bootstrap.StartOutcome.FAILED
+
+
+async def test_failed_start_is_retried_until_the_engine_runs(monkeypatch) -> None:
+    """일시적 기동 실패(DB 재시작 등)는 백오프로 재시도해 엔진을 되살리고, 실패·복구를 알린다."""
+    outcomes = iter([bootstrap.StartOutcome.FAILED, bootstrap.StartOutcome.STARTED])
+    starts: list[None] = []
+
+    async def _start(_settings):
+        starts.append(None)
+        return next(outcomes)
+
+    sleeps: list[float] = []
+
+    async def _sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    alerts: list[str] = []
+    monkeypatch.setattr(bootstrap, "start_limit_up_if_enabled", _start)
+    monkeypatch.setattr(bootstrap.notify, "push", alerts.append)
+
+    await bootstrap.retry_limit_up_start(MapsSettings(), sleep=_sleep)
+
+    assert len(starts) == 2
+    assert sleeps == [bootstrap._RETRY_INITIAL_SECONDS, bootstrap._RETRY_INITIAL_SECONDS * 2]
+    assert any("복구" in text for text in alerts)
+
+
+async def test_retry_stops_on_a_deterministic_refusal(monkeypatch) -> None:
+    """설정 거부(브로커 모드·안전 스위치)는 재시도해도 같다 — 반복하지 않는다."""
+    outcomes = iter([bootstrap.StartOutcome.REFUSED])
+
+    async def _start(_settings):
+        return next(outcomes)
+
+    async def _sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(bootstrap, "start_limit_up_if_enabled", _start)
+    monkeypatch.setattr(bootstrap.notify, "push", lambda _text: None)
+
+    await bootstrap.retry_limit_up_start(MapsSettings(), sleep=_sleep)  # 끝나야 한다
+
+
+async def test_retry_backoff_is_capped(monkeypatch) -> None:
+    results = [bootstrap.StartOutcome.FAILED] * 8 + [bootstrap.StartOutcome.STARTED]
+    outcomes = iter(results)
+
+    async def _start(_settings):
+        return next(outcomes)
+
+    sleeps: list[float] = []
+
+    async def _sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(bootstrap, "start_limit_up_if_enabled", _start)
+    monkeypatch.setattr(bootstrap.notify, "push", lambda _text: None)
+
+    await bootstrap.retry_limit_up_start(MapsSettings(), sleep=_sleep)
+
+    assert max(sleeps) == bootstrap._RETRY_MAX_SECONDS

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import datetime
 import logging
+import threading
+import time
 
 import requests
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -32,7 +34,7 @@ from maps.api.schemas import (
 from maps.common.exceptions import BrokerAdapterError
 from maps.common.models import AnalysisPick, AnalysisPickLeg, HistoricalOHLCV, OrderLog
 from maps.common.settings import MapsSettings, get_settings
-from maps.execution.broker_adapter import AccountBalance, get_broker
+from maps.execution.broker_adapter import AccountBalance, get_broker, screen_position_snapshot
 from maps.execution.order_manager import OrderManager
 from maps.market.regime_history import latest_applied_regime
 from maps.ops.pick_freshness import (
@@ -53,6 +55,14 @@ from maps.strategy.live_rules import (
 )
 
 logger = logging.getLogger(__name__)
+
+# 미보유 워치 종목 시세 캐시(화면 전용). ticker → (monotonic 시각, 가격 | None=조회 실패).
+# 실패도 캐시한다 — KIS 모의서버가 멈춘 동안 새로고침마다 같은 종목에 다시 매달리지 않게.
+# 장중 KIS 레인은 상한가 엔진이 점유하고, 모의서버는 저하 시 30초 가까이 무응답이다
+# (2026-09-23 실측: 목록 API 2~30초, 한 종목 3회 timeout 으로 ~100초).
+_QUOTE_CACHE_TTL_SECONDS = 60.0
+_QUOTE_CACHE: dict[str, tuple[float, float | None]] = {}
+_QUOTE_CACHE_LOCK = threading.Lock()
 
 router = APIRouter(prefix="/api/v1/analysis-picks", tags=["SCR-19 Analysis Picks"])
 
@@ -207,31 +217,25 @@ def _rr_ratio(buy: float | None, target: float | None, stop: float | None) -> fl
 
 
 def _broker_live_prices(tickers: list[str]) -> dict[str, float]:
-    """브로커 보유 포지션의 라이브 현재가를 구한다(리스크 모니터 보유종목과 동일 소스).
+    """보유 포지션의 현재가를 잔고 스냅샷에서 구한다(리스크 모니터 보유종목과 동일 소스).
 
-    KIS 등 실거래 브로커는 잔고 조회 시 종목별 현재가(prpr)를 함께 반환한다. 보유 중인
-    티커에 한해 그 값을 사용하면 장중 실시간 시세가 반영된다. 미보유 종목은 브로커가
-    시세를 주지 않으므로 결과에서 빠진다(상위에서 일봉 종가로 폴백). 브로커 조회 실패는
-    로깅 후 빈 딕셔너리로 흡수해 목록 조회가 죽지 않게 한다.
+    KIS 잔고 조회는 종목별 현재가(prpr)를 함께 준다. 조회 전용 화면이므로 `broker_sync`
+    (60초)가 데운 캐시를 `MAPS_SCREEN_BALANCE_MAX_AGE_SECONDS` 까지 허용한다 — 실조회는
+    장중 상한가 엔진 뒤에 줄을 서 수 초가 걸린다. 미보유 종목은 결과에서 빠진다(상위에서
+    시세·일봉 종가로 폴백). 브로커 조회 실패는 로깅 후 빈 딕셔너리로 흡수한다.
     """
     target = {t for t in tickers if t}
     if not target:
         return {}
     try:
-        broker = get_broker()
-        fetch = getattr(broker, "_fetch_positions_and_balance", None)
-        if callable(fetch):
-            position_map, _balance = fetch()
-        else:
-            position_map = {
-                ticker: broker.get_position(ticker)
-                for ticker in target
-            }
+        snapshot = screen_position_snapshot(
+            get_broker(), get_settings().maps_screen_balance_max_age_seconds
+        )
     except (BrokerAdapterError, NotImplementedError, ValueError, requests.RequestException) as exc:
         logger.warning("워치리스트 브로커 현재가 조회 실패: %s", exc)
         return {}
     prices: dict[str, float] = {}
-    for ticker, position in position_map.items():
+    for ticker, position in snapshot.positions.items():
         if ticker not in target or position is None:
             continue
         price = position.current_price
@@ -241,20 +245,36 @@ def _broker_live_prices(tickers: list[str]) -> dict[str, float]:
 
 
 def _live_quote_prices(tickers: list[str]) -> dict[str, float]:
-    """미보유 워치 종목의 실시간 현재가를 브로커 시세 조회로 구한다.
+    """미보유 워치 종목의 실시간 현재가. 60초 캐시 + 종목당 1회 시도.
 
-    보유 종목 시세만 주는 잔고 조회(`_broker_live_prices`)와 달리 임의 종목의 현재가를
-    얻는다. 시세 API가 없는 브로커(mock)는 빈 딕셔너리를 반환한다. 조회 실패는 로깅 후
-    흡수해 목록 조회가 죽지 않게 한다(상위에서 일봉 종가 폴백).
+    임의 종목 시세는 잔고 조회로 얻을 수 없어 종목마다 KIS 시세 API 를 부른다. 화면용이라
+    재시도하지 않고(느린 시세에 매달리지 않는다) 실패도 캐시한다. 시세 API 가 없는
+    브로커(mock)는 빈 딕셔너리를 준다. 실패 종목은 상위에서 일봉 종가로 폴백한다.
     """
-    target = [t for t in tickers if t]
-    if not target:
-        return {}
+    now = time.monotonic()
+    prices: dict[str, float] = {}
+    missing: list[str] = []
+    with _QUOTE_CACHE_LOCK:
+        for ticker in {t for t in tickers if t}:
+            cached = _QUOTE_CACHE.get(ticker)
+            if cached is not None and now - cached[0] < _QUOTE_CACHE_TTL_SECONDS:
+                if cached[1] is not None:
+                    prices[ticker] = cached[1]
+            else:
+                missing.append(ticker)
+    if not missing:
+        return prices
     try:
-        return get_broker().get_current_prices(target)
+        fetched = get_broker().get_current_prices(missing, attempts=1)
     except (BrokerAdapterError, NotImplementedError, ValueError, requests.RequestException) as exc:
         logger.warning("워치리스트 실시간 시세 조회 실패: %s", exc)
-        return {}
+        fetched = {}
+    fetched_at = time.monotonic()
+    with _QUOTE_CACHE_LOCK:
+        for ticker in missing:
+            _QUOTE_CACHE[ticker] = (fetched_at, fetched.get(ticker))
+    prices.update(fetched)
+    return prices
 
 
 def _current_prices(db: Session, tickers: list[str]) -> dict[str, float]:

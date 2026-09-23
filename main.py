@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import secrets
 import time
@@ -65,6 +66,9 @@ async def _lifespan(app: FastAPI):
         real_trading_unconfirmed,
     )
     from maps.limit_up.bootstrap import (
+        StartOutcome,
+        alert_start_failed,
+        retry_limit_up_start,
         shutdown_limit_up,
         start_limit_up_if_enabled,
     )
@@ -89,11 +93,17 @@ async def _lifespan(app: FastAPI):
     # 계정이 하나도 없을 때만 .env 자격증명으로 관리자를 시드한다(최초 1회).
     ensure_bootstrap_admin(settings)
     start_operational_scheduler_if_enabled()
-    await start_limit_up_if_enabled(settings)
+    limit_up_retry: asyncio.Task | None = None
+    if await start_limit_up_if_enabled(settings) is StartOutcome.FAILED:
+        # 일시적 실패(재시작 중인 DB 등)면 서버 수명 동안 백오프로 다시 띄운다.
+        alert_start_failed()
+        limit_up_retry = asyncio.create_task(retry_limit_up_start(settings))
     logger.info("MAPS 서버 시작 완료")
     try:
         yield
     finally:
+        if limit_up_retry is not None:
+            limit_up_retry.cancel()
         await shutdown_limit_up()
         shutdown_operational_scheduler()
 

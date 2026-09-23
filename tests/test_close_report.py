@@ -173,3 +173,26 @@ def test_html_is_escaped(db, settings) -> None:
 
     assert "&lt;AppKey&gt; &amp; more" in text
     assert "<AppKey>" not in text
+
+
+def test_report_shows_kis_request_totals(db, settings, monkeypatch) -> None:
+    """한도초과·무응답을 시도 기준으로 드러낸다 — 재시도 소진분만 보면 빈도가 가려진다."""
+    from collections import Counter
+
+    from maps.ops import close_report
+    from maps.execution.kis_request_stats import KisDayTotals
+
+    totals = KisDayTotals(
+        day=REF_DATE,
+        since=dt.datetime.combine(REF_DATE, dt.time(6, 4)),
+        counts=Counter({"ok": 900, "rate_limited": 12, "read_timeout": 3}),
+    )
+    monkeypatch.setattr(close_report.KIS_REQUEST_STATS, "totals", lambda day: totals)
+
+    text = build_close_report(db, settings, REF_DATE)
+
+    assert "🔌 <b>KIS 요청</b> 915회 (시도 기준, 06:04 이후) · 한도초과 12 · 응답없음 3" in text
+
+
+def test_report_omits_kis_line_without_requests(db, settings) -> None:
+    assert "KIS 요청" not in build_close_report(db, settings, REF_DATE)

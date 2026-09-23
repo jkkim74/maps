@@ -13,6 +13,8 @@ _CLAIMED_CANDIDATE_STATUSES = frozenset({
     OrderStatus.PENDING.value,
     OrderStatus.PARTIALLY_FILLED.value,
     OrderStatus.FILLED.value,
+    # 결과를 확정하지 못한 주문은 접수됐을 수 있으므로 점유로 본다(재매수 금지).
+    OrderStatus.UNKNOWN.value,
 })
 
 

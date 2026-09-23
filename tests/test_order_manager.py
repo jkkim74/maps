@@ -11,7 +11,13 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from maps.common.db import Base
-from maps.common.exceptions import BrokerAdapterError, DuplicateOrderError, KillSwitchError, ResearchStrategyError
+from maps.common.exceptions import (
+    BrokerAdapterError,
+    BrokerOrderUnknownError,
+    DuplicateOrderError,
+    KillSwitchError,
+    ResearchStrategyError,
+)
 from maps.common.models import OrderLog
 from maps.execution.broker_adapter import (
     AccountBalance,
@@ -368,3 +374,131 @@ def test_order_log_mode_marks_only_real_money_as_live(monkeypatch, kwargs, expec
         lambda: MapsSettings(**kwargs),
     )
     assert _order_log_mode() == expected
+
+
+# ---------------------------------------------------------------------------
+# 모호한 주문 실패(timeout 등) — 재주문하지 않고 브로커 당일 주문으로 확정한다
+# ---------------------------------------------------------------------------
+
+_KST_TZ = dt.timezone(dt.timedelta(hours=9))
+
+
+def _kst_now_naive() -> dt.datetime:
+    return dt.datetime.now(_KST_TZ).replace(tzinfo=None)
+
+
+def _unknown_broker(daily_results=None, daily_error: Exception | None = None) -> MagicMock:
+    broker = MagicMock()
+    broker.get_account_balance.return_value = AccountBalance(cash=10_000_000, positions_value=0)
+    broker.place_order.side_effect = BrokerOrderUnknownError("KIS order outcome unknown: read timed out")
+    if daily_error is not None:
+        broker.get_daily_order_results.side_effect = daily_error
+    else:
+        broker.get_daily_order_results.return_value = daily_results or []
+    return broker
+
+
+def _broker_row(order_id: str, *, side: OrderSide = OrderSide.BUY, ticker: str = "AAAA") -> OrderResult:
+    return OrderResult(
+        order_id=order_id,
+        strategy_id="",
+        ticker=ticker,
+        side=side,
+        status=OrderStatus.PENDING,
+        submitted_at=_kst_now_naive(),
+    )
+
+
+def _manager_for(broker: MagicMock, db) -> OrderManager:
+    return OrderManager(
+        broker=broker,
+        risk=RiskManager(broker=broker, db=db, config=RiskConfig()),
+        db=db,
+        notifier=MagicMock(),
+    )
+
+
+def test_unknown_order_is_adopted_from_broker_daily_orders(db) -> None:
+    """timeout 난 주문이 KIS 당일 주문에 있으면 그 주문으로 확정한다 — 재주문 0회."""
+    broker = _unknown_broker([_broker_row("0000000999")])
+    manager = _manager_for(broker, db)
+
+    result = manager.submit(_buy())
+
+    assert broker.place_order.call_count == 1
+    assert raw_broker_order_id(result.order_id) == "0000000999"
+    row = db.query(OrderLog).one()
+    assert row.status == OrderStatus.PENDING.value
+    assert raw_broker_order_id(row.order_id) == "0000000999"
+
+
+def test_unknown_buy_without_broker_evidence_is_blocked_for_the_day(db) -> None:
+    """브로커에서 못 찾으면 재주문하지 않고, 같은 날 같은 종목 매수를 막는다(fail-closed)."""
+    broker = _unknown_broker([])
+    manager = _manager_for(broker, db)
+
+    with pytest.raises(BrokerOrderUnknownError):
+        manager.submit(_buy())
+
+    assert broker.place_order.call_count == 1
+    row = db.query(OrderLog).one()
+    assert row.status == OrderStatus.UNKNOWN.value
+    with pytest.raises(DuplicateOrderError):
+        manager.submit(_buy())
+    assert broker.place_order.call_count == 1
+
+
+def test_unknown_buy_blocked_when_broker_lookup_fails(db) -> None:
+    broker = _unknown_broker(daily_error=BrokerAdapterError("KIS request failed"))
+    manager = _manager_for(broker, db)
+
+    with pytest.raises(BrokerOrderUnknownError):
+        manager.submit(_buy())
+
+    assert broker.place_order.call_count == 1
+    assert db.query(OrderLog).one().status == OrderStatus.UNKNOWN.value
+
+
+def test_unknown_order_does_not_adopt_an_already_logged_order(db) -> None:
+    """이미 감사 로그에 있는 주문(다른 제출분)을 이번 주문으로 착각하면 안 된다."""
+    db.add(OrderLog(
+        order_id="0000000999", strategy_id="other", ticker="AAAA", side="BUY",
+        qty=10, status=OrderStatus.CANCELLED.value, created_at=dt.datetime.now(),
+    ))
+    db.commit()
+    broker = _unknown_broker([_broker_row("0000000999")])
+    manager = _manager_for(broker, db)
+
+    with pytest.raises(BrokerOrderUnknownError):
+        manager.submit(_buy())
+
+    assert broker.place_order.call_count == 1
+
+
+def test_unknown_order_with_two_candidates_is_not_guessed(db) -> None:
+    broker = _unknown_broker([_broker_row("0000000998"), _broker_row("0000000999")])
+    manager = _manager_for(broker, db)
+
+    with pytest.raises(BrokerOrderUnknownError):
+        manager.submit(_buy())
+
+    assert db.query(OrderLog).one().status == OrderStatus.UNKNOWN.value
+
+
+def test_unknown_sell_is_not_blocked(db) -> None:
+    """매도(손절·청산)는 막지 않는다 — 막으면 보유가 청산 없이 방치된다.
+
+    중복 매도는 KIS 가 주문가능수량 부족으로 거절하므로 다음 주기 재판단에 맡긴다.
+    """
+    broker = _unknown_broker([])
+    manager = _manager_for(broker, db)
+    sell = Order(
+        strategy_id="live_strat", ticker="AAAA", side=OrderSide.SELL,
+        order_type=OrderType.MARKET, quantity=10,
+    )
+
+    with pytest.raises(BrokerOrderUnknownError):
+        manager.submit_exit(sell, exit_reason="stop_loss")
+
+    assert broker.place_order.call_count == 1
+    assert db.query(OrderLog).count() == 0

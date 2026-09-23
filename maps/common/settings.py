@@ -76,6 +76,13 @@ class MapsSettings(BaseSettings):
     maps_order_retry_attempts: int = Field(default=3, ge=1)
     maps_order_retry_backoff_seconds: float = Field(default=0.5, ge=0.0)
     maps_kis_timeout: float = Field(default=30.0, ge=1.0)  # KIS API read timeout (초). 모의서버 지연 대응
+    # 조회(시세·잔고·지수·순위) 전용 timeout. KIS 모의서버는 저하 시 30초 가까이 무응답인데,
+    # 조회는 재시도·폴백이 가능하므로 오래 매달리지 않는다(2026-09-23: 30초×3회로 화면 92초 정지).
+    # 주문은 재전송이 금지라 maps_kis_timeout(30초) 동안 응답을 기다린다.
+    maps_kis_connect_timeout: float = Field(default=3.0, ge=0.5)
+    maps_kis_read_timeout: float = Field(default=8.0, ge=1.0)
+    # 모의투자 REST 최소 간격(초). KIS 는 요청 도착 시각으로 세므로 한도(초당 2건)에 딱 맞추지 않고 마진을 둔다.
+    maps_kis_paper_min_interval_seconds: float = Field(default=0.55, ge=0.05)
     maps_order_slippage_pct: float = Field(default=0.01, ge=0.0)   # 지정가 = 최신종가 * (1 + slippage)
     maps_order_max_gap_pct: float = Field(default=0.02, ge=0.0)    # 신호 이후 갭 상승 허용 상한 (초과 시 주문 스킵)
     # 주문금액 / 20거래일 평균 거래대금 상한. 0 이면 유동성 게이트 비활성.

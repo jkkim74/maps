@@ -12,7 +12,12 @@ from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from maps.common.exceptions import BrokerAdapterError, DuplicateOrderError, ResearchStrategyError
+from maps.common.exceptions import (
+    BrokerAdapterError,
+    BrokerOrderUnknownError,
+    DuplicateOrderError,
+    ResearchStrategyError,
+)
 from maps.common.models import OrderLog
 from maps.common.settings import get_settings
 from maps.execution.broker_adapter import (
@@ -33,6 +38,8 @@ logger = logging.getLogger(__name__)
 _BLOCKED_STAGES: frozenset[str] = frozenset(["research", "alert_only"])
 
 _KST = zoneinfo.ZoneInfo("Asia/Seoul")
+# 결과 불명 주문 확정 시 브로커 접수 시각(KST, 초 단위)과 우리 시계의 허용 오차.
+_UNKNOWN_ORDER_CLOCK_SKEW = timedelta(seconds=60)
 
 
 def kst_day_bounds_utc(ref_date: date) -> tuple[datetime, datetime]:
@@ -188,9 +195,13 @@ class OrderManager:
             )
 
         risk_id = risk_strategy_id or order.strategy_id
+        sent_at = datetime.now(_KST).replace(tzinfo=None)
 
         try:
-            result = self._place_with_retry(order)
+            try:
+                result = self._place_with_retry(order)
+            except BrokerOrderUnknownError as unknown:
+                result = self._resolve_unknown_order(order, sent_at=sent_at, cause=unknown)
             settings = get_settings()
             result = replace(
                 result,
@@ -448,6 +459,8 @@ class OrderManager:
             .filter(OrderLog.status.in_([
                 OrderStatus.PENDING.value,
                 OrderStatus.PARTIALLY_FILLED.value,
+                # 결과 불명 매수도 잔고의 당일 매수수량이 보이면 체결로 확정한다.
+                OrderStatus.UNKNOWN.value,
             ]))
             .all()
         )
@@ -546,7 +559,8 @@ class OrderManager:
         for attempt in range(1, attempts + 1):
             try:
                 return self._broker.place_order(order)
-            except DuplicateOrderError:
+            except (DuplicateOrderError, BrokerOrderUnknownError):
+                # 결과 불명 주문은 재전송하면 중복 주문이 된다 — 호출부가 확정한다.
                 raise
             except BrokerAdapterError as exc:
                 last_exc = exc
@@ -565,6 +579,97 @@ class OrderManager:
         )
         raise final_exc
 
+    def _resolve_unknown_order(
+        self,
+        order: Order,
+        *,
+        sent_at: datetime,
+        cause: BrokerOrderUnknownError,
+    ) -> OrderResult:
+        """결과를 모르는 주문을 브로커 당일 주문 조회로 확정한다. **재주문하지 않는다.**
+
+        같은 종목·방향이고 제출 시각 이후 접수됐으며 아직 감사 로그에 없는 주문이
+        정확히 하나면 그 주문으로 확정한다. 없거나 여럿이거나 조회가 실패하면 추측하지
+        않는다 — 매수는 `unknown` 행을 남겨 당일 같은 종목 재매수를 막고(fail-closed),
+        매도는 막지 않는다(막으면 보유가 청산 없이 방치된다. 중복 매도는 KIS 가
+        주문가능수량 부족으로 거절한다).
+
+        Args:
+            order: 제출하려던 주문.
+            sent_at: 제출 직전 KST naive 시각.
+            cause: 어댑터가 올린 결과 불명 예외.
+
+        Returns:
+            브로커에서 찾은 주문 결과.
+
+        Raises:
+            BrokerOrderUnknownError: 브로커에서 이 주문을 확정하지 못했을 때.
+        """
+        candidates: list[OrderResult] | None
+        try:
+            daily = self._broker.get_daily_order_results()
+        except (BrokerAdapterError, NotImplementedError) as exc:
+            logger.warning("결과 불명 주문 확인용 당일 주문 조회 실패 [%s]: %s", order.ticker, exc)
+            candidates = None
+        else:
+            known = {
+                raw_broker_order_id(row.order_id)
+                for row in self._db.query(OrderLog.order_id)
+                .filter(OrderLog.created_at >= _kst_today_start_utc() - timedelta(days=1))
+                .all()
+            }
+            earliest = sent_at - _UNKNOWN_ORDER_CLOCK_SKEW
+            candidates = [
+                row for row in daily
+                if row.ticker == order.ticker
+                and row.side == order.side
+                and raw_broker_order_id(row.order_id) not in known
+                and (row.submitted_at is None or row.submitted_at >= earliest)
+            ]
+
+        if candidates is not None and len(candidates) == 1:
+            found = replace(candidates[0], strategy_id=order.strategy_id)
+            logger.warning(
+                "결과 불명 주문을 브로커 당일 주문으로 확정 [%s %s %s] order_id=%s (%s)",
+                order.strategy_id, order.ticker, order.side.value, found.order_id, cause,
+            )
+            self._notifier.send_order_alert(
+                level="WARN",
+                strategy_id=order.strategy_id,
+                ticker=order.ticker,
+                message="Order response timed out; adopted the broker's same-day order.",
+                fields={"side": order.side.value, "order_id": found.order_id},
+            )
+            return found
+
+        reason = (
+            "broker lookup failed" if candidates is None
+            else f"{len(candidates)} matching broker orders"
+        )
+        if order.side == OrderSide.BUY:
+            self._log_order(
+                order,
+                OrderResult(
+                    order_id=f"unknown:{order.ticker}:{sent_at:%Y%m%d%H%M%S%f}",
+                    strategy_id=order.strategy_id,
+                    ticker=order.ticker,
+                    side=order.side,
+                    status=OrderStatus.UNKNOWN,
+                    submitted_at=sent_at,
+                ),
+            )
+        self._notifier.send_order_alert(
+            level="ERROR",
+            strategy_id=order.strategy_id,
+            ticker=order.ticker,
+            message=(
+                f"Order outcome unknown ({reason}); not resent."
+                + (" Same-day buys of this ticker are blocked." if order.side == OrderSide.BUY else "")
+            ),
+            fields={"side": order.side.value, "cause": str(cause)},
+        )
+        raise cause
+
     def _raise_if_duplicate_active_order(self, order: Order) -> None:
         # 08:55 KST 제출분은 UTC 로 전일 23:55 — KST 자정 기준이라야 같은 거래일로 잡힌다.
         today_start = _kst_today_start_utc()
@@ -578,6 +683,7 @@ class OrderManager:
                 OrderStatus.PENDING.value,
                 OrderStatus.PARTIALLY_FILLED.value,
                 OrderStatus.FILLED.value,
+                OrderStatus.UNKNOWN.value,
             ]))
             .first()
         )

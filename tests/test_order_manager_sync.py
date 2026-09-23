@@ -370,3 +370,41 @@ def test_transient_broker_error_is_retried(db) -> None:
 
     assert result.order_id == "retry-1"
     assert broker.place_order.call_count == 2
+
+
+def test_sync_broker_state_confirms_unknown_buy_from_same_day_quantity(db) -> None:
+    """응답 전 timeout 으로 결과 불명이던 매수도 잔고의 당일 매수수량으로 체결 확정한다.
+
+    확정하지 않으면 실제 보유가 감사 로그에 '불명'으로만 남아 청산 관리의 근거가 비는다.
+    """
+    broker = MagicMock()
+    broker.get_account_balance.return_value = AccountBalance(cash=1_000_000, positions_value=100_000)
+    broker.get_open_orders.return_value = []
+    broker.get_daily_order_results.return_value = []
+    broker.get_same_day_buys.return_value = {
+        "AAAA": SameDayBuy(ticker="AAAA", quantity=10, avg_price=9_900),
+    }
+    risk = RiskManager(broker=broker, db=db, config=RiskConfig())
+    manager = OrderManager(broker=broker, risk=risk, db=db)
+    db.add(
+        OrderLog(
+            order_id="unknown:AAAA:20260923091500000000",
+            strategy_id="s1",
+            ticker="AAAA",
+            side=OrderSide.BUY.value,
+            qty=10,
+            order_price=10_000,
+            fill_qty=0,
+            status=OrderStatus.UNKNOWN.value,
+            broker="kis",
+            mode="mock",
+            created_at=dt.datetime.now(),
+        )
+    )
+    db.commit()
+
+    manager.sync_broker_state()
+
+    row = db.query(OrderLog).one()
+    assert row.status == OrderStatus.FILLED.value
+    assert row.fill_qty == 10

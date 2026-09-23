@@ -12,6 +12,7 @@ import datetime as dt
 import hashlib
 import json
 import logging
+import random
 import threading
 import time
 from dataclasses import dataclass
@@ -20,7 +21,8 @@ from typing import Any
 
 import requests
 
-from maps.common.exceptions import BrokerAdapterError
+from maps.common.exceptions import BrokerAdapterError, BrokerOrderUnknownError
+from maps.execution.kis_request_stats import KIS_REQUEST_STATS
 from maps.common.settings import MapsSettings, get_settings
 from maps.market.trading_rules import is_krx_closed_date, krx_tick_size
 from maps.execution.broker_adapter import (
@@ -99,6 +101,8 @@ _KIS_ERROR_HINTS = {
 
 # 토큰 만료로 인한 서버측 세션 오류 코드 (자동 재발급 대상)
 _TOKEN_EXPIRED_CODES: frozenset[str] = frozenset({"90020000", "EGW00123"})
+# 게이트웨이가 처리 전에 거절한 응답 — 주문도 다시 보내도 중복이 생기지 않는다.
+_REQUEST_REJECTED_CODES: frozenset[str] = frozenset({"EGW00201", "EGW00215"})
 
 # 연속조회(tr_cont) 페이지 상한 — 잔고·일별체결은 페이지당 약 20행이므로
 # 100페이지(약 2,000행)면 개인 계좌에서는 사실상 무한. 무한루프 방어용.
@@ -217,7 +221,7 @@ class KISAdapter(BrokerAdapter):
                 self._token_cache_key,
                 _RequestPaceState(lock=threading.Lock()),
             )
-        interval = 0.05 if self._real else 0.5
+        interval = 0.05 if self._real else self._settings.maps_kis_paper_min_interval_seconds
         scheduled_at: float
         with state.lock:
             now = time.monotonic()
@@ -239,7 +243,9 @@ class KISAdapter(BrokerAdapter):
             "ORD_QTY": str(order.quantity),
             "ORD_UNPR": str(order_price),
         }
-        data = self._request("POST", _ORDER_PATH, tr_id=tr_id, json=body, hash_body=body)
+        data = self._request(
+            "POST", _ORDER_PATH, tr_id=tr_id, json=body, hash_body=body, idempotent=False
+        )
         self._invalidate_balance_cache()
         output = self._output(data)
         order_id = str(output.get("ODNO") or output.get("odno") or "")
@@ -562,7 +568,9 @@ class KISAdapter(BrokerAdapter):
             )
         return buys
 
-    def get_current_prices(self, tickers: list[str]) -> dict[str, float]:
+    def get_current_prices(
+        self, tickers: list[str], *, attempts: int | None = None
+    ) -> dict[str, float]:
         """종목별 실시간 현재가를 조회한다(미보유 포함). 실패한 종목은 결과에서 빠진다.
 
         KIS inquire-price(FHKST01010100)를 종목당 1회 호출한다. 보유 종목만 시세를 주는
@@ -573,7 +581,9 @@ class KISAdapter(BrokerAdapter):
         for ticker in {t for t in tickers if t}:
             params = {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": ticker}
             try:
-                data = self._request("GET", _PRICE_PATH, tr_id=_PRICE_TR_ID, params=params)
+                data = self._request(
+                    "GET", _PRICE_PATH, tr_id=_PRICE_TR_ID, params=params, attempts=attempts
+                )
             except (BrokerAdapterError, requests.RequestException) as exc:
                 logger.warning("KIS 현재가 조회 실패 [%s]: %s", ticker, exc)
                 continue
@@ -848,6 +858,8 @@ class KISAdapter(BrokerAdapter):
         json: dict[str, Any] | None = None,
         hash_body: dict[str, Any] | None = None,
         tr_cont: str = "",
+        idempotent: bool = True,
+        attempts: int | None = None,
     ) -> dict[str, Any]:
         headers = {
             "content-type": "application/json; charset=utf-8",
@@ -862,7 +874,10 @@ class KISAdapter(BrokerAdapter):
         if hash_body is not None:
             headers["hashkey"] = self._hashkey(hash_body)
 
-        response = self._send_with_retry(method, path, headers=headers, params=params, json=json)
+        response = self._send_with_retry(
+            method, path, headers=headers, params=params, json=json,
+            idempotent=idempotent, attempts=attempts,
+        )
         self._last_tr_cont = str(response.headers.get("tr_cont") or "").strip().upper()
         payload = self._decode_response(response)
         rt_cd = str(payload.get("rt_cd", "0"))
@@ -875,7 +890,10 @@ class KISAdapter(BrokerAdapter):
                 headers["authorization"] = f"Bearer {self._ensure_token()}"
                 if hash_body is not None:
                     headers["hashkey"] = self._hashkey(hash_body)
-                response = self._send_with_retry(method, path, headers=headers, params=params, json=json)
+                response = self._send_with_retry(
+                    method, path, headers=headers, params=params, json=json,
+                    idempotent=idempotent, attempts=attempts,
+                )
                 self._last_tr_cont = str(response.headers.get("tr_cont") or "").strip().upper()
                 payload = self._decode_response(response)
                 rt_cd = str(payload.get("rt_cd", "0"))
@@ -908,30 +926,51 @@ class KISAdapter(BrokerAdapter):
         headers: dict[str, str],
         params: dict[str, Any] | None,
         json: dict[str, Any] | None,
+        idempotent: bool = True,
+        attempts: int | None = None,
     ) -> requests.Response:
-        attempts = max(1, self._settings.maps_order_retry_attempts)
+        """KIS 요청을 보내고 일시 오류는 재시도한다.
+
+        :param idempotent: False(주문)면 **요청이 처리되지 않았음이 확실한 실패만** 다시
+            보낸다 — 연결 실패(`ConnectTimeout`), 호출한도 거절(`EGW00201`/`EGW00215`),
+            토큰 만료. 응답 전 timeout·그 밖의 5xx 는 KIS 가 이미 접수했을 수 있어 다시
+            보내면 중복 주문이 된다. 이때는 `BrokerOrderUnknownError` 를 올려 호출부가
+            당일 주문 조회로 결과를 확정하게 한다.
+        """
+        attempts = max(1, attempts or self._settings.maps_order_retry_attempts)
         backoff = self._settings.maps_order_retry_backoff_seconds
         last_exc: Exception | None = None
         token_refreshed = False
         attempt = 0
         while attempt < attempts:
             attempt += 1
+            started = time.monotonic()
             try:
                 self._pace_request()
+                started = time.monotonic()  # 레인 대기는 빼고 KIS 응답 시간만 잰다
                 response = self._http.request(
                     method,
                     self._url(path),
                     headers=headers,
                     params=params,
                     json=json,
-                    timeout=self._timeout,
+                    timeout=self._http_timeout(idempotent=idempotent),
                 )
+                latency_ms = (time.monotonic() - started) * 1000
                 if response.status_code not in {429, 500, 502, 503, 504}:
+                    KIS_REQUEST_STATS.record("ok", latency_ms=latency_ms)
                     return response
                 # KIS는 토큰 만료(EGW00123/90020000)를 HTTP 200이 아니라 5xx로 내려주기도 한다.
                 # 이 경우 _request의 토큰 재발급 분기(rt_cd 검사)에 도달하지 못하므로, 여기서
                 # 본문의 msg_cd를 직접 확인해 토큰을 재발급하고 1회 무료 재시도한다.
                 msg_cd = self._peek_msg_cd(response)
+                outcome = "rate_limited" if msg_cd in _REQUEST_REJECTED_CODES else "http_error"
+                KIS_REQUEST_STATS.record(outcome, latency_ms=latency_ms)
+                logger.warning(
+                    "KIS 요청 실패 시도 %d/%d: %s tr_id=%s HTTP %s msg_cd=%s %.0fms",
+                    attempt, attempts, path, headers.get("tr_id", ""),
+                    response.status_code, msg_cd or "-", latency_ms,
+                )
                 if msg_cd in _TOKEN_EXPIRED_CODES and not token_refreshed:
                     token_refreshed = True
                     attempt -= 1  # 토큰 재발급 재시도는 재시도 횟수에서 제외
@@ -942,30 +981,58 @@ class KISAdapter(BrokerAdapter):
                     self._invalidate_token_cache()
                     headers["authorization"] = f"Bearer {self._ensure_token()}"
                     continue
-                # 그 외 429/5xx는 재시도 대상. 대부분(예: EGW00201 초당 호출한도)은 재시도로
-                # 자가복구되므로 매 시도는 DEBUG로만 남겨 로그 노이즈를 줄이고, 모든 시도 소진
-                # 시에만 WARNING(아래)을 남긴다. KIS가 5xx 본문에 실어 보내는 진단 메시지와
-                # 추적키(gt_uid)는 예외 메시지에 보존한다(고객센터 접수·디버깅용).
+                if not idempotent and msg_cd not in _REQUEST_REJECTED_CODES:
+                    raise BrokerOrderUnknownError(
+                        f"KIS order outcome unknown: HTTP {response.status_code} {msg_cd or '-'} {path}"
+                        f" gt_uid={response.headers.get('gt_uid', '')}"
+                    )
+                # 그 외 429/5xx는 재시도 대상. 시도마다 위에서 WARNING 한 줄(경로·tr_id·코드·
+                # 지연)을 남긴다 — 예전엔 DEBUG 라 한도 초과 빈도를 셀 수 없었다(2026-09-23).
+                # KIS가 5xx 본문에 실어 보내는 진단 메시지와 추적키(gt_uid)는 예외 메시지에
+                # 보존한다(고객센터 접수·디버깅용).
                 gt_uid = response.headers.get("gt_uid", "")
                 body_snippet = (response.text or "")[:500]
-                logger.debug(
-                    "KIS transient HTTP %s: %s (attempt %d/%d) gt_uid=%s body=%s",
-                    response.status_code, path, attempt, attempts, gt_uid, body_snippet,
-                )
                 last_exc = BrokerAdapterError(
                     f"KIS transient HTTP {response.status_code}: {path}"
                     + (f" gt_uid={gt_uid}" if gt_uid else "")
                     + (f" body={body_snippet}" if body_snippet else "")
                 )
             except requests.RequestException as exc:
+                latency_ms = (time.monotonic() - started) * 1000
+                KIS_REQUEST_STATS.record(
+                    "read_timeout" if isinstance(exc, requests.ReadTimeout)
+                    else "connect_timeout" if isinstance(exc, requests.ConnectTimeout)
+                    else "exception",
+                    latency_ms=latency_ms,
+                )
+                logger.warning(
+                    "KIS 요청 실패 시도 %d/%d: %s tr_id=%s %s %.0fms",
+                    attempt, attempts, path, headers.get("tr_id", ""), type(exc).__name__, latency_ms,
+                )
+                if not idempotent and not isinstance(exc, requests.ConnectTimeout):
+                    raise BrokerOrderUnknownError(
+                        f"KIS order outcome unknown: {type(exc).__name__} {path}: {exc}"
+                    ) from exc
                 last_exc = exc
             if attempt < attempts:
-                time.sleep(backoff * (2 ** (attempt - 1)))
+                # 지터: 같은 순간 실패한 요청들이 같은 순간 재시도해 다시 한도에 걸리지 않게 한다.
+                time.sleep(backoff * (2 ** (attempt - 1)) * random.uniform(0.8, 1.2))
         # 모든 재시도 소진 = 실제 실패. 이때만 한 번 WARNING으로 남긴다(본문·gt_uid 포함).
         logger.warning("KIS 요청 %d회 재시도 모두 실패: %s", attempts, last_exc)
         if isinstance(last_exc, BrokerAdapterError):
             raise last_exc
         raise BrokerAdapterError(f"KIS request failed after {attempts} attempts: {last_exc}") from last_exc
+
+    def _http_timeout(self, *, idempotent: bool) -> tuple[float, float]:
+        """(connect, read) timeout. 조회는 짧게, 주문은 응답을 끝까지 기다린다.
+
+        주문은 재전송이 금지라 read timeout 이 곧 '결과 불명' 이 된다 — 짧게 끊으면 접수된
+        주문을 불명으로 만들 뿐이다. 조회는 재시도와 폴백이 있으므로 오래 매달리지 않는다.
+        """
+        connect = self._settings.maps_kis_connect_timeout
+        if not idempotent:
+            return connect, self._timeout
+        return connect, min(self._settings.maps_kis_read_timeout, self._timeout)
 
     @staticmethod
     def _peek_msg_cd(response: requests.Response) -> str:

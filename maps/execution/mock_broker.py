@@ -247,8 +247,11 @@ class MockBroker(BrokerAdapter):
             cumulative_volume=self._after_hours_volume.get(ticker, 0),
         )
 
-    def get_current_prices(self, tickers: list[str]) -> dict[str, float]:
+    def get_current_prices(
+        self, tickers: list[str], *, attempts: int | None = None
+    ) -> dict[str, float]:
         """price_feed에 있는 종목의 현재가를 반환한다(미보유 포함)."""
+        del attempts
         return {
             t: float(self._price_feed[t])
             for t in tickers

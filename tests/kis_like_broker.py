@@ -228,6 +228,8 @@ class KISLikeBroker(BrokerAdapter):
             cumulative_volume=self._after_hours_volume.get(ticker, 0),
         )
 
-    def get_current_prices(self, tickers: list[str]) -> dict[str, float]:
+    def get_current_prices(
+        self, tickers: list[str], *, attempts: int | None = None
+    ) -> dict[str, float]:
         """Return set prices for the requested tickers."""
         return {t: float(self._prices[t]) for t in tickers if t in self._prices}
