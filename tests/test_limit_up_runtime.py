@@ -995,3 +995,33 @@ async def test_ws_index_frames_feed_the_guard_at_most_once_per_second() -> None:
 
     assert [c["value"] for c in calls] == [815.0, 803.0]
     assert runtime._last_ws_index_at == 11.1
+
+
+async def test_startup_recovery_runs_with_patient_kis_reads() -> None:
+    """복구 조회만 긴 timeout — 시작 후 루프들의 조회는 짧은 timeout 그대로."""
+    from maps.execution import kis_adapter
+    from maps.limit_up.runtime import KISIntradayRuntime
+
+    seen: list[bool] = []
+
+    class _Service:
+        def recover(self, **_kwargs: object) -> None:
+            seen.append(kis_adapter._PATIENT_READS.get())
+
+    runtime = object.__new__(KISIntradayRuntime)
+    runtime.service = _Service()
+    runtime.wall_now = _session_wall
+    runtime.monotonic = lambda: 0.0
+
+    async def _idle() -> None:
+        return None
+
+    runtime._service_pump = _idle
+    runtime._control_loop = _idle
+    runtime._websocket_loop = _idle
+
+    await runtime.start()
+    await asyncio.gather(*runtime._tasks)
+
+    assert seen == [True]
+    assert kis_adapter._PATIENT_READS.get() is False

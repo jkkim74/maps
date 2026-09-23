@@ -65,6 +65,7 @@ execution/
 | 경로 | timeout (connect, read) | 재전송 |
 |---|---|---|
 | 조회 (잔고·시세·지수·순위·당일주문) | (`MAPS_KIS_CONNECT_TIMEOUT`=3, `MAPS_KIS_READ_TIMEOUT`=8) | 429/5xx·timeout 재시도 + 지터 |
+| 반드시 성공해야 하는 조회 (`with kis_adapter.patient_reads():` — 현재 상한가 엔진 기동 복구만) | (3, `MAPS_KIS_TIMEOUT`=30) | 조회와 같음. ContextVar 라 감싼 스레드 안에서만 적용 |
 | 주문 `place_order` (`idempotent=False`) | (3, `MAPS_KIS_TIMEOUT`=30) | **연결 실패·`EGW00201`/`EGW00215`·토큰 만료만.** 응답 전 timeout·그 밖의 5xx 는 `BrokerOrderUnknownError` |
 
 > 🔴 **결과 불명 주문은 다시 보내지 않는다.** KIS 가 이미 접수했을 수 있다. 예전엔 어댑터 3회 ×

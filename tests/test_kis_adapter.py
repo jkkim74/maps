@@ -911,3 +911,29 @@ def test_attempt_outcomes_are_counted(no_backoff: MapsSettings, monkeypatch: pyt
     [totals] = [stats.totals(d) for d in {stats._day.day}]
     assert totals.counts["rate_limited"] == 1
     assert totals.counts["ok"] == 1
+
+
+def test_patient_reads_use_the_full_timeout_only_inside_the_block(settings: MapsSettings) -> None:
+    """엔진 복구처럼 반드시 성공해야 하는 조회는 KIS 저하 중에도 끝까지 기다린다.
+
+    2026-09-23 12:23 KIS 저하(응답 ~8초) 중 재시작하자 복구의 당일주문 조회가 8초 timeout
+    3회로 실패해 엔진 기동이 2분 늦었다. 화면·주기 조회는 계속 짧게 끊는다.
+    """
+    import threading
+
+    http = FakeSession()
+    broker = KISAdapter(settings, http=http)
+    long_timeout = (settings.maps_kis_connect_timeout, settings.maps_kis_timeout)
+    short_timeout = (settings.maps_kis_connect_timeout, settings.maps_kis_read_timeout)
+
+    with kis_adapter.patient_reads():
+        assert broker._http_timeout(idempotent=True) == long_timeout
+        seen_in_other_thread: list[tuple[float, float]] = []
+        worker = threading.Thread(
+            target=lambda: seen_in_other_thread.append(broker._http_timeout(idempotent=True))
+        )
+        worker.start()
+        worker.join()
+        assert seen_in_other_thread == [short_timeout]  # 다른 스레드로 새지 않는다
+
+    assert broker._http_timeout(idempotent=True) == short_timeout

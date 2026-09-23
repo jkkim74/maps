@@ -13,6 +13,9 @@ import hashlib
 import json
 import logging
 import random
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 import threading
 import time
 from dataclasses import dataclass
@@ -101,6 +104,27 @@ _KIS_ERROR_HINTS = {
 
 # 토큰 만료로 인한 서버측 세션 오류 코드 (자동 재발급 대상)
 _TOKEN_EXPIRED_CODES: frozenset[str] = frozenset({"90020000", "EGW00123"})
+# 이 컨텍스트 안의 조회는 짧은 조회 timeout 대신 주문과 같은 긴 read timeout 을 쓴다.
+# ContextVar 라 설정한 스레드·태스크 안에서만 보인다 — 같은 어댑터를 쓰는 화면·주기 조회는
+# 계속 짧게 끊는다.
+_PATIENT_READS: ContextVar[bool] = ContextVar("kis_patient_reads", default=False)
+
+
+@contextmanager
+def patient_reads() -> Iterator[None]:
+    """반드시 성공해야 하는 조회 구간 — KIS 저하(응답 수 초) 중에도 끝까지 기다린다.
+
+    2026-09-23 12:23 KIS 저하 중 재시작하자 상한가 엔진 복구의 당일주문 조회가 8초
+    timeout 3회로 실패해 엔진이 2분 늦게 떴다. 엔진 기동 복구처럼 실패 비용이 큰 조회만
+    이 구간으로 감싼다.
+    """
+    token = _PATIENT_READS.set(True)
+    try:
+        yield
+    finally:
+        _PATIENT_READS.reset(token)
+
+
 # 게이트웨이가 처리 전에 거절한 응답 — 주문도 다시 보내도 중복이 생기지 않는다.
 _REQUEST_REJECTED_CODES: frozenset[str] = frozenset({"EGW00201", "EGW00215"})
 
@@ -1030,7 +1054,7 @@ class KISAdapter(BrokerAdapter):
         주문을 불명으로 만들 뿐이다. 조회는 재시도와 폴백이 있으므로 오래 매달리지 않는다.
         """
         connect = self._settings.maps_kis_connect_timeout
-        if not idempotent:
+        if not idempotent or _PATIENT_READS.get():
             return connect, self._timeout
         return connect, min(self._settings.maps_kis_read_timeout, self._timeout)
 

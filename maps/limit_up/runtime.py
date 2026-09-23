@@ -22,6 +22,7 @@ from maps.common.models import SecurityMetadata
 from maps.common.settings import MapsSettings
 from maps.execution.kis_adapter import KISAdapter
 from maps.limit_up.domain import LimitUpConfig, LimitUpState
+from maps.execution.kis_adapter import patient_reads
 from maps.limit_up.feed import (
     FeedIndex,
     FeedQuote,
@@ -367,14 +368,19 @@ class KISIntradayRuntime:
     async def start(self) -> None:
         """Recover broker truth before starting all background loops."""
         now = self.wall_now()
+        now_monotonic = self.monotonic()
+
+        def _recover() -> None:
+            # 복구 조회는 KIS 가 느려도 끝까지 기다린다 — 여기서 실패하면 엔진이 안 뜬다
+            # (2026-09-23 12:23, 8초 timeout 3회로 기동 실패 → 재시도로 2분 뒤 기동).
+            with patient_reads():
+                self.service.recover(
+                    ref_date=now.date(), now_monotonic=now_monotonic, now_kst=now,
+                )
+
         # 펌프가 아직 없으므로 큐에 넣으면 영원히 대기한다. 이 시점에는 경합할 상대도
         # 없으니 직접 스레드로 돌린다.
-        await asyncio.to_thread(
-            self.service.recover,
-            ref_date=now.date(),
-            now_monotonic=self.monotonic(),
-            now_kst=now,
-        )
+        await asyncio.to_thread(_recover)
         self._loop = asyncio.get_running_loop()
         self._tasks = [
             asyncio.create_task(self._service_pump(), name="limit-up-service"),
