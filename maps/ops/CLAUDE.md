@@ -235,7 +235,7 @@ broker sync는 기존 손절·익절·전략 청산을 먼저 처리한 뒤 보�
 
 | 모듈 | 함수 | 설명 |
 |---|---|---|
-| `order_preview.py` | `next_trading_day()`, `build_order_preview()` | 브로커 호출 없이 DB+설정만으로 다음 거래일 예정 주문 시뮬레이션 |
+| `order_preview.py` | `next_trading_day()`, `build_order_preview()` | 브로커 호출 없이 DB+설정만으로 다음 거래일 예정 주문 시뮬레이션. 장세는 **`market_regime_log` 최근 행으로 재구성**(`_regime_from_log`)하고, 행이 없거나 오버라이드일 때만 `analyze()` 를 부른다 — 실시간 분석이 요청당 6~28초로 `/orders` 화면을 막았다(2026-09-23) |
 | `order_state.py` | `claimed_candidate_tickers()` | `since` 이후 `PENDING`/`PARTIALLY_FILLED`/`FILLED` BUY ticker |
 | `reconciliation.py` | `build_reconciliation()`, `format_reconciliation_text()` | KST 일자 기준 체결률 집계 + 미체결 도달 가능성 진단 |
 

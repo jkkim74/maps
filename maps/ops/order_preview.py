@@ -10,9 +10,17 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from maps.api.schemas import OrderPreviewResponse, PreviewOrderItem
-from maps.common.models import CandidateSnapshot, HistoricalOHLCV, PortfolioSnapshot, PromotionHistory
+from maps.common.models import (
+    CandidateSnapshot,
+    HistoricalOHLCV,
+    MarketRegimeLog,
+    PortfolioSnapshot,
+    PromotionHistory,
+)
 from maps.common.settings import MapsSettings
 from maps.data.ohlcv_repo import HistoricalOHLCVRepository
+from maps.market.breadth import classify_breadth
+from maps.market.regime import RegimeLabel, RegimeResult, VolRegimeLabel, WeeklyTrendLabel
 from maps.market.trading_rules import previous_trading_day, round_up_krx_price
 from maps.ops.liquidity_cap import BLOCKING_REASONS, apply_liquidity_cap
 from maps.ops.candidate_selection import (
@@ -159,6 +167,31 @@ def _held_tickers(db: Session) -> set[str]:
     return set()
 
 
+def _regime_from_log(row: MarketRegimeLog, settings: MapsSettings) -> RegimeResult:
+    """`market_regime_log` 행 하나로 `RegimeResult` 를 재구성한다. 외부 호출이 없다.
+
+    진입 한도·전략별 진입 정책이 읽는 입력(라벨·주봉 추세·변동성·floor·breadth)을
+    모두 행에서 가져온다. breadth 는 저장된 비율을 주문 경로와 같은 임계값으로 분류한다
+    — 비율이 없으면(order_cycle 행 등) UNKNOWN 이라 가드가 적용되지 않는다.
+    """
+    return RegimeResult(
+        regime=RegimeLabel(row.applied_regime),
+        weekly_trend=WeeklyTrendLabel(row.weekly_trend),
+        limit_ratio=row.entry_limit_ratio or 0.0,
+        kospi_ts=row.kospi_ts,
+        vol_regime=VolRegimeLabel(row.vol_regime),
+        floor_applied=bool(row.floor_applied),
+        korea_weak_applied=bool(row.korea_weak_guard_applied),
+        breadth=classify_breadth(
+            row.breadth_pct, weak_threshold=settings.maps_breadth_weak_threshold
+        ),
+        up_count=row.up_count,
+        total_assets=row.total_assets,
+        kospi_above_ma5w=row.kospi_above_ma5w,
+        kospi_above_ma10w=row.kospi_above_ma10w,
+    )
+
+
 # ── 최상위 조립 함수 ──────────────────────────────────────────────────────────
 
 
@@ -169,16 +202,26 @@ def build_order_preview(db: Session, settings: MapsSettings) -> OrderPreviewResp
     # 장세 분석 — 스케줄러 주문 경로와 동일하게 설정 오버라이드를 존중한다.
     regime_result = None
     try:
-        from maps.market.regime import RegimeLabel, create_regime_analyzer
+        from maps.market.regime import create_regime_analyzer
         from maps.market.regime_history import latest_applied_regime
-        regime_result = create_regime_analyzer(settings).analyze()
-        # 스케줄러가 기록한 최근 판정(히스테리시스 적용)이 있으면 우선 사용한다.
-        # 오버라이드가 걸려 있으면 오버라이드를 존중한다.
-        if settings.maps_market_regime_override == "auto":
-            log_row = latest_applied_regime(db, today)
-            if log_row is not None:
-                regime_result.regime = RegimeLabel(log_row.applied_regime)
-                regime_result.floor_applied = bool(log_row.floor_applied)
+
+        no_override = (
+            settings.maps_market_regime_override == "auto"
+            and settings.maps_weekly_trend_override == "auto"
+        )
+        log_row = latest_applied_regime(db, today) if no_override else None
+        if log_row is not None:
+            # 스케줄러가 기록한 최근 판정(히스테리시스 적용)을 그대로 쓴다. 실시간
+            # analyze() 는 KRX·yfinance 시세 10건 + 시장 내부지표로 요청당 6~28초가
+            # 걸려 /orders 화면 전체를 막았다(2026-09-23, /market 은 1b20f75 에서 같은 수정).
+            regime_result = _regime_from_log(log_row, settings)
+        else:
+            regime_result = create_regime_analyzer(settings).analyze()
+            if settings.maps_market_regime_override == "auto":
+                log_row = latest_applied_regime(db, today)
+                if log_row is not None:
+                    regime_result.regime = RegimeLabel(log_row.applied_regime)
+                    regime_result.floor_applied = bool(log_row.floor_applied)
         market_regime = regime_result.regime.value
         weekly_trend = regime_result.weekly_trend.value
         entry_limit_ratio = regime_result.entry_limit_ratio

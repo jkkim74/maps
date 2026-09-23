@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import datetime as dt
 
-from maps.common.models import CandidateSnapshot, HistoricalOHLCV, OrderLog, PromotionHistory
+from maps.common.models import (
+    CandidateSnapshot,
+    HistoricalOHLCV,
+    MarketRegimeLog,
+    OrderLog,
+    PromotionHistory,
+)
 from maps.common.settings import MapsSettings
 from maps.execution.broker_adapter import OrderSide, OrderStatus
 from maps.api.orders import get_orders
@@ -341,3 +347,94 @@ def test_preview_marks_blocked_when_turnover_unknown(db, monkeypatch) -> None:
     assert item.liquidity_reason == "TURNOVER_UNAVAILABLE"
     assert item.estimated_qty == 0
     assert item.skip_reason == "insufficient_liquidity"
+
+
+def _seed_regime_log(db, **overrides) -> None:
+    """스케줄러가 남기는 market_regime_log 행을 심는다."""
+    values = dict(
+        ref_date=dt.date.today(),
+        raw_regime="strong",
+        applied_regime="strong",
+        weekly_trend="pass",
+        vol_regime="normal",
+        floor_applied=False,
+        entry_limit_ratio=1.0,
+    )
+    values.update(overrides)
+    db.add(MarketRegimeLog(**values))
+    db.commit()
+
+
+def _forbid_live_regime_analysis(monkeypatch) -> None:
+    """실시간 장세 분석(외부 시세 호출, 요청당 수 초~수십 초)이 불리면 실패시킨다."""
+    def _boom(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        raise AssertionError("live regime analysis must not run when a regime log row exists")
+
+    monkeypatch.setattr("maps.market.regime.create_regime_analyzer", _boom)
+
+
+def test_preview_uses_regime_log_without_live_analysis(db, monkeypatch) -> None:
+    """최근 판정 행이 있으면 실시간 분석 없이 그 행으로 장세를 낸다 (/orders 지연 회귀 방지)."""
+    _seed_candidate(db, ref_date=dt.date.today())
+    _seed_regime_log(db)
+    monkeypatch.setattr("maps.ops.order_preview.next_trading_day", lambda value: value + dt.timedelta(days=1))
+    _forbid_live_regime_analysis(monkeypatch)
+
+    resp = build_order_preview(db, MapsSettings())
+
+    assert resp.market_regime == "strong"
+    assert resp.weekly_trend == "pass"
+    assert resp.entry_limit_ratio == 1.0
+
+
+def test_preview_limit_ratio_follows_logged_vol_regime(db, monkeypatch) -> None:
+    """진입 한도는 기록된 변동성 국면으로 계산한다 — 라벨만 로그, 나머지는 실시간으로 섞지 않는다."""
+    _seed_candidate(db, ref_date=dt.date.today())
+    _seed_regime_log(db, applied_regime="mixed", vol_regime="high", entry_limit_ratio=0.25)
+    monkeypatch.setattr("maps.ops.order_preview.next_trading_day", lambda value: value + dt.timedelta(days=1))
+    _forbid_live_regime_analysis(monkeypatch)
+
+    resp = build_order_preview(db, MapsSettings())
+
+    assert resp.market_regime == "mixed"
+    assert resp.entry_limit_ratio == 0.25
+
+
+def test_preview_blocks_on_logged_weekly_trend_fail(db, monkeypatch) -> None:
+    _seed_candidate(db, ref_date=dt.date.today())
+    _seed_regime_log(db, weekly_trend="fail", entry_limit_ratio=0.0)
+    monkeypatch.setattr("maps.ops.order_preview.next_trading_day", lambda value: value + dt.timedelta(days=1))
+    _forbid_live_regime_analysis(monkeypatch)
+
+    resp = build_order_preview(db, MapsSettings())
+
+    assert resp.entry_limit_ratio == 0.0
+    assert resp.items[0].skipped is True
+    assert resp.items[0].skip_reason == "weekly_trend_fail"
+
+
+def test_preview_applies_narrow_breadth_guard_from_log(db, monkeypatch) -> None:
+    """빌려온 MIXED + 좁은 장이면 모멘텀 후보를 막는다 — 실시간 분석은 breadth 를 몰라 놓쳤다."""
+    _seed_candidate(db, ref_date=dt.date.today())  # donchian_v2 = MOMENTUM
+    _seed_regime_log(
+        db, applied_regime="mixed", floor_applied=True, breadth_pct=0.2, entry_limit_ratio=0.5,
+    )
+    monkeypatch.setattr("maps.ops.order_preview.next_trading_day", lambda value: value + dt.timedelta(days=1))
+    _forbid_live_regime_analysis(monkeypatch)
+
+    resp = build_order_preview(db, MapsSettings())
+
+    assert resp.items[0].skipped is True
+    assert resp.items[0].skip_reason == "narrow_breadth_blocks_momentum_breakout"
+
+
+def test_preview_override_ignores_regime_log(db, monkeypatch) -> None:
+    """오버라이드가 걸리면 로그 행보다 오버라이드가 우선한다."""
+    _seed_candidate(db, ref_date=dt.date.today())
+    _seed_regime_log(db)  # strong
+    monkeypatch.setattr("maps.ops.order_preview.next_trading_day", lambda value: value + dt.timedelta(days=1))
+
+    resp = build_order_preview(db, MapsSettings(maps_market_regime_override="weak"))
+
+    assert resp.market_regime == "weak"
+    assert resp.items[0].skip_reason == "preferred_regime_mismatch:weak"

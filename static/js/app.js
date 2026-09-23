@@ -1716,12 +1716,16 @@ async function loadOrders() {
   loading('orders-expired');
   loading('orders-preview-kpi');
   loading('orders-preview-table');
+  // 미리보기는 서버 계산이 더 무거우므로 따로 그린다 — 한쪽이 늦거나 실패해도
+  // 다른 쪽 표가 스피너에 묶이지 않는다.
+  const previewDone = apiFetch('/orders/preview')
+    .then(_renderOrderPreview)
+    .catch(e => {
+      empty('orders-preview-kpi', '');
+      empty('orders-preview-table', `Error: ${e.message}`);
+    });
   try {
-    const [d, preview] = await Promise.all([
-      apiFetch('/orders'),
-      apiFetch('/orders/preview'),
-    ]);
-    _renderOrderPreview(preview);
+    const d = await apiFetch('/orders');
     const slip = d.slippage || {};
     document.getElementById('orders-kpi').innerHTML = `
       <div class="kpi-grid">
@@ -1798,9 +1802,8 @@ async function loadOrders() {
     empty('orders-pending', '');
     empty('orders-fills', '');
     empty('orders-expired', '');
-    empty('orders-preview-kpi', '');
-    empty('orders-preview-table', `Error: ${e.message}`);
   }
+  await previewDone;
 }
 
 async function loadDataQualityV2() {
