@@ -1367,6 +1367,8 @@ class LimitUpStatusResponse(BaseModel):
     """상한가 V1 상태기계 운영 스냅샷."""
 
     mode: str
+    min_turnover_krw: int | None = None
+    min_execution_strength: float | None = None
     attempts: int
     pattern_failures: int
     daily_pnl: float = 0.0

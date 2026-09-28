@@ -20,6 +20,8 @@ class FakeRuntime:
         """Return a service-compatible status payload."""
         return {
             "mode": self.mode,
+            "min_turnover_krw": 50_000_000_000,
+            "min_execution_strength": 130.0,
             "attempts": 1,
             "pattern_failures": 0,
             "entry_halted": False,
@@ -48,9 +50,18 @@ def test_limit_up_status_and_emergency_off_are_admin_controls(monkeypatch) -> No
 
     assert status.status_code == 200
     assert status.json()["attempts"] == 1
+    assert status.json()["min_execution_strength"] == 130.0
+    assert status.json()["min_turnover_krw"] == 50_000_000_000
     assert stopped.status_code == 200
     assert stopped.json()["mode"] == "off"
     assert runtime.off_calls == 1
+
+
+def test_stopped_engine_has_no_applied_thresholds(monkeypatch):
+    monkeypatch.setattr(bootstrap, "_runtime", None)
+    result = TestClient(main.app).get("/api/v1/limit-up/status").json()
+    assert result["min_execution_strength"] is None
+    assert result["min_turnover_krw"] is None
 
 
 def test_limit_up_settings_reject_turnover_below_absolute_floor() -> None:

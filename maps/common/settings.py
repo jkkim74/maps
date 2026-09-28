@@ -50,6 +50,9 @@ class MapsSettings(BaseSettings):
     maps_limit_up_enabled: bool = False
     maps_limit_up_mode: LimitUpModeSetting = "recommend_only"
     maps_limit_up_min_turnover_krw: int = Field(default=50_000_000_000, ge=50_000_000_000)
+    maps_limit_up_min_execution_strength: float = Field(
+        default=150.0, ge=130.0, allow_inf_nan=False
+    )
     maps_limit_up_healthchecks_ping_url: str = ""
     # 시간외 붕괴 판정 기준. 0 < x <= 0.02 만 허용 — 느슨하게 열면 갭하락 방어가 늦어진다.
     maps_limit_up_after_hours_drop_pct: float = Field(default=0.02, gt=0.0, le=0.02)

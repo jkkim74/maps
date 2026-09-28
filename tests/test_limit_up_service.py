@@ -110,7 +110,8 @@ def _candidate() -> Candidate:
     )
 
 
-def _service(db, mode: LimitUpMode, broker: ServiceBroker | None = None) -> LimitUpService:
+def _service(db, mode: LimitUpMode, broker: ServiceBroker | None = None,
+             *, strength: float = 150.0) -> LimitUpService:
     repo = LimitUpRepository(db)
     worker = None
     if broker is not None:
@@ -118,7 +119,7 @@ def _service(db, mode: LimitUpMode, broker: ServiceBroker | None = None) -> Limi
         worker = LimitUpCommandWorker(manager, broker, repo)
     return LimitUpService(
         mode=mode,
-        config=LimitUpConfig(),
+        config=LimitUpConfig(min_execution_strength=strength),
         repository=repo,
         worker=worker,
     )
@@ -149,6 +150,25 @@ def _trade(at: float, price: int) -> FeedTrade:
         buy_initiated=True,
         received_at=at,
     )
+
+
+def test_runtime_turnover_update_keeps_strength_and_updates_existing_watches(db):
+    from maps.common.settings import MapsSettings
+    from maps.limit_up.runtime import KISIntradayRuntime
+
+    service = _service(db, LimitUpMode.RECOMMEND_ONLY, strength=130)
+    now = dt.datetime(2026, 8, 28, 10, tzinfo=KST)
+    assert service.watch_candidate(_candidate(), now_kst=now) is None
+    runtime = KISIntradayRuntime(settings=MapsSettings(), db=db,
+                                adapter=ServiceBroker(), service=service)
+    runtime._apply_settings("recommend_only", 60_000_000_000)
+    assert service.machine("005930").config is service.config
+    assert service.status()["min_turnover_krw"] == 60_000_000_000
+    assert service.status()["min_execution_strength"] == 130
+    service.on_trade(_trade(1, 99_600), now_kst=now)
+    service.on_trade(_trade(2, 99_800), now_kst=now)
+    assert service.machine("005930").state is LimitUpState.WATCHING
+    assert service.machine("005930").cross_samples[-1]["failed"] == "turnover"
 
 
 def test_automatic_trigger_submits_exactly_two_grid_orders(db) -> None:
@@ -723,7 +743,8 @@ def test_restart_does_not_hand_back_attempts_the_day_already_spent(db) -> None:
     assert not restarted.guard.can_enter(active_sessions=0)
 
 
-def test_kosdaq_latch_survives_a_restart_with_no_session_to_infer_it_from(db) -> None:
+@pytest.mark.parametrize("strength", [130.0, 150.0])
+def test_kosdaq_latch_survives_a_restart_with_no_session_to_infer_it_from(db, strength) -> None:
     """The halt can fire with nothing open, leaving no session trace to rebuild from.
 
     Inferring the latch from session end_reasons quietly released it in exactly
@@ -739,7 +760,7 @@ def test_kosdaq_latch_survives_a_restart_with_no_session_to_infer_it_from(db) ->
     assert "kosdaq_drawdown" in service.guard.halted_reasons
     assert service.repository.db.query(LimitUpSession).count() == 0
 
-    restarted = _service(db, LimitUpMode.AUTOMATIC, broker)
+    restarted = _service(db, LimitUpMode.AUTOMATIC, broker, strength=strength)
     restarted._refresh_daily_pnl(ref_date)
 
     assert "kosdaq_drawdown" in restarted.guard.halted_reasons
@@ -1360,20 +1381,21 @@ def test_recover_keeps_observations_a_restart_would_otherwise_zero(db) -> None:
     assert session.observed_low_price == 99_000
 
 
-def test_observe_only_candidate_is_watched_but_never_ordered(db) -> None:
+@pytest.mark.parametrize("strength", [130.0, 150.0])
+def test_observe_only_candidate_is_watched_but_never_ordered(db, strength) -> None:
     """A too_new mover must produce a record, not a trade — even in automatic mode.
 
     2026-09-21 스카이랩스(386380)는 상장 17일차라 세션조차 못 만들었는데, 그날 거래대금
     하한 500억을 넘긴 유일한 후보였다(2,041억). 매매는 막되 기록은 남겨야 나중에 답한다.
     """
     broker = ServiceBroker()
-    service = _service(db, LimitUpMode.AUTOMATIC, broker)
+    service = _service(db, LimitUpMode.AUTOMATIC, broker, strength=strength)
     now = dt.datetime(2026, 8, 28, 10, 0, tzinfo=KST)
     candidate = replace(_candidate(), ticker="386380", observe_only=True)
 
     assert service.watch_candidate(candidate, now_kst=now) is None
 
-    trade = replace(_trade(1.0, 99_600), ticker="386380")
+    trade = replace(_trade(1.0, 99_600), ticker="386380", execution_strength=strength)
     service.on_trade(trade, now_kst=now)
     service.on_trade(replace(trade, price=99_800, received_at=2.0), now_kst=now)
 

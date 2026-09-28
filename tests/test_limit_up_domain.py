@@ -57,6 +57,27 @@ def test_turnover_setting_cannot_cross_the_500eok_safety_floor() -> None:
         LimitUpConfig(min_turnover_krw=49_999_999_999)
 
 
+@pytest.mark.parametrize("strength", [129.99, float("nan"), float("inf"), -float("inf")])
+def test_strength_floor_is_enforced_in_domain_too(strength):
+    with pytest.raises(ValueError, match="finite and at least 130"):
+        LimitUpConfig(min_execution_strength=strength)
+
+
+@pytest.mark.parametrize("threshold,strength,buy,observe,fire", [
+    (150, 130, True, False, False),
+    (130, 129.99, True, False, False),
+    (130, 130, True, False, True),
+    (130, 130, False, False, False),
+    (130, 130, True, True, False),
+])
+def test_strength_trial_preserves_buy_led_cross_and_observe_only(threshold, strength, buy, observe, fire):
+    machine = LimitUpMachine("005930", upper_limit_price=13_000,
+                             config=_config(min_execution_strength=threshold), observe_only=observe)
+    machine.on_trade(_trade(1, 12_960, strength=strength))
+    commands = machine.on_trade(_trade(2, 12_970, strength=strength, buy_initiated=buy))
+    assert any(command.kind is CommandKind.FIRE_NET for command in commands) is fire
+
+
 def test_trigger_and_grid_use_upper_limit_ticks_and_ceil_rounding() -> None:
     """Wrong tick arithmetic would fire late or place off-grid buy prices."""
     assert trigger_price(39_450) == 39_300

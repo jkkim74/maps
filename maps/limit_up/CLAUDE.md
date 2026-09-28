@@ -13,6 +13,18 @@
 > 않는다. 2026-09-23 06:04 자동 업데이트가 PostgreSQL 과 maps 를 함께 재시작해 복구 조회가
 > 끊긴 DB 연결에 걸렸고, 재시도가 없어 09:21 까지 엔진 없이 장이 열렸다.
 
+## 체결강도 검증 (2026-09-28)
+
+`MAPS_LIMIT_UP_MIN_EXECUTION_STRENGTH`는 누적 CTTR 진입 기준이다. 기본 **150**, 최소
+**130**, NaN/Infinity 금지. 환경설정 변경 후 재기동해야 하며 장중 변경 API는 없다.
+상태 API의 `min_turnover_krw`/`min_execution_strength`는 실제 엔진 적용값이고,
+엔진 미기동이면 `null`이다. 거래대금 하한 **500억**과 손실 가드는 유지한다.
+
+10거래일 전체 감시 창을 확인하기 전에는 운영 강도를 150으로 유지한다. 표본만으로
+정상 가동을 증명하지 않는다. `scripts/limit_up_cross_samples_report.py`의
+`--verified-day`는 로그로 검증한 날짜만 전달한다. 적용·복원 절차는
+`docs/HANDOFF_limit_up_cross_samples.md`의 9/28 절을 따른다.
+
 ## Directory structure
 
 ```

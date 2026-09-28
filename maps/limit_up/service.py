@@ -964,6 +964,8 @@ class LimitUpService:
         """Return an admin-safe in-memory operational snapshot."""
         return {
             "mode": self.mode.value,
+            "min_turnover_krw": self.config.min_turnover_krw,
+            "min_execution_strength": self.config.min_execution_strength,
             "attempts": self.guard.attempts,
             "daily_pnl": self.guard.daily_pnl,
             "pattern_failures": self.guard.pattern_failures,

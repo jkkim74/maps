@@ -894,6 +894,8 @@ class KISIntradayRuntime:
             fill_timeout_seconds=self.service.config.fill_timeout_seconds,
             lock_seconds=self.service.config.lock_seconds,
         )
+        for ticker in self.service.watched_tickers():
+            self.service.machine(ticker).config = self.service.config
 
     async def _run_daily_actions(self, wall: dt.datetime) -> None:
         """Run the 15:18-15:28 overnight review and next-day 08:59:30 exits."""

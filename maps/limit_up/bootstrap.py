@@ -93,7 +93,10 @@ def build_runtime(settings: MapsSettings) -> KISIntradayRuntime:
     worker = LimitUpCommandWorker(OrderManager(broker=broker, risk=risk, db=db), broker, repository)
     service = LimitUpService(
         mode=LimitUpMode(settings.maps_limit_up_mode),
-        config=LimitUpConfig(min_turnover_krw=settings.maps_limit_up_min_turnover_krw),
+        config=LimitUpConfig(
+            min_turnover_krw=settings.maps_limit_up_min_turnover_krw,
+            min_execution_strength=settings.maps_limit_up_min_execution_strength,
+        ),
         repository=repository,
         worker=worker,
     )

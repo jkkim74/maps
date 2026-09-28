@@ -8,6 +8,19 @@ from pydantic import ValidationError
 from maps.common.settings import MapsSettings, get_config_status, get_missing_required_settings
 
 
+def test_limit_up_strength_defaults_to_150_and_reads_restart_setting(monkeypatch):
+    monkeypatch.delenv("MAPS_LIMIT_UP_MIN_EXECUTION_STRENGTH", raising=False)
+    assert MapsSettings(_env_file=None).maps_limit_up_min_execution_strength == 150.0
+    monkeypatch.setenv("MAPS_LIMIT_UP_MIN_EXECUTION_STRENGTH", "130")
+    assert MapsSettings(_env_file=None).maps_limit_up_min_execution_strength == 130.0
+
+
+@pytest.mark.parametrize("strength", [129.99, float("nan"), float("inf"), -float("inf")])
+def test_limit_up_strength_rejects_unsafe_values(strength):
+    with pytest.raises(ValidationError):
+        MapsSettings(_env_file=None, maps_limit_up_min_execution_strength=strength)
+
+
 def test_ai_scoring_defaults_are_safe_and_bounded() -> None:
     """AI scoring stays disabled and bounded unless explicitly configured."""
     settings = MapsSettings()

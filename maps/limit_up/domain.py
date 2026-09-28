@@ -122,7 +122,7 @@ class CommandKind(str, Enum):
 
 @dataclass(frozen=True)
 class LimitUpConfig:
-    """Validated V1 constants with only turnover configurable upward."""
+    """Validated V1 entry thresholds and fixed exit timing."""
 
     min_turnover_krw: int = MIN_TURNOVER_FLOOR_KRW
     min_execution_strength: float = 150.0
@@ -131,9 +131,11 @@ class LimitUpConfig:
     lock_seconds: float = 10.0
 
     def __post_init__(self) -> None:
-        """Reject any setting that weakens the hard liquidity floor."""
+        """Reject thresholds below the liquidity or strength trial floors."""
         if self.min_turnover_krw < MIN_TURNOVER_FLOOR_KRW:
             raise ValueError("min_turnover_krw must be at least 50,000,000,000")
+        if not math.isfinite(self.min_execution_strength) or self.min_execution_strength < 130.0:
+            raise ValueError("min_execution_strength must be finite and at least 130")
 
 
 @dataclass(frozen=True)

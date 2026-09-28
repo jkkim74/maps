@@ -56,7 +56,8 @@ async def test_startup_failure_never_takes_down_the_api(monkeypatch, caplog) -> 
     assert "기동 실패" in caplog.text
 
 
-def test_recommend_only_still_builds_a_command_worker(monkeypatch) -> None:
+@pytest.mark.parametrize("strength", [130.0, 150.0])
+def test_recommend_only_still_builds_a_command_worker(monkeypatch, strength) -> None:
     """A missing worker would make a later switch to automatic a silent no-op.
 
     Every order path is guarded by ``mode is AUTOMATIC and worker is not None``,
@@ -69,12 +70,17 @@ def test_recommend_only_still_builds_a_command_worker(monkeypatch) -> None:
         maps_limit_up_enabled=True,
         maps_broker_mode="kis",
         maps_limit_up_mode="recommend_only",
+        maps_limit_up_min_execution_strength=strength,
     )
 
     runtime = bootstrap.build_runtime(settings)
 
     assert runtime.service.mode is LimitUpMode.RECOMMEND_ONLY
     assert runtime.service.worker is not None
+    assert runtime.service.config.min_execution_strength == strength
+    assert runtime.service.status()["min_execution_strength"] == strength
+    assert runtime.service.status()["min_turnover_krw"] == 50_000_000_000
+    runtime.db.close()
 
 
 class _StubBroker:
