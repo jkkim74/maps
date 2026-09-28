@@ -12,8 +12,14 @@
 > 수정까지 `test_limit_up_service.py`·`test_limit_up_runtime.py`·
 > `test_limit_up_cross_samples_report.py` **112 passed**. compileall/diff-check 통과.
 > 새 리포트를 운영 DB 읽기 전용으로 실행해 626표본, 검증일수 0으로 확인했다.
-> **운영 배포·환경설정 변경·재기동은 미실행**(장중). 운영 호출 간격 0.55초,
-> 거래대금 500억·강도 150 그대로다. 1.1초 시험 및 다음 정규장 평가는 남아 있다.
+> **13:45 KST 사용자 명시 요청으로 장중 배포 완료** — 기능 커밋 `3dfa341`.
+> 미체결/unknown 주문 0·상한가 보유/정산 0·analyze idle·tracked clean 확인 후 적용.
+> 호출 간격 **1.1초**, 거래대금 **500억**, 강도 **150**. KIS 모의투자 유지.
+> `.env` 백업 `/opt/maps/backups/pre_limit_up_trial_20260928_134532.env` (600).
+> 13:46:56 엔진 automatic 기동, 내부/외부 health 200, 실제 임계값 API 확인.
+> 코스닥 당일 래치 유지, manual_lock=false. 13:47:43 broker_sync 성공/오류 0.
+> 기동 후 첫 두 요청 창은 37/37 성공, 다음 43시도 중 rate_limited 4·read_timeout 1.
+> 통신 시험은 시작했지만 **하루 검증 미완료**. 130 적용/실계좌 전환은 하지 않았다.
 
 > 📎 **상한가 V1 임계값 재설정용 교차 표본 분석은 `docs/HANDOFF_limit_up_cross_samples.md` 에서 이어간다** (9/22 분리, 재실행 스크립트 `scripts/limit_up_cross_samples_report.py`).
 
