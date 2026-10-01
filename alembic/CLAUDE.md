@@ -22,7 +22,12 @@ alembic downgrade -1                             # 한 단계 되돌리기
 파일명이 아니라 각 파일의 `down_revision` 을 따라간다. 예: `efca8676041a` 의
 `down_revision` 은 `0005_stock_report_runs` 다.
 
-현재 head: **`0035_limit_up_cross_samples`**.
+현재 head: **`0037_close_report_evidence`**.
+
+`0037_close_report_evidence` adds nullable collection metadata quality and candidate
+research version/scope/evidence columns plus `dart_financial_snapshot`,
+`dart_filing_receipt`, and `dart_collection_state`. Existing historical scores are
+preserved; no financial or score backfill is performed.
 
 ## 규칙
 
