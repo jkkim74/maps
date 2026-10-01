@@ -14,6 +14,7 @@ strategy/
 ├── holding_type.py             # CORE/SWING/TRADING/WATCH/BAN 분류
 ├── price_calculator.py         # 코스톨라니 이중 목표가·손절가 산출
 ├── score_features.py           # 실측 가능한 점수 컴포넌트만 파생
+??? contrarian_features.py      # Versioned point-in-time research components
 ├── scoring.py                  # legacy / 전략인지 최종 점수 계산기
 ├── pullback_v2.py              # PullbackV2Strategy
 ├── pullback_v3.py              # PullbackV3Strategy (주력)

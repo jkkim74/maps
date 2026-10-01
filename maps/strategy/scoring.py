@@ -151,7 +151,7 @@ class StrategyAwareScoreCalculator:
     }
     _CONTRARIAN_WEIGHTS = {
         "valuation_margin_score": 0.30,
-        "earnings_revision_score": 0.25,
+        "earnings_improvement_score": 0.25,
         "crowd_neglect_score": 0.20,
         "accumulation_flow_score": 0.15,
         "technical_bottom_score": 0.10,
@@ -285,7 +285,7 @@ class StrategyAwareScoreCalculator:
     def _contrarian_components(self, score_input: StrategyScoreInput, extra: dict[str, Any]) -> dict[str, float | None]:
         return {
             "valuation_margin_score": score_input.valuation_margin_score,
-            "earnings_revision_score": extra.get("earnings_revision_score"),
+            "earnings_improvement_score": extra.get("earnings_improvement_score"),
             "crowd_neglect_score": extra.get("crowd_neglect_score"),
             "accumulation_flow_score": extra.get("accumulation_flow_score"),
             "technical_bottom_score": extra.get("technical_bottom_score"),

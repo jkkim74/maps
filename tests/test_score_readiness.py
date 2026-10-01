@@ -86,6 +86,12 @@ def test_candidate_gate_requires_exact_complete_market_and_candidate(db) -> None
         score_coverage_ratio=1.0, score_status="complete", score_ready=True,
     ))
     db.commit()
+    assert candidate_score_ready(db, candidate) == (False, "metadata_quality_legacy_unknown")
+    from maps.common.models import CollectionLog
+    from tests.test_collection_readiness import quality
+    db.add(CollectionLog(ref_date=ref_date, source="krx", status="success", items=200,
+                         metadata_quality=quality(100)))
+    db.commit()
     assert candidate_score_ready(db, candidate) == (True, None)
 
 

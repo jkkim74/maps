@@ -25,6 +25,12 @@
 `--verified-day`는 로그로 검증한 날짜만 전달한다. 적용·복원 절차는
 `docs/HANDOFF_limit_up_cross_samples.md`의 9/28 절을 따른다.
 
+`worker.fire_grid()` checks the exact previous KRX session's persisted metadata
+quality, including ticker-specific gaps, before each new BUY leg. This gate is
+unconditional even when optional score-readiness checks are disabled. Missing,
+failed, or insufficient metadata blocks new submission while broker reconciliation
+of ambiguous intents and all exit/cancellation paths remain available.
+
 ## Directory structure
 
 ```

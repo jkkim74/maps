@@ -24,7 +24,7 @@ _KST = dt.timezone(dt.timedelta(hours=9))
 _SUMMARY_WINDOW_SECONDS = 60.0
 
 #: 결과 분류. ``rate_limited`` 는 게이트웨이 한도 거절(EGW00201/EGW00215).
-OUTCOMES = ("ok", "rate_limited", "http_error", "read_timeout", "connect_timeout", "exception")
+OUTCOMES = ("ok", "rate_limited", "http_error", "api_error", "read_timeout", "connect_timeout", "exception")
 
 
 @dataclass
@@ -52,8 +52,16 @@ class KisRequestStats:
         self._window: Counter = Counter()
         self._latencies: list[float] = []
         self._day: KisDayTotals | None = None
+        self._endpoints: Counter = Counter()
+        self._gate_waits: list[float] = []
+        self._min_start_gap: float | None = None
+        self._gap_violations = 0
 
-    def record(self, outcome: str, *, latency_ms: float) -> None:
+    def record(
+        self, outcome: str, *, latency_ms: float, path: str = "", tr_id: str = "",
+        gate_wait_ms: float = 0.0, start_gap_ms: float | None = None,
+        min_interval_ms: float = 0.0,
+    ) -> None:
         """시도 하나의 결과를 더하고, 창이 찼으면 요약 한 줄을 남긴다."""
         summary: str | None = None
         with self._lock:
@@ -63,10 +71,19 @@ class KisRequestStats:
             self._day.counts[outcome] += 1
             self._window[outcome] += 1
             self._latencies.append(latency_ms)
+            self._endpoints[(path, tr_id, outcome)] += 1
+            self._gate_waits.append(gate_wait_ms)
+            if start_gap_ms is not None:
+                self._min_start_gap = min(self._min_start_gap, start_gap_ms) if self._min_start_gap is not None else start_gap_ms
+                self._gap_violations += int(start_gap_ms + 0.001 < min_interval_ms)
             if self._clock() - self._window_started >= _SUMMARY_WINDOW_SECONDS:
                 summary = self._format_window()
                 self._window = Counter()
                 self._latencies = []
+                self._endpoints.clear()
+                self._gate_waits = []
+                self._min_start_gap = None
+                self._gap_violations = 0
                 self._window_started = self._clock()
         if summary is not None:
             logger.info(summary)
@@ -79,12 +96,19 @@ class KisRequestStats:
             return KisDayTotals(day=self._day.day, since=self._day.since, counts=Counter(self._day.counts))
 
     def _format_window(self) -> str:
+        """Format the current completed-attempt window, including gate observations."""
+        waits = sorted(self._gate_waits)
+        wait_p95 = waits[min(len(waits) - 1, int(len(waits) * 0.95))] if waits else 0.0
+        gap = "unknown" if self._min_start_gap is None else f"{self._min_start_gap:.0f}ms"
+        endpoints = " ".join(f"{path}:{tr_id}:{outcome}={count}" for (path, tr_id, outcome), count in sorted(self._endpoints.items()))
         latencies = sorted(self._latencies)
         p95 = latencies[min(len(latencies) - 1, int(len(latencies) * 0.95))] if latencies else 0.0
         parts = " ".join(f"{name}={self._window.get(name, 0)}" for name in OUTCOMES)
         return (
             f"KIS req summary {_SUMMARY_WINDOW_SECONDS:.0f}s: n={sum(self._window.values())} "
-            f"{parts} p95={p95:.0f}ms max={latencies[-1] if latencies else 0:.0f}ms"
+            f"{parts} p95={p95:.0f}ms max={latencies[-1] if latencies else 0:.0f}ms "
+            f"gate_wait_p95={wait_p95:.0f}ms min_start_gap={gap} "
+            f"gap_violations={self._gap_violations} endpoints=[{endpoints}]"
         )
 
 

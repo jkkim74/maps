@@ -40,7 +40,10 @@ def test_fresh_database_reaches_current_schema(tmp_path, monkeypatch) -> None:
         revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
     engine.dispose()
 
-    assert revision == "0036_market_regime_asset_trends"
+    assert revision == "0037_close_report_evidence"
+    assert {"dart_financial_snapshot", "dart_filing_receipt", "dart_collection_state"} <= set(inspector.get_table_names())
+    assert {"score_version", "score_scope", "score_evidence"} <= {c["name"] for c in inspector.get_columns("candidate_snapshot")}
+    assert "metadata_quality" in {c["name"] for c in inspector.get_columns("collection_log")}
     assert "asset_trends" in regime_columns
     assert "scan_rejections" in guard_columns
     assert {

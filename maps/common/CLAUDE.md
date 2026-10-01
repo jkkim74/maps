@@ -136,6 +136,18 @@ MAPSError (base)
 
 > **감사 로그 4종** (`promotion_history`, `universe_quality_log`, `order_log`, `kill_switch_log`)은 Day 1부터 존재해야 한다.
 
+## DART research evidence
+
+`DartFinancialSnapshot` (`dart_financial_snapshot`) stores append-only raw JSON,
+Decimal/Numeric amounts, fiscal period, receipt, basis, raw hash, publication date,
+first collected UTC time, and first usable KRX date. `DartFilingReceipt`
+(`dart_filing_receipt`) preserves first-seen corrections even before they parse.
+`DartCollectionState` (`dart_collection_state`) tracks checks, receipt IDs, retry
+time, and secret-free status/errors. No migration backfills historical decisions.
+`CandidateSnapshot.score_version`, `score_scope`, and `score_evidence` are nullable
+for legacy compatibility. `CollectionLog.metadata_quality` preserves per-market
+metadata collection quality independently of price/flow success.
+
 ## settings.py — 환경변수 설정
 
 `MapsSettings(BaseSettings)` — pydantic-settings로 `.env` 및 프로세스 환경변수를 로드한다.

@@ -428,6 +428,22 @@ function krPrice(p) {
   return `<span class="mono">${Math.round(p).toLocaleString('ko-KR')}</span>`;
 }
 
+function candidateScoreDetails(c) {
+  const labels = {
+    earnings_improvement_score: '실적 개선',
+    earnings_revision_score: '이익 전망 수정 (과거 점수)',
+    crowd_neglect_score: '시장 관심 감소',
+    accumulation_flow_score: '매집 수급',
+    technical_bottom_score: '기술적 바닥',
+    valuation_margin_score: '가치평가',
+  };
+  const research = c.score_scope === 'research' ? badge('연구용 · 주문 비활성', 'info') : '';
+  const components = Object.entries(c.component_scores || {})
+    .map(([key, value]) => `${esc(labels[key] || key)} ${value == null ? '미측정' : Number(value).toFixed(1)}`)
+    .join(' · ');
+  return `${research}${components ? `<br><small class="text-muted" title="${esc(c.score_version || '과거 점수')}">${components}</small>` : ''}`;
+}
+
 async function loadCandidates() {
   loading('candidates-kpi');
   loading('candidates-area');
@@ -503,7 +519,7 @@ async function loadCandidates() {
         return `
         <tr>
           <td class="mono">${c.ticker}</td>
-          <td>${c.name} <span class="text-muted" style="font-size:10px">${c.market}</span></td>
+          <td>${esc(c.name)} <span class="text-muted" style="font-size:10px">${esc(c.market)}</span>${candidateScoreDetails(c)}</td>
           <td>${badge(c.ts_bucket, 'info')}</td>
           <td class="mono">${fmt.score(c.factor_score)}</td>
           <td class="mono">${fmt.score(c.trend_strength)}</td>
@@ -555,7 +571,7 @@ async function loadCandidates() {
         return `
         <tr>
           <td class="mono">${c.ticker}</td>
-          <td>${esc(c.name)} <span class="text-muted" style="font-size:10px">${esc(c.market)}</span></td>
+          <td>${esc(c.name)} <span class="text-muted" style="font-size:10px">${esc(c.market)}</span>${candidateScoreDetails(c)}</td>
           <td class="mono"><strong>${fmt.score(c.final_score)}</strong><br><span class="text-muted">부분 산출값</span></td>
           <td class="mono">${coverage}</td>
           <td>${missing}</td>
@@ -2007,6 +2023,7 @@ function changeBatchMonitorDays(v) {
 
 const _BM_STATUS = {
   success: ['OK', 'pass'],
+  partial: ['부분 수집', 'warn'],
   failed:  ['FAIL', 'fail'],
   missed:  ['MISS', 'fail'],
   running: ['실행중', 'info'],
@@ -2022,7 +2039,7 @@ function _bmCellHtml(job, cell, isToday) {
     cell.duration_sec != null ? `${cell.duration_sec}초 소요` : null,
   ].filter(Boolean).join(' · ');
   let html = `<span title="${esc(tip)}">${badge(label, cls)}</span>`;
-  if (isToday && job.rerunnable && (cell.status === 'failed' || cell.status === 'missed')) {
+  if (isToday && job.rerunnable && ['failed', 'missed', 'partial'].includes(cell.status)) {
     html += ` <button class="topbar-btn" style="padding:0 6px" title="지금 재실행"
       onclick="rerunBatchJob('${job.name}', this)">↻</button>`;
   }
@@ -2066,9 +2083,9 @@ async function loadBatchMonitor() {
         </table>
       </div>
       <div class="text-muted" style="font-size:0.75rem;margin-top:8px">
-        OK=성공 · FAIL=실패 · MISS=미실행 · 대기=예정 전 · —=비거래일.
+        OK=성공 · 부분 수집=불완전한 실행 이력 있음 · FAIL=실패 · MISS=미실행 · 대기=예정 전 · —=비거래일.
         셀에 마우스를 올리면 상세(오류 메시지·소요시간)가 보입니다.
-        ↻는 오늘 실패/미실행한 스케줄러 잡만 재실행합니다.
+        ↻는 오늘 부분 수집/실패/미실행한 스케줄러 잡을 재실행합니다.
       </div>`;
   } catch (e) {
     empty('bm-matrix', `오류: ${e.message}`);

@@ -150,6 +150,11 @@ def _add_fresh_ohlcv(
     주문 대상 종목에는 **20거래일치**를 넣는다. 유동성 게이트가 20거래일 평균
     거래대금을 요구하고, 이력이 모자라면 fail-closed 로 매수가 막히기 때문이다.
     """
+    from maps.market.trading_rules import previous_trading_day
+    from tests.test_collection_readiness import quality
+    for day in {ref_date, previous_trading_day(ref_date)}:
+        db.add(CollectionLog(ref_date=day, source="krx", status="success", items=200,
+                             metadata_quality=quality(100)))
     for offset in range(20):
         db.add(HistoricalOHLCV(
             ticker=ticker, date=ref_date - dt.timedelta(days=offset),
@@ -201,7 +206,7 @@ def test_pipeline_collect_and_candidate_generation_with_mock_provider() -> None:
     _backfill_turnover_history(factory)
     candidates = pipeline.generate_candidates()
 
-    assert collect.status == "success"
+    assert collect.status == "partial"  # Mock feed has no investor-flow observations.
     assert collect.details["ohlcv_count"] == 3
     assert candidates.status == "success"
     assert candidates.details["kept_count"] == 3

@@ -29,6 +29,8 @@ from maps.limit_up.domain import (
     realized_pnl,
 )
 from maps.limit_up.repository import LimitUpRepository
+from maps.market.trading_rules import previous_trading_day
+from maps.ops.score_readiness import collection_metadata_ready
 
 
 logger = logging.getLogger(__name__)
@@ -185,6 +187,14 @@ class LimitUpCommandWorker:
             leg = self._leg(session, spec.name)
             if leg.broker_order_id or leg.status not in {"created", "rejected"}:
                 continue
+            ready, reason = collection_metadata_ready(
+                self.repository.db,
+                previous_trading_day(session.ref_date, extra_closed_dates=get_settings().krx_closed_dates),
+                session.ticker,
+            )
+            if not ready:
+                logger.warning("Limit-up entry metadata blocked [%s]: %s", session.ticker, reason)
+                return self.reconcile(session)
             self.repository.append_event(
                 session,
                 action="submit_buy",

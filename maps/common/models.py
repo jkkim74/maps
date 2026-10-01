@@ -18,6 +18,7 @@ from sqlalchemy import (
     Integer,
     Index,
     JSON,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -26,6 +27,53 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from maps.common.db import Base
+from decimal import Decimal
+
+
+class DartFinancialSnapshot(Base):
+    """Append-only parsed financial response; availability never backdated."""
+
+    __tablename__ = "dart_financial_snapshot"
+    __table_args__ = (UniqueConstraint("ticker", "receipt", "basis", "raw_hash", name="uq_dart_snapshot"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ticker: Mapped[str] = mapped_column(String(16), index=True)
+    receipt: Mapped[str] = mapped_column(String(32))
+    basis: Mapped[str] = mapped_column(String(3))
+    raw_hash: Mapped[str] = mapped_column(String(64))
+    raw_response: Mapped[dict] = mapped_column(JSON)
+    period_end: Mapped[datetime.date] = mapped_column(Date)
+    publication_date: Mapped[datetime.date] = mapped_column(Date)
+    first_collected_at: Mapped[datetime.datetime] = mapped_column(DateTime)
+    available_date: Mapped[datetime.date] = mapped_column(Date, index=True)
+    currency: Mapped[str] = mapped_column(String(16))
+    revenue: Mapped[Decimal] = mapped_column(Numeric(30, 2))
+    prior_revenue: Mapped[Decimal] = mapped_column(Numeric(30, 2))
+    operating_profit: Mapped[Decimal] = mapped_column(Numeric(30, 2))
+    prior_operating_profit: Mapped[Decimal] = mapped_column(Numeric(30, 2))
+
+
+class DartFilingReceipt(Base):
+    """First-seen receipt journal, including corrections not yet parsed."""
+
+    __tablename__ = "dart_filing_receipt"
+    __table_args__ = (UniqueConstraint("ticker", "receipt", name="uq_dart_receipt"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ticker: Mapped[str] = mapped_column(String(16), index=True)
+    receipt: Mapped[str] = mapped_column(String(32))
+    period_end: Mapped[datetime.date] = mapped_column(Date)
+    publication_date: Mapped[datetime.date] = mapped_column(Date)
+    first_collected_at: Mapped[datetime.datetime] = mapped_column(DateTime)
+    available_date: Mapped[datetime.date] = mapped_column(Date, index=True)
+
+
+class DartCollectionState(Base):
+    __tablename__ = "dart_collection_state"
+    ticker: Mapped[str] = mapped_column(String(16), primary_key=True)
+    checked_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)
+    retry_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="uncollected")
+    error: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    receipts: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
 
 # ---------------------------------------------------------------------------
@@ -109,6 +157,9 @@ class CandidateSnapshot(Base):
     score_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
     strategy_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
     component_scores: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    score_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    score_scope: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    score_evidence: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     component_sources: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     missing_components: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     score_coverage_ratio: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
@@ -276,6 +327,7 @@ class CollectionLog(Base):
     source: Mapped[str] = mapped_column(String(32), nullable=False)   # krx | broker | manual
     status: Mapped[str] = mapped_column(String(16), nullable=False)   # success | partial | failed
     items: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    metadata_quality: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc)

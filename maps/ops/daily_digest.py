@@ -48,6 +48,7 @@ from maps.common.models import (
     AnalysisPick,
     AnalysisRun,
     CandidateSnapshot,
+    CollectionLog,
     HoldingRegimeAudit,
     JobRunLog,
     LimitUpDailyGuard,
@@ -67,6 +68,7 @@ from maps.market.trading_rules import previous_trading_day
 from maps.ops.candidate_selection import candidate_score_complete
 from maps.ops.liquidity_cap import BLOCKING_REASONS
 from maps.ops.pick_freshness import is_pick_stale, pick_cutoff_date
+from maps.ops.score_readiness import metadata_quality_ready
 
 logger = logging.getLogger(__name__)
 
@@ -464,6 +466,9 @@ def _candidate_from_row(r: CandidateSnapshot, pick: AnalysisPick | None) -> Dige
         trend_strength=r.trend_strength,
         ts_bucket=r.ts_bucket,
         score_reason=r.score_reason,
+        score_version=r.score_version,
+        score_scope=r.score_scope,
+        score_evidence=r.score_evidence,
         component_sources=r.component_sources,
         missing_components=r.missing_components or [],
         score_coverage_ratio=r.score_coverage_ratio,
@@ -1120,6 +1125,55 @@ def _build_analysis_run(db: Session, ref_date: dt.date) -> DigestAnalysisRun | N
     )
 
 
+def _candidate_scope_counts(db: Session, ref_date: dt.date) -> dict:
+    """Count unique tickers within persisted scopes; never relabel legacy history."""
+    rows = db.query(CandidateSnapshot).filter(CandidateSnapshot.ref_date == ref_date).all()
+    counts = {}
+    reasons: dict[str, set[str]] = {}
+    for scope in ("operational", "research"):
+        scoped = [row for row in rows if (row.score_scope == "research") == (scope == "research")]
+        tickers = {row.ticker for row in scoped}
+        complete = {row.ticker for row in scoped if candidate_score_complete(row)}
+        counts[f"{scope}_candidate_total"] = len(tickers)
+        counts[f"{scope}_candidate_incomplete_total"] = len(tickers - complete)
+        if scope == "research":
+            for row in scoped:
+                if candidate_score_complete(row):
+                    continue
+                evidence = row.score_evidence or {}
+                for component in row.missing_components or []:
+                    detail = evidence.get(component) or {}
+                    reason = detail.get("missing_reason") if isinstance(detail, dict) else None
+                    label = f"{component}: {reason}" if reason else component
+                    reasons.setdefault(label, set()).add(row.ticker)
+    counts["research_missing_reasons"] = {reason: len(tickers) for reason, tickers in sorted(reasons.items())}
+    return counts
+
+
+def _metadata_warnings(db: Session, ref_date: dt.date) -> list[str]:
+    """Retain every same-date KRX partial/failed attempt, including recovered runs."""
+    rows = (db.query(CollectionLog)
+            .filter(CollectionLog.ref_date == ref_date, CollectionLog.source == "krx")
+            .order_by(CollectionLog.id).all())
+    warnings = []
+    for row in rows:
+        quality = row.metadata_quality if isinstance(row.metadata_quality, dict) else {}
+        status = quality.get("status", "legacy_unknown")
+        if row.status not in {"partial", "failed"} and status == "complete" and metadata_quality_ready(quality):
+            continue
+        details = []
+        for market, item in sorted((quality.get("markets") or {}).items()):
+            details.append(
+                f"{market} {item.get('valid_count', 0)}/{item.get('expected_count', 0)}"
+                f" missing={len(item.get('missing_tickers') or [])}"
+                f" listing_missing={len(item.get('listing_date_missing_tickers') or [])}"
+                + (f" error={item['error']}" if item.get("error") else "")
+            )
+        suffix = "; ".join(details + ([row.note] if row.note else []))
+        warnings.append(f"KRX #{row.id} {row.status}: metadata={status}" + (f"; {suffix}" if suffix else ""))
+    return warnings
+
+
 def build_daily_digest(
     db: Session, settings: MapsSettings, ref_date: dt.date
 ) -> DailyDigest:
@@ -1164,6 +1218,11 @@ def build_daily_digest(
             digest.universe_kept = quality.kept_count
             digest.universe_excluded = quality.excluded_count
             digest.universe_rejection_ratio = quality.rejection_ratio
+
+    scope_counts = _section("candidate_scopes", lambda: _candidate_scope_counts(db, ref_date))
+    for field, value in (scope_counts or {}).items():
+        setattr(digest, field, value)
+    digest.metadata_warnings = _section("metadata_quality", lambda: _metadata_warnings(db, ref_date)) or []
 
     digest.portfolio = _section("portfolio", lambda: _build_portfolio(db, ref_date))
 

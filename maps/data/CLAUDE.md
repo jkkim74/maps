@@ -12,6 +12,7 @@ data/
 ├── krx_auth.py            # KRX 로그인 회로차단기 (계정 잠금 방지)
 ├── naver_fundamental.py   # Naver 모바일 API 펀더멘털 수집 (KRX MDC 대체)
 ├── fundamental_repo.py    # 펀더멘털 as-of-date 조회 + 안전마진 provider
+├── dart_financials.py     # DART 정기공시 수집·불변 재무 스냅샷·시점별 선택
 ├── ohlcv_repo.py          # HistoricalOHLCVRepository — OHLCV 조회 전용 레포
 └── security_repo.py       # SecurityRepository — 종목 메타 조회 전용 레포
 ```
@@ -43,6 +44,7 @@ pykrx 는 요청마다 재로그인을 시도해서, 자격증명이 만료되�
 | `FundamentalData` | 일별 펀더멘털 (pykrx `get_market_fundamental` 기준) |
 | `InvestorFlowData` | 종목별 외국인·기관·개인 순매수 금액 (정확한 기준일) |
 | `SecurityMeta` | 종목 메타 (ticker, name, market, security_type, listing_date, delisting_date) |
+| `MetadataCollection` | items, markets, status; 시장별 실측 커버리지와 `candidate_ready`, `as_dict()` |
 | `CollectionResult` | 수집 결과 묶음 (ref_date, ohlcv, meta, halts, managed) |
 
 ### 어댑터 계층
@@ -59,6 +61,7 @@ KRXAdapterBase (ABC)
 |---|---|
 | `get_ohlcv(ref_date)` | `list[OHLCVData]` |
 | `get_security_meta(ref_date)` | `list[SecurityMeta]` |
+| `get_security_meta_result(ref_date)` | `MetadataCollection` — 기존 list API는 유지 |
 | `get_halt_list(ref_date)` | `list[str]` — 거래정지 ticker |
 | `get_managed_list(ref_date)` | `list[str]` — 관리종목 ticker |
 | `get_sector_classifications(ref_date)` | 업종 분류 |
@@ -69,13 +72,19 @@ KRXAdapterBase (ABC)
 
 - `get_halt_list`: 거래량 0 heuristic + `MAPS_HALTED_TICKERS` 환경변수 override. Phase 5에서 KRX 공시 API로 교체 예정.
 - `get_managed_list`: pykrx 미지원. `MAPS_MANAGED_TICKERS` override만 반영.
-- `get_security_meta`: 멤버십은 `get_market_ticker_list(date)` 가, **상장일은 모듈 함수
-  `fetch_listing_dates()`** 가 정한다 — pykrx 내부 `전종목기본정보().fetch("ALL")`([12005],
-  `LIST_DD`) 1회 요청. ticker-list 엔드포인트는 상장일을 주지 않아 2026-09-07 까지 운영
-  `listing_date` 가 전부 NULL 이었고, 상한가 V1 자격 판정이 fail-closed 라 후보가 한 건도
-  수락되지 않았다. 조회 실패는 WARNING 후 빈 dict(fail-soft) — 수집은 계속되고 값 없는
-  종목은 하류가 막는다. 함수가 스스로 `ensure_krx_login_guard()` 를 부른다(스크립트가
-  어댑터 없이 쓴다). 즉시 채우려면 `scripts/backfill_listing_dates.py --apply`.
+- `get_security_meta_result`: 멤버십은 날짜별 `get_market_ticker_list(date)`로 고정하고,
+  이름·상장일은 `fetch_basic_information()`의 최신 KRX [12005] 응답을 우선한다.
+  이름 폴백은 비어 있지 않은 문자열만 허용하며 ticker 자체·NaN·DataFrame은 거부한다.
+  종목별 오류는 다음 종목 수집을 막지 않으며 영문 포함 코드를 유지한다.
+  **기본정보는 현재 자료이지 과거 이름 스냅샷이 아니다.** 과거 구성종목은 날짜별로
+  제한하지만 과거 이름/상폐 종목 정보를 복원하지 않는다. 알려지지 않은 상장일은 None이다.
+  `fetch_listing_dates()`는 기존 백필 호환 함수로 남는다. 둘 다 로그인 가드를 통과한다.
+- 시장별 quality는 expected_count, valid_count, coverage_ratio, missing_tickers,
+  listing_date_missing_tickers, error를 기록한다. 빈/실패 멤버십은 unavailable이고,
+  두 시장 모두 이름 커버리지 95% 이상이면 candidate_ready다. 상장일 결측과 기본정보
+  조회 실패는 partial로 드러내되 알려진 이름의 커버리지를 없애지 않는다.
+- `MockKRXAdapter`는 `scope="mock"`으로 실제 fixture 개수를 기록한다. 명시적 모의
+  fixture만 빈 시장을 허용한다. 운영 `scope="market"`은 두 시장이 반드시 비어 있지 않아야 한다.
 - OHLCV 컬럼명이 버전에 따라 한글/영문이 혼재 → `_OHLCV_COL_MAP`으로 한글 통일.
 
 #### `MockKRXAdapter` 주입 메서드
@@ -107,6 +116,10 @@ DataCollector(krx: KRXAdapterBase, db: Session, broker=None)
 > `collection_log.status='partial'` + `CollectionResult.investor_flow_count=0` +
 > `logger.error` 로 드러난다. `data_collection` 잡 details 에도 실린다. 조용히 `success` 로
 >끝나면 다음 거래일 신규 매수가 전량 막히는데도 아무 신호가 없다.
+
+메타 실패도 OHLCV/수급 저장을 유지하고 partial로 기록한다. `CollectionResult.metadata_quality`
+및 `CollectionLog.metadata_quality`에 같은 quality JSON을 저장한다. 후속 단계 실패 로그에도
+이미 관측한 quality를 남기고, 재수집 성공이 기존 partial 로그를 덮어쓰지 않는다.
 
 내부 헬퍼:
 

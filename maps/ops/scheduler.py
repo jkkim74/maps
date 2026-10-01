@@ -91,7 +91,7 @@ from maps.ops.candidate_selection import (
 )
 from maps.ops.order_state import claimed_candidate_tickers
 from maps.ops.pick_freshness import is_pick_stale, pick_cutoff_date
-from maps.ops.score_readiness import candidate_score_ready, current_market_score_ready
+from maps.ops.score_readiness import candidate_score_ready, current_market_score_ready, metadata_quality_ready, collection_metadata_ready
 from maps.promotion.gate import PromotionGate, PromotionStage
 from maps.risk.manager import RiskConfig, RiskManager
 from maps.risk.holding_regime_overlay import (
@@ -130,6 +130,7 @@ from maps.strategy.pullback_v2 import PullbackV2Strategy
 from maps.strategy.pullback_v3 import PullbackV3Strategy
 from maps.strategy.scoring import LegacyFinalScoreCalculator, StrategyAwareScoreCalculator, StrategyScoreInput
 from maps.strategy.score_features import strategy_extra_scores
+from maps.strategy.contrarian_features import SCORE_VERSION, contrarian_extra_scores
 from maps.indicator.trend_strength import TrendStrengthCalculator
 from maps.ai.scoring_service import AIScoringRunSummary, AIStockScoringService
 from maps.ai.valuation_margin import ValuationMarginScorer
@@ -229,6 +230,13 @@ class JobRun:
 
 
 @dataclass(frozen=True)
+class JobResult:
+    details: dict
+    status: str = "success"
+    message: str = "ok"
+
+
+@dataclass(frozen=True)
 class TickerContext:
     """종목당 한 번만 계산하는 값들 — 전략 8개가 공유한다.
 
@@ -245,6 +253,7 @@ class TickerContext:
     valuation: object | None = None
     supply_demand_score: float | None = None
     trend_strength_measured: bool = False
+    contrarian_scores: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -332,7 +341,7 @@ class OperationalPipeline:
             collector = DataCollector(self._make_krx_adapter(), db)
             result = collector.collect_daily(ref_date)
             self._last_collection = result
-            return {
+            details = {
                 "ref_date": ref_date.isoformat(),
                 "ohlcv_count": len(result.ohlcv),
                 "meta_count": len(result.meta),
@@ -341,7 +350,13 @@ class OperationalPipeline:
                 # 0 이면 다음 거래일 신규 매수가 전량 막힌다 (score_readiness fail-closed).
                 "investor_flow_count": result.investor_flow_count,
                 "investor_flow_error": result.investor_flow_error,
+                "metadata_quality": result.metadata_quality,
             }
+            quality_status = (result.metadata_quality or {}).get("status", "unavailable")
+            status = "failed" if quality_status == "unavailable" else (
+                "partial" if quality_status != "complete" or result.investor_flow_count == 0 else "success"
+            )
+            return JobResult(details, status, "ok" if status == "success" else "collection_incomplete")
 
         return self._job("data_collection", _run)
 
@@ -355,7 +370,24 @@ class OperationalPipeline:
                 collection = collector.collect_daily(ref_date)
                 self._last_collection = collection
 
-            candidates = self._to_securities(db, collection.meta, collection, ref_date)
+            quality = collection.metadata_quality
+            latest_collection = (db.query(CollectionLog)
+                .filter(CollectionLog.ref_date == ref_date, CollectionLog.source == "krx")
+                .order_by(CollectionLog.id.desc()).first())
+            if latest_collection is not None:
+                quality = latest_collection.metadata_quality
+                if latest_collection.status == "failed":
+                    return JobResult({"ref_date": ref_date.isoformat(), "metadata_quality": quality},
+                                     "failed", "metadata_quality_insufficient")
+            mock_fixture = (self._settings.maps_data_provider == "mock"
+                            and (quality or {}).get("scope") == "mock"
+                            and (quality or {}).get("candidate_ready") is True)
+            if not (metadata_quality_ready(quality) or mock_fixture):
+                return JobResult({"ref_date": ref_date.isoformat(), "metadata_quality": quality},
+                                 "failed", "metadata_quality_insufficient" if quality else "metadata_quality_legacy_unknown")
+            missing = {ticker for market in (quality or {}).get("markets", {}).values()
+                       for ticker in market.get("missing_tickers", [])}
+            candidates = self._to_securities(db, [m for m in collection.meta if m.ticker not in missing], collection, ref_date)
             result = DataQualityFilter(db=db, mode="live").generate(ref_date, candidates)
             # 등록된 모든 전략에 동일한 유니버스 스냅샷을 저장한다.
             # DataQualityFilter 유니버스는 유동성·데이터 품질 기반 공통 후보군이므로
@@ -1001,14 +1033,28 @@ class OperationalPipeline:
 
         return self._job("limit_up_after_hours", _run)
 
-    def _job(self, name: str, fn: Callable[[Session], dict]) -> JobRun:
+    def run_dart_financial_collection(self, ref_date: dt.date | None = None) -> JobRun:
+        from maps.data.dart_financials import DartFinancialCollector
+
+        ref_date = ref_date or dt.date.today()
+
+        def _run(db):
+            details = DartFinancialCollector(db, self._settings.dart_api_key).collect(ref_date)
+            details["ref_date"] = ref_date.isoformat()
+            return JobResult(details, details.get("status", "success"), details.get("reason", "ok"))
+
+        return self._job("dart_financial_collection", _run)
+
+    def _job(self, name: str, fn: Callable[[Session], dict | JobResult]) -> JobRun:
         started = dt.datetime.now(dt.timezone.utc)
         run = JobRun(name=name, status="running", started_at=started)
         db = self._session_factory()
         try:
-            run.details = fn(db)
-            run.status = "success"
-            run.message = "ok"
+            result = fn(db)
+            if isinstance(result, JobResult):
+                run.details, run.status, run.message = result.details, result.status, result.message
+            else:
+                run.details, run.status, run.message = result, "success", "ok"
         except Exception as exc:
             db.rollback()
             run.status = "failed"
@@ -1527,9 +1573,9 @@ class OperationalPipeline:
         ohlcv_by_ticker = {row.ticker: row for row in collection.ohlcv}
         halted = set(collection.halts)
         managed = set(collection.managed)
-        sectors_by_ticker = {
-            row.ticker: row.sector
-            for row in db.query(SecurityMetadata.ticker, SecurityMetadata.sector)
+        metadata_by_ticker = {
+            row.ticker: row
+            for row in db.query(SecurityMetadata.ticker, SecurityMetadata.sector, SecurityMetadata.listing_date)
             .filter(SecurityMetadata.ticker.in_([item.ticker for item in meta]))
             .all()
         }
@@ -1552,8 +1598,8 @@ class OperationalPipeline:
                     name=item.name,
                     market=item.market,
                     security_type=item.security_type,
-                    sector=getattr(item, "sector", None) or sectors_by_ticker.get(item.ticker),
-                    listing_date=item.listing_date or dt.date(2000, 1, 1),
+                    sector=getattr(item, "sector", None) or getattr(metadata_by_ticker.get(item.ticker), "sector", None),
+                    listing_date=item.listing_date or getattr(metadata_by_ticker.get(item.ticker), "listing_date", None),
                     delisting_date=item.delisting_date,
                     # The current collector does not persist a separate
                     # adjusted-price history yet.  Treat present live OHLCV as
@@ -1620,12 +1666,19 @@ class OperationalPipeline:
             db.query(InvestorFlowSnapshot)
             .filter(
                 InvestorFlowSnapshot.date <= ref_date,
-                InvestorFlowSnapshot.date >= ref_date - dt.timedelta(days=10),
+                InvestorFlowSnapshot.date >= ref_date - dt.timedelta(days=60),
             )
             .all()
         )
         flows: dict[str, tuple[float, float]] = {}
+        measured_flows: dict[str, list[dict]] = {}
         for row in flow_rows:
+            measured_flows.setdefault(row.ticker, []).append({
+                "date": row.date, "foreign_net_value": row.foreign_net_value,
+                "institutional_net_value": row.institutional_net_value,
+            })
+            if row.date < ref_date - dt.timedelta(days=10):
+                continue
             # NULL 은 pykrx 가 그 종목·투자자 유형을 결과에 넣지 않았다는 뜻이라 0 으로 더한다.
             # 건너뛰면 우선주·저유동성 종목 20%가 supply_demand_score 에서 조용히 빠진다
             # (`market/feeds.py:_flow_observations` 와 같은 의미론을 유지한다).
@@ -1637,6 +1690,8 @@ class OperationalPipeline:
                 count + 1.0,
             )
 
+        from maps.data.dart_financials import DartFinancialRepository
+        financials = DartFinancialRepository(db)
         contexts: dict[str, TickerContext] = {}
         for stock in universe:
             frame = pd.DataFrame()
@@ -1687,6 +1742,13 @@ class OperationalPipeline:
                         2,
                     )
 
+            flow_frame = pd.DataFrame(measured_flows.get(stock.ticker, []))
+            if not flow_frame.empty:
+                flow_frame = flow_frame.set_index("date")
+            research_scores = contrarian_extra_scores(
+                frame, flow_frame, financials.get_as_of(stock.ticker, ref_date),
+                ref_date=ref_date, extra_closed_dates=self._settings.krx_closed_dates,
+            )
             contexts[stock.ticker] = TickerContext(
                 frame=frame,
                 trend_strength=trend_strength,
@@ -1696,6 +1758,7 @@ class OperationalPipeline:
                 valuation=valuation,
                 supply_demand_score=supply_demand_score,
                 trend_strength_measured=trend_strength_measured,
+                contrarian_scores=research_scores,
             )
         return contexts
 
@@ -1821,6 +1884,8 @@ class OperationalPipeline:
                     supply_demand_score=(ctx.supply_demand_score if ctx else None),
                     macro_liquidity_score=market_liquidity_score,
                 )
+                if strategy_type == StrategyType.CONTRARIAN_QUALITY:
+                    extra_scores = ctx.contrarian_scores if ctx else {}
                 score_result = strategy_score_calculator.calculate(
                     StrategyScoreInput(
                         strategy_type=strategy_type,
@@ -1941,6 +2006,11 @@ class OperationalPipeline:
                     component_scores=score_result.component_scores,
                     component_sources=score_result.component_sources,
                     missing_components=score_result.missing_components,
+                    score_version=SCORE_VERSION if strategy_type == StrategyType.CONTRARIAN_QUALITY and strategy_score_calculator else None,
+                    score_scope=("research" if not self._settings.maps_contrarian_accumulation_enabled else "operational")
+                        if strategy_type == StrategyType.CONTRARIAN_QUALITY else "operational",
+                    score_evidence=(ctx.contrarian_scores.get("_evidence", {}) if ctx else {})
+                        if strategy_type == StrategyType.CONTRARIAN_QUALITY else None,
                     score_coverage_ratio=score_result.coverage_ratio,
                     score_status=score_result.score_status,
                     score_ready=score_result.score_ready,
@@ -2103,6 +2173,17 @@ class OperationalPipeline:
 
         order_regime_label = regime.regime.value
         for candidate in candidates:
+            expected = previous_trading_day(ref_date, extra_closed_dates=self._settings.krx_closed_dates)
+            metadata_ready, metadata_reason = collection_metadata_ready(db, expected, candidate.ticker)
+            research_only = candidate.score_scope == "research" or (
+                candidate.strategy_id == "contrarian_quality_accumulation_v1"
+                and not self._settings.maps_contrarian_accumulation_enabled
+            )
+            if research_only or not metadata_ready:
+                logger.warning("Order skipped [%s %s]: %s", candidate.strategy_id, candidate.ticker,
+                               "research_score_only" if research_only else metadata_reason)
+                skipped += 1
+                continue
             if self._settings.maps_score_readiness_required:
                 ready, readiness_reason = candidate_score_ready(db, candidate)
                 if not ready:
@@ -3210,6 +3291,13 @@ class OperationalPipeline:
             return 0, 0
         if current > next_leg.entry_price:
             return 0, 0
+        metadata_ready, metadata_reason = collection_metadata_ready(
+            db, previous_trading_day(dt.date.today(), extra_closed_dates=self._settings.krx_closed_dates),
+            pick.ticker,
+        )
+        if not metadata_ready:
+            logger.warning("Split strategy metadata blocked [%s]: %s", pick.ticker, metadata_reason)
+            return 0, 0
         if self._settings.maps_score_readiness_required:
             ready, reason = current_market_score_ready(db, self._settings, dt.date.today())
             if not ready:
@@ -3407,6 +3495,13 @@ class OperationalPipeline:
                         db.commit()
                 # 현재가 ≤ 매수가 & 미제출 → 지정가 진입
                 if pick.entry_order_id is None and pick.buy_price and current <= pick.buy_price:
+                    metadata_ready, metadata_reason = collection_metadata_ready(
+                        db, previous_trading_day(dt.date.today(), extra_closed_dates=self._settings.krx_closed_dates),
+                        pick.ticker,
+                    )
+                    if not metadata_ready:
+                        logger.warning("Strategy metadata blocked [%s]: %s", pick.ticker, metadata_reason)
+                        continue
                     if not market_entry_ready:
                         logger.warning(
                             "전략매매 진입 차단 [%s]: %s",
@@ -3549,7 +3644,20 @@ class OperationalPipeline:
         seen_tickers: set[str] = set()
         result: list[CandidateSnapshot] = []
         for row in rows:
+            if row.score_scope == "research" or (
+                row.strategy_id == "contrarian_quality_accumulation_v1"
+                and not self._settings.maps_contrarian_accumulation_enabled
+            ):
+                if blocked is not None:
+                    blocked["research_score_only"] = blocked.get("research_score_only", 0) + 1
+                continue
             if latest_promotions.get(row.strategy_id) not in eligible_stages:
+                continue
+            metadata_ready, metadata_reason = collection_metadata_ready(db, expected, row.ticker)
+            if not metadata_ready:
+                logger.warning("Order candidate blocked [%s %s]: %s", row.strategy_id, row.ticker, metadata_reason)
+                if blocked is not None:
+                    blocked[metadata_reason] = blocked.get(metadata_reason, 0) + 1
                 continue
             if self._settings.maps_score_readiness_required:
                 ready, reason = candidate_score_ready(db, row)
@@ -4038,6 +4146,7 @@ class MapsOperationalScheduler:
             "broker_sync": self._pipeline.sync_broker_state,
             "eod_cleanup": self._pipeline.run_eod_cleanup,
             "daily_close_report": self._pipeline.run_daily_close_report,
+            "dart_financial_collection": self._pipeline.run_dart_financial_collection,
             "limit_up_after_hours": self._pipeline.run_limit_up_after_hours,
             "limit_up_after_hours_final": lambda: (
                 self._pipeline.run_limit_up_after_hours(final_round=True)
@@ -4089,6 +4198,13 @@ class MapsOperationalScheduler:
         self._add_weekday_job("eod_cleanup", self._settings.maps_eod_time)
         # 블로그 크론(18:30, 최대 15분) 뒤 — 블로그 원고 미생성도 리포트가 잡아낸다.
         self._add_weekday_job("daily_close_report", self._settings.maps_close_report_time)
+        self._scheduler.add_job(
+            lambda: self.run_once("dart_financial_collection"),
+            CronTrigger(day_of_week="mon-fri", hour=21, minute=10,
+                        timezone=self._settings.maps_scheduler_timezone),
+            id="dart_financial_collection", name="dart_financial_collection",
+            replace_existing=True, coalesce=True, max_instances=1,
+        )
         # 시간외 단일가는 16:00~18:00 사이 10분 단위로 체결된다. 17:50 회차가 마지막
         # 실효 회차다 — 거기서 낸 주문이 18:00 최종 체결에 걸린다. second=5 는
         # KRX 매칭 → KIS 반영 지연 버퍼로, 정각에 폴링하면 10분 전 값으로 판정할 수 있다.
