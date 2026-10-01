@@ -3,6 +3,12 @@
 from __future__ import annotations
 
 import sys
+import os
+
+# pykrx performs authentication on import when these variables are populated.
+# Test discovery must never log in to an operational KRX account.
+os.environ["KRX_ID"] = ""
+os.environ["KRX_PW"] = ""
 
 import pytest
 

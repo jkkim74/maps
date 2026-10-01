@@ -909,3 +909,74 @@ def test_market_entry_block_is_empty_when_entries_are_open(db, settings) -> None
     assert market is not None
     assert market.entry_block_since is None
     assert market.entry_block_days == 0
+
+
+
+def test_digest_splits_persisted_scopes_without_changing_global_totals(db, settings) -> None:
+    """An operational score cannot hide the same ticker's incomplete research inputs."""
+    for ticker, strategy, scope, ready in [
+        ("SHARED", "donchian_v2", None, True),
+        ("SHARED", "contrarian_quality_accumulation_v1", "research", False),
+        ("RESEARCH", "contrarian_quality_accumulation_v1", "research", False),
+        ("OLD", "contrarian_quality_accumulation_v1", None, False),
+    ]:
+        db.add(CandidateSnapshot(
+            ref_date=REF_DATE, ticker=ticker, name=ticker, market="KOSPI", strategy_id=strategy,
+            final_score=50, score_scope=scope, score_ready=ready,
+            score_coverage_ratio=1 if ready else .3,
+            missing_components=[] if ready else ["earnings_improvement_score"],
+            score_version="contrarian_quality_20261001" if scope else None,
+            score_evidence={"earnings_improvement_score": {"missing_reason": "pending_revision"}} if scope else None,
+        ))
+    db.commit()
+    digest = build_daily_digest(db, settings, REF_DATE)
+    assert (digest.candidate_total, digest.candidate_ready_total, digest.candidate_incomplete_total) == (3, 1, 2)
+    assert (digest.operational_candidate_total, digest.operational_candidate_incomplete_total) == (2, 1)
+    assert (digest.research_candidate_total, digest.research_candidate_incomplete_total) == (2, 2)
+    assert digest.research_missing_reasons == {"earnings_improvement_score: pending_revision": 2}
+    research = next(row for row in digest.incomplete_candidates if row.ticker == "RESEARCH")
+    assert research.score_scope == "research"
+    assert research.score_version == "contrarian_quality_20261001"
+    assert research.score_evidence["earnings_improvement_score"]["missing_reason"] == "pending_revision"
+
+
+def test_digest_keeps_all_metadata_warning_attempts_after_retry(db, settings) -> None:
+    from maps.common.models import CollectionLog
+    for day, source, status, quality in [
+        (REF_DATE, "krx", "partial", "partial"),
+        (REF_DATE, "krx", "failed", "unavailable"),
+        (REF_DATE, "krx", "success", "complete"),
+        (REF_DATE - dt.timedelta(days=1), "krx", "partial", "partial"),
+        (REF_DATE, "krx.history", "failed", "unavailable"),
+    ]:
+        db.add(CollectionLog(ref_date=day, source=source, status=status, items=1,
+                             metadata_quality={"status": quality, "markets": {
+                                 market: {"expected_count": 100, "valid_count": 100, "error": None}
+                                 for market in ("KOSPI", "KOSDAQ")}}))
+    db.commit()
+    digest = build_daily_digest(db, settings, REF_DATE)
+    assert len(digest.metadata_warnings) == 2
+    assert "partial" in digest.metadata_warnings[0]
+    assert "unavailable" in digest.metadata_warnings[1]
+
+
+
+def test_metadata_warnings_validate_counts_and_show_legacy_unknown(db) -> None:
+    """A success label or claimed complete status cannot conceal blocked entries."""
+    from maps.common.models import CollectionLog
+    from maps.ops.daily_digest import _metadata_warnings
+    healthy = {"expected_count": 100, "valid_count": 100, "missing_tickers": [], "error": None}
+    insufficient = {"expected_count": 100, "valid_count": 94, "missing_tickers": ["MISSING"], "error": None}
+    db.add_all([
+        CollectionLog(ref_date=REF_DATE, source="krx", status="success", items=1),
+        CollectionLog(ref_date=REF_DATE, source="krx", status="success", items=1,
+                      metadata_quality={"status": "complete", "markets": {"KOSPI": insufficient, "KOSDAQ": healthy}}),
+        CollectionLog(ref_date=REF_DATE, source="krx", status="success", items=1,
+                      metadata_quality={"status": "complete", "markets": {"KOSPI": healthy, "KOSDAQ": healthy}}),
+    ])
+    db.commit()
+    warnings = _metadata_warnings(db, REF_DATE)
+    assert len(warnings) == 2
+    assert "legacy_unknown" in warnings[0]
+    assert "KOSPI 94/100" in warnings[1]
+    assert "missing=1" in warnings[1]

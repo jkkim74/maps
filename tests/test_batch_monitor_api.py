@@ -277,4 +277,25 @@ def test_rerunnable_flags_limited_to_pipeline_jobs(client) -> None:
         "stock_report": False,
         "blog": False,
         "daily_close_report": True,
+        "dart_financial_collection": True,
     }
+
+
+def test_dart_schedule_and_partial_history_survive_successful_retry(client):
+    tc, factory, _ = client
+    with factory() as db:
+        started = _utc(_NOW)
+        db.add(JobRunLog(name="dart_financial_collection", status="partial", ref_date=_TODAY,
+                        started_at=started, message="receipt pending"))
+        db.add(JobRunLog(name="dart_financial_collection", status="success", ref_date=_TODAY,
+                        started_at=started))
+        db.add(CollectionLog(source="krx", ref_date=_TODAY, status="partial", items=10,
+                             metadata_quality={"status": "partial"}, note="metadata incomplete"))
+        db.add(JobRunLog(name="data_collection", status="success", ref_date=_TODAY, started_at=started))
+        db.commit()
+    body = tc.get("/api/v1/batch-monitor?days=1").json()
+    assert _get_job(body, "dart_financial_collection")["schedule"] == "21:10"
+    assert _get_cell(body, "dart_financial_collection", _TODAY)["status"] == "partial"
+    assert "receipt pending" in _get_cell(body, "dart_financial_collection", _TODAY)["message"]
+    assert _get_cell(body, "data_collection", _TODAY)["status"] == "partial"
+    assert "metadata incomplete" in _get_cell(body, "data_collection", _TODAY)["message"]

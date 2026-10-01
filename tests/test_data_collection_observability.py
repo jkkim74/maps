@@ -84,5 +84,5 @@ def test_collect_data_job_details_expose_investor_flow_count(factory) -> None:
 
     run = pipeline.collect_data(dt.date(2026, 8, 13))
 
-    assert run.status == "success"
+    assert run.status == "partial"
     assert run.details["investor_flow_count"] == 0

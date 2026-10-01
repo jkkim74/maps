@@ -14,6 +14,7 @@ from maps.common.db import Base
 from maps.common.models import (
     AnalysisPick,
     AnalysisPickLeg,
+    CollectionLog,
     KillSwitchLog,
     MarketRegimeLog,
     OrderLog,
@@ -22,7 +23,7 @@ from maps.common.settings import MapsSettings
 from maps.execution.broker_adapter import Order, OrderResult, OrderSide, OrderStatus, OrderType
 from maps.execution.mock_broker import MockBroker
 from maps.execution.order_manager import OrderManager
-from maps.market.trading_rules import trading_days_ago
+from maps.market.trading_rules import trading_days_ago, previous_trading_day
 from maps.ops.scheduler import OperationalPipeline
 
 # 픽 기준일은 today 상대값이어야 한다. 고정 날짜로 두면 신선도 가드가 들어온 뒤
@@ -38,6 +39,11 @@ def env():
     pipeline = OperationalPipeline(session_factory=factory)
     broker = MockBroker(initial_cash=100_000_000, price_feed={})
     db = factory()
+    db.add(CollectionLog(ref_date=previous_trading_day(_TODAY, extra_closed_dates=pipeline._settings.krx_closed_dates),
+                         source="krx", status="success", metadata_quality={"status": "complete", "markets": {
+                             market: {"expected_count": 100, "valid_count": 100, "error": None}
+                             for market in ("KOSPI", "KOSDAQ")}}))
+    db.commit()
     risk = pipeline._make_risk_manager(broker, db)
     manager = OrderManager(broker=broker, risk=risk, db=db)
     try:
@@ -95,6 +101,37 @@ def test_incomplete_market_score_does_not_block_exit(env):
     )
 
     assert (submitted, closed) == (0, 1)
+    assert pick.state == "CLOSED"
+
+
+@pytest.mark.parametrize("split", [False, True])
+@pytest.mark.parametrize("missing", ["legacy", "ticker"])
+def test_metadata_blocks_buy_with_score_gate_disabled(env, split, missing):
+    pipeline, broker, manager, db = env
+    pipeline._settings = MapsSettings(maps_score_readiness_required=False)
+    pick = _split_pick(db) if split else _pick(db)
+    log = db.query(CollectionLog).one()
+    if missing == "legacy":
+        log.metadata_quality = None
+    else:
+        data = dict(log.metadata_quality)
+        data["markets"] = {key: dict(value) for key, value in data["markets"].items()}
+        data["markets"]["KOSPI"]["missing_tickers"] = [pick.ticker]
+        log.metadata_quality = data
+    db.commit()
+    assert _run(pipeline, broker, manager, db, [pick], {pick.ticker: 63_000}) == (0, 0)
+    assert db.query(OrderLog).count() == 0
+
+
+@pytest.mark.parametrize("split", [False, True])
+def test_metadata_failure_never_blocks_owned_position_exit(env, split):
+    pipeline, broker, manager, db = env
+    pipeline._settings = MapsSettings(maps_score_readiness_required=False)
+    pick = _split_pick(db) if split else _pick(db)
+    assert _run(pipeline, broker, manager, db, [pick], {pick.ticker: 63_000})[0] == 1
+    db.query(CollectionLog).delete()
+    db.commit()
+    assert _run(pipeline, broker, manager, db, [pick], {pick.ticker: 81_000}) == (0, 1)
     assert pick.state == "CLOSED"
 
 

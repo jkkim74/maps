@@ -47,7 +47,7 @@ def test_breakout_prefers_high_liquidity_and_trend():
     assert strong.score_ready is False
 
 
-def test_contrarian_quality_prefers_valuation_and_earnings_revision():
+def test_contrarian_quality_prefers_valuation_and_earnings_improvement():
     calc = StrategyAwareScoreCalculator()
 
     cheap_improving = calc.calculate(
@@ -57,7 +57,7 @@ def test_contrarian_quality_prefers_valuation_and_earnings_revision():
             trend_strength=30.0,
             valuation_margin_score=85.0,
             extra_scores={
-                "earnings_revision_score": 80.0,
+                "earnings_improvement_score": 80.0,
                 "accumulation_flow_score": 70.0,
                 "technical_bottom_score": 75.0,
             },
@@ -70,7 +70,7 @@ def test_contrarian_quality_prefers_valuation_and_earnings_revision():
             trend_strength=85.0,
             valuation_margin_score=35.0,
             extra_scores={
-                "earnings_revision_score": 30.0,
+                "earnings_improvement_score": 30.0,
                 "accumulation_flow_score": 40.0,
                 "technical_bottom_score": 20.0,
             },

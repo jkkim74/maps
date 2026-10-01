@@ -11,10 +11,11 @@ import pytest
 
 import maps.common.models  # noqa: F401
 from maps.common.db import Base
-from maps.common.models import CandidateSnapshot, OrderLog, PromotionHistory
+from maps.common.models import CandidateSnapshot, CollectionLog, OrderLog, PromotionHistory
 from maps.common.settings import MapsSettings
 from maps.data.security_repo import Security
 from maps.execution.broker_adapter import OrderSide, OrderStatus
+from maps.market.trading_rules import previous_trading_day
 from maps.ops.scheduler import OperationalPipeline, StrategySignal, TickerContext
 
 
@@ -56,8 +57,20 @@ def test_order_candidates_empty_when_snapshot_stale() -> None:
         engine.dispose()
 
 
+def _seed_collection_quality(db, ref_date: dt.date) -> None:
+    db.add(CollectionLog(
+        ref_date=ref_date, source="krx", status="success", items=2,
+        metadata_quality={"status": "complete", "candidate_ready": True, "markets": {
+            market: {"expected_count": 1, "valid_count": 1, "coverage_ratio": 1.0,
+                     "missing_tickers": [], "listing_date_missing_tickers": [], "error": None}
+            for market in ("KOSPI", "KOSDAQ")
+        }},
+    ))
+
+
 def _seed_mock_candidate_strategy(db, ref_date: dt.date) -> None:
     """mock_candidate 단계 전략의 당일 후보 1건을 심는다."""
+    _seed_collection_quality(db, previous_trading_day(ref_date))
     db.add(CandidateSnapshot(
         ref_date=ref_date,
         strategy_id="donchian_v2",
@@ -135,6 +148,7 @@ def _seed_ai_order_candidate(
 
 def _promote_ai_test_strategy(db) -> None:
     """Promote the shared test strategy to paper-order eligibility."""
+    _seed_collection_quality(db, previous_trading_day(dt.date.today()))
     db.add(
         PromotionHistory(
             strategy_id="donchian_v2",

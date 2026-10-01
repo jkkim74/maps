@@ -78,3 +78,17 @@ def test_incomplete_candidates_render_without_ready_candidates() -> None:
     empty_index = source.index("'완성된 매매 후보가 없습니다'")
     incomplete_index = source.index("d.incomplete_candidates")
     assert empty_index < incomplete_index
+
+
+def test_candidate_score_details_render_current_and_legacy_labels():
+    import json
+    import subprocess
+    source = Path("static/js/app.js").read_text(encoding="utf-8")
+    helper = source[source.index("function candidateScoreDetails("):source.index("async function loadCandidates(")]
+    script = "const esc = value => String(value); const badge = value => value;\n" + helper + "\nconsole.log(JSON.stringify([candidateScoreDetails({score_scope:'research',component_scores:{earnings_improvement_score:75}}),candidateScoreDetails({component_scores:{earnings_revision_score:60}})]));"
+    output = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True, encoding="utf-8")
+    current, legacy = json.loads(output.stdout)
+    assert "연구용" in current
+    assert "실적 개선" in current
+    assert "이익 전망 수정" in legacy
+    assert "실적 개선" not in legacy

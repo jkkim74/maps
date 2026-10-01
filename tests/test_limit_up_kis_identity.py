@@ -11,7 +11,7 @@ import datetime as dt
 
 import pytest
 
-from maps.common.models import LimitUpSession, OrderLog
+from maps.common.models import CollectionLog, LimitUpSession, OrderLog
 from maps.execution.broker_adapter import OrderSide, OrderStatus, raw_broker_order_id
 from maps.execution.order_manager import OrderManager
 from maps.limit_up.domain import LimitUpConfig, LimitUpState, build_grid
@@ -40,6 +40,10 @@ def _worker(db, broker) -> tuple[LimitUpCommandWorker, LimitUpSession]:
 
 
 def _service(db, broker, mode=LimitUpMode.AUTOMATIC) -> LimitUpService:
+    db.add(CollectionLog(ref_date=dt.date(2026, 8, 27), source="krx", status="success",
+                         metadata_quality={"markets": {m: {"expected_count": 100, "valid_count": 100, "error": None}
+                                                      for m in ("KOSPI", "KOSDAQ")}}))
+    db.commit()
     repo = LimitUpRepository(db)
     manager = OrderManager(broker, RiskManager(broker, db), db)
     return LimitUpService(

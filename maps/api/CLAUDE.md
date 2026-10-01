@@ -50,6 +50,12 @@ DbDep = Depends(get_db)                    # 라우터 함수 파라미터로 �
 
 모든 API 응답 스키마를 한 파일에서 관리한다. 라우터 파일에서 import해 사용.
 
+후보와 다이제스트 후보는 저장된 `score_version`, `score_scope`, `score_evidence`를
+그대로 반환한다. 과거 NULL 값이나 `earnings_revision_score`를 새 점수로 바꾸지 않는다.
+다이제스트는 기존 합계를 유지하며 운영/연구 미완성 집계와 metadata_warnings를 추가한다.
+배치 모니터는 21:10 DART 수집 및 partial 상태를 표시하고, 이후 성공한 재시도도
+같은 날짜의 부분 수집 이력을 숨기지 않는다.
+
 ## 라우터 등록
 
 저장소 루트의 `main.py`(이 패키지 밖이다)에서 각 라우터를 `app.include_router()` 로 등록한다.

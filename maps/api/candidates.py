@@ -26,6 +26,9 @@ router = APIRouter(prefix="/api/v1/candidates", tags=["SCR-04 Candidates"])
 def _candidate_item(row: CandidateSnapshot) -> CandidateItem:
     """Serialize one persisted snapshot without changing score provenance."""
     return CandidateItem(
+        score_version=row.score_version,
+        score_scope=row.score_scope,
+        score_evidence=row.score_evidence,
         ticker=row.ticker,
         name=row.name,
         market=row.market,

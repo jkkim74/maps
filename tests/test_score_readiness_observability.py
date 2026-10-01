@@ -17,7 +17,7 @@ from sqlalchemy.pool import StaticPool
 
 import maps.common.models  # noqa: F401
 from maps.common.db import Base
-from maps.common.models import CandidateSnapshot, PromotionHistory
+from maps.common.models import CandidateSnapshot, CollectionLog, PromotionHistory
 from maps.common.settings import MapsSettings
 from maps.market.trading_rules import previous_trading_day
 from maps.ops.scheduler import OperationalPipeline
@@ -39,6 +39,14 @@ def factory():
 
 def _seed_blocked_candidate(db, ref_date: dt.date) -> None:
     """준비도만 미달인 후보 1건 + 주문 가능 단계 승격 이력."""
+    db.add(CollectionLog(
+        ref_date=ref_date, source="krx", status="success", items=2,
+        metadata_quality={"status": "complete", "candidate_ready": True, "markets": {
+            market: {"expected_count": 1, "valid_count": 1, "coverage_ratio": 1.0,
+                     "missing_tickers": [], "listing_date_missing_tickers": [], "error": None}
+            for market in ("KOSPI", "KOSDAQ")
+        }},
+    ))
     db.add(CandidateSnapshot(
         ref_date=ref_date,
         strategy_id="ath_breakout_v1",

@@ -7,7 +7,9 @@ import datetime as dt
 import pytest
 
 from maps.common.exceptions import BrokerAdapterError
-from maps.common.models import OrderLog
+from maps.common.models import CollectionLog, OrderLog
+from maps.common.settings import get_settings
+from maps.market.trading_rules import previous_trading_day
 from maps.execution.broker_adapter import (
     AccountBalance,
     BrokerAdapter,
@@ -92,7 +94,34 @@ def _worker(db, broker: ScriptedBroker) -> tuple[LimitUpCommandWorker, object]:
         trigger_price=99_700,
     )
     manager = OrderManager(broker, RiskManager(broker, db), db)
+    db.add(CollectionLog(ref_date=previous_trading_day(session.ref_date, extra_closed_dates=get_settings().krx_closed_dates),
+                         source="krx", status="success", metadata_quality={"markets": {
+                             market: {"expected_count": 100, "valid_count": 100, "error": None}
+                             for market in ("KOSPI", "KOSDAQ")}}))
+    db.commit()
     return LimitUpCommandWorker(manager, broker, repo), session
+
+
+@pytest.mark.parametrize("failure", ["missing", "failed", "ticker_missing", "older_session"])
+def test_grid_metadata_failure_blocks_new_buys(db, failure):
+    broker = ScriptedBroker()
+    worker, session = _worker(db, broker)
+    log = db.query(CollectionLog).one()
+    if failure == "missing":
+        db.delete(log)
+    elif failure == "failed":
+        log.status = "failed"
+    elif failure == "older_session":
+        log.ref_date = previous_trading_day(log.ref_date)
+    else:
+        quality = {"markets": {m: dict(q) for m, q in log.metadata_quality["markets"].items()}}
+        quality["markets"]["KOSPI"]["missing_tickers"] = [session.ticker]
+        log.metadata_quality = quality
+    db.commit()
+    result = worker.fire_grid(session, build_grid(upper_limit_price=100_000, budget_krw=2_000_000))
+    assert broker.orders == []
+    assert result.position_quantity == 0
+    assert not worker.repository.event_exists(session, action="submit_buy", state_version=session.state_version, leg="S")
 
 
 def test_grid_submits_s_then_a_and_persists_broker_ids(db) -> None:
@@ -179,6 +208,8 @@ def test_restart_never_resubmits_ambiguous_persisted_buy_intent(db) -> None:
     )
     worker.repository.db.commit()
 
+    db.query(CollectionLog).delete()
+    db.commit()
     result = worker.fire_grid(session, grid)
 
     assert result.position_quantity == 0
@@ -220,6 +251,8 @@ def test_exit_fill_settles_session_realized_pnl(db) -> None:
     """The daily loss latch is rebuilt from this column; an unpriced exit disarms it."""
     broker = ScriptedBroker()
     worker, session = _filled_grid(db, broker)
+    db.query(CollectionLog).delete()
+    db.commit()
     broker.daily_results.append(
         OrderResult(
             order_id="1003",

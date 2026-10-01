@@ -133,6 +133,15 @@ broker sync는 기존 손절·익절·전략 청산을 먼저 처리한 뒤 보�
 | `market_score_ready(db, ref_date)` | 그 **정확한 관측일**의 시장 점수가 100% 실측인가 |
 | `current_market_score_ready(db, order_date)` | 주문일 직전 **완료된 세션** 기준으로 판정 |
 | `candidate_score_ready(db, ...)` | 시장 + 후보 관측이 모두 정확한 날짜에 완비됐는가 |
+| `metadata_quality_ready(quality)` | KOSPI·KOSDAQ 각각 실제 유효 수 / 기대 수 ≥95%인지 검증 |
+| `collection_metadata_ready(db, ref_date, ticker=None)` | 정확한 날짜 최신 KRX 로그와 해당 종목 누락 여부 검사; 오래된 품질 미기록 로그는 차단 |
+
+메타데이터 검증은 점수 검증 설정과 독립적으로 신규 매수에 적용한다. 수집 부분 실패는
+`JobResult`의 `partial` 상태로 전달하며, 당일 실패 이력은 재수집 성공 후에도 리포트에 남긴다.
+`dart_financial_collection`은 평일 21:10 KST에 실행하고, 후보 계산은 저장된 DART 근거만 사용한다.
+역발상 점수는 `score_version`, `score_scope`, `score_evidence`를 기록하며 연구 범위는 주문에서 제외한다.
+장마감 리포트는 기존 전체 후보 합계를 유지하고 운영·연구 완성도를 별도로 표시한다.
+운영 미완성 비율 경고와 연구 미측정 원인을 분리하며, KIS 실패 시도 횟수와 배치 실패 횟수를 구분한다.
 
 > ⚠️ **fail-closed.** 모든 자동 신규 BUY(후보 주문, 단일·분할 전략매매)와 전략 승격은
 > 여기를 통과해야 한다. SELL·손절·익절·기존 포지션 청산에는 **적용하지 않는다** —

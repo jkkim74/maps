@@ -46,6 +46,7 @@ _JOBS: list[tuple[str, str, str, int, bool, str]] = [
     ("stock_report", "종목 리포트", "maps_stock_report_time", 60, False, "stock_report"),
     ("blog", "블로그 원고 (/blog)", "18:30", 60, False, "blog"),
     ("daily_close_report", "장마감 리포트", "maps_close_report_time", 30, True, "pipeline"),
+    ("dart_financial_collection", "DART 재무 수집", "21:10", 30, True, "pipeline"),
 ]
 
 # broker_sync 하트비트가 이보다 오래되면 당일 기준 '끊김'으로 본다
@@ -104,6 +105,7 @@ def get_batch_monitor(
 
     # 벌크 조회 4개 — 날짜별 도출은 전부 메모리에서
     latest_run: dict[tuple[str, dt.date], JobRunLog] = {}
+    partial_history: dict[tuple[str, dt.date], list[str]] = {}
     sync_failures: dict[dt.date, list[JobRunLog]] = {}
     for row in (
         db.query(JobRunLog)
@@ -115,6 +117,15 @@ def get_batch_monitor(
             sync_failures.setdefault(row.ref_date, []).append(row)
         else:
             latest_run[(row.name, row.ref_date)] = row
+            if row.status == "partial":
+                partial_history.setdefault((row.name, row.ref_date), []).append(row.message or "부분 수집")
+
+    for row in db.query(CollectionLog).filter(
+        CollectionLog.source == "krx", CollectionLog.ref_date >= start_date,
+        CollectionLog.status.in_(["partial", "failed"]),
+    ).all():
+        if row.metadata_quality and row.metadata_quality.get("status") != "complete":
+            partial_history.setdefault(("data_collection", row.ref_date), []).append(row.note or "메타데이터 부분 수집")
 
     heartbeats: dict[dt.date, tuple[int, dt.datetime]] = {
         ref_date: (count, last_at)
@@ -174,6 +185,13 @@ def get_batch_monitor(
             )
             for d in dates
         ]
+        for cell, day in zip(cells, dates):
+            warnings = partial_history.get((name, day), [])
+            if warnings:
+                if cell.status != "failed":
+                    cell.status = "partial"
+                cell.detail = f"부분 수집 이력 {len(warnings)}건"
+                cell.message = "; ".join(dict.fromkeys(filter(None, [cell.message, *warnings])))
         if kind == "broker_sync":
             interval = get_settings().maps_broker_sync_interval_seconds
             schedule = f"{interval}초 간격"
@@ -221,7 +239,7 @@ def _build_cell(
             cell.status = run.status
             cell.started_at = run.started_at.isoformat()
             cell.duration_sec = _duration_sec(run.started_at, run.finished_at)
-            if run.status == "failed":
+            if run.status in {"failed", "partial"}:
                 cell.message = run.message
             return cell
 

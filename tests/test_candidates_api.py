@@ -393,3 +393,21 @@ def test_min_score_filter_uses_final_score_when_ai_off(ctx, monkeypatch) -> None
     _seed_user(factory, monkeypatch, "offuser", {"candidate_min_score": 50.0})
 
     assert client.get("/api/v1/candidates").json()["candidates"] == []
+
+
+def test_candidate_response_preserves_research_evidence_and_legacy_components(ctx):
+    tc, factory = ctx
+    current = _snapshot("005930", 70, "KOSPI")
+    current.score_version = "contrarian_quality_20261001"
+    current.score_scope = "research"
+    current.score_evidence = {"earnings_improvement_score": {"receipt": "202610010001"}}
+    current.component_scores = {"earnings_improvement_score": 70}
+    legacy = _snapshot("000660", 60, "KOSPI")
+    legacy.component_scores = {"earnings_revision_score": 60}
+    _seed_snapshots(factory, [current, legacy])
+    rows = tc.get("/api/v1/candidates").json()["candidates"]
+    assert rows[0]["score_scope"] == "research"
+    assert rows[0]["score_version"] == "contrarian_quality_20261001"
+    assert rows[0]["score_evidence"]["earnings_improvement_score"]["receipt"] == "202610010001"
+    assert rows[1]["score_version"] is None
+    assert rows[1]["component_scores"] == {"earnings_revision_score": 60}

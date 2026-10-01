@@ -4,6 +4,7 @@ import datetime as dt
 
 from maps.common.models import (
     CandidateSnapshot,
+    CollectionLog,
     HistoricalOHLCV,
     MarketRegimeLog,
     OrderLog,
@@ -17,7 +18,19 @@ from maps.ops.order_preview import _get_order_candidates, build_order_preview, n
 from maps.ops.scheduler import OperationalPipeline, StrategySignal
 
 
+def _seed_metadata_quality(db, ref_date: dt.date) -> None:
+    db.add(CollectionLog(
+        ref_date=ref_date, source="krx", status="success", items=2,
+        metadata_quality={"status": "complete", "candidate_ready": True, "markets": {
+            market: {"expected_count": 1, "valid_count": 1, "coverage_ratio": 1.0,
+                     "missing_tickers": [], "listing_date_missing_tickers": [], "error": None}
+            for market in ("KOSPI", "KOSDAQ")
+        }},
+    ))
+
+
 def _seed_candidate(db, *, ref_date: dt.date) -> None:
+    _seed_metadata_quality(db, ref_date)
     db.add(HistoricalOHLCV(
         ticker="AAAA",
         date=ref_date,
@@ -279,6 +292,7 @@ def _force_entry_signal(monkeypatch) -> None:
 
 def _seed_thin_candidate(db, *, ref_date: dt.date, ticker: str, bars: int = 20) -> None:
     """20거래일 평균 거래대금 2,000만원짜리 얇은 종목 후보."""
+    _seed_metadata_quality(db, ref_date)
     for offset in range(bars):
         db.add(HistoricalOHLCV(
             ticker=ticker,
@@ -438,3 +452,32 @@ def test_preview_override_ignores_regime_log(db, monkeypatch) -> None:
 
     assert resp.market_regime == "weak"
     assert resp.items[0].skip_reason == "preferred_regime_mismatch:weak"
+
+
+def test_preview_research_scope_blocks_even_when_score_readiness_disabled(db, monkeypatch):
+    _seed_thin_candidate(db, ref_date=dt.date.today(), ticker="RESEARCH")
+    row = db.query(CandidateSnapshot).one()
+    row.score_scope = "research"
+    db.commit()
+    _force_entry_signal(monkeypatch)
+    preview = build_order_preview(db, MapsSettings(
+        maps_market_regime_override="strong", maps_weekly_trend_override="pass",
+        maps_score_readiness_required=False,
+    ))
+    assert preview.items[0].skipped is True
+    assert preview.items[0].skip_reason == "research_score_only"
+    assert preview.items[0].estimated_qty == 0
+
+
+def test_preview_missing_metadata_blocks_even_when_score_readiness_disabled(db, monkeypatch):
+    _seed_thin_candidate(db, ref_date=dt.date.today(), ticker="NOQUALITY")
+    db.query(CollectionLog).delete()
+    db.commit()
+    _force_entry_signal(monkeypatch)
+    preview = build_order_preview(db, MapsSettings(
+        maps_market_regime_override="strong", maps_weekly_trend_override="pass",
+        maps_score_readiness_required=False,
+    ))
+    assert preview.items[0].skipped is True
+    assert preview.items[0].skip_reason == "metadata_quality_legacy_unknown"
+    assert preview.items[0].estimated_qty == 0

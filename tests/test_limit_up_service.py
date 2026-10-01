@@ -6,6 +6,7 @@ import datetime as dt
 from dataclasses import replace
 
 import pytest
+from maps.common.models import CollectionLog
 
 from maps.execution.broker_adapter import (
     AccountBalance,
@@ -111,6 +112,10 @@ def _candidate() -> Candidate:
 
 
 def _service(db, mode: LimitUpMode, broker: ServiceBroker | None = None) -> LimitUpService:
+    db.add(CollectionLog(ref_date=dt.date(2026, 8, 27), source="krx", status="success",
+                         metadata_quality={"markets": {m: {"expected_count": 100, "valid_count": 100, "error": None}
+                                                      for m in ("KOSPI", "KOSDAQ")}}))
+    db.commit()
     repo = LimitUpRepository(db)
     worker = None
     if broker is not None:

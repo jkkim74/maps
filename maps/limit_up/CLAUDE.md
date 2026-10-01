@@ -13,6 +13,12 @@
 > 않는다. 2026-09-23 06:04 자동 업데이트가 PostgreSQL 과 maps 를 함께 재시작해 복구 조회가
 > 끊긴 DB 연결에 걸렸고, 재시도가 없어 09:21 까지 엔진 없이 장이 열렸다.
 
+`worker.fire_grid()` checks the exact previous KRX session's persisted metadata
+quality, including ticker-specific gaps, before each new BUY leg. This gate is
+unconditional even when optional score-readiness checks are disabled. Missing,
+failed, or insufficient metadata blocks new submission while broker reconciliation
+of ambiguous intents and all exit/cancellation paths remain available.
+
 ## Directory structure
 
 ```

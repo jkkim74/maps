@@ -196,3 +196,47 @@ def test_report_shows_kis_request_totals(db, settings, monkeypatch) -> None:
 
 def test_report_omits_kis_line_without_requests(db, settings) -> None:
     assert "KIS 요청" not in build_close_report(db, settings, REF_DATE)
+
+
+
+@pytest.mark.parametrize("incomplete, warn", [(3, False), (4, True)])
+def test_operational_attention_ignores_research_gaps(incomplete: int, warn: bool) -> None:
+    from maps.api.schemas import DailyDigest
+    from maps.ops.close_report import _attention_items, _render
+    digest = DailyDigest(
+        ref_date=REF_DATE.isoformat(), generated_at="now",
+        candidate_total=110, candidate_incomplete_total=100 + incomplete,
+        operational_candidate_total=10, operational_candidate_incomplete_total=incomplete,
+        research_candidate_total=100, research_candidate_incomplete_total=100,
+        research_missing_reasons={"earnings_improvement_score: pending_revision": 100},
+    )
+    attention = _attention_items(digest, [], blog_written=True)
+    assert any("운영 점수 미완성" in item for item in attention) is warn
+    assert not any("104/110" in item or "103/110" in item for item in attention)
+    text = _render(digest, [], REF_DATE, blog_written=True)
+    assert "연구 0/100" in text
+    assert "pending_revision" in text
+    assert f"운영 {10-incomplete}/10" in text
+
+
+def test_kis_failed_attempts_are_separate_from_batch_failures() -> None:
+    from collections import Counter
+    from maps.api.schemas import DailyDigest
+    from maps.execution.kis_request_stats import KisDayTotals
+    from maps.ops.close_report import _render
+    digest = DailyDigest(ref_date=REF_DATE.isoformat(), generated_at="now")
+    totals = KisDayTotals(REF_DATE, dt.datetime(2026, 7, 27, 9), Counter(ok=9, api_error=2, exception=1))
+    text = _render(digest, [("validation", 1, "boom")], REF_DATE, blog_written=True, kis_totals=totals)
+    assert "실패 시도 3회" in text
+    assert "배치 실패 1건" in text
+
+
+def test_report_surfaces_and_escapes_metadata_warnings() -> None:
+    from maps.api.schemas import DailyDigest
+    from maps.ops.close_report import _render
+    digest = DailyDigest(ref_date=REF_DATE.isoformat(), generated_at="now",
+                         metadata_warnings=["KRX #1 partial <missing>", "KRX #2 failed"])
+    text = _render(digest, [], REF_DATE, blog_written=True)
+    assert "KRX #1 partial &lt;missing&gt;" in text
+    assert "KRX #2 failed" in text
+    assert "✅ 정상" not in text

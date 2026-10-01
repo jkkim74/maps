@@ -111,11 +111,13 @@ def _attention_items(
                 f"상한가 일일 가드 발동: {_esc(', '.join(limit_up.guard.halted_reasons))}"
             )
 
-    if digest.candidate_total and digest.candidate_incomplete_total / digest.candidate_total > 0.3:
+    operational_total = digest.operational_candidate_total
+    operational_incomplete = digest.operational_candidate_incomplete_total
+    if operational_total and operational_incomplete / operational_total > 0.3:
         items.append(
-            f"점수 미완성 후보 {digest.candidate_incomplete_total}/{digest.candidate_total} — "
-            "피드 커버리지 확인"
+            f"운영 점수 미완성 후보 {operational_incomplete}/{operational_total} - 피드 커버리지 확인"
         )
+    items.extend(_esc(warning) for warning in digest.metadata_warnings)
     if digest.liquidity_blocked_total > 0:
         items.append(f"유동성 때문에 제외된 후보 {digest.liquidity_blocked_total}")
 
@@ -150,9 +152,14 @@ def _render(
 
     # 시스템
     total_failed = sum(c for _, c, _ in failed_jobs)
-    lines.append(
-        "🖥 <b>시스템</b> " + ("✅ 정상" if not total_failed else f"⚠️ 실패 {total_failed}건")
+    system_status = (
+        f"⚠️ 실패 {total_failed}건" if total_failed
+        else f"⚠️ 수집 경고 {len(digest.metadata_warnings)}건" if digest.metadata_warnings
+        else "✅ 정상"
     )
+    lines.append("🖥 <b>시스템</b> " + system_status)
+    if total_failed:
+        lines.append(f" · 배치 실패 {total_failed}건")
     for name, count, message in failed_jobs:
         suffix = f" — {_esc(message)}" if message else ""
         lines.append(f" · {_esc(name)} ×{count}{suffix}")
@@ -277,12 +284,27 @@ def _render(
                 f" @{i.limit_price:,} ({_esc(i.strategy_id)})"
             )
 
+    if digest.operational_candidate_total or digest.research_candidate_total:
+        operational_ready = digest.operational_candidate_total - digest.operational_candidate_incomplete_total
+        research_ready = digest.research_candidate_total - digest.research_candidate_incomplete_total
+        lines.append(
+            f"<b>후보 점수 완성</b> 운영 {operational_ready}/{digest.operational_candidate_total}"
+            f" · 연구 {research_ready}/{digest.research_candidate_total}"
+        )
+        for reason, count in sorted(digest.research_missing_reasons.items()):
+            lines.append(f" · 연구 미측정: {_esc(reason)} {count}")
+
     if kis_totals is not None:
         c = kis_totals.counts
         lines.append(
             f"🔌 <b>KIS 요청</b> {kis_totals.requests:,}회 (시도 기준, {kis_totals.since:%H:%M} 이후)"
             f" · 한도초과 {c['rate_limited']} · 응답없음 {c['read_timeout']}"
-            f" · 연결실패 {c['connect_timeout']} · 5xx {c['http_error']}"
+            f" · 연결실패 {c['connect_timeout']} · HTTP 오류 {c['http_error']}"
+        )
+
+        lines.append(
+            f" · 실패 시도 {kis_totals.requests - c['ok']}회 (재시도 후 성공 포함)"
+            f" · API 오류 {c['api_error']} · 예외 {c['exception']}"
         )
 
     # 확인 필요

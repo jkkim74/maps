@@ -149,6 +149,9 @@ class MarketResponse(BaseModel):
 # ── SCR-04 Candidates ─────────────────────────────────────────────────────────
 
 class CandidateItem(BaseModel):
+    score_version: str | None = None
+    score_scope: str | None = None
+    score_evidence: dict | None = None
     ticker: str
     name: str
     market: str
@@ -1028,6 +1031,9 @@ class DigestStrategy(BaseModel):
 
 
 class DigestCandidate(BaseModel):
+    score_version: str | None = None
+    score_scope: str | None = None
+    score_evidence: dict | None = None
     ticker: str
     name: str
     market: str | None = None
@@ -1235,6 +1241,12 @@ class DigestAnalysisRun(BaseModel):
 
 
 class DailyDigest(BaseModel):
+    operational_candidate_total: int = 0
+    operational_candidate_incomplete_total: int = 0
+    research_candidate_total: int = 0
+    research_candidate_incomplete_total: int = 0
+    research_missing_reasons: dict[str, int] = {}
+    metadata_warnings: list[str] = []
     ref_date: str
     generated_at: str
     market: DigestMarket | None = None
@@ -1270,7 +1282,7 @@ class DailyDigest(BaseModel):
 # ── SCR-21 Batch Monitor ──────────────────────────────────────────────────────
 class BatchJobCell(BaseModel):
     date: str
-    status: str                        # success | failed | missed | skipped | pending | running
+    status: str                        # success | partial | failed | missed | skipped | pending | running
     started_at: str | None = None
     duration_sec: float | None = None
     message: str | None = None
