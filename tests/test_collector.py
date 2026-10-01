@@ -82,3 +82,57 @@ def test_upsert_meta_stays_quiet_when_only_a_few_listing_dates_are_missing(db, c
 
     assert not [r for r in caplog.records if r.levelname == "WARNING" and "상장일 결측" in r.getMessage()]
     assert any("상장일 결측 1/4" in r.getMessage() for r in caplog.records)
+
+
+def test_metadata_failure_keeps_prices_and_persists_quality(db, monkeypatch):
+    from maps.common.models import CollectionLog, HistoricalOHLCV
+    import maps.market.feeds as feeds
+    monkeypatch.setattr(feeds, "collect_market_news_sentiment", lambda *args: None)
+    adapter = MockKRXAdapter()
+    def broken(day):
+        raise RuntimeError("metadata unavailable")
+    monkeypatch.setattr(adapter, "get_security_meta", broken)
+    day = datetime.date(2026, 9, 30)
+    result = DataCollector(adapter, db).collect_daily(day)
+    assert db.query(HistoricalOHLCV).filter_by(date=day).count() == 3
+    assert result.metadata_quality["status"] == "unavailable"
+    assert result.metadata_quality["candidate_ready"] is False
+    log = db.query(CollectionLog).one()
+    assert log.status == "partial"
+    assert log.metadata_quality == result.metadata_quality
+
+
+def test_metadata_partial_log_remains_after_successful_retry(db, monkeypatch):
+    from maps.common.models import CollectionLog
+    from maps.data.krx_adapter import InvestorFlowData
+    import maps.market.feeds as feeds
+    monkeypatch.setattr(feeds, "collect_market_news_sentiment", lambda *args: None)
+    adapter = MockKRXAdapter()
+    day = datetime.date(2026, 9, 30)
+    adapter.set_investor_flows({"005930": InvestorFlowData(day, "005930", "KOSPI", 1, 1, 1)})
+    original = adapter.get_security_meta
+    monkeypatch.setattr(adapter, "get_security_meta", lambda day: [])
+    collector = DataCollector(adapter, db)
+    collector.collect_daily(day)
+    monkeypatch.setattr(adapter, "get_security_meta", original)
+    collector.collect_daily(day)
+    logs = db.query(CollectionLog).order_by(CollectionLog.id).all()
+    assert [log.status for log in logs] == ["partial", "success"]
+    assert logs[0].metadata_quality["status"] == "unavailable"
+    assert logs[1].metadata_quality["candidate_ready"] is True
+
+
+def test_failed_daily_log_keeps_observed_metadata_quality(db, monkeypatch):
+    import pytest
+    from maps.common.exceptions import DataCollectionError
+    from maps.common.models import CollectionLog
+    adapter = MockKRXAdapter()
+    def broken(day):
+        raise RuntimeError("halt failure")
+    monkeypatch.setattr(adapter, "get_halt_list", broken)
+    with pytest.raises(DataCollectionError):
+        DataCollector(adapter, db).collect_daily(datetime.date(2026, 9, 30))
+    log = db.query(CollectionLog).one()
+    assert log.status == "failed"
+    assert log.metadata_quality["status"] == "complete"
+    assert log.metadata_quality["markets"]["KOSPI"]["valid_count"] == 3

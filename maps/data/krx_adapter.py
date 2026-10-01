@@ -47,43 +47,46 @@ def _listing_dates_from_frame(frame: pd.DataFrame) -> dict[str, datetime.date]:
     if frame is None or frame.empty:
         return result
     for _, row in frame.iterrows():
-        ticker = str(row.get("ISU_SRT_CD") or "").strip()
+        ticker = row.get("ISU_SRT_CD")
+        if not isinstance(ticker, str):
+            continue
+        ticker = ticker.strip()
         raw = row.get("LIST_DD")
         if not ticker or raw is None:
             continue
         try:
             result[ticker] = datetime.datetime.strptime(str(raw).strip(), "%Y/%m/%d").date()
-        except ValueError:
+        except (TypeError, ValueError):
             continue
     return result
 
 
-def fetch_listing_dates() -> dict[str, datetime.date]:
-    """KRX 전종목 기본정보에서 KOSPI·KOSDAQ·KONEX 전 종목의 상장일을 1회 요청으로 받는다.
+def fetch_basic_information() -> pd.DataFrame:
+    """Fresh KRX names/listing dates; membership remains date-specific.
 
-    pykrx 의 ticker-list 엔드포인트는 상장일을 주지 않아 ``security_metadata.listing_date``
-    가 전부 NULL 이었고(2026-09-07 발견), 상한가 V1 자격 판정이 fail-closed 라 후보가
-    한 건도 수락되지 않았다. ``pykrx.website.krx.market.core.전종목기본정보`` 는 pykrx
-    내부 API 라 어떤 실패도 삼키고 빈 dict 를 돌려준다 — 일일 수집 자체는 깨지지
-    않고, 값이 없는 종목은 하류가 막는다.
-
-    :return: 단축코드 → 상장일. 조회 실패 시 빈 dict.
-    :raises DataCollectionError: pykrx 가 설치되지 않은 경우.
+    This endpoint is current, not a historical snapshot: historical names and
+    delisted securities cannot be reconstructed from it.
     """
-    # pykrx 는 요청마다 재로그인을 시도한다 — 회로차단기를 먼저 설치한다(루트 CLAUDE.md 제약 8).
     ensure_krx_login_guard()
+    from pykrx.website.krx.market import core
+
+    return core.전종목기본정보().fetch("ALL")
+
+
+def fetch_listing_dates() -> dict[str, datetime.date]:
+    """Compatibility helper for listing-date backfills; failures remain missing."""
     try:
-        from pykrx.website.krx.market import core as _krx_core
-    except ImportError as e:
-        raise DataCollectionError("pykrx 라이브러리가 필요합니다: pip install pykrx") from e
-    try:
-        frame = _krx_core.전종목기본정보().fetch("ALL")
-    except Exception as exc:  # noqa: BLE001 - 벤더 내부 API, 수집을 깨뜨리지 않는다
+        return _listing_dates_from_frame(fetch_basic_information())
+    except Exception as exc:
         logger.warning("KRX 전종목 기본정보 조회 실패 — 상장일 미적재: %s", exc)
         return {}
-    result = _listing_dates_from_frame(frame)
-    logger.info("KRX 상장일 수집 완료: %d종목", len(result))
-    return result
+
+
+def _valid_name(value, ticker: str) -> str | None:
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    return value if value and value != ticker and value.lower() not in {"nan", "none", "null"} else None
 
 
 def _env_tickers(name: str) -> set[str]:
@@ -166,6 +169,42 @@ class SecurityMeta:
 
 
 @dataclass
+class MetadataCollection:
+    """Measured metadata coverage. Mock scope represents an explicitly seeded fixture."""
+
+    items: list[SecurityMeta]
+    markets: dict[str, dict]
+    status: str
+    scope: str = "market"
+
+    @property
+    def candidate_ready(self) -> bool:
+        if not self.items or self.status == "unavailable":
+            return False
+        for market in ("KOSPI", "KOSDAQ"):
+            quality = self.markets.get(market, {})
+            expected = quality.get("expected_count", 0)
+            valid = quality.get("valid_count", 0)
+            if expected == 0 and self.scope == "mock":
+                continue
+            if (expected <= 0 or not 0 <= valid <= expected or valid / expected < .95
+                    or quality.get("coverage_ratio", 0) != valid / expected or quality.get("error")):
+                return False
+        return True
+
+    def as_dict(self) -> dict:
+        return {"status": self.status, "markets": self.markets,
+                "candidate_ready": self.candidate_ready, "scope": self.scope}
+
+    @classmethod
+    def unavailable(cls, error: str) -> MetadataCollection:
+        return cls([], {market: {
+            "expected_count": 0, "valid_count": 0, "coverage_ratio": 0.0,
+            "missing_tickers": [], "listing_date_missing_tickers": [], "error": error,
+        } for market in ("KOSPI", "KOSDAQ")}, "unavailable")
+
+
+@dataclass
 class CollectionResult:
     """수집 결과 묶음."""
 
@@ -178,6 +217,7 @@ class CollectionResult:
     # 수급 0건이면 다음 거래일 신규 매수가 전량 막힌다 — 조용히 넘어가면 안 된다.
     investor_flow_count: int = 0
     investor_flow_error: str | None = None
+    metadata_quality: dict | None = None
 
 
 class KRXAdapterBase(ABC):
@@ -190,6 +230,24 @@ class KRXAdapterBase(ABC):
     @abstractmethod
     def get_security_meta(self, ref_date: datetime.date) -> list[SecurityMeta]:
         """ref_date 기준 상장 종목 메타를 반환한다."""
+
+    def get_security_meta_result(self, ref_date: datetime.date) -> MetadataCollection:
+        items = self.get_security_meta(ref_date)
+        markets = {}
+        for market in ("KOSPI", "KOSDAQ"):
+            members = [item for item in items if item.market == market]
+            valid = [item for item in members if _valid_name(item.name, item.ticker)]
+            markets[market] = {
+                "expected_count": len(members), "valid_count": len(valid),
+                "coverage_ratio": len(valid) / len(members) if members else 0.0,
+                "missing_tickers": [item.ticker for item in members if item not in valid],
+                "listing_date_missing_tickers": [item.ticker for item in valid if item.listing_date is None],
+                "error": None if members else "empty membership",
+            }
+        valid_items = [item for item in items if _valid_name(item.name, item.ticker)]
+        status = "unavailable" if any(q["error"] for q in markets.values()) else (
+            "partial" if any(q["missing_tickers"] or q["listing_date_missing_tickers"] for q in markets.values()) else "complete")
+        return MetadataCollection(valid_items, markets, status)
 
     @abstractmethod
     def get_halt_list(self, ref_date: datetime.date) -> list[str]:
@@ -304,37 +362,79 @@ class KRXAdapter(KRXAdapterBase):
         return result
 
     def get_security_meta(self, ref_date: datetime.date) -> list[SecurityMeta]:
-        """ref_date 기준 KOSPI + KOSDAQ 상장 종목 메타를 반환한다."""
-        try:
-            from pykrx import stock as _krx
-        except ImportError as e:
-            raise DataCollectionError("pykrx 라이브러리가 필요합니다: pip install pykrx") from e
+        return self.get_security_meta_result(ref_date).items
 
-        date_str = ref_date.strftime("%Y%m%d")
-        # 상장일은 ticker-list 에 없다 — 전종목 기본정보에서 1회 받아 조회 테이블로 쓴다.
-        # 멤버십은 기존대로 날짜 기준 ticker-list 가 정한다(as-of 의미 유지).
-        listing_dates = fetch_listing_dates()
-        result: list[SecurityMeta] = []
+    def get_security_meta_result(self, ref_date: datetime.date) -> MetadataCollection:
+        ensure_krx_login_guard()
+        from pykrx import stock
+
+        basic_error = None
+        names = {}
+        listing_dates = {}
+        try:
+            frame = fetch_basic_information()
+            listing_dates = _listing_dates_from_frame(frame)
+            if frame is not None:
+                for _, row in frame.iterrows():
+                    ticker = row.get("ISU_SRT_CD")
+                    if not isinstance(ticker, str) or not ticker.strip():
+                        continue
+                    ticker = ticker.strip()
+                    name = _valid_name(row.get("ISU_ABBRV"), ticker) or _valid_name(row.get("ISU_NM"), ticker)
+                    if name:
+                        names[ticker] = name
+        except Exception as exc:
+            basic_error = f"basic information: {type(exc).__name__}: {exc}"
+            logger.warning("KRX basic information unavailable: %s", exc)
+
+        items = []
+        markets = {}
+        unavailable = False
         for market in ("KOSPI", "KOSDAQ"):
             try:
-                tickers = _krx.get_market_ticker_list(date_str, market=market)
-                for ticker in tickers:
-                    try:
-                        name = _krx.get_market_ticker_name(ticker)
-                    except Exception:
-                        name = ticker
-                    result.append(SecurityMeta(
-                        ticker=ticker,
-                        name=name,
-                        market=market,
-                        security_type=_classify_security_type(name),
-                        listing_date=listing_dates.get(ticker),
-                        delisting_date=None,
-                    ))
+                tickers = []
+                seen = set()
+                for ticker in stock.get_market_ticker_list(ref_date.strftime("%Y%m%d"), market=market):
+                    if isinstance(ticker, str):
+                        if ticker in seen:
+                            continue
+                        seen.add(ticker)
+                    tickers.append(ticker)
+                if not tickers:
+                    raise ValueError("empty membership")
             except Exception as exc:
-                logger.warning("KRX 종목 메타 수집 실패 [%s]: %s", market, exc)
-        logger.info("KRX 종목 메타 수집 완료 [%s]: %d종목", date_str, len(result))
-        return result
+                markets[market] = MetadataCollection.unavailable(str(exc)).markets[market]
+                unavailable = True
+                continue
+            missing = []
+            listing_missing = []
+            for ticker in tickers:
+                try:
+                    if not isinstance(ticker, str) or not ticker.strip():
+                        raise ValueError("invalid ticker")
+                    name = names.get(ticker)
+                    if name is None:
+                        name = _valid_name(stock.get_market_ticker_name(ticker), ticker)
+                    if name is None:
+                        raise ValueError("missing or malformed name")
+                    listing_date = listing_dates.get(ticker)
+                    items.append(SecurityMeta(ticker, name, market, _classify_security_type(name), listing_date))
+                    if listing_date is None:
+                        listing_missing.append(ticker)
+                except Exception as exc:
+                    missing.append(str(ticker))
+                    logger.warning("KRX metadata missing [%s %s]: %s", market, ticker, exc)
+            valid_count = len(tickers) - len(missing)
+            markets[market] = {
+                "expected_count": len(tickers), "valid_count": valid_count,
+                "coverage_ratio": valid_count / len(tickers), "missing_tickers": missing,
+                "listing_date_missing_tickers": listing_missing, "error": None,
+            }
+            if basic_error:
+                markets[market]["basic_information_error"] = basic_error
+        status = "unavailable" if unavailable else (
+            "partial" if basic_error or any(q["missing_tickers"] or q["listing_date_missing_tickers"] for q in markets.values()) else "complete")
+        return MetadataCollection(items, markets, status)
 
     def get_halt_list(self, ref_date: datetime.date) -> list[str]:
         """ref_date 에 거래정지 중인 ticker 목록을 반환한다.
@@ -548,6 +648,19 @@ class MockKRXAdapter(KRXAdapterBase):
                         delisting_date=None,
                     )
                 )
+        return result
+
+    def get_security_meta_result(self, ref_date: datetime.date) -> MetadataCollection:
+        result = super().get_security_meta_result(ref_date)
+        result.scope = "mock"
+        # Seeded fixtures need not represent both exchanges. Counts stay actual;
+        # only this explicit mock scope permits an empty simulated exchange.
+        for quality in result.markets.values():
+            if quality["expected_count"] == 0:
+                quality["error"] = None
+        result.status = ("unavailable" if not result.items else "partial" if any(
+            q["missing_tickers"] or q["listing_date_missing_tickers"] for q in result.markets.values()
+        ) else "complete")
         return result
 
     def get_halt_list(self, ref_date: datetime.date) -> list[str]:

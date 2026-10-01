@@ -17,7 +17,7 @@ from maps.common.models import (
     SecurityFundamental,
     SecurityMetadata,
 )
-from maps.data.krx_adapter import CollectionResult, KRXAdapterBase, MockKRXAdapter
+from maps.data.krx_adapter import CollectionResult, KRXAdapterBase, MetadataCollection, MockKRXAdapter
 
 if TYPE_CHECKING:
     from maps.data.naver_fundamental import NaverFundamentalAdapter
@@ -56,9 +56,16 @@ class DataCollector:
         수정주가가 없고 broker가 있으면 broker로 폴백한다.
         """
         logger.info("수집 시작: %s", ref_date)
+        metadata_quality = None
         try:
             ohlcv = self._krx.get_ohlcv(ref_date)
-            meta = self._krx.get_security_meta(ref_date)
+            try:
+                metadata = self._krx.get_security_meta_result(ref_date)
+            except Exception as exc:
+                logger.error("Metadata unavailable (preserving OHLCV): %s", exc)
+                metadata = MetadataCollection.unavailable(f"{type(exc).__name__}: {exc}")
+            meta = metadata.items
+            metadata_quality = metadata.as_dict()
             halts = self._krx.get_halt_list(ref_date)
             managed = self._krx.get_managed_list(ref_date)
 
@@ -80,6 +87,7 @@ class DataCollector:
                 meta=meta,
                 halts=halts,
                 managed=managed,
+                metadata_quality=metadata_quality,
             )
             try:
                 fundamentals = self._krx.get_fundamental(ref_date)
@@ -107,23 +115,19 @@ class DataCollector:
             from maps.market.feeds import collect_market_news_sentiment
 
             collect_market_news_sentiment(self._db, ref_date)
-            if investor_flows:
-                self._write_log(ref_date, "success", saved_rows)
-            else:
-                # 수집 자체는 이어가되(OHLCV 는 살린다) 0건이라는 사실은 남긴다.
-                # 이 날짜 수급이 비면 다음 거래일 신규 매수가 전량 fail-closed 된다.
-                logger.error(
-                    "투자자 수급 0건 [%s] — 다음 거래일 신규매수 차단 (%s)",
-                    ref_date, flow_error or "adapter returned no rows",
-                )
-                self._write_log(
-                    ref_date, "partial", saved_rows,
-                    note=f"investor_flow_count=0 ({flow_error or 'adapter returned no rows'})",
-                )
+            notes = []
+            if metadata.status != "complete":
+                notes.append(f"metadata_status={metadata.status}")
+                logger.error("Partial metadata collection [%s]: %s", ref_date, metadata_quality)
+            if not investor_flows:
+                notes.append(f"investor_flow_count=0 ({flow_error or 'adapter returned no rows'})")
+                logger.error("투자자 수급 0건 [%s] — 다음 거래일 신규매수 차단", ref_date)
+            self._write_log(ref_date, "partial" if notes else "success", saved_rows,
+                            note="; ".join(notes) or None, metadata_quality=metadata_quality)
             return result
 
         except Exception as exc:
-            self._write_log(ref_date, "failed", 0, str(exc))
+            self._write_log(ref_date, "failed", 0, str(exc), metadata_quality=metadata_quality)
             raise DataCollectionError(f"수집 실패 [{ref_date}]: {exc}") from exc
 
     def collect_range(
@@ -454,6 +458,7 @@ class DataCollector:
         items: int,
         note: str | None = None,
         source: str = "krx",
+        metadata_quality: dict | None = None,
     ) -> None:
         """collection_log 테이블에 감사 로그를 기록한다."""
         self._db.add(
@@ -463,6 +468,7 @@ class DataCollector:
                 status=status,
                 items=items,
                 note=note,
+                metadata_quality=metadata_quality,
             )
         )
         self._db.commit()
