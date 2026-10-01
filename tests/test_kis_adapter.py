@@ -198,7 +198,7 @@ def test_pacer_does_not_hold_lane_lock_while_sleeping(
 
     monkeypatch.setattr(kis_adapter.time, "monotonic", lambda: clock[0])
     broker._pace_request()
-    state = kis_adapter._REQUEST_PACE_STATES[broker._token_cache_key]
+    state = kis_adapter._REQUEST_PACE_STATES[broker._request_pace_key]
 
     def fake_sleep(seconds: float) -> None:
         acquired = state.lock.acquire(blocking=False)
@@ -773,7 +773,7 @@ def test_position_snapshot_reuses_cache_within_max_age(
     """
     clock = [1000.0]
     monkeypatch.setattr(kis_adapter.time, "monotonic", lambda: clock[0])
-    monkeypatch.setattr(kis_adapter.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(kis_adapter.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
     http = FakeSession()
     broker = KISAdapter(settings, http=http)
 
@@ -937,3 +937,125 @@ def test_patient_reads_use_the_full_timeout_only_inside_the_block(settings: Maps
         assert seen_in_other_thread == [short_timeout]  # 다른 스레드로 새지 않는다
 
     assert broker._http_timeout(idempotent=True) == short_timeout
+
+
+@pytest.mark.parametrize("wake_delay", [0.2, 2.0])
+def test_pacer_rechecks_after_early_or_late_wake(
+    settings: MapsSettings, monkeypatch: pytest.MonkeyPatch, wake_delay: float,
+) -> None:
+    """A second caller's grant during sleep must move the waiting caller's gate."""
+    clock = [100.0]
+    monkeypatch.setattr(kis_adapter.time, "monotonic", lambda: clock[0])
+    first = KISAdapter(settings, http=FakeSession())
+    second = KISAdapter(settings, http=FakeSession())
+    first._pace_request()
+    sleeps = []
+
+    def sleep(seconds: float) -> None:
+        """Control waking without real delays."""
+        sleeps.append(seconds)
+        if len(sleeps) == 1:
+            clock[0] += wake_delay
+            if wake_delay > 0.55:
+                second._pace_request()
+        else:
+            clock[0] += seconds
+
+    monkeypatch.setattr(kis_adapter.time, "sleep", sleep)
+    first._pace_request()
+    assert len(sleeps) == 2
+    assert clock[0] == pytest.approx(100.55 if wake_delay < 0.55 else 102.55)
+
+
+def test_request_debug_is_secret_free_and_has_timing(
+    no_backoff: MapsSettings, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Request diagnostics expose timing and endpoint, never credentials or payloads."""
+    broker = KISAdapter(no_backoff, http=FakeSession())
+    with caplog.at_level("DEBUG", logger="maps.execution.kis_adapter"):
+        broker.get_account_balance()
+    lines = [r.getMessage() for r in caplog.records if "KIS req attempt" in r.getMessage()]
+    assert len(lines) == 1
+    for field in ("pid=", "path=", "tr_id=", "attempt=1", "gate_wait=", "start_gap=", "latency=", "outcome=ok"):
+        assert field in lines[0]
+    for secret in (no_backoff.kis_app_key, no_backoff.kis_app_secret, no_backoff.kis_account_no, "Bearer", "authorization"):
+        assert secret not in lines[0]
+
+
+
+def test_same_account_with_different_app_keys_shares_gate(
+    settings: MapsSettings, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Account/environment spacing cannot be bypassed by another credential pair."""
+    clock = [100.0]
+    monkeypatch.setattr(kis_adapter.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(kis_adapter.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+    KISAdapter(settings, http=FakeSession())._pace_request()
+    KISAdapter(settings.model_copy(update={"kis_app_key": "another-key"}), http=FakeSession())._pace_request()
+    assert clock[0] == pytest.approx(100.55)
+
+
+def test_concurrent_late_wakers_recheck_the_shared_gate(
+    settings: MapsSettings, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two overdue sleepers cannot consume old reservations back to back."""
+    import threading
+    clock = [100.0]
+    monkeypatch.setattr(kis_adapter.time, "monotonic", lambda: clock[0])
+    brokers = [KISAdapter(settings, http=FakeSession()) for _ in range(2)]
+    brokers[0]._pace_request()
+    sleeping = [threading.Event(), threading.Event()]
+    wake = [threading.Event(), threading.Event()]
+    completed = [threading.Event(), threading.Event()]
+    grants = []
+    local = threading.local()
+
+    def sleep(seconds: float) -> None:
+        """Control waking without real delays."""
+        index = local.index
+        if not sleeping[index].is_set():
+            sleeping[index].set()
+            assert wake[index].wait(3)
+        else:
+            clock[0] += seconds
+
+    def run(index: int) -> None:
+        """Wait for a gate grant on a caller thread."""
+        local.index = index
+        brokers[index]._pace_request()
+        grants.append(clock[0])
+        completed[index].set()
+
+    monkeypatch.setattr(kis_adapter.time, "sleep", sleep)
+    workers = [threading.Thread(target=run, args=(i,), daemon=True) for i in range(2)]
+    for worker in workers:
+        worker.start()
+    try:
+        assert all(event.wait(3) for event in sleeping)
+        clock[0] = 102.0
+        wake[0].set()
+        assert completed[0].wait(3)
+        wake[1].set()
+        assert completed[1].wait(3)
+        assert grants == pytest.approx([102.0, 102.55])
+    finally:
+        for event in wake:
+            event.set()
+        for worker in workers:
+            worker.join(3)
+
+
+
+def test_http_200_business_rejection_is_a_failed_attempt(
+    no_backoff: MapsSettings, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A rejected response with HTTP 200 is not counted as a successful attempt."""
+    from maps.execution.kis_request_stats import KisRequestStats
+    stats = KisRequestStats()
+    monkeypatch.setattr(kis_adapter, "KIS_REQUEST_STATS", stats)
+    http = FakeSession()
+    http.balance_payload = {"rt_cd": "1", "msg_cd": "REJECTED"}
+    with pytest.raises(BrokerAdapterError):
+        KISAdapter(no_backoff, http=http).get_account_balance()
+    assert stats.totals(stats._day.day).counts["api_error"] == 1
+    assert stats.totals(stats._day.day).counts["ok"] == 0

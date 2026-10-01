@@ -46,3 +46,21 @@ def test_day_totals_reset_on_kst_date_change() -> None:
     stats.record("ok", latency_ms=10)
     assert stats.totals(dt.date(2026, 9, 24)) is None
     assert stats.totals(dt.date(2026, 9, 25)).requests == 1
+
+
+
+def test_summary_includes_endpoint_wait_and_start_gap(caplog: pytest.LogCaptureFixture) -> None:
+    """Attempt summaries expose observed start compression, separate from gate grants."""
+    clock = [0.0]
+    now = [dt.datetime(2026, 9, 24, 9, 0, tzinfo=_KST)]
+    stats = _stats(clock, now)
+    with caplog.at_level("INFO", logger="maps.execution.kis_request_stats"):
+        stats.record("rate_limited", latency_ms=10, path="/quote", tr_id="QUOTE", gate_wait_ms=550, start_gap_ms=20, min_interval_ms=550)
+        clock[0] = 61
+        stats.record("ok", latency_ms=20, path="/quote", tr_id="QUOTE", gate_wait_ms=100, start_gap_ms=600, min_interval_ms=550)
+    line = caplog.records[-1].getMessage()
+    assert "gate_wait_p95=550ms" in line
+    assert "min_start_gap=20ms" in line
+    assert "gap_violations=1" in line
+    assert "/quote:QUOTE:rate_limited=1" in line
+    assert "/quote:QUOTE:ok=1" in line

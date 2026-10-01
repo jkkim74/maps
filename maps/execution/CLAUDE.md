@@ -129,3 +129,20 @@ maps.common.exceptions → KillSwitchError, DuplicateOrderError, BrokerAdapterEr
 maps.risk.manager      → RiskManager
 maps.common.settings   → get_settings()
 ```
+
+
+### KIS gate and attempt diagnostics (2026-10-01)
+
+The process-wide gate is shared by account and environment, including adapters
+with different app keys. Each caller locks, checks current monotonic time, grants
+only when due, or unlocks, sleeps and rechecks. No future slots are reserved and
+neither sleep nor HTTP holds the gate lock. This guarantees grant spacing, not
+HTTP/server arrival spacing; intervals, timeouts and order retry rules are unchanged.
+
+Trading/query HTTP attempts emit secret-free DEBUG diagnostics: PID, endpoint,
+TR ID, attempt, gate wait, local HTTP start gap, latency and outcome. Existing
+minute summaries include endpoint outcomes, gate-wait p95, minimum observed start
+gap and interval violations. Initial gaps are unknown. HTTP 200 business rejections
+count as failed attempts (`api_error` or `rate_limited`), without changing retries.
+Authentication/hash requests share the gate but remain outside trading/query
+attempt totals. Totals are process-local attempts, not failed scheduler jobs.

@@ -12,6 +12,7 @@ import datetime as dt
 import hashlib
 import json
 import logging
+import os
 import random
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -158,13 +159,14 @@ _BALANCE_CACHE_LOCK = threading.Lock()
 
 @dataclass
 class _RequestPaceState:
-    """One shared KIS REST lane for an app/account/environment tuple."""
+    """One shared KIS REST lane for an account/environment tuple."""
 
     lock: threading.Lock
     last_request_at: float = float("-inf")
+    last_http_start: float | None = None
 
 
-_REQUEST_PACE_STATES: dict[tuple[str, str, str, bool], _RequestPaceState] = {}
+_REQUEST_PACE_STATES: dict[tuple[str, str, bool], _RequestPaceState] = {}
 _REQUEST_PACE_STATES_LOCK = threading.Lock()
 
 
@@ -217,6 +219,7 @@ class KISAdapter(BrokerAdapter):
         # (기존 기본값 10s는 KIS 모의서버 지연 시 자주 timeout 유발)
         self._timeout = timeout if timeout is not None else self._settings.maps_kis_timeout
         self._token_cache_key = (self._base_url, self._app_key, self._account_no, self._real)
+        self._request_pace_key = (self._base_url, self._account_no, self._real)
         self._token_cache_file = Path(self._settings.maps_log_dir) / ".kis_token_cache.json"
         # 직전 _request 응답의 tr_cont 헤더 — _fetch_paged 의 연속조회 판정용
         self._last_tr_cont = ""
@@ -242,18 +245,48 @@ class KISAdapter(BrokerAdapter):
         """Serialize KIS REST calls at the venue's paper/production interval."""
         with _REQUEST_PACE_STATES_LOCK:
             state = _REQUEST_PACE_STATES.setdefault(
-                self._token_cache_key,
+                self._request_pace_key,
                 _RequestPaceState(lock=threading.Lock()),
             )
         interval = 0.05 if self._real else self._settings.maps_kis_paper_min_interval_seconds
-        scheduled_at: float
-        with state.lock:
-            now = time.monotonic()
-            scheduled_at = max(now, state.last_request_at + interval)
-            state.last_request_at = scheduled_at
-        remaining = scheduled_at - time.monotonic()
-        if remaining > 0:
+        while True:
+            with state.lock:
+                now = time.monotonic()
+                remaining = state.last_request_at + interval - now
+                if remaining <= 0:
+                    state.last_request_at = now
+                    return
+            # Grants use actual wake time; a sleeping caller reserves no future slot.
             time.sleep(remaining)
+
+    def _http_start(self) -> tuple[float, float | None]:
+        """Observe local HTTP start spacing; it is not server arrival spacing."""
+        with _REQUEST_PACE_STATES_LOCK:
+            state = _REQUEST_PACE_STATES.setdefault(
+                self._request_pace_key, _RequestPaceState(lock=threading.Lock()),
+            )
+        with state.lock:
+            started = time.monotonic()
+            gap = None if state.last_http_start is None else (started - state.last_http_start) * 1000
+            state.last_http_start = started
+        return started, gap
+
+    def _record_attempt(
+        self, outcome: str, *, path: str, tr_id: str, attempt: int,
+        gate_wait_ms: float, start_gap_ms: float | None, latency_ms: float,
+    ) -> None:
+        """Record safe endpoint diagnostics without headers, payloads or credentials."""
+        KIS_REQUEST_STATS.record(
+            outcome, latency_ms=latency_ms, path=path, tr_id=tr_id,
+            gate_wait_ms=gate_wait_ms, start_gap_ms=start_gap_ms,
+            min_interval_ms=1000 * (0.05 if self._real else self._settings.maps_kis_paper_min_interval_seconds),
+        )
+        logger.debug(
+            "KIS req attempt pid=%s path=%s tr_id=%s attempt=%s gate_wait=%.0fms "
+            "start_gap=%s latency=%.0fms outcome=%s",
+            os.getpid(), path, tr_id, attempt, gate_wait_ms,
+            "unknown" if start_gap_ms is None else f"{start_gap_ms:.0f}ms", latency_ms, outcome,
+        )
 
     def place_order(self, order: Order) -> OrderResult:
         """Submit a domestic cash stock order through KIS."""
@@ -968,10 +1001,14 @@ class KISAdapter(BrokerAdapter):
         attempt = 0
         while attempt < attempts:
             attempt += 1
-            started = time.monotonic()
+            gate_started = time.monotonic()
+            self._pace_request()
+            started, start_gap_ms = self._http_start()
+            diagnostics = dict(
+                path=path, tr_id=headers.get("tr_id", ""), attempt=attempt,
+                gate_wait_ms=(started - gate_started) * 1000, start_gap_ms=start_gap_ms,
+            )
             try:
-                self._pace_request()
-                started = time.monotonic()  # 레인 대기는 빼고 KIS 응답 시간만 잰다
                 response = self._http.request(
                     method,
                     self._url(path),
@@ -982,14 +1019,26 @@ class KISAdapter(BrokerAdapter):
                 )
                 latency_ms = (time.monotonic() - started) * 1000
                 if response.status_code not in {429, 500, 502, 503, 504}:
-                    KIS_REQUEST_STATS.record("ok", latency_ms=latency_ms)
+                    try:
+                        payload = response.json()
+                    except ValueError:
+                        payload = None
+                    if response.status_code >= 400:
+                        outcome = "http_error"
+                    elif not isinstance(payload, dict):
+                        outcome = "api_error"
+                    elif str(payload.get("rt_cd", "0")) not in {"0", ""}:
+                        outcome = "rate_limited" if self._peek_msg_cd(response) in _REQUEST_REJECTED_CODES else "api_error"
+                    else:
+                        outcome = "ok"
+                    self._record_attempt(outcome, latency_ms=latency_ms, **diagnostics)
                     return response
                 # KIS는 토큰 만료(EGW00123/90020000)를 HTTP 200이 아니라 5xx로 내려주기도 한다.
                 # 이 경우 _request의 토큰 재발급 분기(rt_cd 검사)에 도달하지 못하므로, 여기서
                 # 본문의 msg_cd를 직접 확인해 토큰을 재발급하고 1회 무료 재시도한다.
                 msg_cd = self._peek_msg_cd(response)
                 outcome = "rate_limited" if msg_cd in _REQUEST_REJECTED_CODES else "http_error"
-                KIS_REQUEST_STATS.record(outcome, latency_ms=latency_ms)
+                self._record_attempt(outcome, latency_ms=latency_ms, **diagnostics)
                 logger.warning(
                     "KIS 요청 실패 시도 %d/%d: %s tr_id=%s HTTP %s msg_cd=%s %.0fms",
                     attempt, attempts, path, headers.get("tr_id", ""),
@@ -1023,11 +1072,11 @@ class KISAdapter(BrokerAdapter):
                 )
             except requests.RequestException as exc:
                 latency_ms = (time.monotonic() - started) * 1000
-                KIS_REQUEST_STATS.record(
+                self._record_attempt(
                     "read_timeout" if isinstance(exc, requests.ReadTimeout)
                     else "connect_timeout" if isinstance(exc, requests.ConnectTimeout)
                     else "exception",
-                    latency_ms=latency_ms,
+                    latency_ms=latency_ms, **diagnostics,
                 )
                 logger.warning(
                     "KIS 요청 실패 시도 %d/%d: %s tr_id=%s %s %.0fms",
