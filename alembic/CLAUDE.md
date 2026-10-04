@@ -1,6 +1,6 @@
 # alembic/
 
-DB 스키마 마이그레이션. `alembic/versions/` 에 리비전 40개가 있고 **head 는 하나**다.
+DB 스키마 마이그레이션. `alembic/versions/` 에 리비전 41개가 있고 **head 는 하나**다.
 
 ## 명령
 
@@ -22,7 +22,7 @@ alembic downgrade -1                             # 한 단계 되돌리기
 파일명이 아니라 각 파일의 `down_revision` 을 따라간다. 예: `efca8676041a` 의
 `down_revision` 은 `0005_stock_report_runs` 다.
 
-현재 head: **`0037_close_report_evidence`**.
+현재 head: **`0038_execution_safety`**.
 
 `0037_close_report_evidence` adds nullable collection metadata quality and candidate
 research version/scope/evidence columns plus `dart_financial_snapshot`,
@@ -45,3 +45,6 @@ preserved; no financial or score backfill is performed.
 
 > ⚠️ `env.py` 의 `fileConfig` 는 `disable_existing_loggers=False` 로 둔다. 기본값이면
 > 앱 로거를 죽여 테스트 순서 의존성이 생긴다(2026-08-11 실제 발생).
+
+0038_execution_safety adds account-scoped durable intents, observations, adjustments,
+validation snapshots, safety outbox events and nullable legacy audit links. No backfill.

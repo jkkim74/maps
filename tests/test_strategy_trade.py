@@ -25,6 +25,8 @@ from maps.execution.mock_broker import MockBroker
 from maps.execution.order_manager import OrderManager
 from maps.market.trading_rules import trading_days_ago, previous_trading_day
 from maps.ops.scheduler import OperationalPipeline
+from tests.execution_contract import prime_account
+from maps.execution.safety import account_key
 
 # 픽 기준일은 today 상대값이어야 한다. 고정 날짜로 두면 신선도 가드가 들어온 뒤
 # 시간이 흐르면서 전 테스트가 조용히 만료 픽을 쓰게 된다.
@@ -36,7 +38,8 @@ def env():
     engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(engine)
     factory = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-    pipeline = OperationalPipeline(session_factory=factory)
+    pipeline = OperationalPipeline(session_factory=factory,
+        settings=MapsSettings(maps_strategy_trade_enabled=True, maps_live_trading_enabled=True))
     broker = MockBroker(initial_cash=100_000_000, price_feed={})
     db = factory()
     db.add(CollectionLog(ref_date=previous_trading_day(_TODAY, extra_closed_dates=pipeline._settings.krx_closed_dates),
@@ -45,7 +48,8 @@ def env():
                              for market in ("KOSPI", "KOSDAQ")}}))
     db.commit()
     risk = pipeline._make_risk_manager(broker, db)
-    manager = OrderManager(broker=broker, risk=risk, db=db)
+    manager = OrderManager(broker=broker, risk=risk, db=db, settings=pipeline._settings)
+    prime_account(manager, db)
     try:
         yield pipeline, broker, manager, db
     finally:
@@ -163,7 +167,9 @@ def _split_pick(db, *, ticker="005930", state="ARMED"):
 
 def _seed_leg_order(db, leg, *, status, fill_qty, order_id="leg-order-1"):
     leg.order_id = order_id
+    leg.pick.entry_order_id = order_id
     db.add(OrderLog(
+        account_key=account_key(),
         order_id=order_id,
         strategy_id=f"strategy_trade:{leg.pick_id}:leg:{leg.sequence}",
         ticker=leg.pick.ticker,
@@ -191,7 +197,7 @@ def test_split_submits_only_first_eligible_leg_per_cycle(env):
     assert pick.legs[2].order_id is None
 
 
-def test_split_daily_loss_uses_stable_pick_kill_switch(env):
+def test_split_does_not_trust_caller_supplied_daily_loss(env):
     pipeline, broker, manager, db = env
     pick = _split_pick(db)
 
@@ -205,11 +211,8 @@ def test_split_daily_loss_uses_stable_pick_kill_switch(env):
         daily_pnl=-0.02,
     )
 
-    assert (submitted, closed) == (0, 0)
-    assert db.query(OrderLog).count() == 0
-    kill = db.query(KillSwitchLog).one()
-    assert kill.strategy_id == f"strategy_trade:{pick.id}"
-    assert kill.reason == "daily_loss_limit"
+    assert (submitted, closed) == (1, 0)
+    assert db.query(KillSwitchLog).count() == 0
 
 
 def test_split_market_block_policy_warns_but_allows(env, caplog):

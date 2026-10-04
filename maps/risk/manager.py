@@ -7,12 +7,16 @@ Kill Switch 원칙:
 
 from __future__ import annotations
 
+from decimal import Decimal
+import math
+
 import datetime
 import logging
 from dataclasses import dataclass, field
 from enum import Enum
 
 from sqlalchemy.orm import Session
+from sqlalchemy import or_
 
 from maps.common.exceptions import (
     ExposureCapError,
@@ -20,6 +24,8 @@ from maps.common.exceptions import (
     UnauthorizedLiquidationError,  # noqa: F401
 )
 from maps.common.models import KillSwitchLog, OrderLog
+from maps.common.settings import get_settings
+from maps.execution.safety import account_key
 from maps.execution.broker_adapter import AccountBalance, BrokerAdapter, Order, OrderSide
 from maps.ops.notifications import SlackNotifier
 
@@ -67,6 +73,18 @@ class RiskConfig:
     min_cash_ratio_mixed: float = 0.25
     min_cash_ratio_weak: float = 0.35
 
+    @classmethod
+    def from_settings(cls, settings):
+        return cls(daily_loss_limit=settings.daily_loss_limit, mdd_limit=settings.maps_account_mdd_limit,
+            position_size_limit=settings.max_single_exposure,
+            sector_exposure_limit=settings.maps_max_sector_exposure,
+            theme_exposure_limit=settings.maps_max_theme_exposure,
+            sector_exposure_limit_enabled=settings.maps_sector_exposure_limit_enabled,
+            theme_exposure_limit_enabled=settings.maps_theme_exposure_limit_enabled,
+            min_cash_ratio_strong=settings.maps_min_cash_ratio_strong,
+            min_cash_ratio_mixed=settings.maps_min_cash_ratio_mixed,
+            min_cash_ratio_weak=settings.maps_min_cash_ratio_weak)
+
 
 # 테마 매핑 (종목 ticker → 테마명)
 # SecurityMetadata.theme 컬럼에 없을 경우 이 딕셔너리를 fallback으로 사용
@@ -87,7 +105,7 @@ class RiskManager:
     ) -> None:
         self._broker = broker
         self._db = db
-        self._cfg = config or RiskConfig()
+        self._cfg = config or RiskConfig.from_settings(get_settings())
         self._notifier = notifier or SlackNotifier()
         self._killed: dict[str, KillSwitchEvent] = {}
         self._failure_counts: dict[str, int] = {}
@@ -106,6 +124,8 @@ class RiskManager:
         daily_pnl: float = 0.0,
         *,
         risk_strategy_id: str | None = None,
+        positions=None,
+        pending_orders=None,
     ) -> None:
         """주문 전 리스크 체크. 위반 시 예외 발생.
 
@@ -140,40 +160,61 @@ class RiskManager:
             )
 
         # limit_price 없는 시장가 주문도 current_price로 노출 검사
-        effective_price = order.limit_price or order.current_price
-        if effective_price and effective_price > 0 and account.total_value > 0:
-            order_value = order.quantity * effective_price
-            exposure = order_value / account.total_value
-            if exposure > self._cfg.position_size_limit:
-                raise ExposureCapError(order.ticker, exposure)
-
-        # C-3: 신규 매수는 가용 현금·포트폴리오 총 노출도 함께 검증한다.
-        # total_value 기준 단일 노출 검사만으로는 보유 평가액이 커질수록 현금이 거의
-        # 없어도 "총자산의 10%" 주문이 통과되어, 누적 주문이 가용 현금을 초과할 수 있다.
-        is_buy = getattr(order, "side", OrderSide.BUY) == OrderSide.BUY
-        if is_buy and effective_price and effective_price > 0:
-            order_value = order.quantity * effective_price
-            if order_value > account.cash:
-                raise ExposureCapError(
-                    order.ticker,
-                    order_value / account.total_value if account.total_value > 0 else None,
-                    f"가용 현금 부족: 주문 {order_value:,.0f}원 > 현금 {account.cash:,.0f}원",
-                )
-            if account.total_value > 0:
-                portfolio_exposure = (
-                    account.positions_value + order_value
-                ) / account.total_value
-                if portfolio_exposure > self._cfg.max_portfolio_exposure:
-                    raise ExposureCapError(
-                        order.ticker,
-                        portfolio_exposure,
-                        f"포트폴리오 총 노출 {portfolio_exposure:.1%} > 한도 "
-                        f"{self._cfg.max_portfolio_exposure:.1%}",
-                    )
-
-        # 8단계: 섹터·테마 노출 한도 체크 (활성화된 경우)
-        if effective_price and effective_price > 0 and account.total_value > 0:
-            self._check_exposure_limits(order, account, effective_price)
+        if order.side != OrderSide.BUY:
+            return
+        price = order.limit_price or order.current_price
+        if (not isinstance(order.quantity, int) or isinstance(order.quantity, bool)
+                or order.quantity <= 0 or price is None or not math.isfinite(price)
+                or price <= 0 or not math.isfinite(account.total_value) or account.total_value <= 0
+                or not math.isfinite(account.cash) or account.cash < 0):
+            raise ExposureCapError(order.ticker, None, "invalid_or_missing_order_valuation")
+        if positions is None:
+            positions = self._broker.get_position_details()
+        if pending_orders is None:
+            pending_orders = self._broker.get_open_orders()
+        if not isinstance(positions, dict) or not isinstance(pending_orders, list):
+            raise ExposureCapError(order.ticker, None, "position_contract_invalid")
+        D = lambda value: Decimal(str(value))
+        total = D(account.total_value)
+        value = D(order.quantity) * D(price)
+        held = {}
+        for ticker, pos in positions.items():
+            if pos.quantity > 0 and pos.evaluation_value is None and (
+                    pos.current_price is None or not math.isfinite(pos.current_price) or pos.current_price <= 0):
+                raise ExposureCapError(ticker, None, "position_valuation_missing")
+            amount = D(pos.market_value)
+            if not amount.is_finite() or amount < 0:
+                raise ExposureCapError(ticker, None, "position_valuation_missing")
+            held[ticker] = amount
+        pending = {}
+        for row in pending_orders:
+            if row.side != OrderSide.BUY or row.remaining_quantity <= 0:
+                continue
+            bound = row.order_price
+            if bound is None or not math.isfinite(bound) or bound <= 0:
+                raise ExposureCapError(row.ticker, None, "pending_price_missing")
+            pending[row.ticker] = pending.get(row.ticker, Decimal(0)) + D(row.remaining_quantity) * D(bound)
+        exposure = (held.get(order.ticker, Decimal(0)) + pending.get(order.ticker, Decimal(0)) + value) / total
+        if exposure > D(self._cfg.position_size_limit):
+            raise ExposureCapError(order.ticker, float(exposure))
+        if value > D(account.cash):
+            raise ExposureCapError(order.ticker, float(value / total), "insufficient_cash")
+        if (D(account.positions_value) + sum(pending.values(), Decimal(0)) + value) / total > D(self._cfg.max_portfolio_exposure):
+            raise ExposureCapError(order.ticker, None, "portfolio_exposure_exceeded")
+        from maps.common.models import SecurityMetadata
+        for enabled, field, limit in (
+            (self._cfg.sector_exposure_limit_enabled, "sector", self._cfg.sector_exposure_limit),
+            (self._cfg.theme_exposure_limit_enabled, "theme", self._cfg.theme_exposure_limit),
+        ):
+            if not enabled:
+                continue
+            tickers = set(held) | set(pending) | {order.ticker}
+            metadata = {row.ticker: getattr(row, field) for row in self._db.query(SecurityMetadata).filter(SecurityMetadata.ticker.in_(tickers)).all()}
+            if any(not metadata.get(t) for t in tickers):
+                raise ExposureCapError(order.ticker, None, f"{field}_classification_missing")
+            amount = value + sum((held.get(t, Decimal(0)) + pending.get(t, Decimal(0)) for t in tickers if metadata[t] == metadata[order.ticker]), Decimal(0))
+            if amount / total > D(limit):
+                raise ExposureCapError(order.ticker, float(amount / total), f"{field}_exposure_exceeded")
 
     # ------------------------------------------------------------------
     # 신규: 주문 성공/실패 카운터
@@ -184,7 +225,7 @@ class RiskManager:
         self._failure_counts[strategy_id] = 0
         self._failure_loaded.add(strategy_id)
 
-    def _restore_failure_count(self, strategy_id: str) -> int:
+    def _restore_failure_count(self, strategy_id: str, exclude_order_id: str | None = None) -> int:
         """재시작 후 order_log에서 마지막 성공 이후 연속 REJECTED 수를 복원한다.
 
         in-memory 카운터는 프로세스 재시작 시 0으로 초기화되므로, 감사 로그(order_log)의
@@ -196,7 +237,9 @@ class RiskManager:
             rows = (
                 self._db.query(OrderLog.status)
                 .filter(OrderLog.strategy_id == strategy_id)
-                .order_by(OrderLog.created_at.desc())
+                .filter(OrderLog.account_key == account_key())
+                .filter(OrderLog.order_id != exclude_order_id if exclude_order_id else True)
+                .order_by(OrderLog.created_at.desc(), OrderLog.id.desc())
                 .limit(_CONSEC_FAILURE_THRESHOLD)
                 .all()
             )
@@ -204,13 +247,13 @@ class RiskManager:
             return 0
         count = 0
         for (status,) in rows:
-            if status == "REJECTED":
+            if status.lower() == "rejected":
                 count += 1
             else:
                 break
         return count
 
-    def on_order_failure(self, strategy_id: str, reason: str = "") -> KillSwitchEvent | None:
+    def on_order_failure(self, strategy_id: str, reason: str = "", *, order_id: str | None = None) -> KillSwitchEvent | None:
         """주문 실패 시 카운터를 증가시키고, 5회 시 Kill Switch를 자동 발동한다.
 
         Args:
@@ -223,7 +266,7 @@ class RiskManager:
         """
         # 재시작 직후라면 order_log에서 연속 실패 수를 1회 복원해 카운터를 시드한다(M-2).
         if strategy_id not in self._failure_loaded:
-            restored = self._restore_failure_count(strategy_id)
+            restored = self._restore_failure_count(strategy_id, exclude_order_id=order_id)
             self._failure_counts[strategy_id] = max(
                 self._failure_counts.get(strategy_id, 0), restored
             )
@@ -268,12 +311,11 @@ class RiskManager:
 
         API를 통한 외부 상태 변경(deactivate)도 반영한다.
         """
-        if strategy_id in self._killed:
-            return True
         # DB의 최신 이벤트가 "trigger"이면 메모리에 없더라도 차단
         latest = (
             self._db.query(KillSwitchLog)
             .filter(KillSwitchLog.strategy_id == strategy_id)
+            .filter(or_(KillSwitchLog.account_key == account_key(), KillSwitchLog.account_key.is_(None)))
             .order_by(KillSwitchLog.created_at.desc(), KillSwitchLog.id.desc())
             .first()
         )
@@ -289,7 +331,7 @@ class RiskManager:
             return True
         if latest and latest.event_type == "deactivate":
             self._killed.pop(strategy_id, None)
-        return False
+        return strategy_id in self._killed
 
     def check_and_trigger(
         self,
@@ -359,65 +401,6 @@ class RiskManager:
     # 8단계: 테마·섹터 노출 한도 체크
     # ------------------------------------------------------------------
 
-    def _check_exposure_limits(
-        self,
-        order: Order,
-        account: AccountBalance,
-        effective_price: float,
-    ) -> None:
-        """섹터·테마 노출 한도를 체크하고 초과 시 ExposureCapError를 발생시킨다."""
-        from maps.common.models import SecurityMetadata, PortfolioSnapshot
-
-        if not (self._cfg.sector_exposure_limit_enabled or self._cfg.theme_exposure_limit_enabled):
-            return
-
-        # 현재 포지션 전체 목록 조회 (broker에서 가져온 포지션 기준)
-        try:
-            positions: list = self._broker.get_positions() if hasattr(self._broker, "get_positions") else []
-        except Exception:
-            positions = []
-
-        # 신규 주문 종목의 섹터·테마 조회
-        meta = (
-            self._db.query(SecurityMetadata)
-            .filter(SecurityMetadata.ticker == order.ticker)
-            .first()
-        )
-        order_sector = (meta.sector or "") if meta else ""
-        order_theme = (meta.theme or "") if meta else ""
-        order_value = order.quantity * effective_price
-
-        if account.total_value <= 0:
-            return
-
-        if self._cfg.sector_exposure_limit_enabled and order_sector:
-            sector_value = sum(
-                p.current_value
-                for p in positions
-                if hasattr(p, "ticker") and self._get_ticker_sector(p.ticker) == order_sector
-            )
-            new_sector_ratio = (sector_value + order_value) / account.total_value
-            if new_sector_ratio > self._cfg.sector_exposure_limit:
-                raise ExposureCapError(
-                    order.ticker,
-                    new_sector_ratio,
-                    f"섹터 '{order_sector}' 노출 {new_sector_ratio:.1%} > 한도 {self._cfg.sector_exposure_limit:.1%}",
-                )
-
-        if self._cfg.theme_exposure_limit_enabled and order_theme:
-            theme_value = sum(
-                p.current_value
-                for p in positions
-                if hasattr(p, "ticker") and self._get_ticker_theme(p.ticker) == order_theme
-            )
-            new_theme_ratio = (theme_value + order_value) / account.total_value
-            if new_theme_ratio > self._cfg.theme_exposure_limit:
-                raise ExposureCapError(
-                    order.ticker,
-                    new_theme_ratio,
-                    f"테마 '{order_theme}' 노출 {new_theme_ratio:.1%} > 한도 {self._cfg.theme_exposure_limit:.1%}",
-                )
-
     def _get_ticker_sector(self, ticker: str) -> str:
         """DB에서 종목의 섹터를 조회한다."""
         from maps.common.models import SecurityMetadata
@@ -485,6 +468,7 @@ class RiskManager:
             event_type = "trigger"
         self._db.add(
             KillSwitchLog(
+                account_key=account_key(), scope="strategy",
                 strategy_id=event.strategy_id,
                 event_type=event_type,
                 reason=event.reason.value,

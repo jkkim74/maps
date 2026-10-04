@@ -12,6 +12,7 @@ import hashlib
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
+from decimal import Decimal
 
 from maps.common.settings import get_settings
 
@@ -112,6 +113,9 @@ class OrderResult:
     commission: float = 0.0
     submitted_at: datetime.datetime = field(default_factory=datetime.datetime.now)
     filled_at: datetime.datetime | None = None
+    quantity: int | None = None
+    order_price: float | None = None
+    remaining_quantity: int | None = None
 
 
 @dataclass(frozen=True)
@@ -137,6 +141,7 @@ class Position:
     name: str = ""
     current_price: float | None = None
     evaluation_value: float | None = None
+    sellable_quantity: int | None = None
 
     @property
     def market_value(self) -> float:
@@ -194,6 +199,30 @@ class PositionSnapshot:
     positions: dict[str, Position]
     balance: AccountBalance
     as_of: datetime.datetime
+
+
+@dataclass(frozen=True)
+class BuyingPower:
+    amount: Decimal
+    quantity: int
+    price_bound: Decimal
+    as_of: datetime.datetime
+
+
+@dataclass(frozen=True)
+class AccountActivity:
+    complete: bool
+    costs: Decimal | None = None
+    unsupported: tuple[str, ...] = ("cash_transfers", "security_transfers")
+
+
+@dataclass(frozen=True)
+class CancelResult:
+    accepted: bool
+    confirmed: bool
+
+    def __bool__(self) -> bool:
+        return self.confirmed
 
 
 class BrokerAdapter(abc.ABC):
@@ -279,6 +308,20 @@ class BrokerAdapter(abc.ABC):
     def get_balance(self) -> float:
         """현금 잔고 (하위 호환)."""
         return self.get_account_balance().cash
+
+    def get_execution_snapshot(self) -> PositionSnapshot:
+        return self.get_position_snapshot(0)
+
+    def get_buying_power(self, order: Order) -> BuyingPower:
+        raise NotImplementedError("buying power requires an explicit broker contract")
+
+    def get_order_history(self, start: datetime.date, end: datetime.date) -> list[OrderResult]:
+        if start != datetime.datetime.now(_KST).date() or end != start:
+            raise NotImplementedError("historical order retrieval unsupported")
+        return self.get_daily_order_results()
+
+    def get_account_activity(self, start: datetime.date, end: datetime.date) -> AccountActivity:
+        return AccountActivity(complete=False, unsupported=("costs", "cash_transfers", "security_transfers"))
 
     def get_open_orders(self) -> list[PendingOrder]:
         """Return open/unfilled orders when the broker supports it."""

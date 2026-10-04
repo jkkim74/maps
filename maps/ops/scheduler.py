@@ -69,8 +69,9 @@ from maps.execution.broker_adapter import (
     Position,
     get_broker,
 )
+from maps.execution.safety import ExecutionContext
 from maps.execution.order_manager import OrderManager
-from maps.limit_up.after_hours import run_after_hours_watch
+from maps.limit_up.after_hours import run_after_hours_watch, has_carried_sessions
 from maps.limit_up.service import automatic_mode_blocked_reason
 from maps.market.breadth import classify_breadth, compute_pct_above_ma
 from maps.market.regime import RegimeResult, WeeklyTrendLabel, create_regime_analyzer
@@ -92,6 +93,7 @@ from maps.ops.candidate_selection import (
 from maps.ops.order_state import claimed_candidate_tickers
 from maps.ops.pick_freshness import is_pick_stale, pick_cutoff_date
 from maps.ops.score_readiness import candidate_score_ready, current_market_score_ready, metadata_quality_ready, collection_metadata_ready
+from maps.promotion.evidence import FrozenInputs, evidence_metrics
 from maps.promotion.gate import PromotionGate, PromotionStage
 from maps.risk.manager import RiskConfig, RiskManager
 from maps.risk.holding_regime_overlay import (
@@ -683,7 +685,7 @@ class OperationalPipeline:
 
         def _run(db: Session) -> dict:
             broker = get_broker(self._settings.maps_broker_mode)
-            manager = OrderManager(broker=broker, risk=self._make_risk_manager(broker, db), db=db)
+            manager = OrderManager(broker=broker, risk=self._make_risk_manager(broker, db), db=db, settings=self._settings)
             sync = manager.sync_broker_state()
             holdings, holding_details = self._portfolio_snapshot_positions(db, broker)
             self._save_portfolio_snapshot(
@@ -776,7 +778,7 @@ class OperationalPipeline:
 
         def _run(db: Session) -> dict:
             broker = get_broker(self._settings.maps_broker_mode)
-            manager = OrderManager(broker=broker, risk=self._make_risk_manager(broker, db), db=db)
+            manager = OrderManager(broker=broker, risk=self._make_risk_manager(broker, db), db=db, settings=self._settings)
             sync = manager.sync_broker_state()
             holdings, holding_details = self._portfolio_snapshot_positions(db, broker)
             self._save_portfolio_snapshot(
@@ -795,7 +797,7 @@ class OperationalPipeline:
                 except NotImplementedError:
                     market_open = False
 
-            exit_monitor_active = live_enabled and market_open
+            exit_monitor_active = live_enabled and not self._settings.maps_dry_run and market_open
             strategy_trade_active = exit_monitor_active and self._settings.maps_strategy_trade_enabled
             st_submitted = 0
             st_closed = 0
@@ -902,17 +904,20 @@ class OperationalPipeline:
 
         def _run(db: Session) -> dict:
             broker = get_broker(self._settings.maps_broker_mode)
-            manager = OrderManager(broker=broker, risk=self._make_risk_manager(broker, db), db=db)
+            manager = OrderManager(broker=broker, risk=self._make_risk_manager(broker, db), db=db, settings=self._settings)
+            if self._settings.maps_dry_run or not self._settings.maps_live_trading_enabled:
+                return {"skipped": "execution_disabled"}
+            manager.sync_broker_state()
             cancelled = 0
             try:
                 open_orders = broker.get_open_orders()
             except NotImplementedError:
                 open_orders = []
             for order in open_orders:
-                if broker.cancel_order(order.order_id):
+                if manager.cancel(order.order_id):
                     cancelled += 1
             if hasattr(broker, "eod_cleanup"):
-                broker.eod_cleanup()  # type: ignore[attr-defined]
+                manager.eod_cleanup()  # type: ignore[attr-defined]
             # 만료 전 마지막 체결 동기화 — VTS 장전 주문 등 daily CCLD 누락 케이스 처리
             manager.sync_broker_state()
             expired = manager.expire_pending_orders(before=dt.datetime.now())
@@ -1008,9 +1013,12 @@ class OperationalPipeline:
             if blocked is not None:
                 logger.error("상한가 시간외 감시 차단 — 실주문 안전 스위치(%s)", blocked)
                 return {"ref_date": ref_date.isoformat(), "skipped": blocked}
+            if not has_carried_sessions(db, ref_date):
+                return {"ref_date": ref_date.isoformat(), "final_round": final_round,
+                        "watched": 0, "exited": 0, "no_trade": 0, "bad_data": 0, "errors": 0}
             broker = get_broker(self._settings.maps_broker_mode)
             manager = OrderManager(
-                broker=broker, risk=self._make_risk_manager(broker, db), db=db
+                broker=broker, risk=self._make_risk_manager(broker, db), db=db, settings=self._settings
             )
             counters = run_after_hours_watch(
                 db,
@@ -1096,20 +1104,34 @@ class OperationalPipeline:
 
             # 백테스트 샘플: 유동성 대형주 우선 선택 (알파벳 첫 번째 소형주 회피)
             sample_tickers = self._pick_sample_tickers(tickers, _VALIDATION_SAMPLE_TICKERS)
-            backtests = self._run_backtest_grid(db, repo, strategy, sample_tickers, ref_date)
+            wfa_ticker = self._pick_wfa_ticker(tickers)
+            frozen = FrozenInputs(repo, sorted(set(sample_tickers + [wfa_ticker])), ref_date)
+            run = frozen.create_run(db, strategy, ref_date, sample_tickers, wfa_ticker)
+            backtests = self._run_backtest_grid(db, frozen, strategy, sample_tickers, ref_date)
             if not backtests:
                 generated["skipped"].append({"strategy_id": strategy_id, "reason": "no_backtest_results"})
                 continue
 
+            replay = [BacktestEngine().run(strategy, strategy.default_params, frozen.to_dataframe(t))
+                      for t in sample_tickers]
             self._save_scheduled_backtest(db, strategy, ref_date, backtests)
 
-            if self._save_plateau_result(db, strategy, ref_date, backtests):
+            if self._save_plateau_result(db, strategy, ref_date, backtests, validation_run_id=run.id):
                 generated["plateau"] += 1
-            if self._save_mc_result(db, strategy, ref_date, backtests):
+            if self._save_mc_result(db, strategy, ref_date, [{"sharpe": 0, "daily_returns": self._average_daily_returns(replay)}], validation_run_id=run.id):
                 generated["mc"] += 1
             wfa_ticker = self._pick_wfa_ticker(tickers)
-            if self._save_wfa_result(db, repo, strategy, wfa_ticker, ref_date):
+            if self._save_wfa_result(db, frozen, strategy, wfa_ticker, ref_date, validation_run_id=run.id):
                 generated["wfa"] += 1
+            parts = [db.query(model).filter_by(validation_run_id=run.id).first()
+                     for model in (ParameterPlateauResults, MonteCarloSequenceResults, WalkForwardResults)]
+            run.metrics = self._promotion_metrics(*parts)
+            # Fixed default parameters, actual completed backtest trades and dated bars.
+            run.metrics = {**run.metrics, "replay_equivalent_passed": bool(replay),
+                "replay_completed_trades": sum(r.total_trades for r in replay),
+                "replay_trading_days": min((len(r.daily_returns) for r in replay), default=0)}
+            run.status = "COMPLETE" if all(parts) else "INCOMPLETE"
+            db.commit()
 
         return generated
 
@@ -1165,7 +1187,13 @@ class OperationalPipeline:
     ) -> list[dict]:
         engine = BacktestEngine()
         rows: list[dict] = []
-        for params in strategy.param_grid():
+        seen_params = set()
+        for params in [strategy.default_params] + list(strategy.param_grid()):
+            params = {**strategy.default_params, **params}
+            signature = json.dumps(params, sort_keys=True)
+            if signature in seen_params:
+                continue
+            seen_params.add(signature)
             results: list[BacktestResult] = []
             successful_tickers: list[str] = []
             min_bars = max(strategy.required_bars(params), 30)
@@ -1248,7 +1276,7 @@ class OperationalPipeline:
         db.commit()
 
     @staticmethod
-    def _save_plateau_result(db: Session, strategy: BaseStrategy, ref_date: dt.date, rows: list[dict]) -> bool:
+    def _save_plateau_result(db: Session, strategy: BaseStrategy, ref_date: dt.date, rows: list[dict], *, validation_run_id: str | None = None) -> bool:
         # param_keys: default_params 키 중 실제 row 에 존재하는 것만 사용한다.
         # param_grid() 에 포함되지 않은 파라미터(예: vol_period)가 default_params 에만
         # 있을 경우 KeyError 가 발생하므로 교집합으로 제한한다.
@@ -1262,13 +1290,14 @@ class OperationalPipeline:
             logger.warning("Plateau validation skipped [%s]: no overlapping param keys", strategy.strategy_id)
             return False
         try:
-            result = ParameterPlateauTester().run(rows, param_keys=param_keys)
+            result = ParameterPlateauTester().run(rows, param_keys=param_keys, center_params=strategy.default_params if validation_run_id else None)
         except ValueError as exc:
             logger.warning("Plateau validation skipped [%s]: %s", strategy.strategy_id, exc)
             return False
 
         grade_map = {"robust": "A", "moderate": "C", "fragile": "F"}
         db.add(ParameterPlateauResults(
+            validation_run_id=validation_run_id,
             strategy_id=strategy.strategy_id,
             run_date=ref_date,
             total_combinations=len(rows),
@@ -1281,7 +1310,7 @@ class OperationalPipeline:
         return True
 
     @staticmethod
-    def _save_mc_result(db: Session, strategy: BaseStrategy, ref_date: dt.date, rows: list[dict]) -> bool:
+    def _save_mc_result(db: Session, strategy: BaseStrategy, ref_date: dt.date, rows: list[dict], *, validation_run_id: str | None = None) -> bool:
         best = max(rows, key=lambda row: float(row.get("sharpe", 0.0)))
         daily_returns = list(best.get("daily_returns") or [])
         if len(daily_returns) < 30:
@@ -1299,6 +1328,7 @@ class OperationalPipeline:
             return False
 
         db.add(MonteCarloSequenceResults(
+            validation_run_id=validation_run_id,
             strategy_id=result.strategy_id,
             strategy_group=result.strategy_group,
             run_date=ref_date,
@@ -1317,11 +1347,13 @@ class OperationalPipeline:
         strategy: BaseStrategy,
         ticker: str,
         ref_date: dt.date,
+        *, validation_run_id: str | None = None,
     ) -> bool:
         df = repo.to_dataframe(ticker, end=ref_date)
         df.index.name = ticker
-        result = WalkForwardAnalyzer().run(strategy, df, strategy.param_grid())
+        result = WalkForwardAnalyzer().run(strategy, df, [strategy.default_params] if validation_run_id else strategy.param_grid())
         summary = WalkForwardResults(
+            validation_run_id=validation_run_id,
             strategy_id=strategy.strategy_id,
             run_date=ref_date,
             n_folds=len(result.folds),
@@ -1403,6 +1435,8 @@ class OperationalPipeline:
                 latest_wfa.get(strategy_id),
             )
             metrics["mock_months"] = mock_months.get(strategy_id, 0.0)
+            if current_stage.value in ("mock_candidate", "live_candidate", "live"):
+                metrics.update(evidence_metrics(db, strategy_id, self._settings, ref_date))
             if self._settings.maps_score_readiness_required:
                 metrics.update(self._promotion_score_readiness(db, strategy_id, ref_date))
             decision = gate.evaluate(
@@ -1547,21 +1581,8 @@ class OperationalPipeline:
         mc: MonteCarloSequenceResults | None,
         wfa: WalkForwardResults | None,
     ) -> dict[str, float]:
-        metrics: dict[str, float] = {}
-        if plateau is not None:
-            metrics["robustness"] = max(0.0, min(float(plateau.positive_ratio), 1.0))
-        if mc is not None:
-            ratio = abs(float(mc.mdd_p95)) / float(mc.mdd_limit) if mc.mdd_limit else 1.0
-            metrics["risk"] = max(0.0, min(1.0 - ratio, 1.0))
-            metrics["mc_mdd_p95"] = float(mc.mdd_p95)
-        if wfa is not None:
-            # WFA 통과 여부와 무관하게 실제 측정치 기반으로 항상 설정한다.
-            # 음수 값은 0 으로 클램프 — "메트릭 누락" 대신 실제 점수로 gate 가 판단한다.
-            # 과거에는 passed=True 일 때만 설정했는데, 그러면 모든 미통과 전략이
-            # robustness/risk 점수만으로 평가돼 임계값(60)을 절대 넘지 못했다.
-            metrics["recovery"] = max(0.0, min(float(wfa.mean_g2p) / 2.0, 1.0))
-            metrics["return"] = max(0.0, min(float(wfa.sharpe_mean) / 2.0, 1.0))
-        return metrics
+        from maps.promotion.evidence import validation_metrics
+        return validation_metrics(plateau, mc, wfa)
 
     def _to_securities(
         self,
@@ -2078,7 +2099,9 @@ class OperationalPipeline:
         holdings: dict[str, int] | None = None,
         holding_details: dict[str, dict] | None = None,
     ) -> None:
-        cash = float(sync.get("cash", 0.0))
+        if any(sync.get(field) is None for field in ("cash", "positions_value", "total_assets")):
+            return  # An unavailable broker observation is not a zero-valued portfolio.
+        cash = float(sync["cash"])
         positions_value = float(sync.get("positions_value", 0.0))
         total_assets = float(sync.get("total_assets", cash + positions_value))
         row = (
@@ -2862,7 +2885,8 @@ class OperationalPipeline:
                 },
             )
             try:
-                manager.submit_exit(order, exit_reason=reason)
+                manager.submit_exit(order, exit_reason=reason, context=ExecutionContext(
+                    f"entry:{entry.id}:exit", source_id=entry.id))
             except DuplicateOrderError:
                 logger.info(
                     "Exit skipped [%s %s]: already submitted",
@@ -2958,7 +2982,7 @@ class OperationalPipeline:
     def _split_order_log(db: Session, leg: AnalysisPickLeg) -> OrderLog | None:
         if not leg.order_id:
             return None
-        return db.query(OrderLog).filter(OrderLog.order_id == leg.order_id).first()
+        return db.query(OrderLog).filter(OrderLog.order_id == leg.order_id).populate_existing().first()
 
     @staticmethod
     def _split_entry_prefix(pick: AnalysisPick, leg: AnalysisPickLeg) -> str:
@@ -3114,7 +3138,7 @@ class OperationalPipeline:
             if row is None or (row.status or "").lower() not in live_statuses:
                 continue
             try:
-                cancelled = bool(broker.cancel_order(leg.order_id))
+                cancelled = bool(manager.cancel(leg.order_id))
             except (NotImplementedError, BrokerAdapterError):
                 cancelled = False
             if not cancelled:
@@ -3123,10 +3147,10 @@ class OperationalPipeline:
             # 감사 행만 cancelled로 확정한다. leg 연결은 동기화가 fill delta를
             # 반영할 때까지 유지한다.
             manager.sync_broker_state()
-            row = db.query(OrderLog).filter(OrderLog.order_id == leg.order_id).first()
-            if row is not None and (row.status or "").lower() in live_statuses:
-                row.status = OrderStatus.CANCELLED.value
-            db.commit()
+            row = db.query(OrderLog).filter(OrderLog.order_id == leg.order_id).populate_existing().first()
+            if row is None or (row.status or "").lower() in live_statuses:
+                return False
+            db.expire(row)
             self._sync_split_legs(db, pick)
             return True
         return True
@@ -3249,7 +3273,8 @@ class OperationalPipeline:
                 decision_context=_pick_exit_context(pick, current, reason),
             )
             try:
-                result = manager.submit_exit(order, exit_reason=reason)
+                result = manager.submit_exit(order, exit_reason=reason, context=ExecutionContext(
+                    f"pick:{pick.id}:{pick.execution_version}:exit:{order.strategy_id}", source="analysis_pick", source_id=pick.id))
             except (DuplicateOrderError, BrokerAdapterError) as exc:
                 logger.warning("Split strategy exit failed [%s] %s: %s", pick.ticker, reason, exc)
                 return 0, 0
@@ -3364,6 +3389,8 @@ class OperationalPipeline:
                 order,
                 daily_pnl=daily_pnl,
                 risk_strategy_id=f"strategy_trade:{pick.id}",
+                context=ExecutionContext(f"pick:{pick.id}:{pick.execution_version}:entry:{order.strategy_id}",
+                    source="analysis_pick", source_id=pick.id),
             )
         except (KillSwitchError, DuplicateOrderError, ExposureCapError, BrokerAdapterError) as exc:
             logger.warning("Split strategy entry failed [%s]: %s", pick.ticker, exc)
@@ -3551,6 +3578,8 @@ class OperationalPipeline:
                             order,
                             daily_pnl=daily_pnl,
                             risk_strategy_id=f"strategy_trade:{pick.id}",
+                context=ExecutionContext(f"pick:{pick.id}:{pick.execution_version}:entry:{order.strategy_id}",
+                    source="analysis_pick", source_id=pick.id),
                         )
                     except (KillSwitchError, DuplicateOrderError, ExposureCapError, BrokerAdapterError) as exc:
                         logger.warning("전략매매 진입 실패 [%s]: %s", pick.ticker, exc)
@@ -3585,13 +3614,14 @@ class OperationalPipeline:
                     decision_context=_pick_exit_context(pick, current, reason),
                 )
                 try:
-                    result = manager.submit_exit(order, exit_reason=reason)
+                    result = manager.submit_exit(order, exit_reason=reason, context=ExecutionContext(
+                    f"pick:{pick.id}:{pick.execution_version}:exit:{order.strategy_id}", source="analysis_pick", source_id=pick.id))
                 except (DuplicateOrderError, BrokerAdapterError) as exc:
                     logger.warning("전략매매 청산 실패 [%s] %s: %s", pick.ticker, reason, exc)
                     continue
                 pick.exit_order_id = result.order_id
                 pick.exit_reason = reason
-                pick.state = "CLOSED"
+                pick.state = "CLOSED" if result.status == OrderStatus.FILLED else "BOUGHT"
                 pick.last_action_at = now
                 db.commit()   # 청산(이미 커밋된 OrderLog)과 CLOSED 상태를 즉시 동기화
                 closed += 1

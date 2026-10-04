@@ -6,6 +6,9 @@
 
 ```
 execution/
+├── safety.py          # 실행 모드·계좌별 단일 프로세스 잠금
+├── safety_admin.py    # 근거와 버전을 확인하는 관리자 해결 작업
+├── reconciliation.py # 브로커 체결·계좌 검증, 입출금 보정 손실 한도
 ├── __init__.py        # 빈 패키지 마커
 ├── broker_adapter.py  # BrokerAdapter (ABC) + 공통 데이터 클래스 + get_broker() 팩토리
 ├── mock_broker.py     # MockBroker — 인메모리 주문 시뮬레이터 (Phase 1~4)
@@ -70,12 +73,10 @@ execution/
 
 > 🔴 **결과 불명 주문은 다시 보내지 않는다.** KIS 가 이미 접수했을 수 있다. 예전엔 어댑터 3회 ×
 > `OrderManager` 3회로 **최대 9번** 재전송했고, 중복 가드는 우리 `order_log` 만 봐서 못 막았다.
-> `OrderManager._resolve_unknown_order` 가 `get_daily_order_results()` 에서 같은 종목·방향·제출
-> 시각 이후·미기록 주문을 **정확히 하나** 찾으면 그 주문으로 확정한다. 못 찾거나 여럿이거나 조회가
-> 실패하면 **매수는 `unknown` 행을 남겨 당일 같은 종목 재매수를 막고**(`_raise_if_duplicate_active_order`,
-> `order_state.claimed_candidate_tickers`), 이후 `broker_sync` 가 잔고의 당일 매수수량으로 체결 확정한다.
-> **매도는 막지 않는다** — 막으면 보유가 청산 없이 방치된다(중복 매도는 KIS 가 주문가능수량 부족으로 거절).
-> 취소(`cancel_order`)는 재전송해도 노출이 생기지 않아 기존 재시도를 유지한다.
+> 매수·매도 모두 `UNKNOWN` intent와 예약을 유지한다. 유사한 주문이나 잔고 수량으로 연결하거나
+> 체결을 추정하지 않는다. 관리자가 정확한 브로커 주문 식별자 또는 미접수 확인 자료를 제공해야 한다.
+> 취소(`cancel_order`)도 `idempotent=False`다. 응답 전 단절은 자동 재전송하지 않으며,
+> 취소 접수와 실제 취소 확정을 구분한다.
 
 모의 REST 간격은 `MAPS_KIS_PAPER_MIN_INTERVAL_SECONDS`(기본 0.55초). KIS 는 **도착 시각**으로
 세므로 한도에 딱 맞추지 않는다. 모의 계좌의 정확한 한도(초당 1건 vs 2건)는 공식 확인 전이다 —
@@ -104,22 +105,24 @@ OrderManager(broker: BrokerAdapter, risk: RiskManager, db: Session)
 
 | 메서드 | 설명 |
 |---|---|
-| `submit(order, daily_pnl=0.0)` | 매수 주문 제출. RiskManager 사전 체크 → 주문 → order_log 기록 |
-| `submit_exit(order)` | 매도 주문 제출 (리스크 체크 없이 직접 실행) |
-| `sync_broker_state()` | 브로커 잔고·미결주문 동기화, portfolio_snapshot 갱신 |
-| `expire_pending_orders()` | 당일 미체결 주문 만료 처리 |
+| `submit(order, context=...)` | 계좌·전략·현금·미체결 노출 검증 후 영속 intent를 기록하고 제출 |
+| `submit_exit(order, context=...)` | 실행 모드·최신 매도 가능 수량·해당 소스의 소유 수량 검증 후 제출 |
+| `sync_broker_state()` | 정확한 주문 식별자 대조, 계좌 관측·손실 한도·알림 재시도 |
+| `cancel(order_id)` | 계좌 소속 확인과 취소 요청 기록 후 전송. 실제 취소 내역으로 확정 |
+| `expire_pending_orders()` | 항상 0. 시간 경과를 취소 증거로 사용하지 않음 |
 
 `submit()` 흐름:
-1. `RiskManager.check_before_order()` — Kill Switch · 손실한도 · 노출한도 체크
-2. `broker.place_order()` — 주문 제출
-3. `RiskManager.on_order_success/failure()` — 연속 실패 카운터 갱신
-4. `order_log` 감사 기록
+1. 계좌별 프로세스/스레드 잠금, 이벤트 중복 검사, 브로커 계좌 대조
+2. 매수 자격·손실·보유 및 예약 노출, 또는 매도 소유 수량 검증
+3. `PREPARED → SENDING` 영속 기록 후 단일 제출
+4. 명확한 결과만 반영. 불명 응답은 `UNKNOWN`으로 보관하고 자동 재전송 금지
 
 ## 안전 제약
 
-- `MAPS_LIVE_TRADING_ENABLED=false`이면 실주문 제출 없음 (mock 시뮬레이션만).
+- `MAPS_LIVE_TRADING_ENABLED=false` 또는 dry-run이면 mock을 포함해 매수·매도·취소 금지.
 - `MAPS_BROKER_MODE=mock`이면 `MockBroker`만 사용.
-- KISAdapter / KiwoomAdapter는 Phase 5 전용 — Phase 4까지는 연결 불가.
+- Kiwoom은 새 계좌 검증 계약을 지원할 때까지 실행 금지.
+- 운영 복구·검증 자격·마이그레이션 절차: [계좌 실행 안전 안내](../../docs/execution_safety.md).
 
 ## 의존성
 

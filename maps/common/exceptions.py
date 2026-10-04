@@ -116,6 +116,18 @@ class BrokerOrderUnknownError(BrokerAdapterError):
     """
 
 
+class BrokerOrderRejectedError(BrokerAdapterError):
+    """The broker explicitly refused the request; acceptance is ruled out."""
+
+
+class ExecutionBlockedError(BrokerAdapterError):
+    """A policy/data block, never a rejected order or a broker failure."""
+
+    def __init__(self, reason_code: str) -> None:
+        super().__init__(reason_code)
+        self.reason_code = reason_code
+
+
 # --- 하위 호환 별칭 (구 코드가 참조하는 이름들) ---
 
 class ValidationError(MAPSError):

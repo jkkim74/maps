@@ -7,6 +7,7 @@
 
 ```
 ops/
+├── safety_notifications.py # 실행 안전 이벤트의 영속 알림 재시도
 ├── __init__.py             # 빈 패키지 마커
 ├── candidate_selection.py  # AI 모드별 후보 주문 자격 SQL 식
 ├── close_report.py         # 장마감 텔레그램 리포트 — 다이제스트 + 당일 실패 잡 렌더

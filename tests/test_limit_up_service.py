@@ -19,10 +19,12 @@ from maps.execution.broker_adapter import (
     Position,
 )
 from maps.execution.order_manager import OrderManager
+from maps.common.settings import MapsSettings
+from tests.execution_contract import SyntheticAccountContract, prime_account, record_owned_leg
 from maps.limit_up.domain import LimitUpConfig, LimitUpState
 from maps.limit_up.feed import FeedQuote, FeedTrade
 from maps.limit_up.repository import LimitUpRepository
-from maps.common.exceptions import BrokerAdapterError
+from maps.common.exceptions import BrokerAdapterError, BrokerOrderRejectedError
 from maps.common.models import LimitUpSession, LimitUpTape, OrderLog, PortfolioSnapshot
 from maps.limit_up.service import (
     OBSERVE_ONLY_EXECUTION_MODE,
@@ -37,7 +39,7 @@ from maps.risk.manager import RiskManager
 KST = dt.timezone(dt.timedelta(hours=9))
 
 
-class ServiceBroker(BrokerAdapter):
+class ServiceBroker(SyntheticAccountContract, BrokerAdapter):
     """Pending-order broker that exposes actual orders and positions."""
 
     def __init__(self) -> None:
@@ -97,7 +99,9 @@ class ServiceBroker(BrokerAdapter):
 
     def get_daily_order_results(self) -> list[OrderResult]:
         """Return no fills until a test scripts an actual position."""
-        return []
+        return [OrderResult(oid, request.strategy_id, request.ticker, request.side,
+            OrderStatus.CANCELLED if oid in self.cancelled else OrderStatus.PENDING,
+            quantity=request.quantity, submitted_at=dt.datetime.now()) for oid, request in self.orders]
 
 
 def _candidate() -> Candidate:
@@ -120,7 +124,10 @@ def _service(db, mode: LimitUpMode, broker: ServiceBroker | None = None,
     repo = LimitUpRepository(db)
     worker = None
     if broker is not None:
-        manager = OrderManager(broker, RiskManager(broker, db), db)
+        manager = OrderManager(broker, RiskManager(broker, db), db, settings=MapsSettings(
+            maps_limit_up_enabled=True, maps_limit_up_mode="automatic", maps_live_trading_enabled=True))
+        if mode == LimitUpMode.AUTOMATIC and db.query(OrderLog).count() == 0:
+            prime_account(manager, db)
         worker = LimitUpCommandWorker(manager, broker, repo)
     return LimitUpService(
         mode=mode,
@@ -143,6 +150,7 @@ def _seed_owned(service, ticker: str, quantity: int, price: int = 98_800) -> Non
         )
         leg.filled_quantity = qty
         leg.avg_fill_price = float(price)
+        record_owned_leg(service.repository.db, session, leg, qty, price)
     service.repository.db.commit()
 
 
@@ -459,6 +467,7 @@ def test_rest_fallback_price_can_fire_hard_stop_but_never_entry(db) -> None:
     machine = service.machine("005930")
     machine.state = LimitUpState.LOCKED
     machine.filled_quantity = 3
+    _seed_owned(service, "005930", 3)
     broker.positions["005930"] = Position("005930", 3, 98_800)
 
     service.on_fallback_price("005930", price=94_900, at=20.0, now_kst=now)
@@ -677,6 +686,7 @@ def test_missed_eod_review_liquidates_instead_of_carrying_overnight(db) -> None:
     machine = service.machine("005930")
     machine.fire_net(at=1.0)
     machine.on_fill(at=2.0, cumulative_quantity=40)
+    _seed_owned(service, "005930", 40)
     machine.state = LimitUpState.LOCKED  # 15:18 review never ran
 
     # 15:25 sees nothing to confirm, because the cap never trimmed anything
@@ -871,6 +881,7 @@ def test_recovery_resubmits_an_exit_interrupted_before_it_was_sent(db) -> None:
         leg = service.repository.upsert_leg(row, name=name, price=98_800, quantity=qty)
         leg.filled_quantity = qty
         leg.avg_fill_price = 98_800.0
+        record_owned_leg(db, row, leg, qty, 98_800)
     db.commit()
 
     service.recover(ref_date=dt.date(2026, 8, 28), now_monotonic=100.0)
@@ -960,7 +971,7 @@ def test_a_failed_stop_loss_order_does_not_strand_the_position(db) -> None:
 
     # the protective sell blows up mid-flight
     def _explode(order):
-        raise BrokerAdapterError("broker rejected the exit")
+        raise BrokerOrderRejectedError("broker explicitly rejected the exit")
 
     original = broker.place_order
     broker.place_order = _explode
@@ -1092,7 +1103,7 @@ def test_protective_sell_waits_for_verified_buy_cancels(db, cancel_result) -> No
     assert [order for _, order in broker.orders if order.side is OrderSide.SELL] == []
 
 
-def test_account_daily_loss_is_passed_to_entry_risk_gate(db) -> None:
+def test_unscoped_portfolio_history_does_not_override_account_observations(db) -> None:
     broker = ServiceBroker()
     service = _service(db, LimitUpMode.AUTOMATIC, broker)
     today = dt.date(2026, 8, 28)
@@ -1108,7 +1119,7 @@ def test_account_daily_loss_is_passed_to_entry_risk_gate(db) -> None:
     service.on_trade(_trade(1.0, 99_600), now_kst=now)
     service.on_trade(_trade(2.0, 99_700), now_kst=now)
 
-    assert broker.orders == []
+    assert len(broker.orders) == 2
 
 
 def test_recover_does_not_lock_on_a_watch_only_row_of_unknown_provenance(db) -> None:

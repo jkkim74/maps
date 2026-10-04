@@ -1,111 +1,14 @@
-"""OrderManager 테스트 (Phase 4)."""
-
-from __future__ import annotations
-
+"""Order audit contracts; ambiguous-order safety lives in test_execution_safety."""
 import datetime as dt
-from unittest.mock import MagicMock
-
+from dataclasses import replace
+from unittest.mock import Mock
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
-
-from maps.common.db import Base
-from maps.common.exceptions import (
-    BrokerAdapterError,
-    BrokerOrderUnknownError,
-    DuplicateOrderError,
-    KillSwitchError,
-    ResearchStrategyError,
-)
-from maps.common.models import OrderLog
-from maps.execution.broker_adapter import (
-    AccountBalance,
-    Order,
-    OrderResult,
-    OrderSide,
-    OrderStatus,
-    OrderType,
-    order_log_id,
-    raw_broker_order_id,
-)
-from maps.execution.mock_broker import MockBroker
+from maps.common.exceptions import BrokerOrderRejectedError, BrokerOrderUnknownError, ResearchStrategyError
+from maps.common.models import OrderIntent, OrderLog
 from maps.common.settings import MapsSettings
-from maps.execution.order_manager import OrderManager, _order_log_mode
-from maps.risk.manager import RiskConfig, RiskManager
-
-
-@pytest.fixture
-def broker() -> MockBroker:
-    return MockBroker(
-        initial_cash=10_000_000,
-        price_feed={"AAAA": 10_000},
-    )
-
-
-@pytest.fixture
-def risk(broker: MockBroker) -> RiskManager:
-    return RiskManager(broker=broker, db=MagicMock(), config=RiskConfig())
-
-
-@pytest.fixture
-def manager(broker: MockBroker, risk: RiskManager) -> OrderManager:
-    return OrderManager(
-        broker=broker,
-        risk=risk,
-        db=MagicMock(),
-        research_strategies={"research_strat"},
-    )
-
-
-def _buy(ticker: str = "AAAA", strategy: str = "live_strat") -> Order:
-    return Order(
-        strategy_id=strategy,
-        ticker=ticker,
-        side=OrderSide.BUY,
-        order_type=OrderType.MARKET,
-        quantity=10,
-        limit_price=10_000,
-    )
-
-
-def test_submit_persists_the_exact_decision_context(db, broker) -> None:
-    """주문 이후 후보·장세가 바뀌어도 제출 당시 근거는 order_log에 고정돼야 한다."""
-    context = {
-        "version": 1,
-        "origin": "live",
-        "candidate": {
-            "snapshot_id": 406247,
-            "ref_date": "2026-08-21",
-            "score": 38.27,
-            "score_reason": "decision-time candidate",
-        },
-        "market": {
-            "ref_date": "2026-08-24",
-            "regime": "mixed",
-            "weekly_trend": "pass",
-            "vol_regime": "high",
-            "entry_limit_ratio": 0.25,
-        },
-    }
-    order = Order(
-        strategy_id="live_strat",
-        ticker="AAAA",
-        side=OrderSide.BUY,
-        order_type=OrderType.LIMIT,
-        quantity=10,
-        limit_price=10_000,
-        decision_context=context,
-    )
-    manager = OrderManager(
-        broker=broker,
-        risk=RiskManager(broker=broker, db=db, config=RiskConfig()),
-        db=db,
-    )
-
-    manager.submit(order)
-
-    assert db.query(OrderLog).one().decision_context == context
+from maps.execution.broker_adapter import OrderSide, OrderStatus, order_log_id, raw_broker_order_id
+from maps.execution.order_manager import _order_log_mode
+from tests.test_execution_safety import setup, order, context
 
 
 def test_kis_order_log_id_includes_account_and_kst_day() -> None:
@@ -129,7 +32,6 @@ def test_kis_order_log_id_includes_account_and_kst_day() -> None:
     assert "11111111" not in first
     assert raw_broker_order_id(later) == "0000000755"
 
-
 def test_non_kis_order_log_id_is_unchanged() -> None:
     """Mock 등 ODNO 재사용 문제가 없는 기존 브로커 ID는 바꾸지 않는다."""
     assert order_log_id(
@@ -138,7 +40,6 @@ def test_non_kis_order_log_id_is_unchanged() -> None:
         account_no="",
         submitted_at=dt.datetime(2026, 8, 10),
     ) == "mock-1"
-
 
 def test_kis_order_log_id_canonicalizes_default_product_code() -> None:
     """동일 계좌의 `12345678`과 `12345678-01` 표기는 같은 ID를 만들어야 한다."""
@@ -159,205 +60,6 @@ def test_kis_order_log_id_canonicalizes_default_product_code() -> None:
 
     assert compact == explicit
 
-
-def test_submit_namespaces_kis_order_id_in_result_and_audit_log(db, monkeypatch) -> None:
-    """KIS 제출 결과와 감사 행은 같은 전역 유일 ID를 사용해야 한다."""
-    submitted_at = dt.datetime(2026, 8, 10, 8, 55)
-    live_broker = MagicMock()
-    live_broker.get_account_balance.return_value = AccountBalance(
-        cash=10_000_000,
-        positions_value=0,
-    )
-    live_broker.place_order.return_value = OrderResult(
-        order_id="0000000755",
-        strategy_id="live_strat",
-        ticker="AAAA",
-        side=OrderSide.BUY,
-        status=OrderStatus.PENDING,
-        submitted_at=submitted_at,
-    )
-    settings = MapsSettings(
-        maps_broker_mode="kis",
-        kis_account_no="11111111-01",
-    )
-    monkeypatch.setattr("maps.execution.order_manager.get_settings", lambda: settings)
-    manager = OrderManager(
-        broker=live_broker,
-        risk=RiskManager(broker=live_broker, db=db, config=RiskConfig()),
-        db=db,
-    )
-
-    result = manager.submit(_buy())
-
-    row = db.query(OrderLog).one()
-    assert result.order_id.endswith(":20260810:0000000755")
-    assert row.order_id == result.order_id
-
-
-# ---------------------------------------------------------------------------
-# 1. Research 전략 차단
-# ---------------------------------------------------------------------------
-
-def test_research_strategy_blocked(manager: OrderManager) -> None:
-    """Research 단계 전략의 자동 주문 → ResearchStrategyError."""
-    order = _buy(strategy="research_strat")
-
-    with pytest.raises(ResearchStrategyError) as exc_info:
-        manager.submit(order)
-
-    assert exc_info.value.strategy_id == "research_strat"
-
-
-def test_non_research_strategy_allowed(manager: OrderManager) -> None:
-    """Research 차단 목록에 없는 전략은 정상 주문 가능."""
-    order = _buy(strategy="live_strat")
-    result = manager.submit(order)
-    assert result.status == OrderStatus.FILLED
-
-
-# ---------------------------------------------------------------------------
-# 2. Kill Switch 전파
-# ---------------------------------------------------------------------------
-
-def test_kill_switch_propagates(
-    manager: OrderManager,
-    broker: MockBroker,
-    risk: RiskManager,
-) -> None:
-    """Kill Switch 발동 후 submit() 이 KillSwitchError를 전파한다."""
-    # RiskManager를 통해 Kill Switch 발동
-    risk.check_and_trigger("live_strat", daily_pnl=-0.05, current_mdd=0.0)
-
-    order = _buy(strategy="live_strat")
-    with pytest.raises(KillSwitchError):
-        manager.submit(order)
-
-
-# ---------------------------------------------------------------------------
-# 3. eod_cleanup 위임
-# ---------------------------------------------------------------------------
-
-def test_eod_cleanup_delegates_to_broker(
-    manager: OrderManager,
-    broker: MockBroker,
-) -> None:
-    """eod_cleanup() 이 broker.eod_cleanup() 을 호출한다."""
-    # 첫 주문 후 중복 탐지 등록
-    manager.submit(_buy())
-
-    manager.eod_cleanup()
-
-    # EOD 후 같은 방향 주문이 다시 가능해야 함
-    result = manager.submit(_buy())
-    assert result.status == OrderStatus.FILLED
-
-
-# ---------------------------------------------------------------------------
-# 4. 실패 시 RiskManager 카운터 증가
-# ---------------------------------------------------------------------------
-
-def test_failure_increments_risk_counter(
-    manager: OrderManager,
-    broker: MockBroker,
-    risk: RiskManager,
-) -> None:
-    """broker.place_order가 예외를 던지면 on_order_failure가 호출된다."""
-    # Kill Switch를 broker 레벨에서 직접 활성화
-    broker.activate_kill_switch()
-
-    with pytest.raises(KillSwitchError):
-        # submit() → check_before_order 통과 → broker.place_order → KillSwitchError
-        # → on_order_failure 호출
-        manager.submit(_buy(strategy="s2"))
-
-    # 실패 카운터가 1 이상이어야 함
-    assert risk._failure_counts.get("s2", 0) >= 1
-
-
-def test_submit_exit_bypasses_new_entry_kill_switch(
-    manager: OrderManager,
-    broker: MockBroker,
-    risk: RiskManager,
-) -> None:
-    manager.submit(_buy())
-    risk.check_and_trigger("live_strat", daily_pnl=-0.05, current_mdd=0.0)
-
-    result = manager.submit_exit(Order(
-        strategy_id="live_strat",
-        ticker="AAAA",
-        side=OrderSide.SELL,
-        order_type=OrderType.MARKET,
-        quantity=10,
-        current_price=10_000,
-    ))
-
-    assert result.status == OrderStatus.FILLED
-
-
-def test_submit_exit_records_exit_reason(broker: MockBroker) -> None:
-    """청산 사유가 order_log에 남아야 한다 — 이전에는 로그에만 있어 사후 검증이 불가했다."""
-    engine = create_engine(
-        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
-    )
-    Base.metadata.create_all(engine)
-    db = sessionmaker(bind=engine)()
-    try:
-        manager = OrderManager(
-            broker=broker, risk=RiskManager(broker=broker, db=db, config=RiskConfig()), db=db,
-        )
-        manager.submit(_buy())
-        manager.submit_exit(
-            Order(
-                strategy_id="live_strat",
-                ticker="AAAA",
-                side=OrderSide.SELL,
-                order_type=OrderType.MARKET,
-                quantity=10,
-                current_price=9_000,
-            ),
-            exit_reason="stop_loss",
-        )
-
-        rows = {r.side: r for r in db.query(OrderLog).all()}
-        assert rows["sell"].exit_reason == "stop_loss"
-        assert rows["buy"].exit_reason is None   # 매수에는 청산 사유가 없다
-    finally:
-        db.close()
-        Base.metadata.drop_all(engine)
-        engine.dispose()
-
-
-def test_buy_records_entry_atr(broker: MockBroker) -> None:
-    """매수 주문에 진입 시점 ATR 이 남아야 한다.
-
-    청산·화면이 이 값을 재사용해 손절가를 고정한다. 기록이 없으면 그날의 ATR 로
-    다시 계산돼 손절폭이 사이징 가정과 어긋난다(2026-07-31 확인).
-    """
-    engine = create_engine(
-        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
-    )
-    Base.metadata.create_all(engine)
-    db = sessionmaker(bind=engine)()
-    try:
-        manager = OrderManager(
-            broker=broker, risk=RiskManager(broker=broker, db=db, config=RiskConfig()), db=db,
-        )
-        order = _buy()
-        order.atr14 = 1_874.4
-        manager.submit(order)
-
-        row = db.query(OrderLog).filter(OrderLog.side == "buy").one()
-        assert row.atr14 == pytest.approx(1_874.4)
-    finally:
-        db.close()
-        Base.metadata.drop_all(engine)
-        engine.dispose()
-
-
-# ---------------------------------------------------------------------------
-# 5. order_log.mode 라벨 — 페이퍼 계좌 체결은 'live'가 아니다
-# ---------------------------------------------------------------------------
-
 @pytest.mark.parametrize(
     "kwargs, expected",
     [
@@ -376,129 +78,52 @@ def test_order_log_mode_marks_only_real_money_as_live(monkeypatch, kwargs, expec
     assert _order_log_mode() == expected
 
 
-# ---------------------------------------------------------------------------
-# 모호한 주문 실패(timeout 등) — 재주문하지 않고 브로커 당일 주문으로 확정한다
-# ---------------------------------------------------------------------------
-
-_KST_TZ = dt.timezone(dt.timedelta(hours=9))
-
-
-def _kst_now_naive() -> dt.datetime:
-    return dt.datetime.now(_KST_TZ).replace(tzinfo=None)
-
-
-def _unknown_broker(daily_results=None, daily_error: Exception | None = None) -> MagicMock:
-    broker = MagicMock()
-    broker.get_account_balance.return_value = AccountBalance(cash=10_000_000, positions_value=0)
-    broker.place_order.side_effect = BrokerOrderUnknownError("KIS order outcome unknown: read timed out")
-    if daily_error is not None:
-        broker.get_daily_order_results.side_effect = daily_error
-    else:
-        broker.get_daily_order_results.return_value = daily_results or []
-    return broker
+def test_submit_persists_the_exact_decision_context(db, setup):
+    _, manager = setup
+    evidence = {"candidate": {"snapshot_id": 42}, "market": {"regime": "mixed"}}
+    result = manager.submit(replace(order(), decision_context=evidence, atr14=300), context=context())
+    evidence["market"]["regime"] = "changed"
+    db.expire_all()
+    row = db.query(OrderLog).filter_by(order_id=result.order_id).one()
+    assert row.decision_context["market"]["regime"] == "mixed"
+    assert row.atr14 == 300 and row.intent_id and row.code_hash and row.params_hash
 
 
-def _broker_row(order_id: str, *, side: OrderSide = OrderSide.BUY, ticker: str = "AAAA") -> OrderResult:
-    return OrderResult(
-        order_id=order_id,
-        strategy_id="",
-        ticker=ticker,
-        side=side,
-        status=OrderStatus.PENDING,
-        submitted_at=_kst_now_naive(),
-    )
+def test_research_strategy_blocked(db, setup):
+    broker, manager = setup
+    manager.block_strategy("test")
+    with pytest.raises(ResearchStrategyError):
+        manager.submit(order(), context=context())
+    assert not broker.filled_orders
 
 
-def _manager_for(broker: MagicMock, db) -> OrderManager:
-    return OrderManager(
-        broker=broker,
-        risk=RiskManager(broker=broker, db=db, config=RiskConfig()),
-        db=db,
-        notifier=MagicMock(),
-    )
-
-
-def test_unknown_order_is_adopted_from_broker_daily_orders(db) -> None:
-    """timeout 난 주문이 KIS 당일 주문에 있으면 그 주문으로 확정한다 — 재주문 0회."""
-    broker = _unknown_broker([_broker_row("0000000999")])
-    manager = _manager_for(broker, db)
-
-    result = manager.submit(_buy())
-
-    assert broker.place_order.call_count == 1
-    assert raw_broker_order_id(result.order_id) == "0000000999"
-    row = db.query(OrderLog).one()
-    assert row.status == OrderStatus.PENDING.value
-    assert raw_broker_order_id(row.order_id) == "0000000999"
-
-
-def test_unknown_buy_without_broker_evidence_is_blocked_for_the_day(db) -> None:
-    """브로커에서 못 찾으면 재주문하지 않고, 같은 날 같은 종목 매수를 막는다(fail-closed)."""
-    broker = _unknown_broker([])
-    manager = _manager_for(broker, db)
-
+def test_explicit_rejection_is_released_and_counted_once(db, setup):
+    broker, manager = setup
+    broker.place_order = Mock(side_effect=BrokerOrderRejectedError("insufficient funds"))
+    with pytest.raises(BrokerOrderRejectedError):
+        manager.submit(order(), context=context())
+    row = db.query(OrderIntent).one()
+    assert row.status == "REJECTED" and row.reserved_amount == 0
+    assert db.query(OrderLog).one().status == "rejected"
+    assert manager._risk._failure_counts["test"] == 1
     with pytest.raises(BrokerOrderUnknownError):
-        manager.submit(_buy())
-
-    assert broker.place_order.call_count == 1
-    row = db.query(OrderLog).one()
-    assert row.status == OrderStatus.UNKNOWN.value
-    with pytest.raises(DuplicateOrderError):
-        manager.submit(_buy())
+        manager.submit(order(), context=context())
     assert broker.place_order.call_count == 1
 
 
-def test_unknown_buy_blocked_when_broker_lookup_fails(db) -> None:
-    broker = _unknown_broker(daily_error=BrokerAdapterError("KIS request failed"))
-    manager = _manager_for(broker, db)
+def test_submit_exit_records_reason_and_bypasses_entry_kill(db, setup):
+    _, manager = setup
+    manager.submit(order(), context=context())
+    manager._risk.check_and_trigger("test", daily_pnl=-.05, current_mdd=0)
+    result = manager.submit_exit(order(OrderSide.SELL), exit_reason="stop_loss", context=context("exit"))
+    assert result.status == OrderStatus.FILLED
+    assert db.query(OrderLog).filter_by(order_id=result.order_id).one().exit_reason == "stop_loss"
 
+
+def test_eod_cleanup_does_not_expire_unknown_orders(db, setup):
+    broker, manager = setup
+    broker.place_order = Mock(side_effect=TimeoutError())
     with pytest.raises(BrokerOrderUnknownError):
-        manager.submit(_buy())
-
-    assert broker.place_order.call_count == 1
-    assert db.query(OrderLog).one().status == OrderStatus.UNKNOWN.value
-
-
-def test_unknown_order_does_not_adopt_an_already_logged_order(db) -> None:
-    """이미 감사 로그에 있는 주문(다른 제출분)을 이번 주문으로 착각하면 안 된다."""
-    db.add(OrderLog(
-        order_id="0000000999", strategy_id="other", ticker="AAAA", side="BUY",
-        qty=10, status=OrderStatus.CANCELLED.value, created_at=dt.datetime.now(),
-    ))
-    db.commit()
-    broker = _unknown_broker([_broker_row("0000000999")])
-    manager = _manager_for(broker, db)
-
-    with pytest.raises(BrokerOrderUnknownError):
-        manager.submit(_buy())
-
-    assert broker.place_order.call_count == 1
-
-
-def test_unknown_order_with_two_candidates_is_not_guessed(db) -> None:
-    broker = _unknown_broker([_broker_row("0000000998"), _broker_row("0000000999")])
-    manager = _manager_for(broker, db)
-
-    with pytest.raises(BrokerOrderUnknownError):
-        manager.submit(_buy())
-
-    assert db.query(OrderLog).one().status == OrderStatus.UNKNOWN.value
-
-
-def test_unknown_sell_is_not_blocked(db) -> None:
-    """매도(손절·청산)는 막지 않는다 — 막으면 보유가 청산 없이 방치된다.
-
-    중복 매도는 KIS 가 주문가능수량 부족으로 거절하므로 다음 주기 재판단에 맡긴다.
-    """
-    broker = _unknown_broker([])
-    manager = _manager_for(broker, db)
-    sell = Order(
-        strategy_id="live_strat", ticker="AAAA", side=OrderSide.SELL,
-        order_type=OrderType.MARKET, quantity=10,
-    )
-
-    with pytest.raises(BrokerOrderUnknownError):
-        manager.submit_exit(sell, exit_reason="stop_loss")
-
-    assert broker.place_order.call_count == 1
-    assert db.query(OrderLog).count() == 0
+        manager.submit(order(), context=context())
+    manager.eod_cleanup()
+    assert db.query(OrderIntent).one().status == "UNKNOWN"

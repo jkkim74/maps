@@ -6,6 +6,7 @@
 
 ```
 promotion/
+├── evidence.py # 검증 입력 스냅샷·지문·유효기간과 실매수 자격 심사
 ├── __init__.py  # 빈 패키지 마커
 ├── gate.py      # PromotionGate, PromotionStage, PromotionDecision
 └── stage_snapshot.py # strategy-selector용 최신 성공 승격 단계 JSON
@@ -19,6 +20,12 @@ selector 입력 JSON으로 만든다. 승격 실패는 기존 단계를 박탈�
 `mock_candidate`, `live_candidate`, `live`다.
 
 ## gate.py
+
+실매수는 과거 승격 기록만으로 허용되지 않는다. `evidence.py`가 같은 실행의
+Plateau/MC/WFA 연결, 입력 스냅샷 해시, 코드·파라미터 지문, 20거래일 유효기간,
+완결 거래 20회와 모의 3개월 또는 리플레이 63거래일을 다시 확인한다.
+소액 실전은 Plateau C/OOS Sharpe 0.3, 일반 실전은 B/0.5 이상이며 WFA와 MC도
+필수로 통과해야 한다. 상세 내용은 [운영 안내](../../docs/execution_safety.md)를 참고한다.
 
 ### 핵심 원칙
 

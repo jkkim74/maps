@@ -256,6 +256,13 @@ class MapsSettings(BaseSettings):
 
     # 12단계: 드라이런/백테스트 비교 모드
     maps_dry_run: bool = False
+    maps_execution_snapshot_max_age_seconds: int = Field(default=30, ge=1)
+    maps_execution_quote_max_age_seconds: int = Field(default=15, ge=1)
+    maps_execution_reconciliation_max_age_seconds: int = Field(default=120, ge=1)
+    maps_account_mdd_limit: float = Field(default=0.15, gt=0, le=1)
+    maps_validation_max_age_trading_days: int = Field(default=20, ge=1, le=20)
+    maps_validation_min_completed_trades: int = Field(default=20, ge=20)
+    maps_execution_lock_dir: str = ".execution-locks"
     maps_backtest_mode: bool = False
 
     daily_loss_limit: float = Field(default=0.015, ge=0.0)

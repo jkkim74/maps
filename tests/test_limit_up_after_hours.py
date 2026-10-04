@@ -15,6 +15,7 @@ from maps.execution.broker_adapter import (
 )
 from maps.execution.mock_broker import MockBroker
 from maps.execution.order_manager import OrderManager
+from tests.execution_contract import record_owned_leg
 from maps.limit_up.after_hours import (
     AfterHoursVerdict,
     after_hours_exit_price,
@@ -110,6 +111,7 @@ def _carried_session(db, *, held: int = 20, close: int = 100_000):
         leg = repo.upsert_leg(session, name=name, price=close, quantity=qty)
         leg.filled_quantity = qty
         leg.avg_fill_price = float(close)
+        record_owned_leg(db, session, leg, qty, close)
     db.commit()
     manager = OrderManager(broker, RiskManager(broker, db), db)
     return broker, session, manager, submitted

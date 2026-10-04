@@ -3,43 +3,35 @@
 from __future__ import annotations
 
 import logging
-import time
+import uuid
 import zoneinfo
 from dataclasses import replace
-from datetime import date, datetime, time as dt_time, timedelta
+from datetime import date, datetime, time as dt_time, timedelta, timezone
+from decimal import Decimal
 
-from sqlalchemy import or_
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from maps.common.exceptions import (
-    BrokerAdapterError,
-    BrokerOrderUnknownError,
-    DuplicateOrderError,
+    BrokerOrderUnknownError, BrokerOrderRejectedError, ExecutionBlockedError,
     ResearchStrategyError,
 )
-from maps.common.models import OrderLog
+from maps.common.models import (
+    AnalysisPick, CandidateSnapshot, ExecutionAccountState, LimitUpSession, OrderIntent, OrderLog,
+)
 from maps.common.settings import get_settings
 from maps.execution.broker_adapter import (
-    BrokerAdapter,
-    Order,
-    OrderResult,
-    OrderSide,
-    OrderStatus,
-    order_log_id,
-    raw_broker_order_id,
+    CancelResult, OrderResult, OrderSide, OrderStatus, PendingOrder, raw_broker_order_id,
+)
+from maps.execution.reconciliation import ACTIVE, TERMINAL, apply_result, audit_id, event, money, reconcile
+from maps.execution.safety import (
+    ExecutionContext, account_execution_lock, account_key,
+    execution_environment, require_execution_enabled, utcnow,
 )
 from maps.ops.notifications import SlackNotifier
-from maps.risk.manager import RiskManager
 
 logger = logging.getLogger(__name__)
 
-# Research/Alert_only 단계에서 자동 주문이 금지된 전략 단계
-_BLOCKED_STAGES: frozenset[str] = frozenset(["research", "alert_only"])
-
 _KST = zoneinfo.ZoneInfo("Asia/Seoul")
-# 결과 불명 주문 확정 시 브로커 접수 시각(KST, 초 단위)과 우리 시계의 허용 오차.
-_UNKNOWN_ORDER_CLOCK_SKEW = timedelta(seconds=60)
 
 
 def kst_day_bounds_utc(ref_date: date) -> tuple[datetime, datetime]:
@@ -52,35 +44,6 @@ def kst_day_bounds_utc(ref_date: date) -> tuple[datetime, datetime]:
     """
     start = datetime.combine(ref_date, dt_time.min) - timedelta(hours=9)
     return start, start + timedelta(days=1)
-
-
-def _normalize_filled_row(row: OrderLog) -> bool:
-    """FILLED 로 확정된 주문의 빈 체결 수량·가격을 주문 값으로 채운다.
-
-    브로커가 ``status=filled`` 를 주면서 체결수량 0 을 함께 반환하는 경우가 있다
-    (2026-07-31 운영 확인: 004490 매도가 ``filled`` + ``fill_qty=0`` 으로 남았다).
-    하위 집계가 전부 ``fill_qty > 0`` 을 요구하므로 — 매매일지(`trade_review`),
-    승격 게이트의 `mock_months` — 수량이 비면 그 체결은 **통째로 사라진다**.
-
-    부분체결에는 적용하지 않는다. 실제 체결 수량이 중요한데 주문 수량으로 덮으면
-    보유하지 않은 수량을 체결로 기록하게 된다.
-
-    :param row: 갱신할 주문 로그 행.
-    :return: 값을 채웠으면 ``True``.
-    """
-    changed = False
-    if not row.fill_qty:
-        row.fill_qty = row.qty
-        changed = True
-    if not row.fill_price:
-        row.fill_price = row.order_price
-        changed = True
-    return changed
-
-
-def _kst_today_start_utc() -> datetime:
-    """오늘(KST) 자정을 UTC naive 시각으로 반환한다."""
-    return kst_day_bounds_utc(datetime.now(_KST).date())[0]
 
 
 def _order_log_mode() -> str:
@@ -97,607 +60,330 @@ def _order_log_mode() -> str:
 
 
 class OrderManager:
-    """전략 신호를 브로커 주문으로 변환하고 order_log에 기록한다.
+    """Account-scoped durable order submission. Broker timeout is not rejection."""
 
-    주문 흐름:
-      1. Research 전략 차단 (ResearchStrategyError)
-      2. RiskManager.check_before_order (Kill Switch, 일일 손실, 노출 한도)
-      3. broker.place_order
-      4. 성공: risk.on_order_success
-         실패: risk.on_order_failure (5회 시 Kill Switch 자동 발동)
-    """
-
-    def __init__(
-        self,
-        broker: BrokerAdapter,
-        risk: RiskManager,
-        db: Session,
-        research_strategies: set[str] | None = None,
-        notifier: SlackNotifier | None = None,
-    ) -> None:
-        """
-        Args:
-            broker: 브로커 어댑터 (MockBroker 또는 실 브로커).
-            risk: 리스크 관리자.
-            db: DB 세션 (order_log 기록용).
-            research_strategies: 자동 주문이 금지된 strategy_id 집합.
-                None 이면 모든 전략 허용.
-        """
-        self._broker = broker
-        self._risk = risk
-        self._db = db
+    def __init__(self, broker, risk, db, research_strategies=None, notifier=None, settings=None):
+        self._broker, self._risk, self._db = broker, risk, db
+        self._settings = settings or get_settings()
         self._notifier = notifier or SlackNotifier()
-        self._research: set[str] = research_strategies or set()
+        self._research = set(research_strategies or ())
 
-    def submit(
-        self,
-        order: Order,
-        daily_pnl: float = 0.0,
-        *,
-        risk_strategy_id: str | None = None,
-    ) -> OrderResult:
-        """주문을 제출한다.
+    def _session(self):
+        return Session(bind=self._db.get_bind(), expire_on_commit=False)
 
-        Args:
-            order: 주문 요청.
-            daily_pnl: 당일 손익률 (RiskManager 일일 손실 체크용).
+    def submit(self, order, daily_pnl=None, *, risk_strategy_id=None, context=None):
+        return self._submit(order, context=context, check_entry_risk=True,
+            risk_strategy_id=risk_strategy_id)
 
-        Returns:
-            OrderResult.
-
-        Raises:
-            ResearchStrategyError: Research 단계 전략의 자동 주문 시도.
-            KillSwitchError: Kill Switch 발동 또는 일일 손실 한도 초과.
-            ExposureCapError: 단일 종목 노출 한도 초과.
-        """
-        return self._submit(
-            order,
-            daily_pnl=daily_pnl,
-            check_entry_risk=True,
-            risk_strategy_id=risk_strategy_id,
-        )
-
-    def submit_exit(self, order: Order, *, exit_reason: str | None = None) -> OrderResult:
-        """Submit a strategy exit without applying new-entry exposure checks.
-
-        This is only for a normal strategy exit or stop-loss. Kill Switch
-        liquidation remains a separate, explicitly approved workflow.
-
-        exit_reason(stop_loss|take_profit|signal|bracket)은 order_log에 그대로
-        기록된다. 왜 팔았는지가 감사 로그에 남지 않으면 사후 검증이 불가능하다.
-        """
+    def submit_exit(self, order, *, exit_reason=None, context=None):
         if order.side != OrderSide.SELL:
             raise ValueError("submit_exit only accepts sell orders")
-        return self._submit(
-            order, daily_pnl=0.0, check_entry_risk=False, exit_reason=exit_reason,
-        )
+        return self._submit(order, context=context, check_entry_risk=False, exit_reason=exit_reason)
 
-    def _submit(
-        self,
-        order: Order,
-        *,
-        daily_pnl: float,
-        check_entry_risk: bool,
-        exit_reason: str | None = None,
-        risk_strategy_id: str | None = None,
-    ) -> OrderResult:
+    def _context(self, order, context):
+        if context is None:
+            candidate = (order.decision_context or {}).get("candidate", {}).get("snapshot_id")
+            if candidate:
+                context = ExecutionContext(f"candidate:{candidate}:entry", source_id=candidate)
+            elif self._settings.maps_broker_mode == "mock":
+                context = ExecutionContext(f"mock:{datetime.now(_KST).date()}:{order.strategy_id}:{order.ticker}:{order.side.value}", source="mock")
+            else:
+                raise ExecutionBlockedError("execution_context_missing")
+        if not context.event_key or len(context.event_key) > 128:
+            raise ExecutionBlockedError("invalid_event_key")
+        return context
+
+    def _entry_policy(self, db, order, context):
+        if context.source == "analysis_pick":
+            from maps.ops.pick_freshness import is_pick_stale, pick_cutoff_date
+            pick = db.get(AnalysisPick, context.source_id)
+            if (not self._settings.maps_strategy_trade_enabled or pick is None
+                    or pick.ticker != order.ticker or pick.state not in ("ARMED", "BOUGHT")
+                    or pick.entries_cancelled or pick.exit_pending_reason
+                    or is_pick_stale(pick, pick_cutoff_date(self._settings))):
+                raise ExecutionBlockedError("analysis_pick_not_armed")
+            return None
+        if context.source == "limit_up":
+            session = db.get(LimitUpSession, context.source_id)
+            if (not self._settings.maps_limit_up_enabled or self._settings.maps_limit_up_mode != "automatic"
+                    or session is None or session.ticker != order.ticker
+                    or session.execution_mode != "automatic"):
+                raise ExecutionBlockedError("limit_up_not_automatic")
+            return None
+        if context.source not in ("catalog", "mock"):
+            raise ExecutionBlockedError("entry_policy_unknown")
+        if context.source == "mock" and self._settings.maps_broker_mode != "mock":
+            raise ExecutionBlockedError("mock_policy_on_live_broker")
+        if context.source_id is not None:
+            candidate = db.get(CandidateSnapshot, context.source_id)
+            if candidate is None or candidate.strategy_id != order.strategy_id or candidate.ticker != order.ticker:
+                raise ExecutionBlockedError("candidate_identity_mismatch")
+        if not self._settings.is_paper_account:
+            from maps.promotion.evidence import require_live_eligibility
+            return require_live_eligibility(db, order.strategy_id, self._settings)
+        return None
+
+    def _submit(self, order, *, context, check_entry_risk, exit_reason=None, risk_strategy_id=None):
+        require_execution_enabled(self._settings)
         if order.strategy_id in self._research:
             raise ResearchStrategyError(order.strategy_id, "research")
-        self._raise_if_duplicate_active_order(order)
-
-        if check_entry_risk:
-            account = self._broker.get_account_balance()
-            self._risk.check_before_order(
-                order,
-                account,
-                daily_pnl,
-                risk_strategy_id=risk_strategy_id,
-            )
-
-        risk_id = risk_strategy_id or order.strategy_id
-        sent_at = datetime.now(_KST).replace(tzinfo=None)
-
-        try:
-            try:
-                result = self._place_with_retry(order)
-            except BrokerOrderUnknownError as unknown:
-                result = self._resolve_unknown_order(order, sent_at=sent_at, cause=unknown)
-            settings = get_settings()
-            result = replace(
-                result,
-                order_id=order_log_id(
-                    result.order_id,
-                    broker=settings.maps_broker_mode,
-                    account_no=settings.kis_account_no,
-                    submitted_at=result.submitted_at,
-                ),
-            )
-            if result.status == OrderStatus.REJECTED:
-                logger.warning(
-                    "주문 거부됨 [%s %s %s]: 브로커가 REJECTED 반환",
-                    order.strategy_id, order.ticker, order.side.value,
-                )
-                self._risk.on_order_failure(
-                    risk_id,
-                    reason=f"broker rejected ({order.ticker} {order.side.value})",
-                )
+        if isinstance(order.quantity, bool) or not isinstance(order.quantity, int) or order.quantity <= 0:
+            raise ExecutionBlockedError("invalid_order_quantity")
+        context = self._context(order, context)
+        key = account_key(self._settings)
+        with account_execution_lock(key), self._session() as db:
+            existing = db.query(OrderIntent).filter_by(account_key=key, event_key=context.event_key).first()
+            if existing:
+                request = existing.request
+                if (existing.ticker != order.ticker or existing.side != order.side.value
+                        or existing.strategy_id != order.strategy_id
+                        or request.get("source") != context.source
+                        or request.get("source_id") != context.source_id
+                        or existing.quantity != order.quantity or request["order_type"] != order.order_type.value
+                        or request.get("limit_price") != order.limit_price):
+                    raise ExecutionBlockedError("idempotency_payload_conflict")
+                if existing.broker_order_id:
+                    log = db.query(OrderLog).filter_by(intent_id=existing.id).one()
+                    return OrderResult(order_id=log.order_id, strategy_id=log.strategy_id,
+                        ticker=log.ticker, side=OrderSide(log.side), status=OrderStatus(log.status),
+                        filled_quantity=log.fill_qty, avg_price=log.fill_price or 0)
+                if existing.status != "PREPARED":
+                    raise BrokerOrderUnknownError(f"Order intent {existing.id}: {existing.status}; not resent")
+            sync, snapshot, opens = reconcile(db, self._broker, self._settings)
+            if order.side == OrderSide.BUY and not sync["complete"]:
+                raise ExecutionBlockedError(";".join(sync["block_reasons"]))
+            if snapshot is None:
+                raise ExecutionBlockedError("position_snapshot_unavailable")
+            validation_id = self._entry_policy(db, order, context) if order.side == OrderSide.BUY else None
+            pending = db.query(OrderIntent).filter(OrderIntent.account_key == key, OrderIntent.status.in_(ACTIVE)).all()
+            if any(i.ticker == order.ticker and i.id != getattr(existing, "id", None)
+                    and i.status in ("SENDING", "UNKNOWN") for i in pending):
+                raise ExecutionBlockedError("ticker_order_outcome_unknown")
+            now = utcnow()
+            expires = (existing.valid_until if existing else context.valid_until) or now + timedelta(
+                seconds=self._settings.maps_execution_quote_max_age_seconds)
+            if expires.tzinfo is not None:
+                expires = expires.astimezone(timezone.utc).replace(tzinfo=None)
+            if expires <= now:
+                raise ExecutionBlockedError("intent_expired")
+            bound = money(order.limit_price or order.current_price or 0)
+            if order.side == OrderSide.BUY:
+                power = self._broker.get_buying_power(order)
+                age = (utcnow() - power.as_of.astimezone(timezone.utc).replace(tzinfo=None)).total_seconds()
+                if age < -5 or age > self._settings.maps_execution_quote_max_age_seconds:
+                    raise ExecutionBlockedError("buying_power_stale")
+                bound = money(power.price_bound)
+                if order.limit_price is not None:
+                    bound = max(bound, money(order.limit_price))
+                if bound <= 0 or order.quantity > power.quantity:
+                    raise ExecutionBlockedError("insufficient_buying_power")
+                # Open broker reservations are already reflected in buying power.
+                open_ids = {raw_broker_order_id(o.order_id) for o in opens}
+                extra = sum((i.reserved_amount for i in pending if i.side == "buy"
+                    and i.id != getattr(existing, "id", None)
+                    and (not i.broker_order_id or raw_broker_order_id(i.broker_order_id) not in open_ids)), Decimal(0))
+                if money(order.quantity) * bound > money(power.amount) - extra:
+                    raise ExecutionBlockedError("cash_reserved")
+                state = db.get(ExecutionAccountState, key)
+                self._risk._db.expire_all()
+                risk_order = replace(order, limit_price=float(bound), current_price=float(bound))
+                risk_pending = list(opens)
+                for pending_intent in pending:
+                    if (pending_intent.side == "buy" and pending_intent.id != getattr(existing, "id", None)
+                            and (not pending_intent.broker_order_id or raw_broker_order_id(pending_intent.broker_order_id) not in open_ids)):
+                        risk_pending.append(PendingOrder(pending_intent.id, pending_intent.ticker, OrderSide.BUY,
+                            pending_intent.quantity, pending_intent.quantity - pending_intent.filled_quantity,
+                            float(pending_intent.request["price_bound"])))
+                self._risk.check_before_order(risk_order, replace(snapshot.balance, cash=float(money(power.amount) - extra)),
+                    float(state.daily_return), risk_strategy_id=risk_strategy_id,
+                    positions=snapshot.positions, pending_orders=risk_pending)
             else:
-                self._risk.on_order_success(risk_id)
-            self._log_order(order, result, exit_reason=exit_reason)
+                position = snapshot.positions.get(order.ticker)
+                if position is None:
+                    raise ExecutionBlockedError("position_missing")
+                available = position.sellable_quantity if position.sellable_quantity is not None else position.quantity
+                open_sell_ids = {raw_broker_order_id(o.order_id) for o in opens if o.side == OrderSide.SELL}
+                reserved = sum(i.reserved_quantity for i in pending if i.side == "sell" and i.ticker == order.ticker
+                    and i.id != getattr(existing, "id", None)
+                    and (not i.broker_order_id or raw_broker_order_id(i.broker_order_id) not in open_sell_ids))
+                if position.sellable_quantity is None:
+                    reserved += sum(o.remaining_quantity for o in opens if o.side == OrderSide.SELL and o.ticker == order.ticker)
+                if order.quantity > available - reserved:
+                    raise ExecutionBlockedError("sell_quantity_reserved")
+                if context.source != "mock":
+                    owned = self._owned_quantity(db, key, order, context)
+                    if order.quantity > owned:
+                        raise ExecutionBlockedError("sell_source_ownership_unverified")
+            require_execution_enabled(self._settings)
+            from maps.promotion.evidence import strategy_fingerprint
+            code_hash, params_hash = strategy_fingerprint(order.strategy_id)
+            intent = existing or OrderIntent(id=str(uuid.uuid4()), account_key=key,
+                environment=execution_environment(self._settings), event_key=context.event_key,
+                strategy_id=order.strategy_id, ticker=order.ticker, side=order.side.value,
+                status="PREPARED", quantity=order.quantity, filled_quantity=0,
+                request={"order_type": order.order_type.value, "limit_price": order.limit_price,
+                    "code_hash": code_hash, "params_hash": params_hash,
+                    "current_price": order.current_price, "price_bound": str(bound),
+                    "source": context.source, "source_id": context.source_id,
+                    "exit_reason": exit_reason, "atr14": order.atr14, "decision_context": order.decision_context},
+                validation_run_id=validation_id, valid_until=expires, created_at=now, updated_at=now,
+                reserved_amount=money(order.quantity) * bound if order.side == OrderSide.BUY else 0,
+                reserved_quantity=order.quantity if order.side == OrderSide.SELL else 0)
+            if existing:
+                intent.request = {**intent.request, "price_bound": str(bound)}
+                intent.reserved_amount = money(order.quantity) * bound if order.side == OrderSide.BUY else 0
+                intent.reserved_quantity = order.quantity if order.side == OrderSide.SELL else 0
+                intent.version += 1
+            db.add(intent)
+            db.commit()
+            intent.status = "SENDING"
+            intent.updated_at = utcnow()
+            db.commit()
+            try:
+                require_execution_enabled(self._settings)
+                if utcnow() >= expires:
+                    raise ExecutionBlockedError("intent_expired")
+                snapshot_age = (datetime.now(timezone.utc) - snapshot.as_of.astimezone(timezone.utc)).total_seconds()
+                if snapshot_age > self._settings.maps_execution_snapshot_max_age_seconds:
+                    raise ExecutionBlockedError("account_snapshot_stale")
+                result = self._broker.place_order(order)
+            except BrokerOrderRejectedError:
+                intent.status = "REJECTED"
+                intent.reserved_amount = 0
+                intent.reserved_quantity = 0
+                intent.version += 1
+                db.add(OrderLog(order_id=f"rejected:{intent.id}", intent_id=intent.id, account_key=key,
+                    environment=intent.environment, strategy_id=order.strategy_id, ticker=order.ticker,
+                    side=order.side.value, qty=order.quantity, fill_qty=0, status="rejected",
+                    broker=self._settings.maps_broker_mode, mode="mock" if self._settings.is_paper_account else "live"))
+                event(db, key, "order_rejected", {"intent_id": intent.id})
+                db.commit()
+                self._risk.on_order_failure(risk_strategy_id or order.strategy_id, reason="broker rejected",
+                    order_id=f"rejected:{intent.id}")
+                raise
+            except ExecutionBlockedError:
+                intent.status = "PREPARED"
+                db.commit()
+                raise
+            except Exception as exc:
+                # A generic transport error does not prove non-acceptance.
+                intent.status = "UNKNOWN"
+                intent.updated_at = utcnow()
+                intent.version += 1
+                event(db, key, "order_outcome_unknown", {"intent_id": intent.id, "exception": type(exc).__name__})
+                db.commit()
+                raise BrokerOrderUnknownError(f"Order intent {intent.id}: outcome unknown; not resent") from exc
+            try:
+                if not result.order_id:
+                    raise ExecutionBlockedError("broker_order_id_missing")
+                result = replace(result, order_id=audit_id(result, self._settings))
+                intent.broker_order_id = result.order_id
+                row = OrderLog(order_id=result.order_id, intent_id=intent.id, account_key=key,
+                    environment=execution_environment(self._settings), strategy_id=order.strategy_id,
+                    ticker=order.ticker, side=order.side.value, qty=order.quantity, fill_qty=0,
+                    status="pending", order_price=order.limit_price or order.current_price,
+                    mode="mock" if self._settings.is_paper_account else "live", broker=self._settings.maps_broker_mode,
+                    exit_reason=exit_reason, atr14=order.atr14, decision_context=order.decision_context)
+                row.code_hash, row.params_hash = intent.request["code_hash"], intent.request["params_hash"]
+                db.add(row)
+                db.flush()
+                apply_result(db, row, result)
+                db.commit()
+            except Exception:
+                db.rollback()
+                # Durable SENDING is deliberately retained for restart recovery.
+                raise
+            if result.status == OrderStatus.REJECTED:
+                self._risk.on_order_failure(risk_strategy_id or order.strategy_id, reason="broker rejected",
+                    order_id=result.order_id)
+            else:
+                self._risk.on_order_success(risk_strategy_id or order.strategy_id)
             return result
-        except Exception as exc:
-            # 관측성: 브로커 예외(KIS 에러코드 등)를 사유와 함께 WARNING으로 남기고 카운터에 반영
-            logger.warning(
-                "주문 제출 실패 [%s %s %s]: %s",
-                order.strategy_id, order.ticker, order.side.value, exc,
-            )
-            self._risk.on_order_failure(risk_id, reason=str(exc))
-            raise
 
-    def cancel(self, order_id: str) -> bool:
-        """주문을 취소하고 감사 로그의 상태도 함께 내린다.
+    def _owned_quantity(self, db, key, order, context):
+        if context.source == "catalog":
+            entry = db.get(OrderLog, context.source_id)
+            if (entry is None or entry.account_key != key or entry.ticker != order.ticker
+                    or entry.strategy_id != order.strategy_id or entry.side != "buy"):
+                return 0
+            rows = db.query(OrderLog).filter_by(account_key=key, ticker=order.ticker,
+                strategy_id=order.strategy_id).all()
+            return max(sum((r.fill_qty or 0) * (1 if r.side == "buy" else -1) for r in rows), 0)
+        rows = db.query(OrderLog, OrderIntent).join(OrderIntent, OrderLog.intent_id == OrderIntent.id).filter(
+            OrderLog.account_key == key, OrderLog.ticker == order.ticker, OrderLog.fill_qty > 0).all()
+        owned = {row.order_id: row for row, intent in rows if intent.request.get("source") == context.source
+                 and intent.request.get("source_id") == context.source_id}
+        # Explicit source links also support manually verified legacy audit rows.
+        linked = set()
+        if context.source == "analysis_pick":
+            source = db.get(AnalysisPick, context.source_id)
+            if source is None or source.ticker != order.ticker:
+                return 0
+            linked.update([source.entry_order_id, source.exit_order_id])
+            linked.update(leg.order_id for leg in source.legs)
+        elif context.source == "limit_up":
+            from maps.common.models import LimitUpOrderLeg
+            source = db.get(LimitUpSession, context.source_id)
+            if source is None or source.ticker != order.ticker:
+                return 0
+            linked.update((source.exit_order_ids or "").split(","))
+            linked.update(leg.broker_order_id for leg in db.query(LimitUpOrderLeg).filter_by(session_id=source.id))
+        else:
+            return 0
+        for row in db.query(OrderLog).filter(OrderLog.account_key == key, OrderLog.order_id.in_(linked - {None, ""})):
+            owned[row.order_id] = row
+        return max(sum((r.fill_qty or 0) * (1 if r.side == "buy" else -1) for r in owned.values()), 0)
 
-        브로커만 취소하고 order_log 를 pending 으로 남기면, 그 종목을 다시 팔려는
-        정상 주문이 `_raise_if_duplicate_active_order` 에 막힌다. 취소된 주문이
-        살아 있는 것으로 기록되는 것 자체가 감사 오류이기도 하다.
+    def sync_broker_state(self):
+        key = account_key(self._settings)
+        with account_execution_lock(key), self._session() as db:
+            summary, _, _ = reconcile(db, self._broker, self._settings)
+            from maps.ops.safety_notifications import deliver_safety_events
+            deliver_safety_events(db, self._notifier, key)
+            return summary
 
-        Args:
-            order_id: 취소할 주문의 감사 ID.
-
-        Returns:
-            브로커 취소 성공 여부.
-        """
-        cancelled = self._broker.cancel_order(order_id)
-        if not cancelled:
-            return cancelled
-        # order_log 는 언제나 **감사 ID** 로 저장되는데 호출자는 브로커 원주문 ID 를 넘길
-        # 수 있다(브로커의 열린 주문 목록에는 원주문 ID 만 있다). 정규화 없이 조회하면
-        # KIS 에서만 0건이 매치돼 행이 pending 으로 남고, 그 종목의 다음 정상 주문이
-        # _raise_if_duplicate_active_order 에 막힌다.
-        settings = get_settings()
-        raw_id = raw_broker_order_id(order_id)
-        # ODNO 는 거래일마다 재사용된다. 접미사만 맞추면 과거 주문이나 다른 계좌 행을
-        # 집을 수 있으므로, 계좌·날짜까지 포함한 감사 ID 로 정확히 맞춘다.
-        same_day_audit_id = order_log_id(
-            raw_id,
-            broker=settings.maps_broker_mode,
-            account_no=settings.kis_account_no,
-            submitted_at=datetime.now(_KST),
-        )
-        log = (
-            self._db.query(OrderLog)
-            .filter(or_(
-                OrderLog.order_id == order_id,
-                OrderLog.order_id == same_day_audit_id,
-            ))
-            .filter(OrderLog.status.in_([
-                OrderStatus.PENDING.value,
-                OrderStatus.PARTIALLY_FILLED.value,
-            ]))
-            .first()
-        )
-        if isinstance(log, OrderLog):
-            log.status = OrderStatus.CANCELLED.value
-            self._db.commit()
-        return cancelled
-
-    def eod_cleanup(self) -> None:
-        """장 마감 정리 (중복 탐지 초기화, 미체결 취소)."""
-        if hasattr(self._broker, "eod_cleanup"):
-            self._broker.eod_cleanup()  # type: ignore[union-attr]
-
-    def sync_broker_state(self) -> dict[str, float | int]:
-        """Sync same-day broker fills/open orders into order_log."""
-        # 주문 시각(8:55 KST = 23:55 UTC)이 UTC 날짜 경계를 넘지 않도록 KST 자정 기준으로 만료
-        today_start = _kst_today_start_utc()
-        # expire_pending_orders는 아래 브로커 포지션 대조가 끝난 뒤 마지막에 실행한다.
-        # (전일 제출됐지만 브로커에서 실제 체결된 매도가 동기화 전에 만료로 오기록되는 버그 방지)
-        balance = self._broker.get_account_balance()
-        sync_errors = 0
-        try:
-            open_orders = self._broker.get_open_orders()
-        except NotImplementedError:
-            open_orders = []
-        except BrokerAdapterError as exc:
-            sync_errors += 1
-            open_orders = []
-            logger.warning("Broker open-order sync unavailable: %s", exc)
-        updated = 0
-        try:
-            broker_results = self._broker.get_daily_order_results()
-        except NotImplementedError:
-            broker_results = []
-        except BrokerAdapterError as exc:
-            sync_errors += 1
-            broker_results = []
-            logger.warning("Broker daily fill sync unavailable: %s", exc)
-
-        settings = get_settings()
-        broker_result_ids: set[str] = set()
-        for result in broker_results:
-            if not result.order_id:
-                continue
-            stored_order_id = order_log_id(
-                result.order_id,
-                broker=settings.maps_broker_mode,
-                account_no=settings.kis_account_no,
-                submitted_at=result.submitted_at,
-            )
-            broker_result_ids.add(stored_order_id)
-            row = (
-                self._db.query(OrderLog)
-                .filter(OrderLog.order_id == stored_order_id)
-                .first()
-            )
-            if row is None and stored_order_id != result.order_id:
-                submitted = result.submitted_at
-                if submitted.tzinfo is not None:
-                    submitted = submitted.astimezone(_KST).replace(tzinfo=None)
-                day_start, day_end = kst_day_bounds_utc(submitted.date())
-                row = (
-                    self._db.query(OrderLog)
-                    .filter(OrderLog.order_id == result.order_id)
-                    .filter(OrderLog.broker == settings.maps_broker_mode)
-                    .filter(OrderLog.ticker == result.ticker)
-                    .filter(OrderLog.side == result.side.value)
-                    .filter(OrderLog.created_at >= day_start)
-                    .filter(OrderLog.created_at < day_end)
-                    .first()
-                )
+    def cancel(self, order_id):
+        require_execution_enabled(self._settings)
+        key = account_key(self._settings)
+        with account_execution_lock(key), self._session() as db:
+            row = db.query(OrderLog).filter_by(order_id=order_id, account_key=key).first()
             if row is None:
-                # MAPS 외부(MTS 등)에서 제출된 주문 — DB에 삽입하여 화면에 표시
-                self._db.add(
-                    OrderLog(
-                        order_id=stored_order_id,
-                        strategy_id="external_mts",
-                        ticker=result.ticker,
-                        side=result.side.value,
-                        qty=result.filled_quantity or 0,
-                        order_price=None,
-                        fill_price=result.avg_price if result.avg_price else None,
-                        fill_qty=result.filled_quantity,
-                        status=result.status.value,
-                        broker=get_settings().maps_broker_mode,
-                        mode=_order_log_mode(),
-                    )
-                )
-                updated += 1
-                continue
-            broker_result_ids.add(row.order_id)
-            if row.ticker != result.ticker or row.side != result.side.value:
-                sync_errors += 1
-                logger.error(
-                    "Broker order identity mismatch: order_id=%s db=%s/%s broker=%s/%s",
-                    row.order_id,
-                    row.ticker,
-                    row.side,
-                    result.ticker,
-                    result.side.value,
-                )
-                continue
-            changed = False
-            if row.status != result.status.value:
-                row.status = result.status.value
-                changed = True
-            if result.filled_quantity and row.fill_qty != result.filled_quantity:
-                row.fill_qty = result.filled_quantity
-                changed = True
-            if result.avg_price and row.fill_price != result.avg_price:
-                row.fill_price = result.avg_price
-                changed = True
-            if row.status == OrderStatus.FILLED.value:
-                changed = _normalize_filled_row(row) or changed
-            if changed:
-                updated += 1
-        updated += self._reconcile_same_day_buys(broker_result_ids)
+                candidates = db.query(OrderLog).filter(OrderLog.account_key == key,
+                    OrderLog.status.in_(("pending", "partially_filled"))).all()
+                matches = [r for r in candidates if raw_broker_order_id(r.order_id) == order_id]
+                row = matches[0] if len(matches) == 1 else None
+            if row is None:
+                raise ExecutionBlockedError("cancel_order_identity_unverified")
+            order_id = row.order_id
+            if row.status in TERMINAL:
+                return CancelResult(False, row.status == "cancelled")
+            if row.intent_id:
+                intent = db.get(OrderIntent, row.intent_id)
+                intent.cancel_requested = True
+                intent.version += 1
+            event(db, key, "cancel_requested", {"order_id": order_id})
+            db.commit()
+            accepted = bool(self._broker.cancel_order(order_id))
+            reconcile(db, self._broker, self._settings)
+            db.refresh(row)
+            return CancelResult(accepted, row.status == "cancelled")
 
-        # 포지션 기반 매도 체결 폴백: KIS VTS는 장전 시장가 주문을 daily CCLD에서
-        # 반환하지 않는 경우가 있으므로, 브로커 포지션에서 사라진 종목의 pending SELL을
-        # filled로 처리한다.
-        try:
-            current_positions = set(self._broker.get_positions().keys())
-        except NotImplementedError:
-            current_positions = None
-        except BrokerAdapterError as exc:
-            sync_errors += 1
-            current_positions = None
-            logger.warning("Broker position sync unavailable: %s", exc)
+    def expire_pending_orders(self, *, before=None):
+        # Elapsed time is not evidence of cancellation or rejection.
+        return 0
 
-        if current_positions is not None:
-            # 전일분 포함 모든 pending 매도를 브로커 포지션과 대조한다 (created_at 제한 없음).
-            # 만료 처리 전에 실행되어, 브로커에서 이미 체결돼 포지션이 사라진 매도를 filled로 보정한다.
-            pending_sells = (
-                self._db.query(OrderLog)
-                .filter(OrderLog.status == OrderStatus.PENDING.value)
-                .filter(OrderLog.side == OrderSide.SELL.value)
-                .filter(OrderLog.order_id.notin_(broker_result_ids))
-                .all()
-            )
-            for sell_row in pending_sells:
-                if sell_row.ticker not in current_positions:
-                    sell_row.status = OrderStatus.FILLED.value
-                    # 제출 시점 브로커 응답의 체결수량 0이 그대로 남는 경우가 있어
-                    # 0도 미기록으로 취급한다 (브로커 결과 경로와 같은 규칙).
-                    _normalize_filled_row(sell_row)
-                    updated += 1
-                    logger.info(
-                        "Position-based fill: sell [%s %s] marked filled (ticker absent from broker)",
-                        sell_row.order_id,
-                        sell_row.ticker,
-                    )
-            # 포지션 대조 결과를 DB에 반영(flush)한 뒤 만료 처리해야, bulk update가 보정된 행을 건너뛴다.
-            self._db.flush()
+    def eod_cleanup(self):
+        require_execution_enabled(self._settings)
+        key = account_key(self._settings)
+        with account_execution_lock(key), self._session() as db:
+            ids = [row.order_id for row in db.query(OrderLog).filter(
+                OrderLog.account_key == key, OrderLog.intent_id.isnot(None),
+                OrderLog.status.in_(("pending", "partially_filled")))]
+            for order_id in ids:
+                self.cancel(order_id)
 
-        # 포지션 대조 후에도 미해결인 전일 이전 주문만 만료 처리한다.
-        expired = self.expire_pending_orders(before=today_start)
-
-        self._db.commit()
-        return {
-            "cash": balance.cash,
-            "positions_value": balance.positions_value,
-            "total_assets": balance.total_value,
-            "open_orders": len(open_orders),
-            "updated_orders": updated,
-            "expired_orders": expired,
-            "sync_errors": sync_errors,
-        }
-
-    def _reconcile_same_day_buys(self, returned_order_ids: set[str]) -> int:
-        """Use explicit same-day buy quantities when a broker omits order rows."""
-        try:
-            buys = self._broker.get_same_day_buys()
-        except (BrokerAdapterError, NotImplementedError):
-            return 0
-        if not isinstance(buys, dict):
-            return 0
-
-        today_start = _kst_today_start_utc()
-        rows = (
-            self._db.query(OrderLog)
-            .filter(OrderLog.created_at >= today_start)
-            .filter(OrderLog.side == OrderSide.BUY.value)
-            .filter(OrderLog.status.in_([
-                OrderStatus.PENDING.value,
-                OrderStatus.PARTIALLY_FILLED.value,
-                # 결과 불명 매수도 잔고의 당일 매수수량이 보이면 체결로 확정한다.
-                OrderStatus.UNKNOWN.value,
-            ]))
-            .all()
-        )
-        rows_by_ticker: dict[str, list[OrderLog]] = {}
-        for row in rows:
-            if row.order_id not in returned_order_ids:
-                rows_by_ticker.setdefault(row.ticker, []).append(row)
-
-        updated = 0
-        for ticker, ticker_rows in rows_by_ticker.items():
-            evidence = buys.get(ticker)
-            if evidence is None or evidence.quantity <= 0 or len(ticker_rows) != 1:
-                continue
-            row = ticker_rows[0]
-            fill_qty = min(evidence.quantity, row.qty)
-            status = (
-                OrderStatus.FILLED.value
-                if fill_qty >= row.qty
-                else OrderStatus.PARTIALLY_FILLED.value
-            )
-            if row.status != status or row.fill_qty != fill_qty:
-                row.status = status
-                row.fill_qty = fill_qty
-                if evidence.avg_price:
-                    row.fill_price = evidence.avg_price
-                updated += 1
-        return updated
-
-    def expire_pending_orders(self, *, before: datetime | None = None) -> int:
-        """Expire unresolved orders during scheduler-driven cleanup."""
-        query = self._db.query(OrderLog).filter(OrderLog.status.in_([
-            OrderStatus.PENDING.value,
-            OrderStatus.PARTIALLY_FILLED.value,
-        ]))
-        if before is not None:
-            query = query.filter(OrderLog.created_at < before)
-        count = query.update({"status": "expired"}, synchronize_session=False)
-        self._db.commit()
-        return count
-
-    def block_strategy(self, strategy_id: str) -> None:
-        """전략을 Research 단계로 차단한다."""
+    def block_strategy(self, strategy_id):
         self._research.add(strategy_id)
 
-    def unblock_strategy(self, strategy_id: str) -> None:
-        """전략의 Research 차단을 해제한다."""
+    def unblock_strategy(self, strategy_id):
         self._research.discard(strategy_id)
-
-    # ------------------------------------------------------------------
-
-    def _log_order(
-        self, order: Order, result: OrderResult, *, exit_reason: str | None = None,
-    ) -> None:
-        """order_log 테이블에 감사 로그를 기록한다."""
-        logger.info(
-            "order_log [%s] %s %s qty=%s status=%s%s",
-            result.strategy_id,
-            result.side.value,
-            result.ticker,
-            result.filled_quantity,
-            result.status.value,
-            f" exit_reason={exit_reason}" if exit_reason else "",
-        )
-        try:
-            self._db.add(
-                OrderLog(
-                    order_id=result.order_id,
-                    strategy_id=result.strategy_id,
-                    ticker=result.ticker,
-                    side=result.side.value,
-                    qty=order.quantity,
-                    order_price=order.limit_price or order.current_price or None,
-                    fill_price=result.avg_price if result.avg_price else None,
-                    fill_qty=result.filled_quantity,
-                    status=result.status.value,
-                    broker=get_settings().maps_broker_mode,
-                    mode=_order_log_mode(),
-                    exit_reason=exit_reason,
-                    atr14=order.atr14,
-                    decision_context=order.decision_context,
-                )
-            )
-            self._db.commit()
-        except IntegrityError:
-            self._db.rollback()
-            logger.warning(
-                "order_log duplicate order_id=%s (%s %s %s) — skipping DB insert",
-                result.order_id, result.strategy_id, result.side.value, result.ticker,
-            )
-
-    def _place_with_retry(self, order: Order) -> OrderResult:
-        settings = get_settings()
-        attempts = max(1, settings.maps_order_retry_attempts)
-        backoff = settings.maps_order_retry_backoff_seconds
-        last_exc: Exception | None = None
-        for attempt in range(1, attempts + 1):
-            try:
-                return self._broker.place_order(order)
-            except (DuplicateOrderError, BrokerOrderUnknownError):
-                # 결과 불명 주문은 재전송하면 중복 주문이 된다 — 호출부가 확정한다.
-                raise
-            except BrokerAdapterError as exc:
-                last_exc = exc
-                if not _is_transient_broker_error(exc):
-                    raise
-            if attempt < attempts:
-                time.sleep(backoff * (2 ** (attempt - 1)))
-                self._raise_if_duplicate_active_order(order)
-        final_exc = last_exc or BrokerAdapterError("order retry failed")
-        self._notifier.send_order_alert(
-            level="ERROR",
-            strategy_id=order.strategy_id,
-            ticker=order.ticker,
-            message=str(final_exc),
-            fields={"side": order.side.value, "attempts": attempts},
-        )
-        raise final_exc
-
-    def _resolve_unknown_order(
-        self,
-        order: Order,
-        *,
-        sent_at: datetime,
-        cause: BrokerOrderUnknownError,
-    ) -> OrderResult:
-        """결과를 모르는 주문을 브로커 당일 주문 조회로 확정한다. **재주문하지 않는다.**
-
-        같은 종목·방향이고 제출 시각 이후 접수됐으며 아직 감사 로그에 없는 주문이
-        정확히 하나면 그 주문으로 확정한다. 없거나 여럿이거나 조회가 실패하면 추측하지
-        않는다 — 매수는 `unknown` 행을 남겨 당일 같은 종목 재매수를 막고(fail-closed),
-        매도는 막지 않는다(막으면 보유가 청산 없이 방치된다. 중복 매도는 KIS 가
-        주문가능수량 부족으로 거절한다).
-
-        Args:
-            order: 제출하려던 주문.
-            sent_at: 제출 직전 KST naive 시각.
-            cause: 어댑터가 올린 결과 불명 예외.
-
-        Returns:
-            브로커에서 찾은 주문 결과.
-
-        Raises:
-            BrokerOrderUnknownError: 브로커에서 이 주문을 확정하지 못했을 때.
-        """
-        candidates: list[OrderResult] | None
-        try:
-            daily = self._broker.get_daily_order_results()
-        except (BrokerAdapterError, NotImplementedError) as exc:
-            logger.warning("결과 불명 주문 확인용 당일 주문 조회 실패 [%s]: %s", order.ticker, exc)
-            candidates = None
-        else:
-            known = {
-                raw_broker_order_id(row.order_id)
-                for row in self._db.query(OrderLog.order_id)
-                .filter(OrderLog.created_at >= _kst_today_start_utc() - timedelta(days=1))
-                .all()
-            }
-            earliest = sent_at - _UNKNOWN_ORDER_CLOCK_SKEW
-            candidates = [
-                row for row in daily
-                if row.ticker == order.ticker
-                and row.side == order.side
-                and raw_broker_order_id(row.order_id) not in known
-                and (row.submitted_at is None or row.submitted_at >= earliest)
-            ]
-
-        if candidates is not None and len(candidates) == 1:
-            found = replace(candidates[0], strategy_id=order.strategy_id)
-            logger.warning(
-                "결과 불명 주문을 브로커 당일 주문으로 확정 [%s %s %s] order_id=%s (%s)",
-                order.strategy_id, order.ticker, order.side.value, found.order_id, cause,
-            )
-            self._notifier.send_order_alert(
-                level="WARN",
-                strategy_id=order.strategy_id,
-                ticker=order.ticker,
-                message="Order response timed out; adopted the broker's same-day order.",
-                fields={"side": order.side.value, "order_id": found.order_id},
-            )
-            return found
-
-        reason = (
-            "broker lookup failed" if candidates is None
-            else f"{len(candidates)} matching broker orders"
-        )
-        if order.side == OrderSide.BUY:
-            self._log_order(
-                order,
-                OrderResult(
-                    order_id=f"unknown:{order.ticker}:{sent_at:%Y%m%d%H%M%S%f}",
-                    strategy_id=order.strategy_id,
-                    ticker=order.ticker,
-                    side=order.side,
-                    status=OrderStatus.UNKNOWN,
-                    submitted_at=sent_at,
-                ),
-            )
-        self._notifier.send_order_alert(
-            level="ERROR",
-            strategy_id=order.strategy_id,
-            ticker=order.ticker,
-            message=(
-                f"Order outcome unknown ({reason}); not resent."
-                + (" Same-day buys of this ticker are blocked." if order.side == OrderSide.BUY else "")
-            ),
-            fields={"side": order.side.value, "cause": str(cause)},
-        )
-        raise cause
-
-    def _raise_if_duplicate_active_order(self, order: Order) -> None:
-        # 08:55 KST 제출분은 UTC 로 전일 23:55 — KST 자정 기준이라야 같은 거래일로 잡힌다.
-        today_start = _kst_today_start_utc()
-        existing = (
-            self._db.query(OrderLog)
-            .filter(OrderLog.created_at >= today_start)
-            .filter(OrderLog.strategy_id == order.strategy_id)
-            .filter(OrderLog.ticker == order.ticker)
-            .filter(OrderLog.side == order.side.value)
-            .filter(OrderLog.status.in_([
-                OrderStatus.PENDING.value,
-                OrderStatus.PARTIALLY_FILLED.value,
-                OrderStatus.FILLED.value,
-                OrderStatus.UNKNOWN.value,
-            ]))
-            .first()
-        )
-        if isinstance(existing, OrderLog):
-            self._notifier.send_order_alert(
-                level="WARN",
-                strategy_id=order.strategy_id,
-                ticker=order.ticker,
-                message="Duplicate active order blocked.",
-                fields={"side": order.side.value, "existing_order_id": existing.order_id},
-            )
-            raise DuplicateOrderError(order.ticker)
-
-
-def _is_transient_broker_error(exc: BrokerAdapterError) -> bool:
-    text = str(exc).lower()
-    return any(token in text for token in ("timeout", "tempor", "429", "500", "502", "503", "504", "rate limit"))

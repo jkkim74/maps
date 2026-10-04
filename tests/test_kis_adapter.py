@@ -64,6 +64,7 @@ class FakeSession:
                     "sll_buy_dvsn_cd": "02",
                     "ord_qty": "10",
                     "rmn_qty": "4",
+                    "tot_ccld_qty": "6",
                     "ord_unpr": "70000",
                     "ord_tmd": "091501",
                 }
@@ -829,6 +830,30 @@ def test_order_read_timeout_is_not_resent(no_backoff: MapsSettings) -> None:
         broker.place_order(_limit_buy())
 
     assert len(_order_calls(http)) == 1
+
+
+def test_cancel_read_timeout_is_not_resent(no_backoff: MapsSettings) -> None:
+    http = FakeSession()
+    http.raise_queue["/order-rvsecncl"] = [requests.ReadTimeout("read timed out")]
+    broker = KISAdapter(no_backoff, http=http)
+    with pytest.raises(BrokerOrderUnknownError):
+        broker.cancel_order("12345")
+    assert sum(call["url"].endswith("/order-rvsecncl") for call in http.calls) == 1
+
+
+def test_missing_history_payload_is_not_an_empty_account(settings: MapsSettings) -> None:
+    http = FakeSession()
+    http.open_orders_payload = {"rt_cd": "0"}
+    broker = KISAdapter(settings, http=http)
+    with pytest.raises(BrokerAdapterError, match="broker_page_content_incomplete"):
+        broker.get_daily_order_results()
+
+
+def test_execution_snapshot_preserves_explicit_zero_cash(settings: MapsSettings) -> None:
+    http = FakeSession()
+    http.balance_payload["output2"][0]["prvs_rcdl_excc_amt"] = "0"
+    broker = KISAdapter(settings, http=http)
+    assert broker.get_execution_snapshot().balance.cash == 0
 
 
 def test_order_ambiguous_http_500_is_not_resent(no_backoff: MapsSettings) -> None:

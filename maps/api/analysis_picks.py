@@ -589,6 +589,7 @@ def arm_pick(pick_id: int, db: Session = DbDep) -> AnalysisPickItem:
             ),
         )
     pick.strategy_trade_enabled = True
+    pick.execution_version = (pick.execution_version or 0) + 1
     pick.state = "ARMED"
     pick.entry_order_id = None
     pick.last_action_at = datetime.datetime.now(datetime.timezone.utc)
@@ -618,7 +619,8 @@ def disarm_pick(pick_id: int, db: Session = DbDep) -> AnalysisPickItem:
         # 잔량 취소를 먼저 시도한다 — 체결 여부를 판정하는 동안 추가 체결이 쌓이는 것을 막는다.
         try:
             from maps.execution.broker_adapter import get_broker
-            cancelled = bool(get_broker(get_settings().maps_broker_mode).cancel_order(pick.entry_order_id))
+            broker = get_broker(get_settings().maps_broker_mode)
+            cancelled = bool(OrderManager(broker, RiskManager(broker, db), db).cancel(pick.entry_order_id))
         except Exception as exc:  # noqa: BLE001
             logger.warning("disarm 진입주문 취소 실패 [%s %s]: %s", pick.ticker, pick.entry_order_id, exc)
             cancelled = False
@@ -628,7 +630,7 @@ def disarm_pick(pick_id: int, db: Session = DbDep) -> AnalysisPickItem:
         # 브래킷도 %/ATR 손절도 관리하지 않는 고아 포지션이 된다(2026-07-30 실제 발생:
         # 1,253주 주문 중 21주 체결 후 해제 → 손절·익절 없이 방치).
         entry_log = (
-            db.query(OrderLog).filter(OrderLog.order_id == pick.entry_order_id).first()
+            db.query(OrderLog).filter(OrderLog.order_id == pick.entry_order_id).populate_existing().first()
         )
         filled_qty = int(entry_log.fill_qty or 0) if entry_log is not None else 0
         # fill_qty 는 브로커 동기화에 의존해 늦게 채워질 수 있다. 수량을 모르더라도
@@ -715,7 +717,7 @@ def stop_split_entries(pick_id: int, db: Session = DbDep) -> AnalysisPickItem:
                 leg.current_order_fill_qty = reported
             if (row.status or "").lower() in live_statuses:
                 try:
-                    cancelled = bool(broker.cancel_order(leg.order_id))
+                    cancelled = bool(order_manager.cancel(leg.order_id))
                 except (NotImplementedError, BrokerAdapterError):
                     cancelled = False
                 if not cancelled:
