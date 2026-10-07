@@ -1098,6 +1098,11 @@ class LimitUpSession(Base):
     # 66세션 중 2건이 두 조건을 만족하지만 실제 동시 통과는 481회 중 0회였다).
     # {at, kst, price, turnover, strength, buy, failed} 를 교차당 한 건, 최대 200건.
     cross_samples: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # 교차 **이후** 를 실제 규칙으로 따라간 섀도 프로브 결과. cross_samples 는 게이트가 본
+    # 값이고, 이건 그물을 던졌다면 어떻게 끝났는가다 — 주문·슬롯·시도횟수와 무관한 기록이다.
+    # {kst, cross_no, price, turnover, strength, buy, failed, s_fill, a_fill, entry, low,
+    #  outcome, exit_price, secs} 를 한 번에 하나씩, 최대 20건.
+    shadow_probes: Mapped[list | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc)
     )

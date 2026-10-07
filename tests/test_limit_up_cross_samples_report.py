@@ -4,7 +4,9 @@ import datetime as dt
 
 import pytest
 
-from scripts.limit_up_cross_samples_report import KST, build_report, guard_phase, read_logs
+from scripts.limit_up_cross_samples_report import (
+    KST, build_report, guard_phase, read_logs, shadow_report,
+)
 
 
 def _sample(clock="10:00:00", buy=True):
@@ -78,3 +80,45 @@ def test_logs_count_attempts_once_and_preserve_latch_timestamp(tmp_path):
     assert health["rate_limited_ratio"] == .2
     assert health["attempts"]["n"] == 10
     assert health["broker_sync_gap_p95_seconds"] == 60
+
+
+def _probe(outcome, *, entry=9_880.0, exit_price=None, turnover=60_000_000_000,
+           strength=135.0, cross_no=1, clock="09:20:00"):
+    return {"kst": clock, "cross_no": cross_no, "price": 9_970, "turnover": turnover,
+            "strength": strength, "buy": True, "failed": "strength", "entry": entry,
+            "outcome": outcome, "exit_price": exit_price}
+
+
+def test_shadow_rules_use_the_first_qualifying_probe_and_real_exits():
+    rows = [
+        {"ticker": "A", "ref_date": "2026-10-05", "upper_limit_price": 10_000, "shadow_probes": [
+            _probe("no_fill_timeout", entry=None, strength=100.0),
+            _probe("time_stop", exit_price=9_780, cross_no=2),
+        ]},
+        {"ticker": "B", "ref_date": "2026-10-05", "upper_limit_price": 10_000, "shadow_probes": [
+            _probe("locked", cross_no=7, clock="13:00:00"),
+        ]},
+        {"ticker": "C", "ref_date": "2026-10-05", "upper_limit_price": 10_000, "shadow_probes": None},
+    ]
+    bars = {"B": {"2026-10-05": {"open": 9_000, "close": 10_000},
+                  "2026-10-06": {"open": 10_500, "close": 10_100}}}
+    report = shadow_report(rows, bars)
+    rule = {(r["min_turnover_krw"], r["min_execution_strength"], r["max_cross_no"], r["before_kst"]): r
+            for r in report["rules"]}
+
+    loose = rule[(50_000_000_000, 130, None, None)]
+    assert (loose["sessions"], loose["trades"], loose["wins"]) == (2, 2, 1)
+    assert loose["outcomes"] == {"time_stop": 1, "locked": 1}
+    early = rule[(50_000_000_000, 130, 5, "09:30:00")]
+    assert (early["sessions"], early["trades"]) == (1, 1)
+    assert early["mean_net_pct"] == pytest.approx(-1.0, abs=0.4)
+    assert rule[(0, 0, None, None)]["outcomes"] == {"no_fill_timeout": 1, "locked": 1}
+    assert report["probes"] == 3
+
+
+def test_locked_probe_without_a_next_bar_stays_pending():
+    rows = [{"ticker": "B", "ref_date": "2026-10-05", "upper_limit_price": 10_000,
+             "shadow_probes": [_probe("locked")]}]
+    report = shadow_report(rows, {"B": {"2026-10-05": {"open": 9_000, "close": 10_000}}})
+    rule = report["rules"][0]
+    assert (rule["sessions"], rule["trades"], rule["pending"], rule["mean_net_pct"]) == (1, 0, 1, None)

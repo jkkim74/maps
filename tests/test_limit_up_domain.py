@@ -510,6 +510,106 @@ def test_cross_samples_stop_at_the_cap_and_keep_the_earliest() -> None:
     assert machine.cross_samples[0]["at"] == 1.0
 
 
+def _probing_machine() -> LimitUpMachine:
+    """Return a watch-only machine one failing cross into a shadow probe.
+
+    상한가 13,000 → 트리거 12,970, 그리드 S 12,850 / A 12,680.
+    """
+    machine = LimitUpMachine(
+        "005930", upper_limit_price=13_000, config=_config(), observe_only=True
+    )
+    machine.on_trade(_trade(1.0, 12_960))
+    machine.on_trade(_trade(2.0, 12_970, turnover=10_000_000_000, strength=120.0))
+    return machine
+
+
+def test_shadow_probe_records_a_lock_after_a_virtual_fill() -> None:
+    """The record must say what the net would have caught, not just the gate."""
+    machine = _probing_machine()
+
+    machine.on_trade(_trade(5.0, 12_850))
+    machine.on_quote(_quote(20.0, 13_000, 0))
+    machine.on_timer(31.0)
+
+    assert machine.shadow_probes == [
+        {
+            "kst": None,
+            "cross_no": 1,
+            "price": 12_970,
+            "turnover": 10_000_000_000,
+            "strength": 120.0,
+            "buy": True,
+            "failed": "turnover,strength",
+            "s_fill": 3.0,
+            "a_fill": None,
+            "entry": 12_850.0,
+            "low": 12_850,
+            "outcome": "locked",
+            "exit_price": None,
+            "secs": 29.0,
+        }
+    ]
+
+
+def test_shadow_probe_time_stops_without_a_lock() -> None:
+    """A fill that never locks within 180 seconds is the pattern failure."""
+    machine = _probing_machine()
+
+    machine.on_trade(_trade(5.0, 12_840))
+    machine.on_trade(_trade(60.0, 12_900))
+    machine.on_timer(185.0)
+
+    probe = machine.shadow_probes[0]
+    assert (probe["outcome"], probe["exit_price"], probe["secs"]) == ("time_stop", 12_900, 183.0)
+
+
+def test_shadow_probe_hard_stops_on_the_filled_average() -> None:
+    """Both legs filled: the stop sits 5% under the blended entry."""
+    machine = _probing_machine()
+
+    machine.on_trade(_trade(5.0, 12_680))
+    machine.on_trade(_trade(9.0, 12_000))
+
+    probe = machine.shadow_probes[0]
+    assert (probe["s_fill"], probe["a_fill"]) == (3.0, 3.0)
+    assert 12_680 < probe["entry"] < 12_850
+    assert (probe["outcome"], probe["exit_price"]) == ("hard_stop", 12_000)
+
+
+@pytest.mark.parametrize(
+    ("price", "at", "outcome"),
+    [(13_000, 4.0, "upper_limit_without_fill"), (12_980, 182.0, "no_fill_timeout")],
+)
+def test_shadow_probe_ends_unfilled(price: int, at: float, outcome: str) -> None:
+    """Locking straight up or drifting above the grid both mean no entry."""
+    machine = _probing_machine()
+
+    machine.on_trade(_trade(at, price))
+
+    probe = machine.shadow_probes[0]
+    assert (probe["outcome"], probe["entry"]) == (outcome, None)
+
+
+def test_shadow_probes_run_one_at_a_time_and_never_fire() -> None:
+    """Overlapping probes would count the same minutes as separate evidence."""
+    machine = _probing_machine()
+
+    machine.on_trade(_trade(3.0, 12_960))
+    machine.on_trade(_trade(4.0, 12_970))
+
+    assert machine.trigger_cross_count == 2
+    assert machine.shadow_probes == []
+    assert machine.state is LimitUpState.WATCHING
+    assert machine.net_fired_at is None
+
+    machine.on_timer(190.0)
+    machine.on_trade(_trade(200.0, 12_960))
+    machine.on_trade(_trade(201.0, 12_970))
+    machine.on_timer(400.0)
+
+    assert [probe["cross_no"] for probe in machine.shadow_probes] == [1, 3]
+
+
 def test_observation_keeps_the_peak_turnover_and_strength_of_the_day() -> None:
     """The gate study needs the day's best reading, not the one at first cross."""
     machine = LimitUpMachine("005930", upper_limit_price=13_000, config=_config())

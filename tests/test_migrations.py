@@ -40,7 +40,7 @@ def test_fresh_database_reaches_current_schema(tmp_path, monkeypatch) -> None:
         revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
     engine.dispose()
 
-    assert revision == "0037_close_report_evidence"
+    assert revision == "0038_limit_up_shadow_probes"
     assert {"dart_financial_snapshot", "dart_filing_receipt", "dart_collection_state"} <= set(inspector.get_table_names())
     assert {"score_version", "score_scope", "score_evidence"} <= {c["name"] for c in inspector.get_columns("candidate_snapshot")}
     assert "metadata_quality" in {c["name"] for c in inspector.get_columns("collection_log")}
@@ -54,6 +54,7 @@ def test_fresh_database_reaches_current_schema(tmp_path, monkeypatch) -> None:
         "max_turnover_krw",
         "max_strength",
         "cross_samples",
+        "shadow_probes",
     } <= limit_up_session_columns
     assert {"trade_mode", "total_budget", "entries_cancelled", "exit_pending_reason"} <= pick_columns
     assert "ai_recommendation" in pick_columns

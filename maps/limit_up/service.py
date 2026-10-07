@@ -344,6 +344,7 @@ class LimitUpService:
         # 새 리스트로 대입해야 ORM 이 JSON 변경을 알아챈다 — 같은 객체를 제자리에서
         # 늘리면 flush 가 그냥 지나가고, 기록이 존재 이유인 바로 그 상황에서 빈다.
         session.cross_samples = list(machine.cross_samples)
+        session.shadow_probes = list(machine.shadow_probes)
         return True
 
     @staticmethod
@@ -365,6 +366,7 @@ class LimitUpService:
         machine.max_turnover_krw = session.max_turnover_krw
         machine.max_strength = session.max_strength
         machine.cross_samples = list(session.cross_samples or [])
+        machine.shadow_probes = list(session.shadow_probes or [])
 
     def on_kosdaq(
         self, *, value: float, at: float, now_kst: dt.datetime | None = None

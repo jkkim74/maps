@@ -41,6 +41,16 @@ _GATE_REPORT_MIN_GAP_SECONDS = 300.0
 # 장 초반 편향을 없애려고 만든 기록이 도로 장 후반으로 치우친다.
 _CROSS_SAMPLE_LIMIT = 200
 
+# 섀도 프로브의 세션당 상한. 프로브는 교차 **이후** 를 실제 규칙(그리드 체결 → 180초 안
+# 10초 잠김 → 하드스톱)으로 따라간 결과 한 건이다. 한 번에 하나만 돌리므로 프로브당
+# 수 초~6분이고, 20건이면 그날의 서로 다른 국면을 덮는다. 넘으면 버린다 — 교차 표본과
+# 같은 이유로 앞쪽을 밀어내지 않는다.
+_SHADOW_PROBE_LIMIT = 20
+
+# 그리드 레그 (이름, 예산 비중, 상한가 대비 할인율). 실주문 그리드와 섀도 프로브가
+# 같은 표를 읽어야 "그물을 던졌다면" 이 실제 그물과 같은 가격을 뜻한다.
+_GRID_SPECS: tuple[tuple[str, float, float], ...] = (("S", 0.60, 0.012), ("A", 0.40, 0.025))
+
 # 청산 주문의 전략 ID. **사유마다 달라야 한다.**
 # OrderManager._raise_if_duplicate_active_order 는 같은 날 같은 strategy_id+ticker+side 가
 # pending/partially_filled/**filled** 로 있으면 거부한다. 청산 전부가 한 ID 를 쓰면
@@ -193,9 +203,8 @@ def build_grid(*, upper_limit_price: int, budget_krw: int) -> tuple[GridLeg, Gri
     """Build the fixed 60/40 S/A grid using ceil-to-tick prices."""
     if upper_limit_price <= 0 or budget_krw <= 0:
         raise ValueError("upper_limit_price and budget_krw must be positive")
-    specs = (("S", 0.60, 0.012), ("A", 0.40, 0.025))
     legs: list[GridLeg] = []
-    for name, weight, discount in specs:
+    for name, weight, discount in _GRID_SPECS:
         leg_budget = math.floor(budget_krw * weight)
         price = round_up_krx_price(upper_limit_price * (1.0 - discount))
         legs.append(
@@ -384,6 +393,144 @@ class DailyGuard:
         return not self.halted_reasons and active_sessions < 2
 
 
+class ShadowProbe:
+    """What one trigger cross would have become had the net been thrown.
+
+    Diagnostics only: it never emits a command, takes a slot, or counts as an
+    attempt. The gate readings in ``cross_samples`` say what the gate saw; this
+    says what happened next under the real rules, which is the only evidence
+    that can tell a good threshold from a merely permissive one.
+    """
+
+    def __init__(
+        self,
+        *,
+        upper_limit_price: int,
+        config: LimitUpConfig,
+        cross_no: int,
+        event: TradeEvent,
+        failed: str,
+    ) -> None:
+        """Arm a probe at one upward trigger cross.
+
+        Args:
+            upper_limit_price: Today's upper limit for the watched ticker.
+            config: Engine timing (fill timeouts, lock seconds).
+            cross_no: 1-based ordinal of this cross within the session.
+            event: Execution that crossed the trigger upward.
+            failed: Comma-joined gate names that rejected it, empty on a pass.
+        """
+        self.upper_limit_price = upper_limit_price
+        self.config = config
+        self.started_at = event.at
+        self.leg_prices = {
+            name: round_up_krx_price(upper_limit_price * (1.0 - discount))
+            for name, _, discount in _GRID_SPECS
+        }
+        self.fills: dict[str, float] = {}
+        self.first_fill_at: float | None = None
+        self.entry_price: float | None = None
+        self.hard_stop_price: int | None = None
+        self.lock_started_at: float | None = None
+        self.last_price = event.price
+        self.low_after_fill: int | None = None
+        self.record: dict | None = None
+        self._header = {
+            "kst": event.at_kst,
+            "cross_no": cross_no,
+            "price": event.price,
+            "turnover": event.cumulative_turnover_krw,
+            "strength": event.execution_strength,
+            "buy": event.buy_initiated,
+            "failed": failed,
+        }
+
+    def on_trade(self, event: TradeEvent) -> None:
+        """Advance on one execution: the clock, then fills and the hard stop."""
+        self.on_time(event.at)
+        if self.record is not None:
+            return
+        self.last_price = event.price
+        if self.first_fill_at is None and event.price == self.upper_limit_price:
+            self._finish("upper_limit_without_fill", event.at)
+            return
+        newly = [
+            name
+            for name, price in self.leg_prices.items()
+            if name not in self.fills and event.price <= price
+        ]
+        for name in newly:
+            self.fills[name] = event.at
+        if newly:
+            if self.first_fill_at is None:
+                self.first_fill_at = event.at
+            self.entry_price = self._average_entry()
+            stop = LimitUpMachine._stop_for(self.entry_price)
+            # 실제 머신과 같이 넓히기만 한다 — 레그가 더 차도 손절이 조여지지 않는다.
+            self.hard_stop_price = (
+                stop if self.hard_stop_price is None else min(self.hard_stop_price, stop)
+            )
+        if self.first_fill_at is None:
+            return
+        if self.low_after_fill is None or event.price < self.low_after_fill:
+            self.low_after_fill = event.price
+        if self.hard_stop_price is not None and event.price < self.hard_stop_price:
+            self._finish("hard_stop", event.at, exit_price=event.price)
+
+    def on_quote(self, event: QuoteEvent) -> None:
+        """Track the continuous upper-limit lock exactly as the machine does."""
+        self.on_time(event.at)
+        if self.record is not None or self.first_fill_at is None:
+            return
+        locked_now = event.price == self.upper_limit_price and event.best_ask_qty == 0
+        if locked_now:
+            if self.lock_started_at is None:
+                self.lock_started_at = event.at
+        else:
+            self.lock_started_at = None
+
+    def on_time(self, now: float) -> None:
+        """Apply the no-fill expiry, lock confirmation, and filled time cut."""
+        if self.record is not None:
+            return
+        if self.first_fill_at is None:
+            if now - self.started_at >= self.config.no_fill_timeout_seconds:
+                self._finish("no_fill_timeout", now)
+            return
+        deadline = self.first_fill_at + self.config.fill_timeout_seconds
+        if (
+            self.lock_started_at is not None
+            and self.lock_started_at + self.config.lock_seconds <= min(now, deadline)
+        ):
+            self._finish("locked", now)
+        elif now >= deadline:
+            self._finish("time_stop", now, exit_price=self.last_price)
+
+    def _average_entry(self) -> float:
+        """Return the budget-weighted average price of the legs filled so far."""
+        weights = {name: weight for name, weight, _ in _GRID_SPECS}
+        budget = sum(weights[name] for name in self.fills)
+        shares = sum(weights[name] / self.leg_prices[name] for name in self.fills)
+        return budget / shares
+
+    def _finish(self, outcome: str, at: float, *, exit_price: int | None = None) -> None:
+        """Freeze the probe into its JSON record."""
+        offsets = {
+            name: round(self.fills[name] - self.started_at, 1) if name in self.fills else None
+            for name in self.leg_prices
+        }
+        self.record = {
+            **self._header,
+            "s_fill": offsets["S"],
+            "a_fill": offsets["A"],
+            "entry": round(self.entry_price, 1) if self.entry_price else None,
+            "low": self.low_after_fill,
+            "outcome": outcome,
+            "exit_price": exit_price,
+            "secs": round(at - self.started_at, 1),
+        }
+
+
 class LimitUpMachine:
     """Pure single-session state machine driven by normalized market events."""
 
@@ -430,6 +577,9 @@ class LimitUpMachine:
         # 교차 **전부**의 게이트 입력값. 보고 래치와 무관하게 쌓는다 — 이게 없으면
         # 481회 평가 중 35회만 흔적이 남아 임계값을 데이터로 정할 수가 없다.
         self.cross_samples: list[dict] = []
+        # 교차 이후를 실제 규칙으로 따라간 결과. 진입 판정에는 절대 쓰지 않는다.
+        self.shadow_probes: list[dict] = []
+        self._active_probe: ShadowProbe | None = None
 
     def fire_net(self, *, at: float) -> None:
         """Record one net attempt before the command worker submits orders."""
@@ -458,6 +608,9 @@ class LimitUpMachine:
         strength = event.execution_strength
         if self.max_strength is None or strength > self.max_strength:
             self.max_strength = strength
+        if self._active_probe is not None:
+            self._active_probe.on_trade(event)
+            self._collect_probe()
 
     def on_trade(self, event: TradeEvent) -> list[MachineCommand]:
         """Apply an execution event and return ordered side-effect intents."""
@@ -495,6 +648,7 @@ class LimitUpMachine:
             if not ok
         ]
         self._record_cross_sample(event, failed)
+        self._start_probe(event, failed)
         if failed:
             if not self._may_report_gate_failure(event.at):
                 return []
@@ -533,6 +687,33 @@ class LimitUpMachine:
             }
         )
 
+    def _start_probe(self, event: TradeEvent, failed: list[str]) -> None:
+        """Arm one shadow probe at this cross unless one is still running.
+
+        One at a time: overlapping probes on the same tape would report the same
+        minutes several times and read as independent evidence.
+
+        Args:
+            event: Execution that crossed the trigger upward.
+            failed: Gate names that rejected it, empty when the gate passed.
+        """
+        if self._active_probe is not None or len(self.shadow_probes) >= _SHADOW_PROBE_LIMIT:
+            return
+        self._active_probe = ShadowProbe(
+            upper_limit_price=self.upper_limit_price,
+            config=self.config,
+            cross_no=self.trigger_cross_count,
+            event=event,
+            failed=",".join(failed),
+        )
+
+    def _collect_probe(self) -> None:
+        """Move a finished probe into the persisted list."""
+        probe = self._active_probe
+        if probe is not None and probe.record is not None:
+            self.shadow_probes.append(probe.record)
+            self._active_probe = None
+
     def _may_report_gate_failure(self, at: float) -> bool:
         """Decide whether this failing cross earns a ledger row and a tape dump.
 
@@ -551,6 +732,9 @@ class LimitUpMachine:
 
     def on_quote(self, event: QuoteEvent) -> list[MachineCommand]:
         """Track continuous upper-limit locking and quote-driven hard stops."""
+        if self._active_probe is not None:
+            self._active_probe.on_quote(event)
+            self._collect_probe()
         if self._hard_stop_crossed(event.price):
             return self._protective_exit("hard_stop")
         if self.state is not LimitUpState.FILLED_WAIT_LOCK:
@@ -620,6 +804,9 @@ class LimitUpMachine:
 
     def on_timer(self, now: float) -> list[MachineCommand]:
         """Apply no-fill expiry, lock confirmation, or filled time cut."""
+        if self._active_probe is not None:
+            self._active_probe.on_time(now)
+            self._collect_probe()
         if (
             self.state is LimitUpState.NET_OPEN
             and self.filled_quantity == 0

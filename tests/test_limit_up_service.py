@@ -23,7 +23,13 @@ from maps.limit_up.domain import LimitUpConfig, LimitUpState
 from maps.limit_up.feed import FeedQuote, FeedTrade
 from maps.limit_up.repository import LimitUpRepository
 from maps.common.exceptions import BrokerAdapterError
-from maps.common.models import LimitUpSession, LimitUpTape, OrderLog, PortfolioSnapshot
+from maps.common.models import (
+    LimitUpOrderLeg,
+    LimitUpSession,
+    LimitUpTape,
+    OrderLog,
+    PortfolioSnapshot,
+)
 from maps.limit_up.service import (
     OBSERVE_ONLY_EXECUTION_MODE,
     Candidate,
@@ -1465,6 +1471,28 @@ def test_cross_samples_reach_the_row_and_survive_a_restart(db) -> None:
     restarted.recover(ref_date=now.date(), now_monotonic=200.0, now_kst=now)
 
     assert len(restarted._machines["005930"].cross_samples) == 1
+
+
+def test_shadow_probes_reach_the_row_without_touching_orders_or_attempts(db) -> None:
+    """The probe is evidence only: no leg, no attempt, and it survives a restart."""
+    service = _service(db, LimitUpMode.RECOMMEND_ONLY)
+    now = dt.datetime(2026, 8, 28, 10, 0, tzinfo=KST)
+    service.watch_candidate(_candidate(), now_kst=now)
+    service.on_trade(_watch_trade(1.0, 99_000), now_kst=now)
+    service.on_trade(_watch_trade(2.0, 99_800, turnover=30_000_000_000), now_kst=now)
+    service.on_trade(_watch_trade(3.0, 100_000, turnover=30_000_000_000), now_kst=now)
+    service.tick(now_monotonic=100.0, now_kst=now)
+
+    session = db.query(LimitUpSession).filter_by(ticker="005930").one()
+    assert [probe["outcome"] for probe in session.shadow_probes] == ["upper_limit_without_fill"]
+    assert session.net_fired_at is None
+    assert db.query(LimitUpOrderLeg).count() == 0
+    assert service.guard.attempts == 0
+
+    restarted = _service(db, LimitUpMode.RECOMMEND_ONLY)
+    restarted.recover(ref_date=now.date(), now_monotonic=200.0, now_kst=now)
+
+    assert len(restarted._machines["005930"].shadow_probes) == 1
 
 
 def test_expired_watch_persists_its_final_observation(db) -> None:
