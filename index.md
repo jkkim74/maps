@@ -90,6 +90,7 @@
 | 운영 설정값 | `docs/OPERATIONS_CONFIG.md` |
 | 서버 런북 | `docs/AWS_LIGHTSAIL_RUNBOOK.md` |
 | 전략 설명 원고 | `docs/strategy_guides/` |
+| 후지모토식 매매 설계·다음 세션 인계 | [전용 인계 문서](docs/HANDOFF_fujimoto_trading.md) → [설계서](docs/superpowers/specs/2026-10-07-fujimoto-trading-design.md) (구현 전) |
 
 ## 5. 자주 밟는 지뢰
 
