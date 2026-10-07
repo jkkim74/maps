@@ -26,7 +26,7 @@
 
 - [x] Read handoff and approved design; inspect existing contracts and isolate workspace.
 - [x] Task 1: causal evidence, indicators, and pure rules (449bbb9; reviewed).
-- [ ] Task 2: durable ledger, replay, portfolio budget and validation.
+- [x] Task 2: durable ledger, replay, portfolio budget and validation (9325acd; reviewed).
 - [ ] Task 3: guarded execution, feed sharing, API, dashboard and scheduling.
 - [ ] Final review and complete regression checks.
 
@@ -68,13 +68,13 @@ assert evaluate(mode, evidence, pending_cycle).action == "hold"
 
 **Interfaces:** Consume Task 1 evidence/decisions. Produce persisted mode configurations, immutable evidence/candidate runs, cycles, leg/intent links and monotone cumulative fill application. Replay calls the same evaluate and fill transition functions. Validation output separates safe, original, combined, with/without orderbook and insufficient evidence.
 
-- [ ] Test fill progression, duplicates, partial fills and confirmed cancellation, restart reconstruction, two-mode same-ticker ownership, PnL/cash conservation, oversell rejection and final rounding before implementing persistence.
-- [ ] Persist config version, cycle state, exact evidence and order references; preserve immutable history. Add reversible migration following existing conventions and verify upgrade/downgrade on temporary SQLite.
-- [ ] Implement 1:2:6 monetary budgets, mode position limits and reserve floors, safe risk cap and non-decreasing stop, reservation accounting and explicit deposit/budget changes. Replay must model next-session capped limits, fees/tax/slippage and volume-limited fills (touch alone is not full fill), exchange halts and unavailable data.
-- [ ] Implement reproducible replay reports/stress checks, WFA/parameter-neighborhood/cost-double evaluation via existing primitives where appropriate. Require both mode validations and combined risk and tape evidence for promotion; missing input returns insufficient, never pass.
-- [ ] Validation must derive metrics from stored replay inputs/results, not accept arbitrary caller-supplied pass flags. Persist fingerprints and distinguish a callable research runner from measured results. Annual, quote and candidate evidence storage must retain provenance and be queryable as of the actual observation time.
-- [ ] Register two research-only strategy IDs `fujimoto_safe_v1` and `fujimoto_original_v1`, human prose/guides and explicit price-stop policy. Do not route stateful cycles through a legacy boolean-only engine that cannot reproduce them.
-- [ ] Verify focused tests, migrations, catalog and docs tests, commit task files, report exact public interfaces to Task 3.
+- [x] Test fill progression, duplicates, partial fills and confirmed cancellation, restart reconstruction, two-mode same-ticker ownership, PnL/cash conservation, oversell rejection and final rounding before implementing persistence.
+- [x] Persist config version, cycle state, exact evidence and order references; preserve immutable history. Add reversible migration following existing conventions and verify upgrade/downgrade on temporary SQLite.
+- [x] Implement 1:2:6 monetary budgets, mode position limits and reserve floors, safe risk cap and non-decreasing stop, reservation accounting and explicit deposit/budget changes. Replay must model next-session capped limits, fees/tax/slippage and volume-limited fills (touch alone is not full fill), exchange halts and unavailable data.
+- [x] Implement reproducible replay reports/stress checks, WFA/parameter-neighborhood/cost-double evaluation via existing primitives where appropriate. Require both mode validations and combined risk and tape evidence for promotion; missing input returns insufficient, never pass.
+- [x] Validation must derive metrics from stored replay inputs/results, not accept arbitrary caller-supplied pass flags. Persist fingerprints and distinguish a callable research runner from measured results. Annual, quote and candidate evidence storage must retain provenance and be queryable as of the actual observation time.
+- [x] Register two research-only strategy IDs `fujimoto_safe_v1` and `fujimoto_original_v1`, human prose/guides and explicit price-stop policy. Do not route stateful cycles through a legacy boolean-only engine that cannot reproduce them.
+- [x] Verify focused tests, migrations, catalog and docs tests, commit task files, report exact public interfaces to Task 3.
 
 ```python
 assert repository.apply_fill(event) == repository.apply_fill(event)
@@ -110,5 +110,7 @@ Revert implementation commits to roll back code; run migration downgrade only ag
 ## Results
 
 Baseline full suite: 1609 passed, 2588 existing warnings in 349.79 seconds. Task 1 implementation is e72651d; focused evidence/rules/stop/calendar/catalog/docs/DART checks: 137 passed with one pre-existing warning. Review fixed stale daily signals, mixed-ticker financial evidence and integer targets in 449bbb9; 33 focused tests pass, scoped re-review approved.
+
+Task 2 persistence/replay implementation e5d9c10 and reviewed fixes 9325acd pass 180 focused tests (14 baseline warnings). Historical terminal corrections preserve active reservations, after-close financial exits use the next session, and selected book variants receive full validation with variant/account-MDD manifest binding. Independent scoped re-review approved all three findings.
 
 Strategy profitability and production data coverage require separate evidence and are not claimed by software acceptance tests.
