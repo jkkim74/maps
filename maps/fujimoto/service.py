@@ -343,7 +343,7 @@ class FujimotoService:
                     if mode.value not in current or any(c.mode == mode.value for c in cycles):
                         continue
                     from maps.fujimoto.domain import CycleState
-                    if evaluate(mode, evidence, CycleState()).action == "buy" and next_session(evidence.as_of,
+                    if evaluate(mode, evidence, CycleState(), decision_date=wall.date()).action == "buy" and next_session(evidence.as_of,
                             tuple(self.settings.krx_closed_dates)) == wall.date():
                         try:
                             cycles.append(self.repo.create_cycle(current[mode.value].id, quote.ticker))
@@ -361,9 +361,10 @@ class FujimotoService:
                     current.get(cycle.mode) and current[cycle.mode].settings.get("with_orderbook", True)))
                 if bid is None:
                     continue
-                decision = evaluate(Mode(cycle.mode), live, state)
+                decision = evaluate(Mode(cycle.mode), live, state, decision_date=wall.date())
                 if state.pending_order:
-                    emergency = evaluate(Mode(cycle.mode), live, replace(state, pending_order=False))
+                    emergency = evaluate(Mode(cycle.mode), live, replace(state, pending_order=False),
+                                         decision_date=wall.date())
                     if emergency.action == "sell" and emergency.timing in {"intraday", "first_available"}:
                         for order in self.repo.orders(key):
                             if order.cycle_id == cycle.id and order.status not in TERMINAL and order.decision["action"] == "buy":
@@ -372,12 +373,12 @@ class FujimotoService:
                                     self.db.commit()
                                     self.manager.cancel(order.broker_order_id)
                     continue
+                if decision.timing == "next_session" and next_session(evidence.as_of,
+                        tuple(self.settings.krx_closed_dates)) != wall.date():
+                    continue
                 if decision.action == "hold":
                     if source:
                         self.repo.record_decision(cycle.id, source.id, decision)
-                    continue
-                if decision.timing == "next_session" and next_session(evidence.as_of,
-                        tuple(self.settings.krx_closed_dates)) != wall.date():
                     continue
                 if decision.action == "buy" and (not control.get("entries_enabled") or cost_gaps):
                     continue

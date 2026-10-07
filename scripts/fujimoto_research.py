@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import argparse
 import base64
-from datetime import date
+from datetime import date, timedelta
 import json
 from pathlib import Path
 import sys
@@ -34,13 +34,16 @@ def export_inputs(db, key: str, budget: float) -> dict:
             continue
         if row.kind == "candidate":
             day = row.payload["ref_date"]
+            if row.ticker in evidence.get(day, {}):
+                continue  # Freeze the first observed snapshot for this session.
             raw = json.loads(zlib.decompress(base64.b64decode(row.payload["raw_zlib"])))
             evidence.setdefault(day, {})[row.ticker] = row.payload["rule"]
             screening.setdefault(day, {})[row.ticker] = raw
             candidate_ids.append(row.id)
             for bar in raw["prices"]:
-                bars.setdefault(bar["date"], {})[row.ticker] = {k: bar[k] for k in
-                    ("open", "high", "low", "close", "volume")}
+                if bar["date"] == day:
+                    bars.setdefault(day, {})[row.ticker] = {k: bar[k] for k in
+                        ("open", "high", "low", "close", "volume")}
         elif row.kind == "screen":
             ranking[row.payload["ref_date"]] = row.payload.get("ranked", [])
             if row.payload.get("reason"):
@@ -51,6 +54,19 @@ def export_inputs(db, key: str, budget: float) -> dict:
             tape.append(row.payload)
         elif row.kind == "feed_quality" and row.payload.get("reason") == "tape_capacity_exhausted":
             gaps.append({"id": row.id, "reason": row.payload["reason"]})
+    # Older rows within a later snapshot are indicator history, not historical
+    # execution/valuation truth. Never repair an absent session with that history.
+    if evidence:
+        from maps.market.trading_rules import is_krx_closed_date
+        day, end = date.fromisoformat(min(evidence)), date.fromisoformat(max(evidence))
+        seen_tickers = set()
+        while day <= end:
+            stamp = day.isoformat()
+            seen_tickers.update(evidence.get(stamp, {}))
+            if not is_krx_closed_date(day, extra_closed_dates=settings.krx_closed_dates):
+                for ticker in sorted(seen_tickers - bars.get(stamp, {}).keys()):
+                    gaps.append({"reason": "missing_session_bar", "date": stamp, "ticker": ticker})
+            day += timedelta(days=1)
     return {"budget": budget, "evidence": evidence, "screening": screening,
         "fee_rate": .00015, "tax_rate": .002, "slippage": .001,
         "account_ticker_limit": settings.max_single_exposure,

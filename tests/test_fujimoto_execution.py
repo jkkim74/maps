@@ -210,6 +210,65 @@ def test_observe_feed_does_not_call_broker_without_budget(db):
         account_key=account_key())
 
 
+@pytest.mark.parametrize("scenario", ["stop", "financial", "book", "technical_due", "technical_stale", "technical_stale_rounding", "same_day_add"])
+def test_on_quote_today_fills_keep_prior_bar_date_and_protect_all_cycles(db, monkeypatch, scenario):
+    from unittest.mock import Mock
+    from maps.fujimoto.service import FujimotoService
+    from maps.fujimoto.repository import FillEvent
+    from maps.limit_up.feed import FeedQuote
+    from maps.common.models import FujimotoEvidence
+    now = datetime(2026, 10, 8, 1, tzinfo=timezone.utc)
+    monkeypatch.setattr("maps.fujimoto.service.utcnow", lambda: now.replace(tzinfo=None))
+    settings = MapsSettings(_env_file=None, maps_fujimoto_enabled=True)
+    repo = FujimotoRepository(db)
+    key = account_key(settings)
+    rule = RuleEvidence(date(2026, 10, 6 if scenario.startswith("technical_stale") else 7), 1000, True,
+        financial_status="maintained", daily_rsi=40, weekly_rsi=50, macd_golden=True,
+        rsi_cross_70=scenario.startswith("technical"))
+    source = repo.record_evidence("candidate", "AAA", now - timedelta(days=1),
+        now - timedelta(days=1), {"rule": rule})
+    quantity = 2 if scenario == "technical_stale_rounding" else 18
+    for mode in Mode:
+        config = repo.configure(key, 7, mode, 5000000)
+        cycle = repo.create_cycle(config.id, "AAA")
+        order = repo.reserve_order(cycle.id, evaluate(mode, rule, CycleState()), source.id,
+            quantity, 1000, signal_date=rule.as_of, stop_price=920 if mode == Mode.SAFE else None)
+        repo.apply_fill(FillEvent(order.id, key, None, quantity, quantity * 1000, 0, 0, "FILLED", now.date()))
+        if scenario == "book":
+            repo.record_evidence("order_cost", str(order.id), now, now, {"complete": True}, account_key=key)
+    repo.record_evidence("control", "*", now - timedelta(minutes=1), now - timedelta(minutes=1),
+        {"execution_mode": "paper", "entries_enabled": scenario == "same_day_add", "sell_consent": True}, account_key=key)
+    db.commit()
+    monkeypatch.setattr("maps.fujimoto.sources.current_financial_status",
+                        lambda *a: "deteriorated" if scenario == "financial" else "maintained")
+    service = FujimotoService(db, Mock(), settings=settings)
+    submitted = []
+    monkeypatch.setattr(service, "_submit_decision", lambda cycle, evidence, decision, *a:
+        submitted.append((cycle.mode, evidence.as_of, decision.reason)))
+    bid = 900 if scenario == "stop" else 1100
+    for second in range(31 if scenario == "book" else 1):
+        received = now + timedelta(seconds=second)
+        quote = FeedQuote("AAA", bid + 1, 100, bid, 400, float(second), 100, 400, received, received)
+        service.on_quote(quote, now=received)
+    if scenario == "financial":
+        assert submitted == [(mode.value, rule.as_of, "fundamental_deterioration") for mode in Mode]
+    elif scenario == "book":
+        assert submitted == [(mode.value, rule.as_of, "orderbook_take_profit") for mode in Mode]
+    elif scenario == "technical_due":
+        assert submitted == [(mode.value, rule.as_of, "rsi_cross_70") for mode in Mode]
+    elif scenario.startswith("technical_stale"):
+        assert submitted == []
+        assert all(repo.state(c.id).sell_target_ninths == 0 for c in repo.cycles(key))
+    elif scenario == "stop":
+        assert submitted == [("safe", rule.as_of, "price_stop")]
+        holds = db.query(FujimotoEvidence).filter_by(kind="decision").all()
+        assert "same_day_advancement" in holds[-1].payload["decision"]["reasons"]
+    else:
+        assert submitted == []
+        holds = db.query(FujimotoEvidence).filter_by(kind="decision").all()
+        assert "same_day_advancement" in holds[-1].payload["decision"]["reasons"]
+
+
 def test_exact_late_buy_fee_after_partial_sell_is_audited_and_allocated(db):
     from maps.common.models import FujimotoFill
     from maps.fujimoto.service import FujimotoService

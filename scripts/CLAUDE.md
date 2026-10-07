@@ -72,6 +72,9 @@
 insufficient offline report without DB/broker access. `--export --database URL
 --account-key HASH --budget AMOUNT --output observations.json` reads only recorded
 source/screen/tape snapshots; it never rebuilds history from current metadata.
+Execution/valuation bars come only from the first snapshot of their own session;
+later snapshots' revised history is indicator input only. Missing session bars
+inside the exported observation span are explicit coverage gaps, never backfilled.
 `--input observations.json --output report.json` replays both variants. Explicit
 `--persist --database URL --account-key HASH` stores replay/validation only; choose
 `--without-orderbook` and `--account-mdd-limit` consistently with runtime config.

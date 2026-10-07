@@ -92,3 +92,25 @@ def test_offline_research_cli_and_export_do_not_grant_execution(db, monkeypatch,
     data = input_from_json(export_inputs(db, "isolated", 1000000))
     assert data.evidence == {} and data.tape == ()
     assert data.minimum_cash_fraction == .35
+
+
+def test_export_never_rewrites_or_backfills_session_bars_from_later_history(db):
+    import base64, json, zlib
+    from maps.fujimoto.repository import FujimotoRepository
+    from scripts.fujimoto_research import export_inputs
+    repo = FujimotoRepository(db)
+    def snapshot(day, prices):
+        raw = {"prices": [{"date": d, "open": p, "high": p, "low": p, "close": p, "volume": 100}
+                          for d, p in prices]}
+        stamp = datetime.fromisoformat(day + "T13:00:00+00:00")
+        repo.record_evidence("candidate", "AAA", stamp, stamp, {"ref_date": day, "rule": {},
+            "raw_zlib": base64.b64encode(zlib.compress(json.dumps(raw).encode())).decode()})
+    snapshot("2026-10-07", [("2026-10-07", 100)])
+    snapshot("2026-10-08", [("2026-10-07", 90)])  # today's bar is missing
+    snapshot("2026-10-12", [("2026-10-07", 80), ("2026-10-08", 95), ("2026-10-12", 110)])
+    result = export_inputs(db, "account", 1000000)
+    assert result["bars"]["2026-10-07"]["AAA"]["close"] == 100
+    assert "AAA" not in result["bars"].get("2026-10-08", {})
+    assert result["bars"]["2026-10-12"]["AAA"]["close"] == 110
+    assert any(g["reason"] == "missing_session_bar" and g["date"] == "2026-10-08"
+               for g in result["provenance"]["coverage_gaps"])

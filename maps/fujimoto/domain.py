@@ -132,7 +132,8 @@ class Decision:
     timing: str = "next_session"
 
 
-def evaluate(mode: Mode, evidence: RuleEvidence, cycle: CycleState, *, first_rsi_threshold: float = 40) -> Decision:
+def evaluate(mode: Mode, evidence: RuleEvidence, cycle: CycleState, *, first_rsi_threshold: float = 40,
+             decision_date: date | None = None) -> Decision:
     """Emergency exits > ordinary targets > rebound > sequential fill-driven buys."""
     if not isinstance(mode, Mode):
         raise DataQualityError("invalid_mode")
@@ -140,11 +141,14 @@ def evaluate(mode: Mode, evidence: RuleEvidence, cycle: CycleState, *, first_rsi
     if isinstance(first_rsi_threshold, bool) or first_rsi_threshold is None or not 0 <= first_rsi_threshold <= 100:
         raise DataQualityError("invalid_first_rsi_threshold")
     policy = "required" if mode == Mode.SAFE else "intentional_none"
+    decision_date = decision_date or evidence.as_of
+    if evidence.as_of > decision_date:
+        raise DataQualityError("future_rule_evidence")
     def hold(reason: str, reasons: tuple[str, ...] = ()) -> Decision:
         return Decision("hold", reason, reasons or (reason,), stop_policy=policy)
     if cycle.pending_order:
         return hold("pending_order")
-    if cycle.last_buy_date is not None and cycle.last_buy_date > evidence.as_of:
+    if cycle.last_buy_date is not None and cycle.last_buy_date > decision_date:
         raise DataQualityError("future_cycle_fill")
     if cycle.buy_stage and not cycle.quantity:
         return hold("cycle_closed")
@@ -184,7 +188,8 @@ def evaluate(mode: Mode, evidence: RuleEvidence, cycle: CycleState, *, first_rsi
         reasons.append("missing_close")
     if cycle.quantity and mode == Mode.SAFE and cycle.stop_price is None:
         reasons.append("missing_required_stop")
-    if cycle.last_buy_date == evidence.as_of:
+    if cycle.last_buy_date is not None and (cycle.last_buy_date >= evidence.as_of
+                                           or cycle.last_buy_date == decision_date):
         reasons.append("same_day_advancement")
     if reasons:
         return hold("buy_blocked", tuple(dict.fromkeys(reasons)))

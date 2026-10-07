@@ -74,6 +74,12 @@ net sale profitability and approval before setting them. Builder leaves them abs
 No stale arbitrary raw quote may be passed as live_price. Runtime must provide fresh
 combined account limits and approvals; repository/replay own sizing, persistence and
 signal expiry. These unit contracts establish no profitability.
+`evaluate(..., decision_date=...)` separates the current runtime session from
+`RuleEvidence.as_of`, which remains the completed-bar date. Today's confirmed
+fill therefore permits current protective/financial/book exits, while any further
+BUY requires a completed signal date after the previous fill date. Technical
+orders still require exactly the next session of the unchanged evidence date.
+Replay defaults decision_date to evidence.as_of; genuinely future fills remain invalid.
 
 ## Durable ledger and research
 
