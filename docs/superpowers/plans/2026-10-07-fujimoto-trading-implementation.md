@@ -27,7 +27,7 @@
 - [x] Read handoff and approved design; inspect existing contracts and isolate workspace.
 - [x] Task 1: causal evidence, indicators, and pure rules (449bbb9; reviewed).
 - [x] Task 2: durable ledger, replay, portfolio budget and validation (9325acd; reviewed).
-- [ ] Task 3: guarded execution, feed sharing, API, dashboard and scheduling.
+- [x] Task 3: guarded execution, feed sharing, API, dashboard and scheduling (8e6cb5b; reviewed).
 - [ ] Final review and complete regression checks.
 
 ## Decisions
@@ -41,6 +41,9 @@
 - Annual-data research freshness expires after the following fiscal year end plus 90 days; this is a conservative entry gate, not a claim about a legal filing deadline. RuleEvidence intraday fields require timestamp/continuity/cost-validated feed inputs.
 - Subscription capacity must be explicitly configured and shared with existing engine usage; never assume a provider limit or start a second uncoordinated connection.
 - Financial source coverage, recorded tape coverage and independent trade samples must remain insufficient until real evidence exists. No unit test can certify live profitability.
+- 2026-10-08: Missing corporate-action share-basis comparability blocks annual selection. Audited source/period/first-observed evidence may resolve it, never a backdated verified flag. This can delay selection until genuine evidence arrives.
+- Broker-confirmed quantity/order termination is independent of unsettled fee/tax provenance. Missing costs block buys and net-profit book exits, but confirmed owned protective/technical exits remain available. Unknown orders retain reservations. This adds settlement-state handling, covered by late-cost regression tests.
+- Measured activation validation runs outside the account execution lock. Entry checks bind immutable code/data/config/variant/account/promotion identity and freshness. This avoids blocking protective exits with expensive replay; identity changes must invalidate authorization.
 
 ## Task 1: Causal evidence and shared rule evaluation
 
@@ -48,11 +51,11 @@
 
 **Interfaces:** Produce typed, validated evidence (annual revenue/profit/dividend with publication/first-observed/availability dates, basis, currency and share-basis), `Mode`, `CycleState`, `Decision`, and a pure `evaluate(...)` function. Names may be refined by the implementer and documented in its report for consumers. No persistence or orders in this task.
 
-- [ ] Write failing tests for temporal cutoffs and delayed corrections, three consecutive comparable annual records, DPS not inferred from daily fundamentals, missing versus deteriorated fundamentals, sector median restricted to historical membership, 20-session return and turnover ranking.
-- [ ] Run `python -m pytest tests/test_fujimoto_evidence.py tests/test_fujimoto_rules.py -q` and capture expected failure before implementation.
-- [ ] Implement minimal validated dataclasses and pure functions. Reuse DART/classification semantics, calendar and common stop formula. Rules must implement every entry/exit stage in specification section 2, explicit intentional-no-stop policy, no same-day advancement, buy price cap, blocking reasons, and emergency exit priority.
-- [ ] Test Wilder RSI boundaries, incomplete/holiday weeks, shifted cloud prefix invariance, safe versus original averaging down, one-time rebound reduction, stronger sell stage first, data gaps blocking buys but not legitimate exits.
-- [ ] Run focused tests plus existing live-rule/calendar/catalog/doc-map checks; commit only task files and record output in report.
+- [x] Write failing tests for temporal cutoffs and delayed corrections, three consecutive comparable annual records, DPS not inferred from daily fundamentals, missing versus deteriorated fundamentals, sector median restricted to historical membership, 20-session return and turnover ranking.
+- [x] Run `python -m pytest tests/test_fujimoto_evidence.py tests/test_fujimoto_rules.py -q` and capture expected failure before implementation.
+- [x] Implement minimal validated dataclasses and pure functions. Reuse DART/classification semantics, calendar and common stop formula. Rules must implement every entry/exit stage in specification section 2, explicit intentional-no-stop policy, no same-day advancement, buy price cap, blocking reasons, and emergency exit priority.
+- [x] Test Wilder RSI boundaries, incomplete/holiday weeks, shifted cloud prefix invariance, safe versus original averaging down, one-time rebound reduction, stronger sell stage first, data gaps blocking buys but not legitimate exits.
+- [x] Run focused tests plus existing live-rule/calendar/catalog/doc-map checks; commit only task files and record output in report.
 
 Example acceptance invariant (actual dataclass construction belongs in tests):
 
@@ -88,12 +91,13 @@ assert validation(missing_tape).status == "insufficient"
 
 **Interfaces:** Consume persisted Task 2 state and Task 1 decisions. Feed receives normalized shared events, persists tape and maintains deterministic profit-duration state. Service uses existing OrderManager only, including a validated `fujimoto` source and cycle-bound ownership.
 
-- [ ] Test source forgery/owner isolation, reserved exposures across modes, UNKNOWN/no resubmit, cancel race, partial-fill restart and reconciliation disagreement before adding execution paths.
-- [ ] Add cycle-bound source validation and ownership with full existing entry risk checks; approvals apply only to newly acquired strategy shares. Default observe mode. Activation requires explicit dedicated budget, auto-sell rule consent, existing promotion gates and combined validation evidence; no bypass flag.
-- [ ] Extend shared feed totals/exchange/receive timestamps and gap flags; one allocator prioritizes held and pending tickers then candidates. Persist actual events, reset 30-second continuity on zero ask size, crossed quotes, gaps >3s, reconnect, stale/out-of-order input; deduct sale costs before profit condition.
-- [ ] Wire market-wide after-close screening using as-of repositories. Collect/source annual DPS only with exact comparable annual evidence. Missing coverage is visible and blocks entry. No network during tests.
-- [ ] Add admin and owner-scoped configuration, candidates/cycles/evidence/validation queries and observe/paper/stop controls; activation gate remains authoritative. Add web dashboard mode comparison, stages/budgets/reservations, evidence/feed/block reasons. No dedicated mobile UI.
-- [ ] Run new integration tests, existing execution/limit-up/API regressions, full `python -m pytest --tb=short` and `python -m pytest maps/tests -q`; render/check UI and docs map. Commit reviewed task files.
+- [x] Test source forgery/owner isolation, reserved exposures across modes, UNKNOWN/no resubmit, cancel race, partial-fill restart and reconciliation disagreement before adding execution paths.
+- [x] Add cycle-bound source validation and ownership with full existing entry risk checks; approvals apply only to newly acquired strategy shares. Default observe mode. Activation requires explicit dedicated budget, auto-sell rule consent, existing promotion gates and combined validation evidence; no bypass flag.
+- [x] Extend shared feed totals/exchange/receive timestamps and gap flags; one allocator prioritizes held and pending tickers then candidates. Persist actual events, reset 30-second continuity on zero ask size, crossed quotes, gaps >3s, reconnect, stale/out-of-order input; deduct sale costs before profit condition.
+- [x] Wire market-wide after-close screening using as-of repositories. Collect/source annual DPS only with exact comparable annual evidence. Missing coverage is visible and blocks entry. No network during tests.
+- [x] Add admin and owner-scoped configuration, candidates/cycles/evidence/validation queries and observe/paper/stop controls; activation gate remains authoritative. Add web dashboard mode comparison, stages/budgets/reservations, evidence/feed/block reasons. No dedicated mobile UI.
+- [x] Run new integration tests, existing execution/limit-up/API regressions; render/check UI and docs map. Commit reviewed task files.
+- [ ] Complete final isolated full `tests` and `maps/tests` regression run after whole-branch review.
 
 ```python
 assert second_submission_of_unknown_intent.calls_broker == 0
@@ -112,5 +116,11 @@ Revert implementation commits to roll back code; run migration downgrade only ag
 Baseline full suite: 1609 passed, 2588 existing warnings in 349.79 seconds. Task 1 implementation is e72651d; focused evidence/rules/stop/calendar/catalog/docs/DART checks: 137 passed with one pre-existing warning. Review fixed stale daily signals, mixed-ticker financial evidence and integer targets in 449bbb9; 33 focused tests pass, scoped re-review approved.
 
 Task 2 persistence/replay implementation e5d9c10 and reviewed fixes 9325acd pass 180 focused tests (14 baseline warnings). Historical terminal corrections preserve active reservations, after-close financial exits use the next session, and selected book variants receive full validation with variant/account-MDD manifest binding. Independent scoped re-review approved all three findings.
+
+Task 3 implementation e3a739b passed 432 related regressions, then 118 final checks after wiring completed-bar ATR through sizing and reservations. Review fixes 2995ed8 and 8e6cb5b separate the current execution date from completed-bar evidence, preserve causal historical execution prices, and align re-screened candidates/rankings/provenance. The first fix passed 257 related checks, 136 final checks and 36 execution cases; the second passed 51 checks. Independent scoped re-review approved all findings with no new important breakage.
+
+The initial full run on e3a739b found 1810 passed and four document failures (authorization screen matrix/count and guide title convention); these were fixed. A subsequent interim full run was deliberately cancelled when a new scoped-review export defect required another source change. Neither run is the final release gate. Final whole-branch review and full regression remain pending.
+
+Offline visual QA verified empty observation state, a mock dedicated budget split equally, Korean status/blocks, and saving the book toggle off without execution permission. API confirmed persisted settings and no sell consent. Chrome extension UI then blocked an additional reload check; no bypass was attempted. The temporary local server was stopped. Python compileall and inline dashboard JavaScript node --check passed.
 
 Strategy profitability and production data coverage require separate evidence and are not claimed by software acceptance tests.
