@@ -272,6 +272,7 @@ def test_rerunnable_flags_limited_to_pipeline_jobs(client) -> None:
         "eod_cleanup": True,
         "analyze": False,
         "data_collection": True,
+        "theme_collection": True,
         "candidate_generation": True,
         "validation": True,
         "stock_report": False,

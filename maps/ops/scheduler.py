@@ -8,11 +8,15 @@ broker state and records an audit log.
 from __future__ import annotations
 
 import datetime as dt
+from zoneinfo import ZoneInfo
 import hashlib
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Callable, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from maps.ops.classification_jobs import ClassificationJobs
 
 import pandas as pd
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -353,14 +357,37 @@ class OperationalPipeline:
                 "investor_flow_count": result.investor_flow_count,
                 "investor_flow_error": result.investor_flow_error,
                 "metadata_quality": result.metadata_quality,
+                "classification_quality": result.classification_quality,
             }
             quality_status = (result.metadata_quality or {}).get("status", "unavailable")
             status = "failed" if quality_status == "unavailable" else (
-                "partial" if quality_status != "complete" or result.investor_flow_count == 0 else "success"
+                "partial" if quality_status != "complete" or result.investor_flow_count == 0
+                or (result.classification_quality or {}).get("status") != "complete" else "success"
             )
             return JobResult(details, status, "ok" if status == "success" else "collection_incomplete")
 
         return self._job("data_collection", _run)
+
+    def _classification_jobs(self) -> ClassificationJobs:
+        """Create independent classification operations with the configured notifier."""
+        from maps.ops.classification_jobs import ClassificationJobs
+        return ClassificationJobs(self._settings, self._session_factory, self._notifier)
+
+    def collect_themes(self, ref_date: dt.date | None = None) -> JobRun:
+        """Run public theme collection independently from candidate generation."""
+        started = dt.datetime.now(dt.timezone.utc)
+        details = self._classification_jobs().collect(ref_date or dt.datetime.now(ZoneInfo("Asia/Seoul")).date())
+        status = details["status"]
+        return JobRun(name="theme_collection", status="success" if status == "complete" else status,
+                      started_at=started, finished_at=dt.datetime.now(dt.timezone.utc),
+                      message=details.get("error") or status, details=details)
+
+    def check_classifications(self) -> JobRun:
+        """Read persisted attempts and detect failures without collecting data."""
+        started = dt.datetime.now(dt.timezone.utc)
+        details = self._classification_jobs().check()
+        return JobRun(name="classification_check", status="success", started_at=started,
+                      finished_at=dt.datetime.now(dt.timezone.utc), message="ok", details={"runs": details})
 
     def generate_candidates(self, ref_date: dt.date | None = None) -> JobRun:
         ref_date = ref_date or dt.date.today()
@@ -3876,6 +3903,7 @@ class OperationalPipeline:
             broker=broker,
             db=db,
             config=RiskConfig(
+                classification_snapshot_enforced=self._settings.maps_classification_snapshot_enforced,
                 daily_loss_limit=self._settings.daily_loss_limit,
                 position_size_limit=self._settings.max_single_exposure,
                 # 8단계: 테마·섹터 노출 한도 + 최소 현금 비중 (설정으로 활성화)
@@ -4143,6 +4171,7 @@ class MapsOperationalScheduler:
             return
         self._register_jobs()
         self._scheduler.start()
+        self.run_once("classification_check")
         logger.info("MAPS operational scheduler started")
 
     def shutdown(self) -> None:
@@ -4170,6 +4199,8 @@ class MapsOperationalScheduler:
     def run_once(self, job_name: str) -> JobRun:
         mapping = {
             "data_collection": self._pipeline.collect_data,
+            "theme_collection": self._pipeline.collect_themes,
+            "classification_check": self._pipeline.check_classifications,
             "candidate_generation": self._pipeline.generate_candidates,
             "validation": self._pipeline.run_validation,
             "order_cycle": self._pipeline.run_order_cycle,
@@ -4210,6 +4241,16 @@ class MapsOperationalScheduler:
 
     def _register_jobs(self) -> None:
         self._add_weekday_job("data_collection", self._settings.maps_data_collection_time)
+        self._scheduler.add_job(lambda: self.run_once("classification_check"),
+            IntervalTrigger(seconds=60), id="classification_watchdog",
+            replace_existing=True, coalesce=True, max_instances=1)
+        self._add_weekday_job("theme_collection", self._settings.maps_theme_collection_time)
+        self._add_weekday_job("classification_check", self._settings.maps_classification_check_time)
+        hour, minute = _parse_hhmm(self._settings.maps_data_collection_time)
+        sector_check = dt.datetime.combine(dt.date.today(), dt.time(hour, minute)) + dt.timedelta(minutes=20)
+        self._scheduler.add_job(lambda: self.run_once("classification_check"),
+            CronTrigger(day_of_week="mon-fri", hour=sector_check.hour, minute=sector_check.minute),
+            id="sector_classification_check", replace_existing=True, coalesce=True, max_instances=1)
         self._add_weekday_job("candidate_generation", self._settings.maps_candidate_time)
         self._add_weekday_job("validation", self._settings.maps_validation_time)
         self._add_weekday_job("order_cycle", self._settings.maps_order_time)
@@ -4311,7 +4352,7 @@ class MapsOperationalScheduler:
         """
         # ponytail: broker_sync 성공은 60초마다 → 하루 ~500행 노이즈.
         # 성공 하트비트는 collection_log(source='scheduler.broker_sync')가 이미 담당.
-        if run.name == "broker_sync" and run.status == "success":
+        if run.name in {"broker_sync", "classification_check"} and run.status == "success":
             return
         try:
             db = self._pipeline._session_factory()

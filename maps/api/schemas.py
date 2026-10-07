@@ -1319,6 +1319,7 @@ class BatchJobRow(BaseModel):
 
 
 class BatchMonitorResponse(BaseModel):
+    classification_quality: dict = Field(default_factory=dict)
     days: list[str]                    # 최신순
     jobs: list[BatchJobRow]
     generated_at: str

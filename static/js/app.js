@@ -2059,6 +2059,24 @@ async function rerunBatchJob(name, btn) {
   }
 }
 
+function _bmClassificationHtml(quality) {
+  const attemptHtml = (run, kind) => {
+    if (!run) return '기록 없음';
+    const m = run.metrics || {};
+    return `${esc(run.ref_date)} · ${esc(run.status)} · ${esc(run.provider)}<br>` +
+      `대상 ${esc(m.expected_count ?? '—')} · 분류 ${esc(m.assigned_count ?? '—')} · ${kind === 'theme' ? '미소속 확인' : '누락'} ${esc(m.unassigned_count ?? '—')} · 관계 ${esc(m.relation_count ?? '—')} · ${kind === 'theme' ? '테마 수' : '업종 수'} ${esc(m.catalog_count ?? '—')}<br>` +
+      `<span class="text-muted">발행 ${esc(run.published_at || '—')} UTC · 종료 ${esc(run.finished_at || '—')} UTC</span>` +
+      (run.error ? `<br><span class="text-fail">${esc(run.error)}</span>` : '');
+  };
+  const rows = Object.entries(quality || {}).map(([kind, q]) => `<tr>
+    <td><b>${kind === 'sector' ? '섹터' : '테마'}</b><br>${esc(q.state)} · ${q.stale ? '갱신 필요' : '최신'}</td>
+    <td>${attemptHtml(q.latest_attempt, kind)}</td><td>${attemptHtml(q.last_successful, kind)}</td>
+  </tr>`).join('');
+  return rows ? `<h3>분류 데이터 품질</h3><div style="overflow-x:auto"><table>
+    <thead><tr><th>분류 / 상태</th><th>최근 시도</th><th>마지막 성공</th></tr></thead><tbody>${rows}</tbody>
+    </table></div>` : '';
+}
+
 async function loadBatchMonitor() {
   loading('bm-matrix');
   try {
@@ -2076,6 +2094,7 @@ async function loadBatchMonitor() {
       </tr>`;
     }).join('');
     document.getElementById('bm-matrix').innerHTML = `
+      ${_bmClassificationHtml(d.classification_quality)}
       <div style="overflow-x:auto">
         <table>
           <thead><tr><th>잡</th>${head}</tr></thead>

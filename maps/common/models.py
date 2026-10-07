@@ -93,7 +93,7 @@ class SecurityMetadata(Base):
     listing_date: Mapped[datetime.date | None] = mapped_column(Date, nullable=True)
     delisting_date: Mapped[datetime.date | None] = mapped_column(Date, nullable=True)
     has_adjusted_price: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    sector: Mapped[str | None] = mapped_column(String(100), nullable=True)      # WICS 업종 분류
+    sector: Mapped[str | None] = mapped_column(String(100), nullable=True)      # KRX 업종의 호환용 최신 값
     theme: Mapped[str | None] = mapped_column(String(64), nullable=True)        # 8단계: 테마 분류 (AI반도체·HBM 등)
     updated_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc),
@@ -329,6 +329,7 @@ class CollectionLog(Base):
     status: Mapped[str] = mapped_column(String(16), nullable=False)   # success | partial | failed
     items: Mapped[int | None] = mapped_column(Integer, nullable=True)
     metadata_quality: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    classification_quality: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc)
@@ -338,6 +339,37 @@ class CollectionLog(Base):
 # ---------------------------------------------------------------------------
 # 스케줄러 잡 실행 이력 (SCR-21 배치 모니터)
 # ---------------------------------------------------------------------------
+class ClassificationRun(Base):
+    """Durable collection attempt; published complete snapshots are immutable."""
+
+    __tablename__ = "classification_run"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    kind: Mapped[str] = mapped_column(String(16), index=True)
+    provider: Mapped[str] = mapped_column(String(64))
+    ref_date: Mapped[datetime.date] = mapped_column(Date, index=True)
+    status: Mapped[str] = mapped_column(String(16), index=True)
+    started_at: Mapped[datetime.datetime] = mapped_column(DateTime)
+    finished_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)
+    published_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)
+    expected_tickers: Mapped[list] = mapped_column(JSON, default=list)
+    catalog: Mapped[dict] = mapped_column(JSON, default=dict)
+    metrics: Mapped[dict] = mapped_column(JSON, default=dict)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    notified_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class ClassificationMember(Base):
+    """Snapshot relation with historical provider code and label."""
+
+    __tablename__ = "classification_member"
+    __table_args__ = (UniqueConstraint("run_id", "ticker", "code", name="uq_classification_member"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("classification_run.id"), index=True)
+    ticker: Mapped[str] = mapped_column(String(16), index=True)
+    code: Mapped[str] = mapped_column(String(128))
+    name: Mapped[str] = mapped_column(String(256))
+
+
 class JobRunLog(Base):
     """job_run_log — 스케줄러 잡 실행 이력.
 

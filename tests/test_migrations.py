@@ -40,7 +40,9 @@ def test_fresh_database_reaches_current_schema(tmp_path, monkeypatch) -> None:
         revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
     engine.dispose()
 
-    assert revision == "0038_execution_safety"
+    assert revision == "0039_classification_snapshots"
+    assert {"classification_run", "classification_member"} <= set(inspector.get_table_names())
+    assert "classification_quality" in {c["name"] for c in inspector.get_columns("collection_log")}
     assert {"order_intent", "execution_account_state", "account_observation", "account_adjustment",
             "validation_run", "execution_safety_event"} <= set(inspector.get_table_names())
     assert {"account_key", "intent_id", "environment", "code_hash", "params_hash"} <= order_columns

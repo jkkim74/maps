@@ -17,6 +17,7 @@ from maps.common.models import (
     SecurityFundamental,
     SecurityMetadata,
 )
+from maps.data.classifications import ClassificationPayload, ClassificationRepository, valid_label
 from maps.data.krx_adapter import CollectionResult, KRXAdapterBase, MetadataCollection, MockKRXAdapter
 
 if TYPE_CHECKING:
@@ -57,6 +58,7 @@ class DataCollector:
         """
         logger.info("수집 시작: %s", ref_date)
         metadata_quality = None
+        classification_quality = None
         try:
             ohlcv = self._krx.get_ohlcv(ref_date)
             try:
@@ -75,11 +77,38 @@ class DataCollector:
                 logger.warning("수정주가 누락 %d건 — broker 폴백 (Phase 4 구현 예정)", len(missing_adj))
                 # Phase 4: broker.get_adjusted_ohlcv(ref_date) 연동 후 구현
 
+            repository = ClassificationRepository(self._db)
+            sector_run = repository.start("sector", "mock" if isinstance(self._krx, MockKRXAdapter) else "krx", ref_date)
+            sectors = {}
             try:
-                sectors = self._krx.get_sector_classifications(ref_date)
+                raw_sectors = self._krx.get_sector_classifications_strict(ref_date)
+                sectors = {ticker: label.strip() for ticker, label in raw_sectors.items() if valid_label(label)}
+                expected = [item.ticker for item in meta]
+                filtered = {ticker: sectors[ticker] for ticker in expected if ticker in sectors}
+                missing = [ticker for ticker in expected if ticker not in filtered]
+                metrics = dict(expected_count=len(expected), assigned_count=len(filtered),
+                               unassigned_count=len(missing), missing_tickers=missing,
+                               relation_count=len(filtered), catalog_count=len(set(filtered.values())))
+                if missing or not expected or metadata.status != "complete":
+                    repository.fail(sector_run, "sector coverage or metadata universe incomplete", "partial", metrics)
+                else:
+                    repository.publish(sector_run, ClassificationPayload(
+                        "sector", sector_run.provider, ref_date, expected,
+                        {label: label for label in filtered.values()},
+                        {ticker: [label] for ticker, label in filtered.items()}, metrics))
             except Exception as exc:
-                logger.warning("업종 분류 수집 실패 (스킵): %s", exc)
+                logger.error("Sector classification failed (preserving prices): %s", exc)
+                try:
+                    repository.fail(sector_run, f"{type(exc).__name__}: {exc}", metrics={"expected_count": len(meta)})
+                except DataCollectionError:
+                    self._db.refresh(sector_run)
+                    if sector_run.status == "running":
+                        raise
+                    logger.warning("Sector attempt already closed by another worker: %s", sector_run.id)
                 sectors = {}
+            classification_quality = dict(kind="sector", run_id=sector_run.id,
+                provider=sector_run.provider, ref_date=ref_date.isoformat(),
+                status=sector_run.status, error=sector_run.error, **sector_run.metrics)
 
             result = CollectionResult(
                 ref_date=ref_date,
@@ -88,6 +117,7 @@ class DataCollector:
                 halts=halts,
                 managed=managed,
                 metadata_quality=metadata_quality,
+                classification_quality=classification_quality,
             )
             try:
                 fundamentals = self._krx.get_fundamental(ref_date)
@@ -116,6 +146,8 @@ class DataCollector:
 
             collect_market_news_sentiment(self._db, ref_date)
             notes = []
+            if classification_quality["status"] != "complete":
+                notes.append(f"sector_classification_status={classification_quality['status']}")
             if metadata.status != "complete":
                 notes.append(f"metadata_status={metadata.status}")
                 logger.error("Partial metadata collection [%s]: %s", ref_date, metadata_quality)
@@ -123,11 +155,11 @@ class DataCollector:
                 notes.append(f"investor_flow_count=0 ({flow_error or 'adapter returned no rows'})")
                 logger.error("투자자 수급 0건 [%s] — 다음 거래일 신규매수 차단", ref_date)
             self._write_log(ref_date, "partial" if notes else "success", saved_rows,
-                            note="; ".join(notes) or None, metadata_quality=metadata_quality)
+                            note="; ".join(notes) or None, metadata_quality=metadata_quality, classification_quality=classification_quality)
             return result
 
         except Exception as exc:
-            self._write_log(ref_date, "failed", 0, str(exc), metadata_quality=metadata_quality)
+            self._write_log(ref_date, "failed", 0, str(exc), metadata_quality=metadata_quality, classification_quality=classification_quality)
             raise DataCollectionError(f"수집 실패 [{ref_date}]: {exc}") from exc
 
     def collect_range(
@@ -258,6 +290,7 @@ class DataCollector:
         for m in meta_list:
             has_adjusted_price = adjusted_by_ticker.get(m.ticker, False)
             sector = sector_by_ticker.get(m.ticker)
+            sector = sector.strip() if valid_label(sector) else None
             existing = (
                 self._db.query(SecurityMetadata)
                 .filter(SecurityMetadata.ticker == m.ticker)
@@ -459,6 +492,7 @@ class DataCollector:
         note: str | None = None,
         source: str = "krx",
         metadata_quality: dict | None = None,
+        classification_quality: dict | None = None,
     ) -> None:
         """collection_log 테이블에 감사 로그를 기록한다."""
         self._db.add(
@@ -469,6 +503,7 @@ class DataCollector:
                 items=items,
                 note=note,
                 metadata_quality=metadata_quality,
+                classification_quality=classification_quality,
             )
         )
         self._db.commit()

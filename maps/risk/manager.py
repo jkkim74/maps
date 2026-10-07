@@ -14,6 +14,7 @@ import datetime
 import logging
 from dataclasses import dataclass, field
 from enum import Enum
+from zoneinfo import ZoneInfo
 
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
@@ -68,6 +69,7 @@ class RiskConfig:
     theme_exposure_limit: float = 0.35          # 단일 테마 최대 비중 (35%)
     theme_exposure_limit_enabled: bool = False  # 테마 노출 한도 활성 여부
     sector_exposure_limit_enabled: bool = False # 섹터 노출 한도 활성 여부
+    classification_snapshot_enforced: bool = False  # 검증된 분류 스냅샷으로 단계적 전환
     # 시장 국면별 최소 현금 비율
     min_cash_ratio_strong: float = 0.15
     min_cash_ratio_mixed: float = 0.25
@@ -81,6 +83,7 @@ class RiskConfig:
             theme_exposure_limit=settings.maps_max_theme_exposure,
             sector_exposure_limit_enabled=settings.maps_sector_exposure_limit_enabled,
             theme_exposure_limit_enabled=settings.maps_theme_exposure_limit_enabled,
+            classification_snapshot_enforced=settings.maps_classification_snapshot_enforced,
             min_cash_ratio_strong=settings.maps_min_cash_ratio_strong,
             min_cash_ratio_mixed=settings.maps_min_cash_ratio_mixed,
             min_cash_ratio_weak=settings.maps_min_cash_ratio_weak)
@@ -206,6 +209,9 @@ class RiskManager:
             raise ExposureCapError(order.ticker, None, "portfolio_exposure_exceeded")
         if not check_classification_limits:
             return
+        if self._cfg.classification_snapshot_enforced:
+            self._check_classification_snapshots(order.ticker, held, pending, value, total)
+            return
         from maps.common.models import SecurityMetadata
         for enabled, field, limit in (
             (self._cfg.sector_exposure_limit_enabled, "sector", self._cfg.sector_exposure_limit),
@@ -220,6 +226,39 @@ class RiskManager:
             amount = value + sum((held.get(t, Decimal(0)) + pending.get(t, Decimal(0)) for t in tickers if metadata[t] == metadata[order.ticker]), Decimal(0))
             if amount / total > D(limit):
                 raise ExposureCapError(order.ticker, float(amount / total), f"{field}_exposure_exceeded")
+
+    def _check_classification_snapshots(
+        self, ticker: str, held: dict[str, Decimal], pending: dict[str, Decimal],
+        value: Decimal, total: Decimal,
+    ) -> None:
+        """Use observable previous-session classifications, counting each group once."""
+        from maps.data.classifications import ClassificationRepository
+        from maps.market.trading_rules import previous_trading_day
+
+        now = datetime.datetime.now(datetime.timezone.utc)
+        expected = previous_trading_day(now.astimezone(ZoneInfo("Asia/Seoul")).date(),
+                                        extra_closed_dates=get_settings().krx_closed_dates)
+        repo = ClassificationRepository(self._db)
+        tickers = set(held) | set(pending) | {ticker}
+        for enabled, kind, limit in (
+            (self._cfg.sector_exposure_limit_enabled, "sector", self._cfg.sector_exposure_limit),
+            (self._cfg.theme_exposure_limit_enabled, "theme", self._cfg.theme_exposure_limit),
+        ):
+            if not enabled:
+                continue
+            run = repo.latest(kind, ref_date=expected, available_at=now)
+            if run is None:
+                raise ExposureCapError(ticker, None, f"{kind}_classification_stale")
+            groups = repo.memberships(run, tickers)
+            if any(t not in groups or (kind == "sector" and len(groups[t]) != 1) for t in tickers):
+                raise ExposureCapError(ticker, None, f"{kind}_classification_missing")
+            for code in groups[ticker]:
+                amount = value + sum(
+                    (held.get(t, Decimal(0)) + pending.get(t, Decimal(0))
+                     for t in tickers if code in groups[t]), Decimal(0),
+                )
+                if amount / total > Decimal(str(limit)):
+                    raise ExposureCapError(ticker, float(amount / total), f"{kind}_exposure_exceeded")
 
     # ------------------------------------------------------------------
     # 신규: 주문 성공/실패 카운터

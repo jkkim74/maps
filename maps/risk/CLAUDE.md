@@ -11,6 +11,18 @@ risk/
 └── manager.py        # RiskManager, KillSwitchEvent, RiskConfig, KillSwitchReason
 ```
 
+## Classification snapshots (2026-10-07)
+
+`MAPS_CLASSIFICATION_SNAPSHOT_ENFORCED=true` switches enabled sector/theme caps to
+published `ClassificationRun` snapshots for the previous KRX trading day. A missing
+or stale publication blocks normal BUY entries; each held/pending/new ticker must
+belong to that snapshot's explicit universe. A validated empty theme membership is
+allowed. Multi-theme holdings count their full exposure once per shared theme.
+`RiskConfig.from_settings()` carries the rollout flag; its default is false so
+collection can be commissioned before switching enforcement. Watchlist and V1
+classification exemptions return before either legacy or snapshot checks. Cash,
+single-stock/account limits and exit behavior remain unchanged.
+
 ## holding_regime_overlay.py
 
 `evaluate_holding_regime()`은 자동후보 진입 당시 장세와 최근 두 장마감 관측을 비교한다.

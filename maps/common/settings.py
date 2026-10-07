@@ -72,6 +72,10 @@ class MapsSettings(BaseSettings):
     maps_scheduler_enabled: bool = False
     maps_scheduler_timezone: str = "Asia/Seoul"
     maps_data_collection_time: str = "16:10"
+    maps_theme_collection_enabled: bool = False
+    maps_theme_collection_time: str = "17:00"
+    maps_classification_check_time: str = "17:25"
+    maps_classification_snapshot_enforced: bool = False
     maps_candidate_time: str = "16:20"
     maps_validation_time: str = "16:40"
     maps_order_time: str = "08:55"
@@ -268,6 +272,17 @@ class MapsSettings(BaseSettings):
     daily_loss_limit: float = Field(default=0.015, ge=0.0)
     max_single_exposure: float = Field(default=0.10, ge=0.0)
     account_risk_per_trade: float = Field(default=0.005, ge=0.0)
+
+    @model_validator(mode="after")
+    def _validate_classification_times(self) -> "MapsSettings":
+        """Reject malformed collection/check clock values at configuration load."""
+        for value in (self.maps_theme_collection_time, self.maps_classification_check_time):
+            try:
+                hour, minute = map(int, value.split(":"))
+                dt.time(hour, minute)
+            except (ValueError, TypeError) as exc:
+                raise ValueError(f"Invalid classification HH:MM: {value!r}") from exc
+        return self
 
     @model_validator(mode="after")
     def _map_legacy_ai_scoring_settings(self) -> "MapsSettings":

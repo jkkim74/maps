@@ -6,6 +6,8 @@ KRX OHLCV 및 종목 메타데이터 수집·조회 패키지.
 
 ```
 data/
+├── classifications.py     # immutable classification snapshots
+├── naver_themes.py        # public Npay multi-theme collector
 ├── __init__.py            # 빈 패키지 마커
 ├── collector.py           # DataCollector — 일별/기간 수집 오케스트레이터
 ├── krx_adapter.py         # KRXAdapterBase / KRXAdapter / MockKRXAdapter + 데이터 클래스
@@ -183,3 +185,27 @@ maps.common.models     → HistoricalOHLCV, SecurityMetadata, CollectionLog,
                          SecurityFundamental, InvestorFlowSnapshot
 maps.common.exceptions → DataCollectionError
 ```
+
+## Classification snapshots
+
+`classifications.py` defines `ClassificationPayload` and `ClassificationRepository`.
+`start` durably records an attempt; `publish` validates the exact explicit universe,
+unique catalog relations and single-sector coverage, and atomically commits immutable
+historical code/name relations. `fail` never replaces a publication. `latest` supports
+an exact `ref_date` and UTC availability boundary. Known empty theme membership is
+verified no-theme; a ticker outside the expected universe is unknown. Counts are
+recomputed on publication rather than trusting provider completeness claims.
+
+Daily collection uses `get_sector_classifications_strict`; KRX market/schema/label
+failures remain visible while the legacy mapping API retains best-effort behavior.
+Sector failures preserve price/flow writes and the last published snapshot, set the
+collection log partial and expose separate `classification_quality`; metadata quality
+continues to describe metadata only. Mock adapters require explicit sector fixtures.
+`SecurityMetadata.sector` remains a compatibility projection and rejects null/NaN/blank
+labels. There is no historical classification backfill.
+
+`NaverThemeAdapter.collect(ref_date, expected_tickers)` returns provider `naver` current
+public multi-theme memberships, including explicitly verified empty entries. It checks
+full source member counts before universe filtering, verifies unchanged start/end catalog
+manifests, and enforces a 1200-second deadline. This is current snapshot evidence, not
+reconstructed historical membership.

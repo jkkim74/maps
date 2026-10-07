@@ -22,7 +22,7 @@ alembic downgrade -1                             # 한 단계 되돌리기
 파일명이 아니라 각 파일의 `down_revision` 을 따라간다. 예: `efca8676041a` 의
 `down_revision` 은 `0005_stock_report_runs` 다.
 
-현재 head: **`0038_execution_safety`**.
+현재 head: **`0039_classification_snapshots`**.
 
 `0037_close_report_evidence` adds nullable collection metadata quality and candidate
 research version/scope/evidence columns plus `dart_financial_snapshot`,
@@ -48,3 +48,7 @@ preserved; no financial or score backfill is performed.
 
 0038_execution_safety adds account-scoped durable intents, observations, adjustments,
 validation snapshots, safety outbox events and nullable legacy audit links. No backfill.
+
+`0039_classification_snapshots` adds `classification_run`, `classification_member`,
+and nullable `collection_log.classification_quality`. It follows `0038_execution_safety`
+and performs no historical backfill. Downgrade removes only these additive objects.

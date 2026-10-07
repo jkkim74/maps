@@ -310,7 +310,7 @@ def test_universe_ranked_by_trading_value() -> None:
 
 
 def test_resolve_universe_pool_filters() -> None:
-    """market/sector/theme/recent_ipo 풀이 security_metadata 기준으로 걸러져야 한다."""
+    """Legacy theme strings cannot masquerade as historical membership evidence."""
     from maps.api import backtest as bt
     from maps.api.schemas import BacktestRunRequest
 
@@ -339,8 +339,9 @@ def test_resolve_universe_pool_filters() -> None:
         pool, _ = resolve(universe="sector", universe_arg="바이오")
         assert pool == ["900001"]
 
-        pool, _ = resolve(universe="theme", universe_arg="HBM")
-        assert pool == ["005930"]
+        with pytest.raises(HTTPException) as exc:
+            resolve(universe="theme", universe_arg="HBM")
+        assert "theme_snapshot_unavailable" in exc.value.detail
 
         pool, label = resolve(universe="recent_ipo", universe_arg="90", end=dt.date(2026, 8, 1))
         assert pool == ["900001"] and label == "recent_ipo:90"
