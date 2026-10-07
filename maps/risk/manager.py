@@ -139,7 +139,7 @@ class RiskManager:
             order: 제출할 주문.
             account: 현재 계좌 잔고.
             daily_pnl: 당일 손익률 (음수 = 손실). 기본 0.0.
-            check_classification_limits: 검증된 워치리스트 주문만 False로 전달한다.
+            check_classification_limits: 검증된 워치리스트·상한가 V1 매수만 False로 전달한다.
                 업종·테마 분류/비중 검사만 생략하고 나머지 리스크 검사는 유지한다.
 
         Raises:

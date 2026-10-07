@@ -7,7 +7,7 @@ import datetime as dt
 import pytest
 
 from maps.common.exceptions import BrokerAdapterError, BrokerOrderRejectedError
-from maps.common.models import CollectionLog, OrderLog
+from maps.common.models import CollectionLog, OrderLog, SecurityMetadata
 from maps.common.settings import get_settings
 from maps.market.trading_rules import previous_trading_day
 from maps.execution.broker_adapter import (
@@ -134,6 +134,29 @@ def test_grid_metadata_failure_blocks_new_buys(db, failure):
     assert broker.orders == []
     assert result.position_quantity == 0
     assert not worker.repository.event_exists(session, action="submit_buy", state_version=session.state_version, leg="S")
+
+
+@pytest.mark.parametrize("field", ["sector", "theme"])
+@pytest.mark.parametrize("classified", [False, True])
+def test_grid_ignores_classification_limits(db, field: str, classified: bool) -> None:
+    """Validated V1 buys submit both legs despite missing or over-cap classification."""
+    broker = ScriptedBroker()
+    worker, session = _worker(db, broker)
+    setattr(worker.order_manager._risk._cfg, f"{field}_exposure_limit_enabled", True)
+    setattr(worker.order_manager._risk._cfg, f"{field}_exposure_limit", 0.005)
+    if classified:
+        db.add(SecurityMetadata(
+            ticker=session.ticker, name="Example", market="KOSPI", security_type="STOCK",
+            sector="electronics", theme="semiconductors",
+        ))
+        db.commit()
+
+    worker.fire_grid(session, build_grid(upper_limit_price=100_000, budget_krw=2_000_000))
+
+    assert [order.strategy_id for order in broker.orders] == ["limit_up_v1:S", "limit_up_v1:A"]
+    assert [(leg.name, leg.broker_order_id, leg.status) for leg in worker.legs(session)] == [
+        ("A", "1002", "pending"), ("S", "1001", "pending"),
+    ]
 
 
 def test_grid_submits_s_then_a_and_persists_broker_ids(db) -> None:

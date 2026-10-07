@@ -120,13 +120,16 @@ OrderManager(broker: BrokerAdapter, risk: RiskManager, db: Session)
 ## 안전 제약
 
 분석 워치리스트(`source="analysis_pick"`) 단일·분할 매수는 픽의 존재·종목·활성 상태·
-유효기간 검증 후에만 업종·테마 분류/비중 검사를 생략한다. 정책은 `OrderManager`에서
+유효기간 검증 후에만 업종·테마 분류/비중 검사를 생략한다. 상한가 V1(`source="limit_up"`)
+매수도 엔진 활성·자동 모드와 DB 세션의 존재·종목 일치·자동 실행 모드를 검증한 뒤
+같은 예외를 적용한다. 전략 이름만으로는 예외가 적용되지 않는다. 정책은 `OrderManager`에서
 선택하며, 외부 API에 우회 플래그를 노출하지 않는다. 현금·종목 비중·총노출·손실·
 중복 주문·계좌 대사와 매도 소유권 검사는 유지한다. 주문 intent의 기존 `source`와
 `source_id`로 적용 경로를 감사한다. 설정·스키마 변경은 없다.
 
 기존 ARMED 픽에도 배포 후 적용되므로 가격과 나머지 안전 조건이 충족되면 다음 주기에
-주문이 제출될 수 있다. 배포 전 활성 픽을 확인한다.
+주문이 제출될 수 있다. 상한가 V1도 기존 감시 세션의 진입 신호와 나머지 조건이 충족되면
+적용된다. 배포 전 활성 픽과 상한가 세션을 확인한다.
 
 - `MAPS_LIVE_TRADING_ENABLED=false` 또는 dry-run이면 mock을 포함해 매수·매도·취소 금지.
 - `MAPS_BROKER_MODE=mock`이면 `MockBroker`만 사용.

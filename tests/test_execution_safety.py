@@ -16,6 +16,7 @@ from maps.execution.order_manager import OrderManager
 from maps.execution.reconciliation import apply_result
 from maps.execution.safety import ExecutionContext, account_key, utcnow
 from maps.execution.safety_admin import classify_adjustment, resolve_intent
+from maps.limit_up.repository import LimitUpRepository
 from maps.risk.manager import RiskConfig, RiskManager
 
 
@@ -53,13 +54,94 @@ def context(key="entry"):
     return ExecutionContext(key, source="mock", valid_until=utcnow() + dt.timedelta(hours=1))
 
 
+@pytest.fixture
+def limit_up_context(db, setup):
+    """Create the persisted automatic source required by the execution boundary."""
+    _, manager = setup
+    manager._settings = manager._settings.model_copy(update={
+        "maps_limit_up_enabled": True, "maps_limit_up_mode": "automatic",
+    })
+    session = LimitUpRepository(db).create_or_get_session(
+        ref_date=dt.date.today(), ticker="AAA", market="KOSPI",
+        upper_limit_price=1000, trigger_price=997,
+    )
+    db.commit()
+    return ExecutionContext("limit-up-entry", source="limit_up", source_id=session.id)
+
+
+@pytest.mark.parametrize("field", ["sector", "theme"])
+@pytest.mark.parametrize("classified", [False, True])
+def test_limit_up_classification_exception_preserves_catalog_limits(
+    db, setup, limit_up_context, field: str, classified: bool,
+) -> None:
+    """V1 bypasses classification, but its holdings still count for catalog buys."""
+    broker, manager = setup
+    setattr(manager._risk._cfg, f"{field}_exposure_limit_enabled", True)
+    setattr(manager._risk._cfg, f"{field}_exposure_limit", 0.005)
+    if classified:
+        db.add_all([SecurityMetadata(
+            ticker=ticker, name=ticker, market="KOSPI", security_type="STOCK",
+            sector="electronics", theme="semiconductors",
+        ) for ticker in ("AAA", "BBB")])
+        db.commit()
+
+    result = manager.submit(order(strategy="limit_up_v1:S"), context=limit_up_context)
+
+    assert result.status == OrderStatus.FILLED
+    assert broker.get_position("AAA").quantity == 10
+    reason = f"{field}_exposure_exceeded" if classified else f"{field}_classification_missing"
+    with pytest.raises(ExposureCapError, match=reason):
+        manager.submit(order(ticker="BBB", quantity=1), context=ExecutionContext("catalog-entry", source="catalog"))
+    assert broker.get_position("BBB") is None
+    intent = db.query(OrderIntent).one()
+    assert intent.request["source"] == "limit_up"
+    assert intent.request["source_id"] == limit_up_context.source_id
+
+
+@pytest.mark.parametrize("invalid", [
+    "missing_id", "missing_session", "ticker", "recommend_only", "observe_only",
+    "disabled", "mode", "unknown_source",
+])
+def test_classification_exception_requires_valid_automatic_limit_up_session(
+    db, setup, limit_up_context, invalid: str,
+) -> None:
+    """An invalid source must fail before any exemption or order intent is created."""
+    from maps.common.models import LimitUpSession
+
+    broker, manager = setup
+    manager._risk._cfg.sector_exposure_limit_enabled = True
+    manager._risk._cfg.theme_exposure_limit_enabled = True
+    session = db.get(LimitUpSession, limit_up_context.source_id)
+    if invalid == "missing_id":
+        limit_up_context = replace(limit_up_context, source_id=None)
+    elif invalid == "missing_session":
+        db.delete(session)
+    elif invalid == "ticker":
+        session.ticker = "BBB"
+    elif invalid in ("recommend_only", "observe_only"):
+        session.execution_mode = invalid
+    elif invalid == "disabled":
+        manager._settings = manager._settings.model_copy(update={"maps_limit_up_enabled": False})
+    elif invalid == "mode":
+        manager._settings = manager._settings.model_copy(update={"maps_limit_up_mode": "recommend_only"})
+    else:
+        limit_up_context = replace(limit_up_context, source="limit_up_v1")
+    db.commit()
+    reason = "entry_policy_unknown" if invalid == "unknown_source" else "limit_up_not_automatic"
+    with pytest.raises(ExecutionBlockedError, match=reason):
+        manager.submit(order(strategy="limit_up_v1:S"), context=limit_up_context)
+    assert broker.filled_orders == []
+    assert db.query(OrderIntent).count() == 0
+
+
+@pytest.mark.parametrize("strategy", ["strategy_trade", "limit_up_v1:S"])
 @pytest.mark.parametrize("source", ["catalog", "mock"])
 @pytest.mark.parametrize("field", ["sector", "theme"])
 @pytest.mark.parametrize("classified", [False, True])
 def test_watchlist_strategy_name_does_not_exempt_other_sources(
-    db, setup, source: str, field: str, classified: bool,
+    db, setup, source: str, field: str, classified: bool, strategy: str,
 ) -> None:
-    """Only a validated pick source may bypass classification, never its name."""
+    """Only validated exempt sources bypass classification, never strategy names."""
     broker, manager = setup
     setattr(manager._risk._cfg, f"{field}_exposure_limit_enabled", True)
     setattr(manager._risk._cfg, f"{field}_exposure_limit", 0.005)
@@ -71,7 +153,7 @@ def test_watchlist_strategy_name_does_not_exempt_other_sources(
         db.commit()
     reason = f"{field}_exposure_exceeded" if classified else f"{field}_classification_missing"
     with pytest.raises(ExposureCapError, match=reason):
-        manager.submit(order(strategy="strategy_trade"), context=ExecutionContext("entry", source=source))
+        manager.submit(order(strategy=strategy), context=ExecutionContext("entry", source=source))
     assert broker.filled_orders == []
     assert db.query(OrderIntent).count() == 0
 

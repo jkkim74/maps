@@ -197,8 +197,8 @@ class OrderManager:
                 self._risk.check_before_order(risk_order, replace(snapshot.balance, cash=float(money(power.amount) - extra)),
                     float(state.daily_return), risk_strategy_id=risk_strategy_id,
                     positions=snapshot.positions, pending_orders=risk_pending,
-                    # _entry_policy already validated the persisted watchlist pick.
-                    check_classification_limits=context.source != "analysis_pick")
+                    # _entry_policy already validated the persisted pick/session.
+                    check_classification_limits=context.source not in ("analysis_pick", "limit_up"))
             else:
                 position = snapshot.positions.get(order.ticker)
                 if position is None:
