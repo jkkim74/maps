@@ -114,3 +114,30 @@ def test_export_never_rewrites_or_backfills_session_bars_from_later_history(db):
     assert result["bars"]["2026-10-12"]["AAA"]["close"] == 110
     assert any(g["reason"] == "missing_session_bar" and g["date"] == "2026-10-08"
                for g in result["provenance"]["coverage_gaps"])
+
+
+def test_export_rescreen_keeps_latest_rules_raw_ranking_and_source_ids(db):
+    import base64, json, zlib
+    from maps.fujimoto.repository import FujimotoRepository
+    from scripts.fujimoto_research import export_inputs
+    repo = FujimotoRepository(db)
+    day = "2026-10-07"
+    candidates, screens = [], []
+    for hour, selected, price in ((7, False, 100), (13, True, 110)):
+        stamp = datetime(2026, 10, 7, hour, tzinfo=timezone.utc)
+        raw = {"revision": hour, "prices": [{"date": day, "open": price, "high": price,
+                "low": price, "close": price, "volume": 100}]}
+        candidates.append(repo.record_evidence("candidate", "AAA", stamp, stamp,
+            {"ref_date": day, "rule": {"as_of": day, "selection_passed": selected, "close": price},
+             "raw_zlib": base64.b64encode(zlib.compress(json.dumps(raw).encode())).decode()}).id)
+        screens.append(repo.record_evidence("screen", "*", stamp, stamp,
+            {"ref_date": day, "ranked": ["AAA"] if selected else []}).id)
+    result = export_inputs(db, "account", 1000000)
+    assert result["evidence"][day]["AAA"]["selection_passed"] is True
+    assert result["evidence"][day]["AAA"]["close"] == 110
+    assert result["screening"][day]["AAA"]["revision"] == 13
+    assert result["candidate_order"][day] == ["AAA"]
+    assert result["provenance"]["candidate_evidence"] == [candidates[-1]]
+    assert result["provenance"]["screen_evidence"] == [screens[-1]]
+    assert result["bars"][day]["AAA"]["close"] == 100
+    assert result["provenance"]["bar_evidence"] == [candidates[0]]

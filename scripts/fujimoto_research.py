@@ -27,25 +27,26 @@ def export_inputs(db, key: str, budget: float) -> dict:
     from maps.common.settings import get_settings
     settings = get_settings()
     evidence, screening, bars, ranking, tape = {}, {}, {}, {}, []
-    candidate_ids, annual_ids, gaps = [], [], []
+    candidate_ids, screen_ids, bar_ids = {}, {}, {}
+    annual_ids, gaps = [], []
     rows = db.query(FujimotoEvidence).order_by(FujimotoEvidence.id)
     for row in rows:
         if row.account_key not in (None, key):
             continue
         if row.kind == "candidate":
             day = row.payload["ref_date"]
-            if row.ticker in evidence.get(day, {}):
-                continue  # Freeze the first observed snapshot for this session.
             raw = json.loads(zlib.decompress(base64.b64decode(row.payload["raw_zlib"])))
             evidence.setdefault(day, {})[row.ticker] = row.payload["rule"]
             screening.setdefault(day, {})[row.ticker] = raw
-            candidate_ids.append(row.id)
+            candidate_ids[day, row.ticker] = row.id
             for bar in raw["prices"]:
-                if bar["date"] == day:
+                if bar["date"] == day and row.ticker not in bars.get(day, {}):
                     bars.setdefault(day, {})[row.ticker] = {k: bar[k] for k in
                         ("open", "high", "low", "close", "volume")}
+                    bar_ids[day, row.ticker] = row.id
         elif row.kind == "screen":
             ranking[row.payload["ref_date"]] = row.payload.get("ranked", [])
+            screen_ids[row.payload["ref_date"]] = row.id
             if row.payload.get("reason"):
                 gaps.append({"id": row.id, "reason": row.payload["reason"]})
         elif row.kind in {"annual_source", "comparability"}:
@@ -73,7 +74,8 @@ def export_inputs(db, key: str, budget: float) -> dict:
         "minimum_cash_fraction": max(.325, settings.maps_min_cash_ratio_weak,
             settings.maps_min_cash_ratio_mixed, settings.maps_min_cash_ratio_strong),
         "bars": {d: v for d, v in bars.items() if d in evidence}, "candidate_order": ranking,
-        "tape": tape, "provenance": {"candidate_evidence": candidate_ids,
+        "tape": tape, "provenance": {"candidate_evidence": sorted(candidate_ids.values()),
+            "screen_evidence": sorted(screen_ids.values()), "bar_evidence": sorted(set(bar_ids.values())),
             "annual_evidence": annual_ids, "coverage_gaps": gaps}}
 
 

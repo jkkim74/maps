@@ -75,6 +75,10 @@ source/screen/tape snapshots; it never rebuilds history from current metadata.
 Execution/valuation bars come only from the first snapshot of their own session;
 later snapshots' revised history is indicator input only. Missing session bars
 inside the exported observation span are explicit coverage gaps, never backfilled.
+Rules/raw screening and ranked selection use their latest recorded session values,
+including same-day re-screens. Candidate and screen provenance identify those
+selected records; separate bar provenance identifies the preserved first own-session
+execution/valuation prices. Freezing execution prices must not freeze candidate rules.
 `--input observations.json --output report.json` replays both variants. Explicit
 `--persist --database URL --account-key HASH` stores replay/validation only; choose
 `--without-orderbook` and `--account-mdd-limit` consistently with runtime config.
