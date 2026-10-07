@@ -44,6 +44,8 @@
 
 ## 2. 패키지 지도
 
+후지모토 시점 근거·지표·순수 분할매매 판단: [maps/fujimoto/CLAUDE.md](maps/fujimoto/CLAUDE.md).
+
 | 패키지 | 한 줄 | 문서 |
 |---|---|---|
 | `maps/ai` | Bedrock 호출 — 점수·매매계획·안전마진. 실패 시 값을 만들지 않는다 | [maps/ai/CLAUDE.md](maps/ai/CLAUDE.md) |

@@ -8,6 +8,7 @@ from maps.market.trading_rules import round_down_krx_price
 
 
 _STOP_LOSS_PCTS: dict[str, float] = {
+    "fujimoto_safe_v1": 0.08,
     "limit_up_v1": 0.05,
     "pullback_v3": 0.05,
     "pullback_v3_3": 0.05,
@@ -37,6 +38,7 @@ _THESIS_STOP_TRIGGERS: dict[str, list[str]] = {
 # 실제 손절가는 :func:`effective_stop_price` 로만 구한다 — 고정%와 ATR 중
 # 손절 폭이 **넓은**(= 가격이 낮은) 쪽이다.
 _ATR_MULTIPLIERS: dict[str, float] = {
+    "fujimoto_safe_v1": 3.0,
     "pullback_v3": 2.0,
     "pullback_v3_3": 2.0,
     "pullback_v2": 2.0,

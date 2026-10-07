@@ -44,6 +44,11 @@ strategy/
 
 ## live_rules.py — 손절은 여기 하나로만 구한다
 
+`fujimoto_safe_v1` 연구 손절은 고정 8%, ATR 3배, 손절폭 상한 16%다.
+`fujimoto_original_v1`은 가격 손절을 등록하지 않으며, 결측과 구분되는
+명시적 `intentional_none` 정책을 [후지모토 규칙](../fujimoto/CLAUDE.md)에서 사용한다.
+두 모드의 상태형 판단은 기존 bool 신호 엔진과 분리되어 있으며 아직 주문에 연결하지 않는다.
+
 | 함수 | 설명 |
 |---|---|
 | `stop_loss_pct(strategy_id)` | 전략별 고정 손절 비율 |
