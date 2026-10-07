@@ -124,9 +124,13 @@ class QualityResult:
 def _as_of(records: Iterable[AnnualRecord | FinancialRecord], cutoff: date) -> list:
     """Select latest known receipt per period, then its latest available observation."""
     latest = {}
+    ticker = None
     for row in records:
         if row.available_date > cutoff:
             continue
+        if ticker is not None and row.ticker != ticker:
+            raise DataQualityError("mixed_ticker_evidence")
+        ticker = row.ticker
         old = latest.get(row.period_end)
         key = (row.publication_date, row.receipt, _utc(row.first_observed_at))
         if old is None or key > (old.publication_date, old.receipt, _utc(old.first_observed_at)):

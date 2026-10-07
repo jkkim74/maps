@@ -18,7 +18,10 @@ or null amounts for a known pending revision. Its basis/currency/share_basis mus
 match three consecutive fiscal years. Availability cannot precede DART's
 next-session-after-publication/first-observation boundary. Never construct annual
 DPS from daily fundamentals. A known available correction masks old values until
-its parsed observation becomes available. Annual freshness is a research policy:
+its parsed observation becomes available. Available records must identify one
+ticker before period/revision selection;
+foreign same-period records cannot hide deterioration or mask annual evidence.
+Annual freshness is a research policy:
 the latest fiscal year remains usable until the following fiscal year's end plus
 90 days; after that missing newer evidence blocks buys. This is not a legal
 reporting deadline assertion. `financial_status` uses DART's 180-day coverage rule
@@ -38,6 +41,8 @@ Ichimoku is 9/26/52 with the cloud shifted 26 sessions and lag confirmation usin
 past closes. Weekly aggregation requires every actual KRX session in the week.
 `build_rule_evidence` derives daily/weekly signals and blocks buys on warm-up,
 missing current bars, or calendar gaps; valid exits remain independent of buy gates.
+If the cutoff daily bar is absent, no fresh daily technical signals are emitted
+from an older bar. Independent financial/live exits and persisted targets remain.
 Its cutoff is after close. Date-only inputs must never contain unfinished bars.
 
 `evaluate(Mode, RuleEvidence, CycleState)` is pure. buy_weight is monetary 1/2/6.

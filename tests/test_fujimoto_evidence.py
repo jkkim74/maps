@@ -89,6 +89,23 @@ def test_missing_financials_are_not_deterioration():
     assert financial_status([row, pending], CUTOFF) == "missing"
 
 
+def test_available_mixed_tickers_rejected_before_period_collapse():
+    row = FinancialRecord("A", date(2025, 12, 31), "r", date(2026, 3, 20),
+                          datetime(2026, 3, 20, tzinfo=timezone.utc), date(2026, 3, 23),
+                          "CFS", "KRW", 90, 100, 9, 10)
+    foreign = replace(row, ticker="B", receipt="z", revenue=120, operating_profit=12)
+    with pytest.raises(DataQualityError, match="mixed_ticker_evidence"):
+        financial_status([row, foreign], CUTOFF)
+    # An observation not available at cutoff must not leak even its identity.
+    future = replace(foreign, first_observed_at=datetime(2026, 4, 9, tzinfo=timezone.utc),
+                     available_date=date(2026, 4, 10))
+    assert financial_status([row, future], CUTOFF) == "deteriorated"
+    rows = [annual(y, v) for y, v in [(2023, 100), (2024, 110), (2025, 120)]]
+    foreign_annual = replace(rows[-1], ticker="B", receipt="z")
+    with pytest.raises(DataQualityError, match="mixed_ticker_evidence"):
+        annual_quality([*rows, foreign_annual], CUTOFF)
+
+
 def test_sector_median_uses_exact_historical_universe_and_price_cutoff():
     snap = SectorSnapshot(CUTOFF, datetime(2026, 4, 7, tzinfo=timezone.utc),
                           (("A", "s"), ("B", "s"), ("C", "other")))

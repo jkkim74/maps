@@ -191,3 +191,35 @@ receipt journal entries for pending corrections and must never fabricate unknown
 share-basis comparability. Task 2/3 must honor the above fill, rounding, timing,
 freshness and pending-order contracts. Source and historical tape coverage remain
 unmeasured; test success does not imply profitability, promotion or live permission.
+
+## Independent review fixes
+
+The controller review identified two Important issues and one Minor type issue.
+All three have targeted test-first fixes, limited to evidence/domain contracts and
+their documentation; the controller's modified implementation plan was left unstaged.
+
+- Stale daily crossover events were being copied from the last old daily bar
+  into a later cutoff. The builder now uses a daily signal/value row only when
+  its date equals cutoff. An absent current bar emits no fresh MACD/RSI/Ichimoku
+  technical signals or current close. Existing persisted ordinary targets and
+  independent validated financial/live price exits are still evaluated.
+- Available mixed-ticker records could collapse into one same-period record
+  before identity validation and hide a deterioration. `_as_of` now validates
+  each available ticker identity before any period/revision collapse. Future
+  unavailable foreign records remain excluded and do not leak identity.
+- `sell_target_ninths` now requires a nonboolean integer before membership
+  validation, rejecting True and 1.0 and preserving integer quantity arithmetic.
+
+Red command (same mock/UTF-8/Python/worktree environment):
+`python -m pytest tests/test_fujimoto_rules.py::test_stale_daily_crossovers_do_not_create_new_exits
+tests/test_fujimoto_rules.py::test_sell_target_requires_nonbool_integer
+tests/test_fujimoto_evidence.py::test_available_mixed_tickers_rejected_before_period_collapse -q`
+produced **4 expected assertion failures in 2.03s** before production fixes.
+
+Green command: `python -m pytest tests/test_fujimoto_evidence.py
+tests/test_fujimoto_rules.py -q` produced **33 passed in 6.77s**. The stale-bar
+regression checks suppressed new signals, continued financial/price exits, and
+continued a persisted cumulative target. Mixed identity checks cover financial
+and annual same-period records, plus exclusion of a future foreign observation.
+No full suite or unrelated integration checks were repeated for these limited
+review fixes. Final staged whitespace and scope review passed.

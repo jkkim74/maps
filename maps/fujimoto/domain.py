@@ -39,8 +39,9 @@ class CycleState:
     sell_target_ninths: int = 0
 
     def __post_init__(self) -> None:
-        if isinstance(self.buy_stage, bool) or not isinstance(self.buy_stage, int):
-            raise DataQualityError("invalid_cycle_stage")
+        for value in (self.buy_stage, self.sell_target_ninths):
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise DataQualityError("invalid_cycle_stage")
         for name in ("pending_order", "averaging_down", "rebound_reduced"):
             if not isinstance(getattr(self, name), bool):
                 raise DataQualityError("invalid_cycle_boolean")
@@ -215,7 +216,8 @@ def build_rule_evidence(prices: pd.DataFrame, cutoff: date, selection: Selection
         reasons.append("missing_current_daily_bar")
     if has_session_gap(daily, cutoff, closed_dates=closed_dates):
         reasons.append("price_session_gap")
-    last = daily.iloc[-1] if len(daily) else None
+    # Crossovers are one-session events, not reusable signals under a later date.
+    last = daily.iloc[-1] if len(daily) and daily.index[-1].date() == cutoff else None
     week = weekly.iloc[-1] if len(weekly) else None
     def value(row: pd.Series | None, field: str) -> float | None:
         number = None if row is None else row[field]

@@ -158,3 +158,32 @@ def test_first_leg_does_not_wait_for_weekly_macd_warmup():
     frame = pd.DataFrame(dict(open=close, high=close + 2, low=close - 2, close=close, volume=100))
     ev = build_rule_evidence(frame, DAY, SelectionResult("A", True, ()), "maintained")
     assert evaluate(Mode.SAFE, ev, CycleState()).buy_stage == 1
+
+
+def test_stale_daily_crossovers_do_not_create_new_exits():
+    import pandas as pd
+    from maps.fujimoto.domain import build_rule_evidence
+    from maps.fujimoto.evidence import SelectionResult
+    from maps.fujimoto.indicators import indicators
+    idx = pd.bdate_range(end="2025-06-02", periods=100)
+    close = pd.Series([100] * 70 + list(range(101, 130)) + [90], index=idx)
+    frame = pd.DataFrame(dict(open=close, high=close + 2, low=close - 2, close=close, volume=100))
+    assert indicators(frame, date(2025, 6, 2)).macd_dead.iloc[-1]
+    cutoff = date(2025, 6, 10)
+    ev = build_rule_evidence(frame, cutoff, SelectionResult("A", True, ()), "maintained")
+    owned = cycle(last_buy_date=date(2025, 5, 30))
+    assert "missing_current_daily_bar" in ev.blocking_reasons
+    assert not any(getattr(ev, name) for name in (
+        "macd_golden", "macd_dead", "tenkan_cross_up", "tenkan_cross_down",
+        "ichimoku_bullish", "cloud_bearish", "rsi_cross_70"))
+    assert evaluate(Mode.SAFE, ev, owned).action == "hold"
+    assert evaluate(Mode.SAFE, replace(ev, financial_status="deteriorated"), owned).reason == "fundamental_deterioration"
+    assert evaluate(Mode.SAFE, replace(ev, live_price=85), owned).reason == "price_stop"
+    pending_target = replace(owned, sell_basis_quantity=90, sell_target_ninths=3)
+    assert evaluate(Mode.SAFE, ev, pending_target).sell_quantity == 30
+
+
+@pytest.mark.parametrize("target", [True, 1.0])
+def test_sell_target_requires_nonbool_integer(target):
+    with pytest.raises(DataQualityError, match="invalid_cycle_stage"):
+        cycle(sell_target_ninths=target)
