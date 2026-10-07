@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - Preserve existing local edits by implementing in `.worktrees/fujimoto-trading`, branch `feat/fujimoto-trading`.
-- Development uses `MAPS_BROKER_MODE=mock`; never activate trading, access account credentials, deploy, or adopt existing holdings.
+- Development uses `MAPS_BROKER_MODE=mock`; never activate trading or adopt existing holdings. User subsequently authorized commit/push/production deployment after completion; deploy observation-default feature using repository runbook.
 - Safe/original budgets default to 50:50 of an explicitly supplied budget. No implicit real-account budget.
 - Incomplete evidence blocks buying; missing financials never imply fundamental deterioration.
 - No future information, retroactive current classifications, or fabricated historical dividends/order books.
@@ -25,7 +25,7 @@
 ## Progress
 
 - [x] Read handoff and approved design; inspect existing contracts and isolate workspace.
-- [ ] Task 1: causal evidence, indicators, and pure rules.
+- [x] Task 1: causal evidence, indicators, and pure rules (449bbb9; reviewed).
 - [ ] Task 2: durable ledger, replay, portfolio budget and validation.
 - [ ] Task 3: guarded execution, feed sharing, API, dashboard and scheduling.
 - [ ] Final review and complete regression checks.
@@ -38,6 +38,7 @@
 - A partially filled leg advances only on terminal confirmation with positive fills; zero-filled cancellation does not advance. A pending/UNKNOWN leg blocks a new leg. Signal validity is next trading session only; do not retry UNKNOWN or release a cancellation request before broker confirmation.
 - Emergency exits precede ordinary cumulative sell targets; ordinary sales precede one-off rebound reduction. Integer ordinary targets round down, final exit sells all residual owned shares. Rebound reduction is independently recorded and never replenishes buy budget.
 - Mode NAV includes cash and marked owned quantities; config/budget changes require no unresolved orders and apply prospectively with versioned evidence. Account checks still include other strategies and reservations.
+- Annual-data research freshness expires after the following fiscal year end plus 90 days; this is a conservative entry gate, not a claim about a legal filing deadline. RuleEvidence intraday fields require timestamp/continuity/cost-validated feed inputs.
 - Subscription capacity must be explicitly configured and shared with existing engine usage; never assume a provider limit or start a second uncoordinated connection.
 - Financial source coverage, recorded tape coverage and independent trade samples must remain insufficient until real evidence exists. No unit test can certify live profitability.
 
@@ -71,6 +72,7 @@ assert evaluate(mode, evidence, pending_cycle).action == "hold"
 - [ ] Persist config version, cycle state, exact evidence and order references; preserve immutable history. Add reversible migration following existing conventions and verify upgrade/downgrade on temporary SQLite.
 - [ ] Implement 1:2:6 monetary budgets, mode position limits and reserve floors, safe risk cap and non-decreasing stop, reservation accounting and explicit deposit/budget changes. Replay must model next-session capped limits, fees/tax/slippage and volume-limited fills (touch alone is not full fill), exchange halts and unavailable data.
 - [ ] Implement reproducible replay reports/stress checks, WFA/parameter-neighborhood/cost-double evaluation via existing primitives where appropriate. Require both mode validations and combined risk and tape evidence for promotion; missing input returns insufficient, never pass.
+- [ ] Validation must derive metrics from stored replay inputs/results, not accept arbitrary caller-supplied pass flags. Persist fingerprints and distinguish a callable research runner from measured results. Annual, quote and candidate evidence storage must retain provenance and be queryable as of the actual observation time.
 - [ ] Register two research-only strategy IDs `fujimoto_safe_v1` and `fujimoto_original_v1`, human prose/guides and explicit price-stop policy. Do not route stateful cycles through a legacy boolean-only engine that cannot reproduce them.
 - [ ] Verify focused tests, migrations, catalog and docs tests, commit task files, report exact public interfaces to Task 3.
 
@@ -103,8 +105,10 @@ assert quote_profit_signal(gap_seconds=4).triggered is False
 
 Python executable: `D:/workspace/maps/maps/.venv/Scripts/python.exe`; commands run from this worktree root with mock mode and UTF-8. Record exact command, counts, duration and failures. Fix attributable regressions; document reproducible baseline failures separately.
 
-Revert implementation commits to roll back code; run migration downgrade only against a disposable DB in development. Never delete strategy audit/ownership state to recover live execution. Disabling new entries leaves pending-order reservations and owned-share exits governed by existing rules. Do not merge or push without user request.
+Revert implementation commits to roll back code; run migration downgrade only against a disposable DB in development. Never delete strategy audit/ownership state to recover live execution. Disabling new entries leaves pending-order reservations and owned-share exits governed by existing rules. User authorized commit, push and production deployment; follow repository deployment windows, backup/migration instructions and health checks after completing development.
 
 ## Results
 
-Implementation and review results will be recorded as tasks complete. Strategy profitability and production data coverage require separate evidence and are not claimed by software acceptance tests.
+Baseline full suite: 1609 passed, 2588 existing warnings in 349.79 seconds. Task 1 implementation is e72651d; focused evidence/rules/stop/calendar/catalog/docs/DART checks: 137 passed with one pre-existing warning. Review fixed stale daily signals, mixed-ticker financial evidence and integer targets in 449bbb9; 33 focused tests pass, scoped re-review approved.
+
+Strategy profitability and production data coverage require separate evidence and are not claimed by software acceptance tests.
