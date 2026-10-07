@@ -74,8 +74,8 @@ class MapsSettings(BaseSettings):
     maps_fujimoto_screen_time: str = "22:00"
     maps_fujimoto_collect_batch: int = Field(default=20, ge=1, le=100)
     maps_shared_feed_capacity: int = Field(default=40, ge=1, le=100)
-    maps_fujimoto_tape_rows: int = Field(default=100000, ge=1, le=1000000)
-    maps_fujimoto_candidate_rows: int = Field(default=10000, ge=1, le=100000)
+    maps_fujimoto_tape_rows: int = Field(default=100000, ge=1, le=100000000)
+    maps_fujimoto_candidate_rows: int = Field(default=10000, ge=1, le=2000000)
     maps_scheduler_timezone: str = "Asia/Seoul"
     maps_data_collection_time: str = "16:10"
     maps_theme_collection_enabled: bool = False

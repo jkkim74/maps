@@ -23,6 +23,20 @@ class Mode(str, Enum):
         return f"fujimoto_{self.value}_v1"
 
 
+def ranked_admission(active: Iterable[str], eligible: Iterable[str]) -> tuple[str, ...]:
+    """Protect existing cycles, then reserve remaining slots by recorded rank.
+
+    Missing/stale quotes never promote a lower ranked instrument into its slot.
+    """
+    protected = tuple(dict.fromkeys(active))
+    return protected + tuple(t for t in dict.fromkeys(eligible) if t not in protected)[:max(0, 5 - len(protected))]
+
+
+def empty_cycle_expired(state: CycleState, started: date, today: date) -> bool:
+    """Only unowned, nonpending first-leg watches expire after their session."""
+    return started < today and not (state.quantity or state.pending_order or state.buy_stage)
+
+
 @dataclass(frozen=True)
 class CycleState:
     """Fill-derived owned state, independent of account holdings and order intentions."""

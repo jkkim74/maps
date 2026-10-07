@@ -132,6 +132,15 @@ execution data, costs and participation. It executes only next-session capped li
 models partial liquidity shared across modes, halts and missing bars. After-close
 fundamental deterioration cannot execute at the same day's open; financial sells
 queue for the next session. Safe daily lows alone never fabricate intraday stop fills.
+An opening capped BUY may precede intraday quotes. A BUY justified only by the
+completed daily low is accounted after intraday events and explicitly reports
+`unknown_intraday_fill_order`: its acquisition/stop order cannot be proved, even
+on a drop-and-recovery day. Such exploratory fills cannot pass validation.
+`ReplayResult.reasons` contains unavailable evidence; `diagnostics` separately
+records position/budget waits, observed halts/outages and window-end intention
+expiry. Unsent next-session intentions expire at each research-window boundary;
+owned shares remain marked and no closing fill is invented. Missing real next-session
+bars, held-tape coverage, valuation and independent samples still block validation.
 `quote_signal` accepts exact recorded quote
 keys exchange_at/received_at (ISO UTC), connected, gap, bid, ask, bid_size, total_bid,
 total_ask, ticker and resets invalid/stale/out-of-order/gapped continuity. Actual quotes
@@ -139,6 +148,18 @@ are needed for intraday stop/imbalance exits; no synthetic tape is generated.
 `candidate_order[date]` must preserve the actual ranked candidate ticker tuple; omitted
 ranking falls back to ticker order for exploratory runs and cannot pass validation.
 `quote_session_date` slices actual received timestamps into KST sessions for replay/WFA.
+`ReplayInput.recording` contains actual sent subscription snapshots and completed
+disconnect/reconnect intervals, with export evidence IDs. Every replay/neighbor/WFA
+checks the actual held interval from 09:00 until exit or 15:20 KST. Subscription
+requests alone are insufficient: fresh arrivals must cover it within three seconds.
+Unrelated instruments, a morning fragment, invalid/gapped quotes and silent missing
+sessions cannot prove safe-stop or book coverage. This applies with book disabled too.
+A bounded outage observed by the same recorder instance models unavailable execution
+and remains a diagnostic; process restart does not invent an outage endpoint. Known
+whole-session exchange halts are measured without pretending there was an executable bid.
+The strict coverage policy may reject quiet instruments; silence is never assumed
+to prove that a stop could not have triggered. Old exports lack recording evidence
+and require remeasurement with actual coverage, never synthetic repair.
 
 Optional `ReplayInput.screening[date][ticker]` is a frozen snapshot with annual_records,
 financial_records and valuations (exact Task1 dataclass dictionaries), sectors
@@ -228,6 +249,13 @@ validation. Paper uses existing mock_candidate-or-later stage and current mock g
 (60 score; only live track-record requirement excluded). Live retains the existing
 live eligibility gate. Neither path manufactures promotion history.
 
+`ranked_admission` is shared by replay and runtime: existing owned/pending/watch
+cycles have priority, then the recorded ranked eligible list reserves the remaining
+five-position slots. A missing/stale higher-ranked quote leaves its slot unused for
+that session; lower ranks cannot win by arriving first. Runtime creates a cycle only
+on its own fresh quote. `empty_cycle_expired` frees unfunded first-leg watches at the
+next session boundary after terminal nonfill; pending/UNKNOWN ownership never expires.
+
 Activation replays outside the account lock; immediately under the lock, and again
 before each BUY, it checks immutable replay fingerprint, current code, config IDs,
 account budget/limits/cost parameters, variant, standard evidence freshness and both
@@ -235,6 +263,9 @@ promotion bindings. The entry path does not load/replay the large research paylo
 Runtime costs are fee .00015, tax .002, slippage .001; cash floor is the maximum of
 32.5% and all configured regime floors (default 35%, conservative for all regimes).
 Research export binds these values; a mismatched exploratory report cannot activate.
+Runtime and replay share `expected_net_sale`: bid × quantity × (1−slippage) ×
+(1−fee−tax) must strictly exceed the remaining acquisition basis. Cost-double runs
+multiply all three costs before both signal and fill calculation; equality is no profit.
 `RuleEvidence.atr14` is derived from the same completed, cutoff-sliced daily bars.
 Runtime and replay pass it to shared sizing; reservation preserves the planned
 ATR stop rather than replacing it with the fixed-percent fallback. Subsequent
@@ -262,12 +293,19 @@ no ownership/cost guess is made. The dashboard labels unsettled cost/P&L provisi
 
 ## Recording ceiling and research
 
-Actual quote rows are capped at 100,000 per account (configurable up to 1,000,000).
+Actual quote rows are capped at 100,000 per account (configurable up to 100,000,000).
 Candidate snapshots are zlib/base64 compressed, capped at 10,000 total (up to
-100,000). Prices are bounded to 900 calendar days per snapshot. Before a market-wide
+2,000,000). Prices are bounded to 900 calendar days per snapshot. Before a market-wide
 screen, enough remaining candidate capacity for the whole universe is required.
 The defaults are a deliberately small recording pilot, not months of full-market
 history: quote capacity may fill intraday and candidate capacity within days.
+For a bounded 60-session research campaign, 3,000 names × two full screens × 60
+requires 360,000 candidate rows; twenty subscribed names × 22,800 seconds × one
+actual quote/second × 60 requires 27,360,000 tape rows. Both are supported settings,
+not claims about market history or expected quote rates. Provision additional rows
+for existing evidence, re-screens, quote bursts and the longer horizon needed for
+independent trade samples. Configure the campaign bounds before collecting; raising
+a ceiling later resumes recording but cannot repair an already observed gap.
 Unchanged decisions/blocks are deduplicated. On capacity exhaustion the feed records
 an evidence gap and disables imbalance duration; fresh protective bids still work.
 Exported gaps make validation insufficient. Nothing automatically deletes immutable

@@ -41,6 +41,11 @@ of ambiguous intents and all exit/cancellation paths remain available.
 오버나이트 한도·청산 및 매도 소유권 검증은 그대로 유지한다. V1 보유분은 다른 전략의
 업종·테마 노출 계산에 계속 포함한다. 설정과 스키마 변경은 없다.
 
+The shared Fujimoto feed records sent subscription sets after both channel sends.
+Those sets establish subscription provenance only; research also requires actual
+fresh held-instrument arrivals or bounded disconnect/reconnect evidence. Upper-limit
+allocation, order paths and runtime limits remain unchanged.
+
 ## Directory structure
 
 ```

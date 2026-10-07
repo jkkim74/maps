@@ -829,6 +829,9 @@ class KISIntradayRuntime:
             self._subscribed.remove(ticker)
         for ticker in selected:
             await self._subscribe(socket, approval, ticker)
+        if self.fujimoto:
+            await self._call_service(self.fujimoto.feed.record_subscriptions,
+                tuple(selected), now=self.wall_now(), priority=_PRIORITY_HIGH)
         if blocked and self.fujimoto:
             await self._call_service(self.fujimoto._blocked,
                 self.fujimoto.feed.key, "*", "subscription_capacity:" + ",".join(blocked), self.wall_now())

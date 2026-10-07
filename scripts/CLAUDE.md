@@ -84,3 +84,7 @@ execution/valuation prices. Freezing execution prices must not freeze candidate 
 `--without-orderbook` and `--account-mdd-limit` consistently with runtime config.
 No promotion, activation or order path exists. Use an isolated DB for development;
 real coverage and measured performance are not supplied by the demo.
+Export includes `recording`: sent subscription snapshots and bounded, same-process
+disconnect/reconnect intervals with evidence IDs. Actual held-session tape coverage
+is checked independently in every shared replay run, including book-off and WFA;
+an unrelated quote or partial session is insufficient. No history is synthesized.

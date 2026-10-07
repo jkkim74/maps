@@ -25,19 +25,35 @@ class FujimotoFeed:
         self._recorded = db.query(FujimotoEvidence).filter_by(kind="quote", account_key=key).count()
         self._capacity_notice = False
         self._generation, self._seen_generation = 0, {}
+        self._subscriptions, self._outage_start = (), None
+
+    def record_subscriptions(self, tickers, *, now: datetime) -> None:
+        """Record actual sent subscriptions; received quotes must still prove coverage."""
+        self._subscriptions = tuple(tickers)
+        self.repo.record_evidence("feed_recording", "*", now, now,
+            {"kind": "subscriptions", "at": now.isoformat(), "tickers": self._subscriptions}, account_key=self.key)
+        self.repo.session.commit()
 
     def reset(self, reason: str) -> None:
         """Reconnect/disconnect and parse gaps invalidate every duration."""
         self._duration.clear()
         self._generation += 1
         now = datetime.now(timezone.utc)
+        if reason == "disconnect" and self._outage_start is None:
+            self._outage_start = (now, self._subscriptions)
+        elif reason == "reconnect" and self._outage_start is not None:
+            start, tickers = self._outage_start
+            self.repo.record_evidence("feed_recording", "*", now, now,
+                {"kind": "outage", "reason": "disconnect", "start": start.isoformat(),
+                 "end": now.isoformat(), "tickers": tickers}, account_key=self.key)
+            self._outage_start = None
         self.repo.record_evidence("feed_quality", "*", now, now,
             {"reason": reason, "continuous": False}, account_key=self.key)
         self.repo.session.commit()
 
     def on_quote(self, quote: FeedQuote, *, now: datetime, cycle_id: int = 0,
                  cost_basis: float = 0, quantity: int = 0, costs_complete: bool = True,
-                 sale_cost_rate: float = .00315, persist: bool = True) -> tuple:
+                 sale_cost_rate: float = .00215, slippage: float = .001, persist: bool = True) -> tuple:
         """Persist actual arrival provenance and return fresh bid/net-profit signal."""
         payload = {"ticker": quote.ticker, "exchange_at": quote.exchange_at.isoformat() if quote.exchange_at else None,
             "received_at": quote.received_utc.isoformat() if quote.received_utc else None,
@@ -61,10 +77,11 @@ class FujimotoFeed:
             elif not self._capacity_notice:
                 self.reset("tape_capacity_exhausted")
                 self._capacity_notice = True
-        since, last = self._duration.get(cycle_id, (None, None))
+        identity = cycle_id, quote.ticker
+        since, last = self._duration.get(identity, (None, None))
         since, last, bid, signal = quote_signal(since, last, payload, cost_basis,
-                                               quantity if costs_complete else 0, sale_cost_rate)
+                                               quantity if costs_complete else 0, sale_cost_rate, slippage=slippage)
         if self._recorded >= self.capacity:
             since, signal = None, False
-        self._duration[cycle_id] = since, last
+        self._duration[identity] = since, last
         return bid, signal

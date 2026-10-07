@@ -21,7 +21,7 @@ from maps.execution.broker_adapter import Order, OrderSide, OrderType, raw_broke
 from maps.execution.broker_adapter import PendingOrder
 from maps.execution.safety import ExecutionContext, account_execution_lock, account_key, utcnow
 from maps.execution.reconciliation import ACTIVE
-from maps.fujimoto.domain import Mode, RuleEvidence, evaluate
+from maps.fujimoto.domain import Mode, RuleEvidence, CycleState, evaluate, ranked_admission, empty_cycle_expired
 from maps.fujimoto.repository import (FujimotoRepository, AccountLimits, FillEvent,
                                      TERMINAL, fingerprint, json_data, money, utc_naive)
 from maps.fujimoto.replay import next_session
@@ -246,13 +246,12 @@ class FujimotoService:
         """Release unfunded watch slots without expiring pending or UNKNOWN orders."""
         for cycle in self.repo.cycles(key):
             state = self.repo.state(cycle.id)
-            if not state.quantity and not state.pending_order and not state.buy_stage:
-                if (utc_naive(cycle.created_at) + timedelta(hours=9)).date() < today:
-                    now = utcnow()
-                    rows = self.repo.evidence_as_of("cycle_expired", cycle.ticker, now, account_key=key)
-                    if not any(r.payload.get("cycle_id") == cycle.id for r in rows):
-                        self.repo.record_evidence("cycle_expired", cycle.ticker, now, now,
-                            {"cycle_id": cycle.id}, account_key=key)
+            if empty_cycle_expired(state, (utc_naive(cycle.created_at) + timedelta(hours=9)).date(), today):
+                now = utcnow()
+                rows = self.repo.evidence_as_of("cycle_expired", cycle.ticker, now, account_key=key)
+                if not any(r.payload.get("cycle_id") == cycle.id for r in rows):
+                    self.repo.record_evidence("cycle_expired", cycle.ticker, now, now,
+                        {"cycle_id": cycle.id}, account_key=key)
         self.db.commit()
 
     def unresolved_costs(self, key: str) -> list[int]:
@@ -312,7 +311,7 @@ class FujimotoService:
         key = account_key(self.settings)
         with account_execution_lock(key):
             self.db.expire_all()
-            self.feed.on_quote(quote, now=now)
+            fresh_bid, _ = self.feed.on_quote(quote, now=now)
             self.db.commit()
             control = self.control(key)
             if control["execution_mode"] == "observe" or self.manager is None:
@@ -320,6 +319,7 @@ class FujimotoService:
             wall = now.astimezone(KST)
             if not time(9) <= wall.time().replace(tzinfo=None) < time(15, 20):
                 return
+            self.expire_empty_cycles(key, wall.date())
             candidates = self.repo.evidence_as_of("candidate", quote.ticker, now)
             source = candidates[-1] if candidates else None
             if source:
@@ -338,11 +338,33 @@ class FujimotoService:
             expired_ids = {r.payload.get("cycle_id") for r in self.db.query(FujimotoEvidence).filter_by(
                 kind="cycle_expired", account_key=key)}
             cycles = [c for c in cycles if c.id not in expired_ids]
-            if control.get("entries_enabled") and source:
+            if (control.get("entries_enabled") and source and fresh_bid is not None
+                    and any(mode.value in current and not any(c.mode == mode.value for c in cycles) for mode in Mode)):
+                screens = self.repo.evidence_as_of("screen", "*", now)
+                ranked = screens[-1].payload.get("ranked", ()) if screens else ()
+                ranked_rules = {}
+                for ticker in ranked:
+                    rows = self.repo.evidence_as_of("candidate", ticker, now)
+                    if rows:
+                        raw = dict(rows[-1].payload["rule"])
+                        raw["as_of"] = date.fromisoformat(raw["as_of"])
+                        candidate = RuleEvidence(**raw)
+                        if (screens[-1].payload.get("ref_date") == candidate.as_of.isoformat()
+                                and next_session(candidate.as_of, tuple(self.settings.krx_closed_dates)) == wall.date()):
+                            ranked_rules[ticker] = candidate
+                        if all(sum(evaluate(mode, row, CycleState(), decision_date=wall.date()).action == "buy"
+                                   for row in ranked_rules.values()) >= 5 for mode in Mode):
+                            break
                 for mode in Mode:
                     if mode.value not in current or any(c.mode == mode.value for c in cycles):
                         continue
-                    from maps.fujimoto.domain import CycleState
+                    active = [c.ticker for c in self.repo.cycles(key, mode)
+                              if self.repo.state(c.id).quantity or self.repo.state(c.id).pending_order
+                              or (not self.repo.state(c.id).buy_stage and c.id not in expired_ids)]
+                    eligible = [t for t, row in ranked_rules.items()
+                                if evaluate(mode, row, CycleState(), decision_date=wall.date()).action == "buy"]
+                    if quote.ticker not in ranked_admission(active, eligible):
+                        continue
                     if evaluate(mode, evidence, CycleState(), decision_date=wall.date()).action == "buy" and next_session(evidence.as_of,
                             tuple(self.settings.krx_closed_dates)) == wall.date():
                         try:
@@ -355,7 +377,7 @@ class FujimotoService:
                 state = self.repo.state(cycle.id)
                 complete = not any(o.id in cost_gaps for o in self.repo.orders(key) if o.cycle_id == cycle.id)
                 bid, profit = self.feed.on_quote(quote, now=now, cycle_id=cycle.id,
-                    cost_basis=float(cycle.cost_basis), quantity=state.quantity,
+                    cost_basis=cycle.cost_basis, quantity=state.quantity,
                     costs_complete=complete, persist=False)
                 live = replace(evidence, live_price=bid, orderbook_take_profit=bool(profit and
                     current.get(cycle.mode) and current[cycle.mode].settings.get("with_orderbook", True)))

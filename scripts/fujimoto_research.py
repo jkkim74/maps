@@ -26,7 +26,7 @@ def export_inputs(db, key: str, budget: float) -> dict:
     from maps.common.models import FujimotoEvidence
     from maps.common.settings import get_settings
     settings = get_settings()
-    evidence, screening, bars, ranking, tape = {}, {}, {}, {}, []
+    evidence, screening, bars, ranking, tape, recording = {}, {}, {}, {}, [], []
     candidate_ids, screen_ids, bar_ids = {}, {}, {}
     annual_ids, gaps = [], []
     rows = db.query(FujimotoEvidence).order_by(FujimotoEvidence.id)
@@ -53,6 +53,8 @@ def export_inputs(db, key: str, budget: float) -> dict:
             annual_ids.append(row.id)
         elif row.kind == "quote":
             tape.append(row.payload)
+        elif row.kind == "feed_recording":
+            recording.append({**row.payload, "evidence_id": row.id})
         elif row.kind == "feed_quality" and row.payload.get("reason") == "tape_capacity_exhausted":
             gaps.append({"id": row.id, "reason": row.payload["reason"]})
     # Older rows within a later snapshot are indicator history, not historical
@@ -74,7 +76,7 @@ def export_inputs(db, key: str, budget: float) -> dict:
         "minimum_cash_fraction": max(.325, settings.maps_min_cash_ratio_weak,
             settings.maps_min_cash_ratio_mixed, settings.maps_min_cash_ratio_strong),
         "bars": {d: v for d, v in bars.items() if d in evidence}, "candidate_order": ranking,
-        "tape": tape, "provenance": {"candidate_evidence": sorted(candidate_ids.values()),
+        "tape": tape, "recording": recording, "provenance": {"candidate_evidence": sorted(candidate_ids.values()),
             "screen_evidence": sorted(screen_ids.values()), "bar_evidence": sorted(set(bar_ids.values())),
             "annual_evidence": annual_ids, "coverage_gaps": gaps}}
 

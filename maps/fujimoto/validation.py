@@ -119,6 +119,8 @@ def validation(repository: FujimotoRepository, replay_id: int, *, account_mdd_li
                  *(fold[label] for fold in operational["wfa"] for label in ("is", "oos"))]
     for measured in evaluated:
         reasons.update(measured["reasons"])
+    metrics["execution_diagnostics"] = sorted({reason for measured in evaluated
+                                                for reason in measured["diagnostics"]})
     # Reproducible tape-direction cohorts, not a claimed official regime model.
     regimes, previous_marks = {}, {}
     for day, bars in sorted(data.bars.items()):

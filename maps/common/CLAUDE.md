@@ -194,3 +194,7 @@ Default `maps_fujimoto_enabled=False`, screen time 22:00, annual collection batc
 environment values and the explicit recording-limit policy are in
 `maps/fujimoto/CLAUDE.md`. Existing migration 0041 supplies all required tables;
 Task 3 introduces no additional migration.
+Pilot defaults remain unchanged. Configurable maxima are 2,000,000 candidate rows
+and 100,000,000 quote rows/account, supporting a bounded 60+ session campaign;
+size from actual universe, re-screen and quote rates before collection. Bounds do
+not guarantee bytes/free disk or erase existing gaps/immutable references.
