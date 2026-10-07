@@ -43,34 +43,41 @@ def run_research(data: ReplayInput) -> dict:
     the legacy boolean BacktestEngine/WalkForwardAnalyzer cannot model these legs.
     Existing plateau and seeded block-bootstrap MC remain the metric primitives.
     """
-    baseline = replay(data)
     variants = (list(product((38, 40, 42), (.18, .2, .22), (-.01, 0, .01)))
                 if data.screening else [(rsi, .2, 0) for rsi in (38, 40, 42)])
-    neighbors = []
-    for rsi, surge, dividend in variants:
-        measured = json_data(replay(data, first_rsi=rsi, maximum_return_20=surge, minimum_dividend_growth=dividend))
-        measured["parameters"] = {"first_rsi": rsi, "maximum_return_20": surge, "minimum_dividend_growth": dividend}
-        neighbors.append(measured)
     days = sorted(data.evidence)
-    folds = []
-    if len(days) >= 60:
-        chunks = np.array_split(days, 6)
-        for i in range(1, 6):
-            fold = {}
-            for label, selected in (("is", chunks[i - 1]), ("oos", chunks[i])):
-                window = set(selected)
-                subset = replace(data, evidence={d: rows for d, rows in data.evidence.items() if d in window},
-                                 bars={d: rows for d, rows in data.bars.items() if d in window},
-                                 screening={d: rows for d, rows in data.screening.items() if d in window},
-                                 candidate_order={d: rows for d, rows in data.candidate_order.items() if d in window},
-                                 tape=tuple(q for q in data.tape if quote_session_date(q) in window))
-                fold[label] = json_data(replay(subset))
-            folds.append(fold)
-    return {"baseline": json_data(baseline), "with_orderbook": json_data(replay(data, with_orderbook=True)),
-            "without_orderbook": json_data(baseline), "cost_double": json_data(replay(data, cost_multiplier=2)),
-            "neighbors": neighbors, "wfa": folds,
+
+    def measure(with_orderbook: bool) -> dict:
+        neighbors, folds = [], []
+        for rsi, surge, dividend in variants:
+            measured = json_data(replay(data, with_orderbook=with_orderbook, first_rsi=rsi,
+                                       maximum_return_20=surge, minimum_dividend_growth=dividend))
+            measured["parameters"] = {"first_rsi": rsi, "maximum_return_20": surge, "minimum_dividend_growth": dividend}
+            neighbors.append(measured)
+        if len(days) >= 60:
+            chunks = np.array_split(days, 6)
+            for i in range(1, 6):
+                fold = {}
+                for label, selected in (("is", chunks[i - 1]), ("oos", chunks[i])):
+                    window = set(selected)
+                    subset = replace(data, evidence={d: rows for d, rows in data.evidence.items() if d in window},
+                                     bars={d: rows for d, rows in data.bars.items() if d in window},
+                                     screening={d: rows for d, rows in data.screening.items() if d in window},
+                                     candidate_order={d: rows for d, rows in data.candidate_order.items() if d in window},
+                                     tape=tuple(q for q in data.tape if quote_session_date(q) in window))
+                    fold[label] = json_data(replay(subset, with_orderbook=with_orderbook))
+                folds.append(fold)
+        return {"baseline": json_data(replay(data, with_orderbook=with_orderbook)),
+                "cost_double": json_data(replay(data, with_orderbook=with_orderbook, cost_multiplier=2)),
+                "neighbors": neighbors, "wfa": folds}
+
+    without_book, with_book = measure(False), measure(True)
+    # Keep original book-off report keys for callers comparing historical runs.
+    return {**without_book, "with_orderbook": with_book["baseline"],
+            "without_orderbook": without_book["baseline"],
+            "variants": {"without_orderbook": without_book, "with_orderbook": with_book},
             "stress": {"safe": stress_losses(.5), "original": stress_losses(.675), "combined": stress_losses(.5875)},
-            "runner": "fujimoto_stateful_v1"}
+            "runner": "fujimoto_stateful_v2"}
 
 
 @dataclass(frozen=True)
@@ -83,10 +90,11 @@ class ValidationResult:
     fingerprint: str
 
 
-def validation(repository: FujimotoRepository, replay_id: int, *, account_mdd_limit: float = .28) -> ValidationResult:
+def validation(repository: FujimotoRepository, replay_id: int, *, account_mdd_limit: float = .28,
+               with_orderbook: bool = True) -> ValidationResult:
     """Recompute from stored inputs, verify fingerprints, derive all measured gates."""
     stored = repository.session.get(FujimotoEvidence, replay_id)
-    if stored is None or stored.kind != "replay" or not 0 < account_mdd_limit <= 1:
+    if stored is None or stored.kind != "replay" or not 0 < account_mdd_limit <= 1 or not isinstance(with_orderbook, bool):
         raise DataQualityError("invalid_replay_validation")
     if fingerprint(stored.payload) != stored.fingerprint:
         raise DataQualityError("replay_evidence_changed")
@@ -95,6 +103,8 @@ def validation(repository: FujimotoRepository, replay_id: int, *, account_mdd_li
     if fingerprint(report) != fingerprint(stored.payload["report"]):
         raise DataQualityError("replay_result_or_code_mismatch")
     reasons, failures, metrics = set(), set(), {}
+    variant = "with_orderbook" if with_orderbook else "without_orderbook"
+    operational = report["variants"][variant]
     if not data.tape:
         reasons.add("missing_recorded_tape")
     if not data.provenance.get("annual_evidence") or not data.provenance.get("candidate_evidence"):
@@ -103,7 +113,10 @@ def validation(repository: FujimotoRepository, replay_id: int, *, account_mdd_li
         reasons.add("insufficient_screening_neighborhood")
     if any(day not in data.candidate_order for day in data.evidence):
         reasons.add("missing_recorded_candidate_ranking")
-    reasons.update(report["baseline"]["reasons"])
+    evaluated = [operational["baseline"], operational["cost_double"], *operational["neighbors"],
+                 *(fold[label] for fold in operational["wfa"] for label in ("is", "oos"))]
+    for measured in evaluated:
+        reasons.update(measured["reasons"])
     # Reproducible tape-direction cohorts, not a claimed official regime model.
     regimes, previous_marks = {}, {}
     for day, bars in sorted(data.bars.items()):
@@ -117,10 +130,10 @@ def validation(repository: FujimotoRepository, replay_id: int, *, account_mdd_li
     for mode, initial, group, limit in (("safe", data.budget / 2, "fujimoto_safe", .15),
                                       ("original", data.budget / 2, "fujimoto_original", .25),
                                       ("combined", data.budget, "portfolio_total", account_mdd_limit)):
-        base = statistics([row[mode] for row in report["baseline"]["equity"]], initial)
-        base["regime_returns"] = {label: [value for row, value in zip(report["baseline"]["equity"], base["daily_returns"])
+        base = statistics([row[mode] for row in operational["baseline"]["equity"]], initial)
+        base["regime_returns"] = {label: [value for row, value in zip(operational["baseline"]["equity"], base["daily_returns"])
                                           if regimes.get(row["date"]) == label] for label in ("rising", "falling", "sideways")}
-        exits = [f for f in report["baseline"]["fills"] if f["completed_cycle"] and (mode == "combined" or f["mode"] == mode)]
+        exits = [f for f in operational["baseline"]["fills"] if f["completed_cycle"] and (mode == "combined" or f["mode"] == mode)]
         base["exit_samples"] = len(exits)
         if len(exits) < 30:
             reasons.add("insufficient_trade_samples")
@@ -132,7 +145,7 @@ def validation(repository: FujimotoRepository, replay_id: int, *, account_mdd_li
             if mc.mdd_p95 > limit:
                 failures.add(mode + "_mc_limit")
         neighbor_rows = [dict(**row["parameters"], **statistics([e[mode] for e in row["equity"]], initial))
-                         for row in report["neighbors"]]
+                         for row in operational["neighbors"]]
         plateau = ParameterPlateauTester().run(neighbor_rows,
             param_keys=["first_rsi", "maximum_return_20", "minimum_dividend_growth"],
             center_params={"first_rsi": 40, "maximum_return_20": .2, "minimum_dividend_growth": 0})
@@ -141,12 +154,12 @@ def validation(repository: FujimotoRepository, replay_id: int, *, account_mdd_li
         base["neighbor_count"] = len(neighbor_rows)
         if base["return"] <= 0 or base["positive_neighbor_ratio"] < .6 or not plateau.passed:
             failures.add(mode + "_parameter_neighborhood")
-        doubled = statistics([e[mode] for e in report["cost_double"]["equity"]], initial)
+        doubled = statistics([e[mode] for e in operational["cost_double"]["equity"]], initial)
         base["cost_double"] = doubled
         if doubled["return"] <= 0:
             failures.add(mode + "_cost_double")
         folds = []
-        for fold in report["wfa"]:
+        for fold in operational["wfa"]:
             ins = statistics([e[mode] for e in fold["is"]["equity"]], initial)
             oos = statistics([e[mode] for e in fold["oos"]["equity"]], initial)
             fold_exits = [f for f in fold["oos"]["fills"] if f["completed_cycle"] and (mode == "combined" or f["mode"] == mode)]
@@ -161,17 +174,27 @@ def validation(repository: FujimotoRepository, replay_id: int, *, account_mdd_li
             failures.add(mode + "_wfa")
         metrics[mode] = base
     # Tape availability is not tape validation: actual on/off runs need independent exits.
-    taped_exits = [f for f in report["with_orderbook"]["fills"] if f["reason"] == "orderbook_take_profit"]
-    if len({(f["mode"], f["ticker"], f["cycle_number"]) for f in taped_exits}) < 30:
-        reasons.add("insufficient_orderbook_samples")
+    for mode in ("safe", "original"):
+        taped_exits = [f for f in report["with_orderbook"]["fills"]
+                       if f["reason"] == "orderbook_take_profit" and f["mode"] == mode]
+        samples = len({(f["ticker"], f["cycle_number"]) for f in taped_exits})
+        metrics[mode]["orderbook_samples"] = samples
+        if with_orderbook and samples < 30:
+            reasons.update({"insufficient_orderbook_samples", mode + "_insufficient_orderbook_samples"})
+    metrics["variant"] = variant
     metrics["with_orderbook"] = report["with_orderbook"]
+    metrics["account_mdd_limit"] = account_mdd_limit
+    metrics["execution_params"] = {"with_orderbook": with_orderbook, "account_mdd_limit": account_mdd_limit}
+    metrics["execution_params_hash"] = fingerprint(metrics["execution_params"])
     metrics["without_orderbook"] = report["without_orderbook"]
     metrics["stress"] = report["stress"]
     status = "insufficient" if reasons else "failed" if failures else "passed"
-    return ValidationResult(status, tuple(sorted(reasons | failures)), metrics, replay_id, fingerprint(report))
+    return ValidationResult(status, tuple(sorted(reasons | failures)), metrics, replay_id,
+                            fingerprint({"report": report, "with_orderbook": with_orderbook, "account_mdd_limit": account_mdd_limit}))
 
 
-def persist_validation(repository: FujimotoRepository, replay_id: int, *, account_mdd_limit: float = .28) -> tuple:
+def persist_validation(repository: FujimotoRepository, replay_id: int, *, account_mdd_limit: float = .28,
+                       with_orderbook: bool = True) -> tuple:
     """Persist reproducible standard components plus supplemental combined evidence.
 
     INSUFFICIENT never becomes COMPLETE; measured failures retain actual metrics.
@@ -180,12 +203,13 @@ def persist_validation(repository: FujimotoRepository, replay_id: int, *, accoun
     from datetime import date
     from maps.fujimoto.domain import Mode
     from maps.promotion.evidence import strategy_fingerprint, validation_metrics
-    result = validation(repository, replay_id, account_mdd_limit=account_mdd_limit)
+    result = validation(repository, replay_id, account_mdd_limit=account_mdd_limit, with_orderbook=with_orderbook)
     evidence = repository.session.get(FujimotoEvidence, replay_id)
     data = input_from_json(evidence.payload["inputs"])
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     run_date = max(data.evidence) if data.evidence else now.date()
     snapshot = json.dumps(evidence.payload["inputs"], sort_keys=True, allow_nan=False).encode()
+    execution_params = {"with_orderbook": with_orderbook, "account_mdd_limit": account_mdd_limit}
     runs = []
     for mode in Mode:
         measured = result.metrics[mode.value]
@@ -196,6 +220,8 @@ def persist_validation(repository: FujimotoRepository, replay_id: int, *, accoun
                             input_snapshot=zlib.compress(snapshot), created_at=now,
                             manifest={"format": "fujimoto-stateful-json-v1", "fujimoto_replay_id": replay_id,
                                       "account_key": evidence.account_key, "combined_status": result.status,
+                                      "variant": result.metrics["variant"],
+                                      **execution_params, "execution_params_hash": fingerprint(execution_params),
                                       "combined_fingerprint": result.fingerprint, "mc_seed": 42, "mc_simulations": 1000,
                                       "replay_code_hash": evidence.payload["report"]["baseline"]["code_hash"]})
         common = dict(validation_run_id=run.id, strategy_id=mode.strategy_id, run_date=run_date)

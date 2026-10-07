@@ -111,7 +111,10 @@ def apply_fill_transition(state: CycleState, cost_basis: Decimal, realized_pnl: 
     if (current.quantity == 0 and any(new)) or (delta > 0 and gross <= 0):
         raise DataQualityError("fill_without_price")
     pending = current.status not in TERMINAL
-    changes = {"pending_order": pending}
+    # A historical terminal correction belongs to its old order, not a newer
+    # reservation in the cycle. Only the active order changes progression.
+    active_order = previous.status not in TERMINAL
+    changes = {"pending_order": pending} if active_order else {}
     cash_delta = Decimal(0)
     if decision.action == "buy":
         cash_delta = -(gross + fees + tax)
@@ -125,7 +128,7 @@ def apply_fill_transition(state: CycleState, cost_basis: Decimal, realized_pnl: 
                 changes["stop_price"] = max(state.stop_price or 0, stop_price)
         elif decision.buy_stage == 1 and current.quantity and new[0] != old[0]:
             changes["first_fill_price"] = float(new[0] / current.quantity)
-        if not pending and current.quantity:
+        if active_order and not pending and current.quantity:
             changes["buy_stage"] = decision.buy_stage
             changes["averaging_down"] = state.averaging_down or decision.averaging_down
     elif decision.action == "sell":
@@ -140,7 +143,7 @@ def apply_fill_transition(state: CycleState, cost_basis: Decimal, realized_pnl: 
             changes["ordinary_sold_quantity"] = state.ordinary_sold_quantity + delta
         if decision.reason == "rebound_reduction":
             changes["rebound_sold_quantity"] = state.rebound_sold_quantity + delta
-            if not pending and changes["rebound_sold_quantity"] >= state.rebound_basis_quantity // 3:
+            if active_order and not pending and changes["rebound_sold_quantity"] >= state.rebound_basis_quantity // 3:
                 changes["rebound_reduced"] = True
     else:
         raise DataQualityError("fill_without_order_action")

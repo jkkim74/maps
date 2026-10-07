@@ -185,7 +185,8 @@ def replay(data: ReplayInput, *, with_orderbook: bool = False, cost_multiplier: 
 
     Daily-only replay cannot claim an intraday stop execution. Recorded quotes
     carry actual bid liquidity/timestamps and are required for those exits.
-    Financial exits may execute at the first available session open.
+    Completed-session financial evidence is available after close, so its first
+    executable open is the next session. Intraday exits require recorded quotes.
     """
     if money(cost_multiplier) <= 0 or not 0 <= first_rsi <= 100:
         raise DataQualityError("invalid_replay_parameter")
@@ -355,11 +356,8 @@ def replay(data: ReplayInput, *, with_orderbook: bool = False, cost_multiplier: 
                 if not qty:
                     reasons.add("budget_or_risk_wait")
                     continue
-                if decision.timing == "first_available":
-                    execute(key, decision, day, bars.get(ticker), qty, limit, stop)
-                else:
-                    pending[key] = next_session(day, data.closed_dates), decision, qty, limit, stop
-                    states[key] = replace(states[key], pending_order=True)
+                pending[key] = next_session(day, data.closed_dates), decision, qty, limit, stop
+                states[key] = replace(states[key], pending_order=True)
         if any(s.quantity and t not in bars for (m, t), s in states.items()):
             reasons.add("stale_valuation")
         equity.append({"date": day.isoformat(), "safe": nav(Mode.SAFE), "original": nav(Mode.ORIGINAL),

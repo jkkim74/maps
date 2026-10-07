@@ -205,6 +205,40 @@ def test_terminal_cumulative_fee_and_average_corrections_are_idempotent(db):
     assert repo.apply_fill(corrected) == state
 
 
+def test_historical_sell_fee_correction_preserves_newer_sell_reservation(db):
+    repo, config, cycle = setup_cycle(db)
+    order = buy(repo, cycle)
+    repo.apply_fill(event(order, 10, 10000, status="FILLED"))
+    evidence = repo.record_evidence("candidate", cycle.ticker, datetime(2026, 1, 7), datetime(2026, 1, 7), {})
+    old = repo.reserve_order(cycle.id, Decision("sell", "cloud_exit", sell_quantity=2), evidence.id, 2, 1100)
+    repo.apply_fill(event(old, 2, 2200, 2, "FILLED", date(2026, 1, 8)))
+    newer = repo.reserve_order(cycle.id, Decision("sell", "cloud_exit", sell_quantity=8), evidence.id, 8, 1100)
+    before = repo.state(cycle.id)
+    corrected = event(old, 2, 2200, 3, "FILLED", date(2026, 1, 8))
+    assert repo.apply_fill(corrected) == before
+    assert repo.cash(config.id) == 992197
+    assert newer.status == "RESERVED"
+    with pytest.raises(DataQualityError):
+        repo.reserve_order(cycle.id, Decision("sell", "cloud_exit", sell_quantity=8), evidence.id, 8, 1100)
+
+
+def test_historical_buy_refresh_preserves_newer_buy_stage_and_reservation(db):
+    repo, _, cycle = setup_cycle(db)
+    first = buy(repo, cycle)
+    repo.apply_fill(event(first, 10, 10000, status="FILLED"))
+    evidence = repo.record_evidence("candidate", cycle.ticker, datetime(2026, 1, 7), datetime(2026, 1, 7), {})
+    decision = Decision("buy", "buy_stage_2", buy_stage=2, buy_weight=2, price_cap=900)
+    newer = repo.reserve_order(cycle.id, decision, evidence.id, 10, 900, signal_date=date(2026, 1, 7))
+    before = repo.state(cycle.id)
+    assert repo.apply_fill(event(first, 10, 10000, status="FILLED", day=date(2026, 1, 7))) == before
+    with pytest.raises(DataQualityError):
+        repo.reserve_order(cycle.id, decision, evidence.id, 10, 900, signal_date=date(2026, 1, 7))
+    repo.apply_fill(event(newer, 10, 9000, status="FILLED", day=date(2026, 1, 8)))
+    completed = repo.state(cycle.id)
+    assert completed.buy_stage == 2
+    assert repo.apply_fill(event(first, 10, 10000, status="FILLED", day=date(2026, 1, 9))) == completed
+
+
 def test_forged_existing_intent_cross_ticker_or_cycle_is_rejected(db):
     from maps.common.models import OrderIntent
     repo, _, cycle = setup_cycle(db)

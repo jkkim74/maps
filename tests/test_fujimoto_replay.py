@@ -27,6 +27,7 @@ def inputs():
         date(2026, 1, 5): {"005930": SessionBar(1000, 1010, 990, 1000, 10000)},
         date(2026, 1, 6): {"005930": SessionBar(1000, 1010, 990, 1000, 20)},
         date(2026, 1, 7): {"005930": SessionBar(1100, 1110, 1090, 1100, 10000)},
+        date(2026, 1, 8): {"005930": SessionBar(1100, 1110, 1090, 1100, 10000)},
     }, participation=.1, slippage=0, fee_rate=.001, tax_rate=.002)
 
 
@@ -35,7 +36,8 @@ def test_replay_shared_transition_volume_partial_costs_and_reproducibility():
     data = inputs()
     result = replay(data)
     assert result == replay(data)
-    assert len(result.fills) == 4  # two buys plus two same-session financial exits
+    assert len(result.fills) == 4  # two buys plus two next-session financial exits
+    assert all(fill["date"] == "2026-01-08" for fill in result.fills[2:])
     assert all(fill["quantity"] == 1 for fill in result.fills[:2])  # shared volume 2
     assert result.final_quantities == {"safe:005930": 0, "original:005930": 0}
     assert result.final_cash["safe"] == pytest.approx(500095.7)
@@ -136,10 +138,10 @@ def test_closed_cycle_can_begin_new_independent_cycle_on_later_session():
     data = inputs()
     evidence = dict(data.evidence)
     bars = dict(data.bars)
-    evidence[date(2026, 1, 8)] = {"005930": RuleEvidence(date(2026, 1, 8), 1000, True,
+    evidence[date(2026, 1, 9)] = {"005930": RuleEvidence(date(2026, 1, 9), 1000, True,
         financial_status="maintained", daily_rsi=40, weekly_rsi=50)}
-    bars[date(2026, 1, 8)] = {"005930": SessionBar(1000, 1010, 990, 1000, 10000)}
     bars[date(2026, 1, 9)] = {"005930": SessionBar(1000, 1010, 990, 1000, 10000)}
+    bars[date(2026, 1, 12)] = {"005930": SessionBar(1000, 1010, 990, 1000, 10000)}
     result = replay(replace(data, evidence=evidence, bars=bars))
     buys = [fill for fill in result.fills if fill["action"] == "buy"]
     assert len(buys) == 4
@@ -164,6 +166,109 @@ def test_rule_threshold_neighborhood_reruns_shared_evaluation():
     evidence = RuleEvidence(date(2026, 1, 5), 1000, True, financial_status="maintained", daily_rsi=42, weekly_rsi=50)
     assert evaluate(Mode.SAFE, evidence, CycleState()).action == "hold"
     assert evaluate(Mode.SAFE, evidence, CycleState(), first_rsi_threshold=42).action == "buy"
+
+
+def test_after_close_financial_deterioration_never_executes_past_open():
+    from dataclasses import replace
+    from maps.fujimoto.replay import replay, SessionBar
+    data = inputs()
+    evidence = dict(data.evidence)
+    evidence[date(2026, 1, 7)] = {"005930": RuleEvidence(date(2026, 1, 7), 800, financial_status="deteriorated")}
+    bars = dict(data.bars)
+    bars[date(2026, 1, 7)] = {"005930": SessionBar(2000, 2000, 800, 800, 10000)}
+    bars[date(2026, 1, 8)] = {"005930": SessionBar(750, 760, 740, 750, 10000)}
+    result = replay(replace(data, evidence=evidence, bars=bars))
+    exits = [f for f in result.fills if f["action"] == "sell"]
+    assert len(exits) == 2
+    assert all(f["date"] == "2026-01-08" and f["price"] == 750 for f in exits)
+
+
+def operational_inputs():
+    """Actual profitable imbalance exits reduce later profitable exposure."""
+    from maps.fujimoto.replay import ReplayInput, SessionBar, next_session
+    days = [date(2026, 1, 5)]
+    for _ in range(59):
+        days.append(next_session(days[-1]))
+    evidence, bars, quotes = {}, {}, []
+    for i, day in enumerate(days):
+        phase = i % 4
+        price = 1200 if phase == 3 else 1000
+        evidence[day] = {"005930": RuleEvidence(day, price, phase == 0,
+            financial_status="deteriorated" if phase == 2 else "maintained",
+            daily_rsi=40, weekly_rsi=50)}
+        bars[day] = {"005930": SessionBar(price, max(price, 1100), price, price, 100000)}
+        if phase == 2:
+            quotes.extend(dict(ticker="005930", exchange_at=f"{day.isoformat()}T00:00:{second:02}",
+                received_at=f"{day.isoformat()}T00:00:{second:02}", connected=True, bid=1100, ask=1101,
+                bid_size=10000, total_bid=30000, total_ask=10000) for second in range(31))
+    return ReplayInput(10000000, evidence, bars, tape=tuple(quotes), participation=.1, slippage=0)
+
+
+def test_enabled_orderbook_variant_drives_all_measured_gates_and_manifest(db):
+    from maps.fujimoto.repository import FujimotoRepository
+    from maps.fujimoto.validation import run_research, persist_validation, statistics, validation
+    from maps.validation.monte_carlo import MonteCarloValidator
+    data = operational_inputs()
+    report = run_research(data)
+    assert report["with_orderbook"]["final_cash"] != report["without_orderbook"]["final_cash"]
+    enabled = report["variants"]["with_orderbook"]
+    assert all(row["with_orderbook"] for row in enabled["neighbors"])
+    assert enabled["cost_double"]["with_orderbook"]
+    assert all(f[label]["with_orderbook"] for f in enabled["wfa"] for label in ("is", "oos"))
+    repo = FujimotoRepository(db)
+    stored = repo.store_replay(data, report, account_key="mock:one")
+    result, runs = persist_validation(repo, stored.id, account_mdd_limit=.19)
+    assert result.metrics["variant"] == "with_orderbook"
+    assert result.metrics["account_mdd_limit"] == .19
+    for measured in [enabled["baseline"], enabled["cost_double"], *enabled["neighbors"],
+                     *(f[label] for f in enabled["wfa"] for label in ("is", "oos"))]:
+        assert set(measured["reasons"]) <= set(result.reasons)
+    for mode in ("safe", "original", "combined"):
+        initial = data.budget if mode == "combined" else data.budget / 2
+        actual = statistics([e[mode] for e in report["with_orderbook"]["equity"]], initial)
+        assert result.metrics[mode]["return"] == actual["return"]
+        group = "portfolio_total" if mode == "combined" else "fujimoto_" + mode
+        mc = MonteCarloValidator(n_simulations=1000, seed=42).validate(mode, group, actual["daily_returns"])
+        assert result.metrics[mode]["mc_p95"] == mc.mdd_p95
+        doubled = statistics([e[mode] for e in enabled["cost_double"]["equity"]], initial)
+        assert result.metrics[mode]["cost_double"]["return"] == doubled["return"]
+        expected_neighbors = [statistics([e[mode] for e in row["equity"]], initial) for row in enabled["neighbors"]]
+        assert result.metrics[mode]["positive_neighbor_ratio"] == sum(row["return"] > 0 for row in expected_neighbors) / len(expected_neighbors)
+        for measured, fold in zip(result.metrics[mode]["wfa"], enabled["wfa"]):
+            assert measured["oos"] == statistics([e[mode] for e in fold["oos"]["equity"]], initial)
+        assert (mode + "_cost_double" in result.reasons) == (doubled["return"] <= 0)
+        limit = .19 if mode == "combined" else .15 if mode == "safe" else .25
+        assert (mode + "_mc_limit" in result.reasons) == (mc.mdd_p95 > limit)
+    for run in runs:
+        assert run.manifest["variant"] == "with_orderbook"
+        assert run.manifest["with_orderbook"] is True
+        assert run.manifest["account_mdd_limit"] == .19
+        assert run.manifest["execution_params_hash"] == result.metrics["execution_params_hash"]
+        assert run.metrics["is_cagr"] == result.metrics[run.strategy_id.split("_")[1]]["return"]
+    # Thirty aggregated on-tape cycles cannot substitute for thirty per mode.
+    assert result.metrics["safe"]["orderbook_samples"] == 15
+    assert result.metrics["original"]["orderbook_samples"] == 15
+    assert {"safe_insufficient_orderbook_samples", "original_insufficient_orderbook_samples"} <= set(result.reasons)
+    off = validation(repo, stored.id, with_orderbook=False, account_mdd_limit=.19)
+    changed_limit = validation(repo, stored.id, account_mdd_limit=.2)
+    assert len({result.fingerprint, off.fingerprint, changed_limit.fingerprint}) == 3
+    assert off.metrics["variant"] == "without_orderbook"
+    assert off.metrics["safe"]["return"] != result.metrics["safe"]["return"]
+
+
+def test_orderbook_sample_requirement_is_per_mode_and_missing_reasons_propagate(db):
+    from dataclasses import replace
+    from maps.fujimoto.repository import FujimotoRepository
+    from maps.fujimoto.validation import run_research, validation
+    data = operational_inputs()
+    # The book-off baseline has no missing-tape reason; enabled replay does.
+    data = replace(data, tape=())
+    repo = FujimotoRepository(db)
+    stored = repo.store_replay(data, run_research(data))
+    result = validation(repo, stored.id)
+    assert "missing_recorded_tape" in result.reasons
+    assert "safe_insufficient_orderbook_samples" in result.reasons
+    assert "original_insufficient_orderbook_samples" in result.reasons
 
 
 def test_raw_screening_neighborhood_changes_real_quality_and_surge_gates():

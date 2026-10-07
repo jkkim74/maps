@@ -112,13 +112,17 @@ UNKNOWN and CANCEL_REQUESTED retain reservations. Terminal positive buys advance
 zero-filled cancellation does not. First-leg price is its cumulative weighted actual
 average. Immediate terminal monetary corrections are idempotent; late buy-cost
 corrections after later cycle orders fail closed for explicit reconstruction.
+Historical terminal observations and sell monetary corrections preserve newer
+pending reservations and buy stages; only a newly terminal order advances state.
 `apply_fill_transition` is the same pure accounting function used by replay.
 Rebound basis/sold quantities freeze the one-third target through partial cancellations.
 
 `ReplayInput` requires explicit budget, completed RuleEvidence by date/ticker, SessionBar
 execution data, costs and participation. It executes only next-session capped limits,
-models partial liquidity shared across modes, halts and missing bars. Safe daily lows
-alone never fabricate intraday stop fills. `quote_signal` accepts exact recorded quote
+models partial liquidity shared across modes, halts and missing bars. After-close
+fundamental deterioration cannot execute at the same day's open; financial sells
+queue for the next session. Safe daily lows alone never fabricate intraday stop fills.
+`quote_signal` accepts exact recorded quote
 keys exchange_at/received_at (ISO UTC), connected, gap, bid, ask, bid_size, total_bid,
 total_ask, ticker and resets invalid/stale/out-of-order/gapped continuity. Actual quotes
 are needed for intraday stop/imbalance exits; no synthetic tape is generated.
@@ -138,17 +142,28 @@ minimum_dividend_growth=0. These research-only keyword defaults preserve baselin
 raw snapshots exist) surge .18/.20/.22 and dividend growth -.01/0/.01 neighborhoods.
 Five chronological independent IS/OOS folds re-run shared rules with empty initial
 cycles. Existing plateau and seeded block-bootstrap Monte Carlo are reused.
+`report["variants"]["with_orderbook" | "without_orderbook"]` stores each variant's
+baseline, neighbors, cost_double and wfa; top-level research keys remain book-off.
 `store_replay(inputs,report,account_key=None)` records immutable inputs/results;
-`validation(repo,replay_id,account_mdd_limit=.28)` recomputes and verifies them, rejecting
+`validation(repo,replay_id,account_mdd_limit=.28,with_orderbook=True)` recomputes and verifies them, rejecting
 forged results or code changes. Missing tape, raw screening, provenance, 30 independent
 completed cycles or WFA coverage is insufficient, never passed. Partial sells are not
 independent completed trades. Both modes and combined account must pass.
+The selected operational variant supplies every performance/MC/neighborhood/cost/WFA
+gate and propagates missing reasons from all its runs. Book-on requires at least thirty
+actual imbalance-exit cycles separately for safe and original; aggregated samples do
+not satisfy either mode. Both on/off comparisons remain available. The result fingerprint
+binds the report, selected with_orderbook flag and account MDD limit.
 Direction cohorts use the observed input basket's mean daily price change, with ±0.3%
 research boundaries and at least ten observations in each rising/falling/sideways cohort;
 they are not claimed to be the existing official composite market regime model.
 `persist_validation` writes linked standard ValidationRun/Plateau/WFA/MC rows and
 folds using existing promotion fingerprints. Insufficient stays INSUFFICIENT; no
 PromotionHistory is written. Existing live promotion gates remain mandatory.
+It accepts the same keyword arguments. Standard component metrics describe the selected
+variant; the manifest persists with_orderbook, account_mdd_limit and execution_params_hash.
+The standard params_hash remains the catalog default fingerprint; Task3 must additionally
+require the manifest variant and limit to match the configuration and account gate.
 
 No historical source coverage or profitability has been measured. stress_losses
 reports uncapped 68%/total-loss/halts/three-lower-limit scenario exposure; stops are
