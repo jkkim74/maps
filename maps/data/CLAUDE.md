@@ -206,6 +206,8 @@ labels. There is no historical classification backfill.
 
 `NaverThemeAdapter.collect(ref_date, expected_tickers)` returns provider `naver` current
 public multi-theme memberships, including explicitly verified empty entries. It checks
-full source member counts before universe filtering, verifies unchanged start/end catalog
-manifests, and enforces a 1200-second deadline. This is current snapshot evidence, not
-reconstructed historical membership.
+full source member counts before universe filtering. A stale catalog count is accepted
+only when the mobile cursor API reaches an explicit final page with the same theme name
+and exactly the same nonempty ticker set; discrepancies remain in snapshot metrics.
+It verifies unchanged start/end catalog manifests and enforces a shared 1200-second
+deadline across both APIs. This is current snapshot evidence, not reconstructed history.

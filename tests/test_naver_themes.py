@@ -96,7 +96,7 @@ def test_catalog_and_members_use_page_number_beyond_200():
     [[theme(), theme()]], [[theme(name=" ")]], [[theme(no=None)]],
     [[theme(count=-1)]], [[theme(count=True)]], [[theme(count="1.0")]],
     [[theme(count="-1")]], [[theme(count=1.5)]], [[theme(count="nan")]],
-    [[theme()], []], [[theme()], [member(), member("000660")]],
+    [[theme()], []], [[theme()], [member(), member("000660")], {}],
     [[theme()], {"error": "member source failed"}], [[theme()], [None]],
     [[theme(count=2)], [member(), member()]],
     [[theme()], [member(ticker=" ")]], [[theme()], [member(ticker=None)]],
@@ -187,3 +187,62 @@ def test_numeric_theme_code_is_normalized():
     result, _ = collect([[theme(no=123)], [member()], [theme(no=123)]])
     assert result.catalog == {"123": "Theme"}
     assert result.memberships["005930"] == ["123"]
+
+
+def mobile_page(tickers, *, has_next=False, cursor=None, name="Theme"):
+    """Represent the public mobile API's explicit completion contract."""
+    return {"isSuccess": True, "result": {
+        "sectorInfo": {"sectorName": name},
+        "items": [{"itemCode": ticker, "name": "Company"} for ticker in tickers],
+        "hasNext": has_next, "cursor": cursor,
+    }}
+
+
+def test_stale_catalog_count_requires_matching_complete_mobile_memberships():
+    catalog = [theme(count=3)]
+    result, session = collect([catalog, [member(), member("000660")],
+        mobile_page(["005930"], has_next=True, cursor="next-page"),
+        mobile_page(["000660"]), catalog])
+    assert result.memberships == {"005930": ["1"], "000660": ["1"]}
+    assert result.metrics["source_count_discrepancies"] == [
+        {"theme_code": "1", "advertised_count": 3, "verified_count": 2,
+         "verification": "mobile_cursor_complete"}]
+    assert session.calls[3][1]["params"]["cursor"] == "next-page"
+
+
+def test_real_mobile_pagination_has_theme_info_only_on_first_page():
+    tickers = [f"A{i:05}" for i in range(69)]
+    catalog = [theme("284", "SPAC", 70)]
+    first = mobile_page(tickers[:50], has_next=True, cursor="next", name="SPAC")
+    last = mobile_page(tickers[50:])
+    last["result"]["sectorInfo"] = None
+    result, _ = collect([catalog, [member(t) for t in tickers], first, last, catalog],
+                        expected=[tickers[0], "000660"])
+    assert result.memberships == {tickers[0]: ["284"], "000660": []}
+    assert result.metrics["source_relation_count"] == 69
+
+
+def test_mobile_duplicate_across_pages_is_not_deduplicated():
+    with pytest.raises(DataCollectionError, match="duplicate"):
+        collect([[theme(count=2)], [member()],
+            mobile_page(["005930"], has_next=True, cursor="next"),
+            mobile_page(["005930"])])
+
+
+@pytest.mark.parametrize("pages", [
+    [mobile_page(["000660"])],  # Same count, different members is not corroboration.
+    [mobile_page(["005930"], name="Another theme")],
+    [mobile_page(["005930"], has_next=True)],
+    [mobile_page(["005930"], has_next="false")],
+    [mobile_page(["005930", "005930"])],
+    [mobile_page(["005930"], has_next=True, cursor="repeated"),
+     mobile_page(["000660"], has_next=True, cursor="repeated")],
+    [{"isSuccess": False, "result": {}}],
+    [{"isSuccess": True, "result": None}],
+    [{"isSuccess": True, "result": {"items": [], "hasNext": False}}],
+    [mobile_page([None])],
+    [mobile_page(["005930"] * 51)],
+])
+def test_count_mismatch_still_fails_without_complete_matching_evidence(pages):
+    with pytest.raises(DataCollectionError):
+        collect([[theme(count=2)], [member()], *pages])

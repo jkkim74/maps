@@ -24,6 +24,17 @@ member pages use zero-based page numbers, not row offsets. The HTTP collector ha
 a 20-minute deadline and bounded retries. Its quote timestamps are not treated as
 classification change timestamps.
 
+Npay's catalog count can lag its actual constituent lists (observed for SPAC on
+2026-10-07: advertised 70, actual 69). On a count mismatch, collection additionally
+traverses the public mobile constituent API's cursor pages to an explicit
+`hasNext=false`. Publication requires the same theme name and exactly the same
+nonempty ticker set in both APIs. Duplicate members, malformed or looping cursors,
+missing completion signals, HTTP errors and differing lists still fail collection.
+Accepted count discrepancies are retained in `classification_run.metrics` under
+`source_count_discrepancies`, including advertised/verified counts and the
+`mobile_cursor_complete` verification method. No missing ticker is invented and
+no numeric mismatch tolerance is used.
+
 Counts are derived from accepted records, not trusted caller flags. Monitoring
 shows latest attempt separately from last successful publication, including source,
 dates, assigned/unassigned counts, relation/catalog counts and failure reasons.
