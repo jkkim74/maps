@@ -34,6 +34,8 @@ class CycleState:
     pending_order: bool = False
     averaging_down: bool = False
     rebound_reduced: bool = False
+    rebound_basis_quantity: int = 0
+    rebound_sold_quantity: int = 0
     sell_basis_quantity: int = 0
     ordinary_sold_quantity: int = 0
     sell_target_ninths: int = 0
@@ -47,13 +49,15 @@ class CycleState:
                 raise DataQualityError("invalid_cycle_boolean")
         if self.buy_stage not in range(4) or self.sell_target_ninths not in (0, 1, 3, 9):
             raise DataQualityError("invalid_cycle_stage")
-        for name in ("quantity", "sell_basis_quantity", "ordinary_sold_quantity"):
+        for name in ("quantity", "sell_basis_quantity", "ordinary_sold_quantity", "rebound_basis_quantity", "rebound_sold_quantity"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                 raise DataQualityError("invalid_cycle_quantity")
         if self.ordinary_sold_quantity > self.sell_basis_quantity:
             raise DataQualityError("ordinary_sales_exceed_basis")
-        if self.quantity > 0 and (self.buy_stage == 0 or self.first_fill_price is None or self.last_buy_date is None):
+        if self.rebound_sold_quantity > self.rebound_basis_quantity // 3:
+            raise DataQualityError("rebound_sales_exceed_target")
+        if self.quantity > 0 and ((self.buy_stage == 0 and not self.pending_order) or self.first_fill_price is None or self.last_buy_date is None):
             raise DataQualityError("holding_without_fill_provenance")
         _number(self.first_fill_price, "first_fill_price", positive=True)
         _number(self.stop_price, "stop_price", positive=True)
@@ -124,10 +128,13 @@ class Decision:
     timing: str = "next_session"
 
 
-def evaluate(mode: Mode, evidence: RuleEvidence, cycle: CycleState) -> Decision:
+def evaluate(mode: Mode, evidence: RuleEvidence, cycle: CycleState, *, first_rsi_threshold: float = 40) -> Decision:
     """Emergency exits > ordinary targets > rebound > sequential fill-driven buys."""
     if not isinstance(mode, Mode):
         raise DataQualityError("invalid_mode")
+    _number(first_rsi_threshold, "first_rsi_threshold")
+    if isinstance(first_rsi_threshold, bool) or first_rsi_threshold is None or not 0 <= first_rsi_threshold <= 100:
+        raise DataQualityError("invalid_first_rsi_threshold")
     policy = "required" if mode == Mode.SAFE else "intentional_none"
     def hold(reason: str, reasons: tuple[str, ...] = ()) -> Decision:
         return Decision("hold", reason, reasons or (reason,), stop_policy=policy)
@@ -162,7 +169,7 @@ def evaluate(mode: Mode, evidence: RuleEvidence, cycle: CycleState) -> Decision:
             return Decision("sell" if quantity else "hold", reason, sell_target_ninths=target,
                             sell_basis_quantity=basis, sell_quantity=quantity, stop_policy=policy, timing=timing)
         if mode == Mode.ORIGINAL and cycle.averaging_down and not cycle.rebound_reduced and evidence.macd_golden:
-            quantity = cycle.quantity // 3
+            quantity = min(cycle.quantity, max(0, (cycle.rebound_basis_quantity or cycle.quantity) // 3 - cycle.rebound_sold_quantity))
             return Decision("sell" if quantity else "hold", "rebound_reduction", sell_quantity=quantity, stop_policy=policy)
     reasons = list(evidence.blocking_reasons)
     if not evidence.selection_passed:
@@ -180,7 +187,7 @@ def evaluate(mode: Mode, evidence: RuleEvidence, cycle: CycleState) -> Decision:
     stage = cycle.buy_stage + 1
     averaging = False
     if stage == 1:
-        trigger = (evidence.daily_rsi is not None and evidence.daily_rsi <= 40
+        trigger = (evidence.daily_rsi is not None and evidence.daily_rsi <= first_rsi_threshold
                    and evidence.weekly_rsi is not None and evidence.weekly_rsi < 70)
     elif stage == 2:
         reversal = evidence.macd_golden or evidence.tenkan_cross_up

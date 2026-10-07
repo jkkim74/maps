@@ -31,6 +31,83 @@ from maps.common.db import Base
 from decimal import Decimal
 
 
+class FujimotoConfig(Base):
+    """Prospective immutable mode configuration and explicit cash contribution."""
+    __tablename__ = "fujimoto_config"
+    __table_args__ = (UniqueConstraint("account_key", "mode", "version", name="uq_fujimoto_config"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_key: Mapped[str] = mapped_column(String(128), index=True)
+    owner_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    mode: Mapped[str] = mapped_column(String(16))
+    version: Mapped[int] = mapped_column(Integer)
+    budget: Mapped[Decimal] = mapped_column(Numeric(24, 6))
+    deposit: Mapped[Decimal] = mapped_column(Numeric(24, 6))
+    settings: Mapped[dict] = mapped_column(JSON)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=lambda: datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None))
+
+
+class FujimotoEvidence(Base):
+    """Append-only annual, candidate, quote, decision and research observations."""
+    __tablename__ = "fujimoto_evidence"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    kind: Mapped[str] = mapped_column(String(32), index=True)
+    ticker: Mapped[str] = mapped_column(String(16), index=True)
+    account_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    observed_at: Mapped[datetime.datetime] = mapped_column(DateTime, index=True)
+    available_at: Mapped[datetime.datetime] = mapped_column(DateTime, index=True)
+    payload: Mapped[dict] = mapped_column(JSON)
+    fingerprint: Mapped[str] = mapped_column(String(64))
+
+
+class FujimotoCycle(Base):
+    """Mode-owned fill projection; account holdings are never adopted."""
+    __tablename__ = "fujimoto_cycle"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    config_id: Mapped[int] = mapped_column(ForeignKey("fujimoto_config.id"))
+    account_key: Mapped[str] = mapped_column(String(128), index=True)
+    mode: Mapped[str] = mapped_column(String(16))
+    ticker: Mapped[str] = mapped_column(String(16), index=True)
+    budget: Mapped[Decimal] = mapped_column(Numeric(24, 6))
+    state: Mapped[dict] = mapped_column(JSON)
+    cost_basis: Mapped[Decimal] = mapped_column(Numeric(24, 6), default=0)
+    realized_pnl: Mapped[Decimal] = mapped_column(Numeric(24, 6), default=0)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=lambda: datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None))
+
+
+class FujimotoOrder(Base):
+    """Cycle-bound reservation and monotone cumulative broker fill projection."""
+    __tablename__ = "fujimoto_order"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    cycle_id: Mapped[int] = mapped_column(ForeignKey("fujimoto_cycle.id"), index=True)
+    evidence_id: Mapped[int] = mapped_column(ForeignKey("fujimoto_evidence.id"))
+    account_key: Mapped[str] = mapped_column(String(128), index=True)
+    intent_id: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True)
+    broker_order_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    decision: Mapped[dict] = mapped_column(JSON)
+    signal_date: Mapped[datetime.date | None] = mapped_column(Date, nullable=True)
+    quantity: Mapped[int] = mapped_column(Integer)
+    limit_price: Mapped[Decimal] = mapped_column(Numeric(24, 6))
+    stop_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    fee_rate: Mapped[float] = mapped_column(Float)
+    status: Mapped[str] = mapped_column(String(32), default="RESERVED")
+    filled_quantity: Mapped[int] = mapped_column(Integer, default=0)
+    gross: Mapped[Decimal] = mapped_column(Numeric(24, 6), default=0)
+    fees: Mapped[Decimal] = mapped_column(Numeric(24, 6), default=0)
+    tax: Mapped[Decimal] = mapped_column(Numeric(24, 6), default=0)
+
+
+class FujimotoFill(Base):
+    """Immutable cumulative fill observation and resulting state for audit/restart."""
+    __tablename__ = "fujimoto_fill"
+    __table_args__ = (UniqueConstraint("order_id", "fingerprint", name="uq_fujimoto_fill"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    order_id: Mapped[int] = mapped_column(ForeignKey("fujimoto_order.id"), index=True)
+    fingerprint: Mapped[str] = mapped_column(String(64))
+    payload: Mapped[dict] = mapped_column(JSON)
+    resulting_state: Mapped[dict] = mapped_column(JSON)
+    observed_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=lambda: datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None))
+
+
 class DartFinancialSnapshot(Base):
     """Append-only parsed financial response; availability never backdated."""
 

@@ -177,3 +177,11 @@ quality counts/errors. `ClassificationMember` stores unique `(run_id,ticker,code
 relations and historical labels. Only complete published runs are usable snapshots;
 failed attempts do not supersede success. `CollectionLog.classification_quality` is
 nullable additive JSON independent of `metadata_quality`.
+
+## Fujimoto persistence
+
+0041 adds FujimotoConfig, FujimotoEvidence, FujimotoCycle, FujimotoOrder and FujimotoFill.
+Configs/evidence/fill observations are immutable history; cycle/order rows are restartable
+fill projections. Numeric cumulative gross/fees/tax preserve accounting. Configs are
+account/owner/mode/version scoped; cycles freeze their inception allocation. No backfill
+or adoption of existing holdings. See ../fujimoto/CLAUDE.md for transaction contracts.

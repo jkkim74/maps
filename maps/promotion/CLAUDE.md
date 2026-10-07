@@ -97,3 +97,7 @@ maps.common.constants  → ALLOWED_MDD, STRATEGY_GROUP_MAP, TRADEABILITY_THRESHO
 maps.common.exceptions → UnknownStrategyError
 maps.common.models     → PromotionHistory
 ```
+
+Fujimoto strategy_fingerprint additionally includes maps/fujimoto/*.py. Dedicated
+stateful research persists the same ValidationRun and linked Plateau/WFA/MC contracts;
+combined/tape evidence supplements rather than bypasses these existing gates.

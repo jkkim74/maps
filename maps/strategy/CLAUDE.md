@@ -9,6 +9,7 @@
 strategy/
 ├── __init__.py                 # 빈 패키지 마커
 ├── base.py                     # BaseStrategy — 추상 베이스 + PositionExitPolicy
+├── fujimoto.py                 # Research-only modes; dedicated stateful runner
 ├── catalog.py                  # 화면용 전략 설명 (산문만)
 ├── live_rules.py               # 실거래 손절 — effective_stop_price() 가 정본
 ├── holding_type.py             # CORE/SWING/TRADING/WATCH/BAN 분류
@@ -144,3 +145,7 @@ maps.common.constants → STRATEGY_GROUP_MAP, ALLOWED_MDD
 maps.market.regime    → preferred_regimes 판정에 쓰는 라벨
 maps.backtest.engine  → BacktestEngine (generate_signals 호출)
 ```
+
+Fujimoto identities are catalog-registered research only, excluded from runnable scheduler.
+Use maps.fujimoto.replay and validation; generate_signals fails explicitly for legacy engines.
+Original stop_policy is intentional_none; safe stop_policy is required.

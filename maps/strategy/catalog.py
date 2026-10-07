@@ -25,6 +25,7 @@ from maps.strategy.base import BaseStrategy
 from maps.strategy.contrarian_quality_v1 import ContrarianQualityAccumulationV1Strategy
 from maps.strategy.donchian_v1 import DonchianV1Strategy
 from maps.strategy.donchian_v2 import DonchianV2Strategy
+from maps.strategy.fujimoto import FujimotoSafeV1Strategy, FujimotoOriginalV1Strategy
 from maps.strategy.live_rules import atr_multiplier, stop_loss_pct
 from maps.strategy.multi_asset_trend_v1 import MultiAssetTrendV1Strategy
 from maps.strategy.pullback_v2 import PullbackV2Strategy
@@ -65,6 +66,8 @@ class StrategyDescription:
 
 #: strategy_id → 전략 클래스. 숫자를 클래스에서 직접 읽기 위한 매핑이다.
 STRATEGY_CLASSES: dict[str, type[BaseStrategy]] = {
+    "fujimoto_safe_v1": FujimotoSafeV1Strategy,
+    "fujimoto_original_v1": FujimotoOriginalV1Strategy,
     "pullback_v3": PullbackV3Strategy,
     "pullback_v3_3": PullbackV33Strategy,
     "pullback_v2": PullbackV2Strategy,
@@ -235,6 +238,17 @@ STRATEGY_PROSE: dict[str, StrategyProse] = {
         guide_file="08_contrarian_quality_v1.txt",
     ),
 }
+
+
+for _mode, _name, _policy in (("safe", "안전형", "가격 손절과 실적 훼손 청산"),
+                             ("original", "원문 기반·계좌 한도 적용형", "가격 손절 없음; 실적 훼손 청산")):
+    STRATEGY_PROSE[f"fujimoto_{_mode}_v1"] = StrategyProse(
+        display_name=f"후지모토 {_name}",
+        summary="우량주 선별과 확인된 체결에 따른 분할매매를 결합하는 연구 전략",
+        idea="공시 관측 시점을 보존하고 모드별 소유량과 예산을 분리한다. 검증 전 가설이며 자동 운영에 등록하지 않는다.",
+        entry_rules=("확정 연간 매출·영업이익·주당배당 성장 및 당시 업종 PER 검사", "완성 일봉·주봉의 RSI와 반전·일목 신호"),
+        exit_rules=(_policy, "체결 기반 누적 분할매도; 기록 호가와 비용 검증이 필요한 장중 익절"),
+        guide_file=f"fujimoto_{_mode}_v1.txt")
 
 
 def describe_strategy(strategy_id: str) -> StrategyDescription | None:

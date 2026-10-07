@@ -22,7 +22,7 @@ alembic downgrade -1                             # 한 단계 되돌리기
 파일명이 아니라 각 파일의 `down_revision` 을 따라간다. 예: `efca8676041a` 의
 `down_revision` 은 `0005_stock_report_runs` 다.
 
-현재 head: **`0040_merge_classification_shadow`**.
+현재 head: **`0041_fujimoto_trading`**.
 
 `0040_merge_classification_shadow`는 `0038_limit_up_shadow_probes`와
 `0039_classification_snapshots` 이력을 연결하는 병합 리비전이다. 자체 DDL은 없고,
@@ -59,3 +59,6 @@ validation snapshots, safety outbox events and nullable legacy audit links. No b
 `0039_classification_snapshots` adds `classification_run`, `classification_member`,
 and nullable `collection_log.classification_quality`. It follows `0038_execution_safety`
 and performs no historical backfill. Downgrade removes only these additive objects.
+
+0041_fujimoto_trading follows the 0040 merge and adds five empty Fujimoto ledger/evidence
+tables. Downgrade removes only these additive objects. No account data is backfilled.

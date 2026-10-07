@@ -25,6 +25,10 @@ def strategy_fingerprint(strategy_id):
         for path in sorted((root / directory).rglob("*.py")):
             digest.update(path.relative_to(root).as_posix().encode())
             digest.update(path.read_bytes())
+    if strategy_id in ("fujimoto_safe_v1", "fujimoto_original_v1"):
+        for path in sorted((root / "fujimoto").glob("*.py")):
+            digest.update(path.relative_to(root).as_posix().encode())
+            digest.update(path.read_bytes())
     digest.update((root / "common" / "constants.py").read_bytes())
     cls = STRATEGY_CLASSES.get(strategy_id)
     params = cls().default_params if cls else {"special_strategy": strategy_id}

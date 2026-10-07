@@ -138,9 +138,12 @@ def _as_of(records: Iterable[AnnualRecord | FinancialRecord], cutoff: date) -> l
     return [latest[d] for d in sorted(latest)]
 
 
-def annual_quality(records: Iterable[AnnualRecord], cutoff: date) -> QualityResult:
+def annual_quality(records: Iterable[AnnualRecord], cutoff: date, *, minimum_dividend_growth: float = 0) -> QualityResult:
     """Require three consecutive comparable fiscal years with increasing profits/revenue."""
     rows = _as_of(records, cutoff)[-3:]
+    _number(minimum_dividend_growth, "minimum_dividend_growth")
+    if isinstance(minimum_dividend_growth, bool) or minimum_dividend_growth is None or not -1 < minimum_dividend_growth <= 1:
+        raise DataQualityError("invalid_minimum_dividend_growth")
     if len(rows) != 3:
         return QualityResult(False, ("missing_annual_history",))
     reasons = []
@@ -168,7 +171,7 @@ def annual_quality(records: Iterable[AnnualRecord], cutoff: date) -> QualityResu
     if any(r.dividend_per_share is None for r in rows):
         reasons.append("missing_dividend")
     elif (any(r.dividend_per_share <= 0 for r in rows)
-          or any(b.dividend_per_share < a.dividend_per_share for a, b in zip(rows, rows[1:]))):
+          or any(a.dividend_per_share <= 0 or b.dividend_per_share / a.dividend_per_share - 1 < minimum_dividend_growth - 1e-12 for a, b in zip(rows, rows[1:]))):
         reasons.append("dividend_failed")
     return QualityResult(not reasons, tuple(reasons))
 
@@ -202,7 +205,8 @@ class SelectionResult:
 
 def screen(ticker: str, annual_records: Iterable[AnnualRecord], valuations: Iterable[ValuationRecord],
            sectors: SectorSnapshot | None, prices: pd.DataFrame, cutoff: date, *,
-           eligible: bool = False) -> SelectionResult:
+           eligible: bool = False, maximum_return_20: float = .2,
+           minimum_dividend_growth: float = 0) -> SelectionResult:
     """Screen only explicit eligible KOSPI/KOSDAQ ordinary-share historical evidence.
 
     eligible is the existing DataQualityFilter's historical eligibility result.
@@ -211,7 +215,10 @@ def screen(ticker: str, annual_records: Iterable[AnnualRecord], valuations: Iter
     rows = list(annual_records)
     if any(r.ticker != ticker for r in rows):
         raise DataQualityError("mixed_ticker_evidence")
-    reasons = list(annual_quality(rows, cutoff).reasons)
+    _number(maximum_return_20, "maximum_return_20")
+    if isinstance(maximum_return_20, bool) or maximum_return_20 is None or not 0 <= maximum_return_20 <= 1:
+        raise DataQualityError("invalid_maximum_return_20")
+    reasons = list(annual_quality(rows, cutoff, minimum_dividend_growth=minimum_dividend_growth).reasons)
     if not eligible:
         reasons.append("ineligible_security")
     membership = {}
@@ -248,7 +255,7 @@ def screen(ticker: str, annual_records: Iterable[AnnualRecord], valuations: Iter
         if has_session_gap(frame.iloc[-21:], cutoff):
             reasons.append("price_session_gap")
         ret = float(frame.close.iloc[-1] / frame.close.iloc[-21] - 1)
-        if ret > 0.20 + 1e-12:
+        if ret > maximum_return_20 + 1e-12:
             reasons.append("rapid_rise")
         if "turnover" not in frame or frame.turnover.iloc[-20:].isna().any():
             reasons.append("missing_turnover")

@@ -10,6 +10,25 @@ from alembic.config import Config
 from sqlalchemy import create_engine, inspect, text
 
 
+def test_fujimoto_additive_upgrade_and_reversible_downgrade(tmp_path, monkeypatch):
+    """0041 adds empty research/ownership tables without adopting existing holdings."""
+    path = tmp_path / "fujimoto.db"
+    monkeypatch.setenv("MAPS_DB_URL", f"sqlite:///{path.as_posix()}")
+    config = Config("alembic.ini")
+    command.upgrade(config, "0040_merge_classification_shadow")
+    command.upgrade(config, "head")
+    engine = create_engine(f"sqlite:///{path.as_posix()}")
+    tables = {"fujimoto_config", "fujimoto_evidence", "fujimoto_cycle", "fujimoto_order", "fujimoto_fill"}
+    assert tables <= set(inspect(engine).get_table_names())
+    with engine.connect() as connection:
+        for table in tables:
+            assert connection.execute(text(f"SELECT COUNT(*) FROM {table}")).scalar_one() == 0
+    command.downgrade(config, "0040_merge_classification_shadow")
+    assert not tables & set(inspect(engine).get_table_names())
+    assert "order_intent" in inspect(engine).get_table_names()
+    engine.dispose()
+
+
 def test_fresh_database_reaches_current_schema(tmp_path, monkeypatch) -> None:
     """새 설치에서 분석·포트폴리오 최신 스키마 누락을 막는다."""
     db_path = tmp_path / "maps-migration.db"
@@ -40,7 +59,7 @@ def test_fresh_database_reaches_current_schema(tmp_path, monkeypatch) -> None:
         revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
     engine.dispose()
 
-    assert revision == "0040_merge_classification_shadow"
+    assert revision == "0041_fujimoto_trading"
     assert {"classification_run", "classification_member"} <= set(inspector.get_table_names())
     assert "classification_quality" in {c["name"] for c in inspector.get_columns("collection_log")}
     assert {"order_intent", "execution_account_state", "account_observation", "account_adjustment",
@@ -157,7 +176,7 @@ def test_both_existing_branches_upgrade_to_merged_schema(tmp_path, monkeypatch, 
         assert "shadow_probes" in {c["name"] for c in inspector.get_columns("limit_up_session")}
         assert {"classification_run", "classification_member", "order_intent"} <= set(inspector.get_table_names())
         with engine.connect() as connection:
-            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0040_merge_classification_shadow"
+            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0041_fujimoto_trading"
     finally:
         engine.dispose()
 

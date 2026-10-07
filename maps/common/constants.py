@@ -13,6 +13,8 @@ from typing import Final
 # mc_p95_limit: Monte Carlo p95 통과 기준 (절대값)
 # ---------------------------------------------------------------------------
 ALLOWED_MDD: Final[dict[str, dict[str, float]]] = {
+    "fujimoto_safe": {"expected": 0.10, "mc_p95_limit": 0.15},
+    "fujimoto_original": {"expected": 0.15, "mc_p95_limit": 0.25},
     "pullback_short": {
         "expected": 0.10,
         "mc_p95_limit": 0.18,
@@ -73,6 +75,8 @@ PLATEAU_GRADES: Final[dict[str, dict]] = {
 # 전략 ID → 전략군 매핑
 # ---------------------------------------------------------------------------
 STRATEGY_GROUP_MAP: Final[dict[str, str]] = {
+    "fujimoto_safe_v1": "fujimoto_safe",
+    "fujimoto_original_v1": "fujimoto_original",
     "pullback_v3":          "pullback_short",
     "pullback_v3_3":        "pullback_short",
     "pullback_v2":          "pullback_short",
