@@ -89,6 +89,7 @@ class RuleEvidence:
     rsi_cross_70: bool = False
     live_price: float | None = None
     orderbook_take_profit: bool = False
+    atr14: float | None = None
 
     def __post_init__(self) -> None:
         for name in ("selection_passed", "macd_golden", "macd_dead", "tenkan_cross_up",
@@ -98,6 +99,9 @@ class RuleEvidence:
                 raise DataQualityError("invalid_signal_boolean")
         _number(self.close, "close", positive=True)
         _number(self.live_price, "live_price", positive=True)
+        _number(self.atr14, "atr14")
+        if self.atr14 is not None and self.atr14 < 0:
+            raise DataQualityError("invalid_atr14")
         for value in (self.daily_rsi, self.weekly_rsi):
             _number(value, "rsi")
             if value is not None and not 0 <= value <= 100:
@@ -240,4 +244,5 @@ def build_rule_evidence(prices: pd.DataFrame, cutoff: date, selection: Selection
         signals[name] = bool(len(weekly) >= 2 and weekly[column].iloc[-1] > weekly[column].iloc[-2])
     return RuleEvidence(cutoff, value(last, "close"), selection_passed=selection.passed,
                         blocking_reasons=tuple(dict.fromkeys(reasons)), financial_status=financial_status,
-                        daily_rsi=value(last, "rsi"), weekly_rsi=value(week, "rsi"), **signals)
+                        daily_rsi=value(last, "rsi"), weekly_rsi=value(week, "rsi"),
+                        atr14=value(last, "atr14"), **signals)

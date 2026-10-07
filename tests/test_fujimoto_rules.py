@@ -131,6 +131,7 @@ def test_indicator_evidence_builder_blocks_gaps_but_preserves_valid_exit():
     frame = pd.DataFrame(dict(open=100, high=102, low=98, close=100, volume=100), index=pd.DatetimeIndex(dates))
     selection = SelectionResult("A", True, ())
     full = build_rule_evidence(frame, DAY, selection, "maintained")
+    assert full.atr14 is not None and full.atr14 > 0
     assert full.daily_rsi == 50 and full.weekly_rsi == 50
     gap = build_rule_evidence(frame.drop(frame.index[-3]), DAY, selection, "maintained")
     assert "price_session_gap" in gap.blocking_reasons

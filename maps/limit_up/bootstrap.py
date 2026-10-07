@@ -97,9 +97,12 @@ def build_runtime(settings: MapsSettings) -> KISIntradayRuntime:
         repository=repository,
         worker=worker,
     )
-    return KISIntradayRuntime(
-        settings=settings, db=db, adapter=broker, service=service
-    )
+    fujimoto = None
+    if settings.maps_fujimoto_enabled:
+        from maps.fujimoto.service import FujimotoService
+        fujimoto = FujimotoService(db, OrderManager(broker, risk, db, settings=settings), settings=settings)
+    return KISIntradayRuntime(settings=settings, db=db, adapter=broker, service=service,
+        fujimoto=fujimoto, upper_enabled=settings.maps_limit_up_enabled)
 
 
 async def start_limit_up_if_enabled(settings: MapsSettings) -> StartOutcome:
@@ -118,7 +121,7 @@ async def start_limit_up_if_enabled(settings: MapsSettings) -> StartOutcome:
     Returns:
         What happened. Only ``FAILED`` is worth retrying.
     """
-    if not settings.maps_limit_up_enabled:
+    if not settings.maps_limit_up_enabled and not settings.maps_fujimoto_enabled:
         return StartOutcome.DISABLED
     if settings.maps_broker_mode != "kis":
         logger.error(
@@ -127,7 +130,7 @@ async def start_limit_up_if_enabled(settings: MapsSettings) -> StartOutcome:
             settings.maps_broker_mode,
         )
         return StartOutcome.REFUSED
-    if settings.maps_limit_up_mode == LimitUpMode.AUTOMATIC.value:
+    if settings.maps_limit_up_enabled and settings.maps_limit_up_mode == LimitUpMode.AUTOMATIC.value:
         blocked = automatic_mode_blocked_reason(settings)
         if blocked is not None:
             logger.error(

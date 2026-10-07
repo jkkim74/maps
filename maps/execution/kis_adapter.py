@@ -598,6 +598,7 @@ class KISAdapter(BrokerAdapter):
                         if filled_qty > 0 else 0.0
                     ),
                     commission=0.0,
+                    cumulative_gross=self._to_float_or_none(row.get("tot_ccld_amt")),
                     submitted_at=submitted_at or _kst_now_naive(),
                     filled_at=submitted_at if filled_qty > 0 else None,
                     quantity=order_qty,

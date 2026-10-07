@@ -40,6 +40,7 @@ from maps.api.cost_sensitivity import router as cost_sensitivity_router
 from maps.api.live_monitor import router as live_monitor_router
 from maps.api.data_quality import router as data_quality_router
 from maps.api.limit_up import router as limit_up_router
+from maps.api.fujimoto import router as fujimoto_router
 from maps.api.ops_config import router as ops_config_router
 from maps.api.scheduler import router as scheduler_router
 from maps.api.stock_report import router as stock_report_router
@@ -158,6 +159,7 @@ app.include_router(cost_sensitivity_router)
 app.include_router(live_monitor_router)
 app.include_router(data_quality_router)
 app.include_router(limit_up_router)
+app.include_router(fujimoto_router)
 app.include_router(ops_config_router)
 app.include_router(scheduler_router)
 app.include_router(stock_report_router)
@@ -198,6 +200,7 @@ _SCREEN_MAP = {
     "cost-sensitivity": "Cost Sensitivity",
     "live-monitor":     "Live Monitor",
     "limit-up":         "상한가 V1",
+    "fujimoto":         "후지모토 분할매매",
     "data-quality":     "Data Quality",
     "ops-config":       "Ops Config",
     "stock-report":     "Stock Report",
@@ -356,6 +359,12 @@ async def scr13(request: Request) -> HTMLResponse:
 @app.get("/limit-up", response_class=HTMLResponse)
 async def scr_limit_up(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "limit_up.html", _ctx(request, "limit-up"))
+
+
+@app.get("/fujimoto", response_class=HTMLResponse)
+async def scr_fujimoto(request: Request) -> HTMLResponse:
+    """Administrator operational view; data API also enforces account ownership."""
+    return templates.TemplateResponse(request, "fujimoto.html", _ctx(request, "fujimoto"))
 
 
 @app.get("/data-quality", response_class=HTMLResponse)

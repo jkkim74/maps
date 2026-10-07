@@ -286,8 +286,12 @@ class FujimotoRepository:
     def create_cycle(self, config_id: int, ticker: str) -> FujimotoCycle:
         """Freeze a monetary cycle ceiling and start with zero owned shares."""
         config = self._get(FujimotoConfig, config_id)
+        expired = {row.payload.get("cycle_id") for row in self.session.scalars(
+            select(FujimotoEvidence).where(FujimotoEvidence.account_key == config.account_key,
+                                          FujimotoEvidence.kind == "cycle_expired"))}
         active = [c for c in self.cycles(config.account_key, Mode(config.mode))
-                  if self.state(c.id).quantity or self.state(c.id).pending_order or not self.state(c.id).buy_stage]
+                  if self.state(c.id).quantity or self.state(c.id).pending_order
+                  or (not self.state(c.id).buy_stage and c.id not in expired)]
         if len(active) >= 5 or any(c.ticker == ticker for c in active):
             raise DataQualityError("mode_position_limit_or_duplicate")
         if config.id != [c for c in self.configurations(config.account_key) if c.mode == config.mode][-1].id:
@@ -364,8 +368,13 @@ class FujimotoRepository:
         elif decision.reason == "rebound_reduction" and not state.rebound_basis_quantity:
             state = replace(state, rebound_basis_quantity=state.quantity)
         cycle.state = json_data(state)
+        payload = {"cycle_id": cycle_id, "evidence_id": evidence_id, "decision": json_data(decision)}
+        last = self.session.query(FujimotoEvidence).filter_by(kind="decision", account_key=cycle.account_key).filter(
+            FujimotoEvidence.payload["cycle_id"].as_integer() == cycle_id).order_by(FujimotoEvidence.id.desc()).first()
+        if last is not None and last.payload == payload:
+            return
         self.record_evidence("decision", cycle.ticker, evidence.observed_at, evidence.available_at,
-                             {"cycle_id": cycle_id, "evidence_id": evidence_id, "decision": json_data(decision)}, account_key=cycle.account_key)
+                             payload, account_key=cycle.account_key)
 
     def plan_buy(self, cycle_id: int, decision: Decision, account: AccountLimits,
                  marks: dict[str, float], *, atr14: float | None = None, fee_rate: float = .00015) -> BuyPlan:
@@ -406,7 +415,8 @@ class FujimotoRepository:
             if spent + reservation > cycle.budget * decision.buy_weight / 9:
                 raise DataQualityError("leg_budget_exceeded")
             if cycle.mode == "safe":
-                stop_price = max(state.stop_price or 0, stop_price or effective_stop_price("fujimoto_safe_v1", limit_price, None) or 0)
+                stop_price = max(state.stop_price or 0, stop_price if stop_price is not None
+                                 else effective_stop_price("fujimoto_safe_v1", limit_price, None) or 0)
         order = FujimotoOrder(cycle_id=cycle_id, evidence_id=evidence_id, account_key=cycle.account_key,
                               intent_id=intent_id, decision=json_data(decision), signal_date=signal_date,
                               quantity=quantity, limit_price=money(limit_price), stop_price=stop_price,

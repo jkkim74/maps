@@ -41,6 +41,32 @@ def test_partial_holdings_can_precede_terminal_stage():
     assert state.buy_stage == 0
 
 
+def test_completed_atr_stop_survives_reservation_and_later_wider_addition(db):
+    from maps.fujimoto.domain import RuleEvidence, evaluate
+    from maps.fujimoto.repository import AccountLimits
+    from dataclasses import replace
+    repo, config, cycle = setup_cycle(db, Mode.SAFE)
+    rule = RuleEvidence(date(2026, 1, 5), 1000, True, financial_status="maintained",
+                        daily_rsi=40, weekly_rsi=50, atr14=40)
+    decision = evaluate(Mode.SAFE, rule, repo.state(cycle.id))
+    plan = repo.plan_buy(cycle.id, decision, AccountLimits(2000000, 2000000, 0, 0, .1, .35), {}, atr14=rule.atr14)
+    evidence = repo.record_evidence("candidate", cycle.ticker, datetime(2026, 1, 5, 7),
+                                   datetime(2026, 1, 5, 7), {"rule": rule})
+    order = repo.reserve_order(cycle.id, decision, evidence.id, plan.quantity, plan.limit_price,
+                              signal_date=rule.as_of, stop_price=plan.stop_price)
+    assert order.stop_price == 880
+    repo.apply_fill(event(order, plan.quantity, plan.quantity * 1000, status="FILLED"))
+    later = replace(rule, as_of=date(2026, 1, 7), macd_golden=True, atr14=60)
+    decision = evaluate(Mode.SAFE, later, repo.state(cycle.id))
+    plan = repo.plan_buy(cycle.id, decision, AccountLimits(2000000, 1900000, 100000, 0, .1, .35),
+                         {cycle.ticker: 1000}, atr14=later.atr14)
+    order = repo.reserve_order(cycle.id, decision, evidence.id, plan.quantity, plan.limit_price,
+                              signal_date=later.as_of, stop_price=plan.stop_price)
+    assert order.stop_price == 880
+    repo.apply_fill(event(order, plan.quantity, plan.quantity * 1000, status="FILLED", day=date(2026, 1, 8)))
+    assert repo.state(cycle.id).stop_price == 880
+
+
 def test_partial_terminal_duplicate_restart_and_cash(db):
     repo, config, cycle = setup_cycle(db)
     order = buy(repo, cycle)

@@ -94,6 +94,12 @@ class OrderManager:
         return context
 
     def _entry_policy(self, db, order, context):
+        from maps.fujimoto.service import STRATEGIES, validate_source
+        if order.strategy_id in STRATEGIES and context.source != "fujimoto":
+            raise ExecutionBlockedError("fujimoto_source_required")
+        if context.source == "fujimoto":
+            validate_source(db, order, context, self._settings)
+            return None
         if context.source == "analysis_pick":
             from maps.ops.pick_freshness import is_pick_stale, pick_cutoff_date
             pick = db.get(AnalysisPick, context.source_id)
@@ -155,6 +161,12 @@ class OrderManager:
             if snapshot is None:
                 raise ExecutionBlockedError("position_snapshot_unavailable")
             validation_id = self._entry_policy(db, order, context) if order.side == OrderSide.BUY else None
+            approval_id = None
+            if context.source == "fujimoto" or order.strategy_id.startswith("fujimoto_"):
+                from maps.fujimoto.service import validate_source
+                if context.source != "fujimoto":
+                    raise ExecutionBlockedError("fujimoto_source_required")
+                approval_id = validate_source(db, order, context, self._settings)
             pending = db.query(OrderIntent).filter(OrderIntent.account_key == key, OrderIntent.status.in_(ACTIVE)).all()
             if any(i.ticker == order.ticker and i.id != getattr(existing, "id", None)
                     and i.status in ("SENDING", "UNKNOWN") for i in pending):
@@ -182,12 +194,16 @@ class OrderManager:
                 extra = sum((i.reserved_amount for i in pending if i.side == "buy"
                     and i.id != getattr(existing, "id", None)
                     and (not i.broker_order_id or raw_broker_order_id(i.broker_order_id) not in open_ids)), Decimal(0))
+                from maps.fujimoto.service import unbound_reservations
+                unbound = unbound_reservations(db, key, exclude_event=context.event_key)
+                extra += sum((money(p.order_price) * p.remaining_quantity for p in unbound), Decimal(0))
                 if money(order.quantity) * bound > money(power.amount) - extra:
                     raise ExecutionBlockedError("cash_reserved")
                 state = db.get(ExecutionAccountState, key)
                 self._risk._db.expire_all()
                 risk_order = replace(order, limit_price=float(bound), current_price=float(bound))
                 risk_pending = list(opens)
+                risk_pending.extend(unbound)
                 for pending_intent in pending:
                     if (pending_intent.side == "buy" and pending_intent.id != getattr(existing, "id", None)
                             and (not pending_intent.broker_order_id or raw_broker_order_id(pending_intent.broker_order_id) not in open_ids)):
@@ -227,6 +243,7 @@ class OrderManager:
                     "code_hash": code_hash, "params_hash": params_hash,
                     "current_price": order.current_price, "price_bound": str(bound),
                     "source": context.source, "source_id": context.source_id,
+                    "fujimoto_approval_id": approval_id,
                     "exit_reason": exit_reason, "atr14": order.atr14, "decision_context": order.decision_context},
                 validation_run_id=validation_id, valid_until=expires, created_at=now, updated_at=now,
                 reserved_amount=money(order.quantity) * bound if order.side == OrderSide.BUY else 0,
@@ -303,6 +320,11 @@ class OrderManager:
             return result
 
     def _owned_quantity(self, db, key, order, context):
+        if context.source == "fujimoto":
+            from maps.fujimoto.service import validate_source
+            from maps.fujimoto.repository import FujimotoRepository
+            validate_source(db, order, context, self._settings)
+            return FujimotoRepository(db).state(context.source_id).quantity
         if context.source == "catalog":
             entry = db.get(OrderLog, context.source_id)
             if (entry is None or entry.account_key != key or entry.ticker != order.ticker

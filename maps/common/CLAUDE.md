@@ -185,3 +185,12 @@ Configs/evidence/fill observations are immutable history; cycle/order rows are r
 fill projections. Numeric cumulative gross/fees/tax preserve accounting. Configs are
 account/owner/mode/version scoped; cycles freeze their inception allocation. No backfill
 or adoption of existing holdings. See ../fujimoto/CLAUDE.md for transaction contracts.
+
+## Fujimoto runtime settings
+
+Default `maps_fujimoto_enabled=False`, screen time 22:00, annual collection batch
+20, shared feed capacity 40 channel slots, quote cap 100000/account, candidate cap
+10000 total. No default strategy budget or sell consent is inferred. Safe example
+environment values and the explicit recording-limit policy are in
+`maps/fujimoto/CLAUDE.md`. Existing migration 0041 supplies all required tables;
+Task 3 introduces no additional migration.

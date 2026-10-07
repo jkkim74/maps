@@ -625,3 +625,17 @@ API 변경이 재시작에 살아남지 않는 것은 **의도된 안전 방향*
 두 실행 방식은 **동일한 신호 엔진**을 쓴다. 자동을 골라도 실거래 스위치·브로커 연결·
 위험 한도가 준비되지 않으면 fail-closed 로 주문을 막는다. 시세·호가·체결통보가 끊기면
 추천 모드로 완화하지 않고 **신규 주문을 차단**한다.
+
+## Shared Fujimoto observation
+
+The existing KIS runtime/socket also serves Fujimoto when explicitly enabled.
+`upper_enabled` gates all upper-limit scans, index polling, recovery and command
+work; Fujimoto-only observation cannot implicitly turn that strategy on. With no
+Fujimoto consumer, existing upper-limit behavior remains unchanged. FeedQuote adds
+optional total depth, exchange time and received UTC without changing its original
+six positional fields. Capture received UTC before queueing; processing never
+refreshes stale quotes. Reconnect/parse gaps reset Fujimoto continuity.
+A shared channel-slot allocator gives account holdings/pending orders priority over
+new candidates (two channels per ticker and one enabled index). Capacity overflow
+is visible, subscriptions are deduplicated, and dropped symbols unsubscribe.
+No separate live socket or background strategy process is introduced.

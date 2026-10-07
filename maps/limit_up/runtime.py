@@ -268,12 +268,16 @@ class KISIntradayRuntime:
         service: LimitUpService,
         monotonic: Callable[[], float] = time.monotonic,
         wall_now: Callable[[], dt.datetime] | None = None,
+        fujimoto=None,
+        upper_enabled: bool = True,
     ) -> None:
         """Bind one process-local service and its broker/DB resources."""
         self.settings = settings
         self.db = db
         self.adapter = adapter
         self.service = service
+        self.fujimoto = fujimoto
+        self.upper_enabled = upper_enabled
         self.monotonic = monotonic
         self.wall_now = wall_now or (lambda: dt.datetime.now(KST))
         self.deadman = DeadmanMonitor(settings.maps_limit_up_healthchecks_ping_url)
@@ -374,9 +378,12 @@ class KISIntradayRuntime:
             # 복구 조회는 KIS 가 느려도 끝까지 기다린다 — 여기서 실패하면 엔진이 안 뜬다
             # (2026-09-23 12:23, 8초 timeout 3회로 기동 실패 → 재시도로 2분 뒤 기동).
             with patient_reads():
-                self.service.recover(
-                    ref_date=now.date(), now_monotonic=now_monotonic, now_kst=now,
-                )
+                if self.upper_enabled:
+                    self.service.recover(
+                        ref_date=now.date(), now_monotonic=now_monotonic, now_kst=now,
+                    )
+                if self.fujimoto:
+                    self.fujimoto.tick(now=now)
 
         # 펌프가 아직 없으므로 큐에 넣으면 영원히 대기한다. 이 시점에는 경합할 상대도
         # 없으니 직접 스레드로 돌린다.
@@ -436,6 +443,8 @@ class KISIntradayRuntime:
 
     async def scan_once(self) -> int:
         """Discover broker candidates and subscribe newly accepted common shares."""
+        if not self.upper_enabled:
+            return 0
         now = self.wall_now()
         if not dt.time(9, 10) <= now.time().replace(tzinfo=None) <= dt.time(14, 30):
             return 0
@@ -536,7 +545,7 @@ class KISIntradayRuntime:
         """
         at = self.monotonic() if received_at is None else received_at
         now = self.wall_now()
-        for event in parse_kis_ws_message(raw, received_at=at):
+        for event in parse_kis_ws_message(raw, received_at=at, received_utc=now):
             self._apply_feed_event(event, now)
         return 1 if raw else 0
 
@@ -551,13 +560,16 @@ class KISIntradayRuntime:
         loop does not need to wait; it only needs to hand work over.
         """
         at = self.monotonic() if received_at is None else received_at
+        received_utc = self.wall_now()
         try:
-            events = parse_kis_ws_message(raw, received_at=at)
+            events = parse_kis_ws_message(raw, received_at=at, received_utc=received_utc)
         except ValueError:
             # 형식이 바뀐 프레임 하나와 죽은 소켓은 다른 사건이다. 같은 핸들러로 보내면
             # 파싱 실패가 피드 끊김으로 오인돼 진입이 래치되고, 재연결→같은 프레임→
             # 다시 실패의 무한 루프가 된다.
             logger.exception("상한가 실시간 프레임 파싱 실패 — 이 프레임만 버린다")
+            if self.fujimoto:
+                await self._call_service(self.fujimoto.feed.reset, "parse_gap", priority=_PRIORITY_HIGH)
             return 0
         if raw.startswith("{") and _INDEX_TR_ID in raw:
             # 구독 응답(성공/오류). 모의 서버의 지수 TR 지원 여부를 로그로 판정한다.
@@ -565,7 +577,8 @@ class KISIntradayRuntime:
         now = self.wall_now()
         for event in events:
             if isinstance(event, FeedIndex):
-                self._on_ws_index(event, now)
+                if self.upper_enabled:
+                    self._on_ws_index(event, now)
                 continue
             task = asyncio.ensure_future(
                 self._call_service(self._apply_feed_event, event, now)
@@ -584,14 +597,20 @@ class KISIntradayRuntime:
     def _apply_feed_event(self, event: Any, now: dt.datetime) -> None:
         """Apply one normalized feed event to the state machine."""
         if isinstance(event, FeedTrade):
-            self.service.on_trade(event, now_kst=now)
+            if self.upper_enabled:
+                self.service.on_trade(event, now_kst=now)
         else:
             self._quotes[event.ticker] = event
-            self.service.on_quote(event, now_kst=now)
+            if self.upper_enabled:
+                self.service.on_quote(event, now_kst=now)
+            if self.fujimoto:
+                self.fujimoto.on_quote(event, now=self.wall_now())
 
     async def fallback_once(self) -> None:
         """Poll held prices only after feed loss and apply protection-only events."""
         if self._feed_connected:
+            return
+        if not self.upper_enabled:
             return
         now_mono = self.monotonic()
         delay = self._fallback_limiter.delay(now=now_mono)
@@ -632,6 +651,15 @@ class KISIntradayRuntime:
                 await asyncio.sleep(_IDLE_SLEEP_SECONDS)
                 continue
             try:
+                if self.fujimoto:
+                    await self._call_service(self.fujimoto.tick, now=wall, priority=_PRIORITY_HIGH)
+                    if now_mono - self._last_scan_at >= 5.0:
+                        await self._subscription_queue.put("*")
+                        if not self.upper_enabled:
+                            self._last_scan_at = now_mono
+                if not self.upper_enabled:
+                    await asyncio.sleep(1)
+                    continue
                 await self._call_service(
                     self.service.tick,
                     now_monotonic=now_mono,
@@ -708,18 +736,22 @@ class KISIntradayRuntime:
                     self._subscribed.clear()
                     self._feed_connected = True
                     backoff = 1.0
-                    await self._call_service(
-                        self.service.on_feed_reconnect, priority=_PRIORITY_HIGH
-                    )
-                    for ticker in self.service.watched_tickers():
-                        await self._subscribe(socket, approval, ticker)
-                    if self.settings.maps_limit_up_index_ws_enabled:
+                    if self.upper_enabled:
+                        await self._call_service(
+                            self.service.on_feed_reconnect, priority=_PRIORITY_HIGH
+                        )
+                    if self.fujimoto:
+                        await self._call_service(self.fujimoto.feed.reset, "reconnect", priority=_PRIORITY_HIGH)
+                    await self._refresh_subscriptions(socket, approval)
+                    if self.upper_enabled and self.settings.maps_limit_up_index_ws_enabled:
                         await self._subscribe_index(socket, approval)
                     await self._serve_socket(socket, approval)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - disconnect is a strategy event
-                if self._feed_connected:
+                if self.fujimoto:
+                    await self._call_service(self.fujimoto.feed.reset, "disconnect", priority=_PRIORITY_HIGH)
+                if self._feed_connected and self.upper_enabled:
                     await self._call_service(
                         self.service.on_feed_disconnect,
                         at=self.monotonic(),
@@ -765,7 +797,41 @@ class KISIntradayRuntime:
                 else:
                     await self.dispatch_message_async(raw)
             if subscribe in done:
-                await self._subscribe(socket, approval, str(subscribe.result()))
+                if self.fujimoto:
+                    await self._refresh_subscriptions(socket, approval)
+                else:
+                    await self._subscribe(socket, approval, str(subscribe.result()))
+
+    def _allocated_tickers(self) -> tuple:
+        """Shared allocator runs on the serialized database worker."""
+        if not self.fujimoto:
+            return tuple(self.service.watched_tickers()), ()
+        from maps.fujimoto.feed import allocate_subscriptions
+        held, pending, candidates = self.fujimoto.subscriptions()
+        upper_held = self.service.held_tickers() if self.upper_enabled else []
+        upper_watched = self.service.watched_tickers() if self.upper_enabled else []
+        index_slots = int(self.upper_enabled and self.settings.maps_limit_up_index_ws_enabled)
+        capacity = max(0, (self.settings.maps_shared_feed_capacity - index_slots) // 2)
+        selected, blocked = allocate_subscriptions(capacity,
+            [*upper_held, *held], pending, [*upper_watched, *candidates])
+        return selected, blocked
+
+    async def _refresh_subscriptions(self, socket: Any, approval: str) -> None:
+        """Evict lower-priority watches before subscribing newly owned/pending shares."""
+        selected, blocked = await self._call_service(self._allocated_tickers, priority=_PRIORITY_HIGH)
+        for ticker in self._subscribed - set(selected):
+            if ticker.startswith("index:"):
+                continue
+            for tr_id in (_TRADE_TR_ID, _QUOTE_TR_ID):
+                payload = json.loads(subscription_payload(approval, tr_id, ticker))
+                payload["header"]["tr_type"] = "2"
+                await socket.send(json.dumps(payload))
+            self._subscribed.remove(ticker)
+        for ticker in selected:
+            await self._subscribe(socket, approval, ticker)
+        if blocked and self.fujimoto:
+            await self._call_service(self.fujimoto._blocked,
+                self.fujimoto.feed.key, "*", "subscription_capacity:" + ",".join(blocked), self.wall_now())
 
     async def _subscribe(self, socket: Any, approval: str, ticker: str) -> None:
         """Subscribe one ticker exactly once per live process connection."""

@@ -20,6 +20,7 @@ api/
 ├── dashboard.py           # SCR-01 대시보드
 ├── data_quality.py        # SCR-14 유니버스 품질 로그
 ├── limit_up.py            # 상한가 V1 상태 조회·비상정지·설정 (관리자)
+├── fujimoto.py            # 관리자·계좌 소유자 한정 예산/관찰/활성화/근거/정산
 ├── live_monitor.py        # SCR-13 계좌·포지션·주문 상태
 ├── market.py              # SCR-03 장세/팩터 분석 — market_regime_log 최근 행 우선, 없으면 실시간 계산
 ├── mobile.py              # 모바일 앱 축약 응답
@@ -151,3 +152,16 @@ maps.ops.scheduler    → get_operational_scheduler()
 maps.risk.manager     → RiskManager
 (각 도메인 패키지)
 ```
+
+## Fujimoto operator API
+
+`fujimoto.py` exposes `/api/v1/fujimoto`: GET status/candidates/evidence/validation
+and cycles/{id}; PUT config; POST observe/stop/activate/comparability and
+orders/{id}/costs. All require administrator role AND the explicit configured
+account owner. No account-key override is accepted. Cycle/order IDs are scoped.
+Read views use persisted state and never contact the broker. Central Pydantic
+schemas reject nonfinite money and invalid action inputs. Dashboard `/fujimoto`
+hydrates saved budget/book selection once and after writes, preserving draft input.
+State/reasons are Korean labels; raw evidence is folded, costs can be provisional.
+Activation is a measured service operation, never an API override of promotion.
+Source and settlement payload contracts: `maps/fujimoto/CLAUDE.md`.

@@ -1,7 +1,8 @@
 # fujimoto/
 
 Fujimoto-inspired causal research, durable mode-owned cycles and shared pure decisions.
-This package submits no broker orders, activates no trading and adopts no holdings.
+The guarded runtime routes orders only through OrderManager. Default is off/observe,
+without dedicated budget; no existing broker holding is adopted.
 
 ## Directory structure
 
@@ -13,6 +14,9 @@ fujimoto/
 ├── domain.py      # Mode, fill-derived CycleState, RuleEvidence, Decision, evaluate
 ├── repository.py  # Immutable evidence/configs, reservations, cumulative fills, sizing
 ├── replay.py      # Two-mode stateful replay and actual quote continuity
+├── sources.py     # Bounded DART annual collection, provenance review, market screening
+├── feed.py        # Actual arrival tape, continuity, recording/subscription bounds
+├── service.py     # Account-locked controls, source ownership, reconciliation and costs
 └── validation.py  # Measured WFA/plateau/MC, standard components, combined gate
 ```
 
@@ -167,4 +171,111 @@ require the manifest variant and limit to match the configuration and account ga
 
 No historical source coverage or profitability has been measured. stress_losses
 reports uncapped 68%/total-loss/halts/three-lower-limit scenario exposure; stops are
-not loss guarantees. API/feed/order activation is the next integration task.
+not loss guarantees. The guarded operational path is described below.
+
+## Operational flow and defaults
+
+`sources.AnnualCollector.collect` uses the existing paced DART client and receipt /
+revision repository, visiting the least recently checked ordinary KOSPI/KOSDAQ
+stocks (20 per scheduled run, at most 500 requests/900 seconds). The existing
+after-close collection job records actual current universe eligibility; nightly
+`fujimoto_screen` builds sector-relative PER, causal annual/quarterly inputs and
+daily/weekly indicators for that observed universe, then ranks by 20-day turnover.
+Missing data remains a visible blocked candidate. No historical universe is inferred
+from current metadata. Annual cash DPS requires the exact common-share row, fiscal
+period and receipt. This does NOT prove split/issuance comparability: an administrator
+must supply three recorded annual receipts, an actual HTTPS source, SHA256 and
+substantive unit-comparability rationale through POST `/api/v1/fujimoto/comparability`.
+The review stores source IDs, periods, reviewer and current observation time. It is
+usable from the next KRX session and cannot create historical research coverage.
+
+Safe environment placeholders (no credentials or implicit money):
+
+```dotenv
+MAPS_BROKER_MODE=mock
+MAPS_LIVE_TRADING_ENABLED=false
+MAPS_DRY_RUN=true
+MAPS_FUJIMOTO_ENABLED=false
+MAPS_FUJIMOTO_SCREEN_TIME=22:00
+MAPS_FUJIMOTO_COLLECT_BATCH=20
+MAPS_SHARED_FEED_CAPACITY=40
+MAPS_FUJIMOTO_TAPE_ROWS=100000
+MAPS_FUJIMOTO_CANDIDATE_ROWS=10000
+```
+
+Real-time observation requires the existing KIS connection. Shared lifespan starts
+when either Fujimoto or upper-limit collection is enabled; enabling Fujimoto alone
+does not start upper-limit scans/orders. The 40 capacity units are channel slots:
+two per ticker, plus one for the upper-limit index when enabled. All account held /
+pending tickers precede candidates. Overflow is recorded; no second socket is opened.
+Received UTC is captured before queueing. Missing/old/out-of-order/exchange-clock
+gaps and reconnects reset the continuous imbalance timer. Book exits additionally
+require confirmed net profitability and 30 seconds of actual depth observations.
+
+`FujimotoService.configure(key,owner,budget,deposit=0,with_orderbook=True)` splits
+explicit dedication equally; cycles retain inception budgets. Configuration stops
+new entries. `stop`/`observe` persist a separate switch even with pending orders and
+retain prior owned-position exit consent. `activate(... execution_mode, replay_id,
+sell_consent)` requires owner, correct broker environment, explicit consent only for
+new Fujimoto acquisitions, both existing promotions and current measured combined
+validation. Paper uses existing mock_candidate-or-later stage and current mock gates
+(60 score; only live track-record requirement excluded). Live retains the existing
+live eligibility gate. Neither path manufactures promotion history.
+
+Activation replays outside the account lock; immediately under the lock, and again
+before each BUY, it checks immutable replay fingerprint, current code, config IDs,
+account budget/limits/cost parameters, variant, standard evidence freshness and both
+promotion bindings. The entry path does not load/replay the large research payload.
+Runtime costs are fee .00015, tax .002, slippage .001; cash floor is the maximum of
+32.5% and all configured regime floors (default 35%, conservative for all regimes).
+Research export binds these values; a mismatched exploratory report cannot activate.
+`RuleEvidence.atr14` is derived from the same completed, cutoff-sliced daily bars.
+Runtime and replay pass it to shared sizing; reservation preserves the planned
+ATR stop rather than replacing it with the fixed-percent fallback. Subsequent
+reservations/fills cannot lower the existing safe stop. Absent ATR retains the
+existing fixed 8% fallback; original mode intentionally has no price stop.
+
+Reservation commits before OrderManager's own session and broker send. Context is
+`source="fujimoto"`, `source_id=cycle.id`, `event_key="fujimoto:<reservation id>"`.
+Entry AND exit verify account/mode/ticker/quantity/limit and intent linkage. All
+account holdings, broker opens, intents and unbound reservations count once in
+sizing. Existing classification and account guards still apply. Recovery binds an
+exact committed intent; SENDING/UNKNOWN is never resent. A no-intent reservation can
+expire without assuming any fill. Cancellation retains reservations until a broker
+terminal observation. Zero-filled expired cycles free watch slots, not capital.
+
+Reconciliation separates terminal quantity truth from cost completeness. Unknown
+fee/tax values are retained as null evidence, distinct from known zero. Approved,
+quantity-confirmed shares can exit for stop/financial/technical rules while costs
+are provisional. Missing costs block new/additional BUY and net-profit book exits.
+`settle_costs` / POST `/orders/{id}/costs` requires exact broker order ID, source URL
+and document hash. A late BUY cost-only increase after SELL-only activity allocates
+remaining/realized cost by original post-buy quantity, with an audit fill. Changed
+gross/quantity, later BUY or other ambiguity still requires audited reconstruction;
+no ownership/cost guess is made. The dashboard labels unsettled cost/P&L provisional.
+
+## Recording ceiling and research
+
+Actual quote rows are capped at 100,000 per account (configurable up to 1,000,000).
+Candidate snapshots are zlib/base64 compressed, capped at 10,000 total (up to
+100,000). Prices are bounded to 900 calendar days per snapshot. Before a market-wide
+screen, enough remaining candidate capacity for the whole universe is required.
+The defaults are a deliberately small recording pilot, not months of full-market
+history: quote capacity may fill intraday and candidate capacity within days.
+Unchanged decisions/blocks are deduplicated. On capacity exhaustion the feed records
+an evidence gap and disables imbalance duration; fresh protective bids still work.
+Exported gaps make validation insufficient. Nothing automatically deletes immutable
+evidence or a validation reference. Monitor DB bytes and disk free space before
+raising limits; row ceilings are not a fixed byte guarantee. There is no automatic
+archive/compaction or retention deletion workflow; export and retain all referenced
+evidence before any separately audited storage migration. A complete long-running
+dataset and storage plan remain prerequisites for promotion, not deployment defaults.
+
+`scripts/fujimoto_research.py --demo --output report.json` is offline and explicitly
+grants no execution permission. `--export --database URL --account-key HASH --budget
+AMOUNT --output observations.json` reads recorded snapshots/tape only. Then `--input
+observations.json --output report.json` runs the shared research; optional `--persist
+--database URL --account-key HASH` stores replay/validation only. Select the same
+`--without-orderbook` and `--account-mdd-limit` as the intended configuration.
+No CLI path promotes, activates, adopts holdings or sends orders. Use an explicitly
+isolated database and mock settings for development.

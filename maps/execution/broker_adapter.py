@@ -116,6 +116,9 @@ class OrderResult:
     quantity: int | None = None
     order_price: float | None = None
     remaining_quantity: int | None = None
+    cumulative_gross: float | None = None
+    tax: float | None = None
+    costs_complete: bool = False
 
 
 @dataclass(frozen=True)

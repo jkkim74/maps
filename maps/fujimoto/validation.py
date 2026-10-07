@@ -103,6 +103,8 @@ def validation(repository: FujimotoRepository, replay_id: int, *, account_mdd_li
     if fingerprint(report) != fingerprint(stored.payload["report"]):
         raise DataQualityError("replay_result_or_code_mismatch")
     reasons, failures, metrics = set(), set(), {}
+    if data.provenance.get("coverage_gaps"):
+        reasons.add("recorded_coverage_gap")
     variant = "with_orderbook" if with_orderbook else "without_orderbook"
     operational = report["variants"][variant]
     if not data.tape:

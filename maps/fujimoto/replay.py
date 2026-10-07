@@ -106,7 +106,8 @@ def code_fingerprint() -> str:
     """Fingerprint all shared rule/accounting code used by this research runner."""
     root = Path(__file__).parent
     return fingerprint({name: (root / name).read_text(encoding="utf-8")
-                        for name in ("domain.py", "evidence.py", "indicators.py", "repository.py", "replay.py", "validation.py")})
+                        for name in ("domain.py", "evidence.py", "indicators.py", "repository.py", "replay.py", "validation.py",
+                                     "service.py", "feed.py", "sources.py")})
 
 
 def quote_signal(since: datetime | None, last: datetime | None, quote: dict,
@@ -349,7 +350,8 @@ def replay(data: ReplayInput, *, with_orderbook: bool = False, cost_multiplier: 
                     mode_reserved = sum(q * lim * (1 + fee_rate) for k, (_, d, q, lim, _) in pending.items() if k[0] == mode and d.action == "buy")
                     decision = replace(decision, price_cap=round_down_krx_price(decision.price_cap))
                     plan = size_buy(mode, states[key], decision, budgets[key], nav(mode), float(cash[mode]), mode_reserved,
-                                    float(costs[key]), spent.get((key, decision.buy_stage), 0), limits, fee_rate=fee_rate)
+                                    float(costs[key]), spent.get((key, decision.buy_stage), 0), limits,
+                                    atr14=evidence.atr14, fee_rate=fee_rate)
                     qty, stop, limit = plan.quantity, plan.stop_price, decision.price_cap
                 else:
                     qty, stop, limit = decision.sell_quantity, states[key].stop_price, 0

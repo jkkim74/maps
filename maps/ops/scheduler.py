@@ -347,6 +347,13 @@ class OperationalPipeline:
             collector = DataCollector(self._make_krx_adapter(), db)
             result = collector.collect_daily(ref_date)
             self._last_collection = result
+            if self._settings.maps_fujimoto_enabled:
+                from maps.fujimoto.sources import capture_universe
+                securities = self._to_securities(db, result.meta, result, ref_date)
+                adjusted = {r.ticker: r.has_adjusted for r in result.ohlcv}
+                for security in securities:
+                    security.has_adjusted_price = adjusted.get(security.ticker, False)
+                capture_universe(db, securities, ref_date, metadata_quality=result.metadata_quality or {})
             details = {
                 "ref_date": ref_date.isoformat(),
                 "ohlcv_count": len(result.ohlcv),
@@ -1079,6 +1086,18 @@ class OperationalPipeline:
             return JobResult(details, details.get("status", "success"), details.get("reason", "ok"))
 
         return self._job("dart_financial_collection", _run)
+
+    def run_fujimoto_screen(self, ref_date: dt.date | None = None) -> JobRun:
+        """Collect bounded annual coverage, then persist actual all-market screening."""
+        from maps.fujimoto.sources import AnnualCollector, screen_market
+        ref_date = ref_date or dt.datetime.now(ZoneInfo("Asia/Seoul")).date()
+        def _run(db):
+            if not self._settings.maps_fujimoto_enabled:
+                return {"status": "disabled"}
+            collection = AnnualCollector(db, self._settings.dart_api_key).collect(ref_date,
+                batch=self._settings.maps_fujimoto_collect_batch)
+            return {"collection": collection, "screen": screen_market(db, ref_date)}
+        return self._job("fujimoto_screen", _run)
 
     def _job(self, name: str, fn: Callable[[Session], dict | JobResult]) -> JobRun:
         started = dt.datetime.now(dt.timezone.utc)
@@ -4208,6 +4227,7 @@ class MapsOperationalScheduler:
             "eod_cleanup": self._pipeline.run_eod_cleanup,
             "daily_close_report": self._pipeline.run_daily_close_report,
             "dart_financial_collection": self._pipeline.run_dart_financial_collection,
+            "fujimoto_screen": self._pipeline.run_fujimoto_screen,
             "limit_up_after_hours": self._pipeline.run_limit_up_after_hours,
             "limit_up_after_hours_final": lambda: (
                 self._pipeline.run_limit_up_after_hours(final_round=True)
@@ -4241,6 +4261,8 @@ class MapsOperationalScheduler:
 
     def _register_jobs(self) -> None:
         self._add_weekday_job("data_collection", self._settings.maps_data_collection_time)
+        if self._settings.maps_fujimoto_enabled:
+            self._add_weekday_job("fujimoto_screen", self._settings.maps_fujimoto_screen_time)
         self._scheduler.add_job(lambda: self.run_once("classification_check"),
             IntervalTrigger(seconds=60), id="classification_watchdog",
             replace_existing=True, coalesce=True, max_instances=1)

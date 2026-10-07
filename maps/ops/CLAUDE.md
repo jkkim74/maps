@@ -349,3 +349,13 @@ Batch monitor exposes `classification_quality` with latest attempt and last succ
 separately, metrics/provider/timestamps/errors, state and stale flag. Before the current day's
 deadline, freshness compares the previous completed trading day. Disabled collection is
 visible as `disabled` and does not produce theme missed alerts.
+
+## Fujimoto scheduled evidence
+
+When MAPS_FUJIMOTO_ENABLED is true, successful after-close data collection captures
+the actual current universe using DataQualityFilter and actual adjusted-price
+availability. The weekday/KRX-aware `fujimoto_screen` job (default 22:00 KST) runs
+the bounded annual collector then causal full-market screening. `run_once` uses
+the same job. Disabled defaults add no job or source collection. Missing universe,
+annual comparability and capacity remain visible blockers, not historical backfill.
+Controls, storage ceilings and offline research: `maps/fujimoto/CLAUDE.md`.

@@ -4,7 +4,7 @@ from __future__ import annotations
 import datetime as dt
 from decimal import Decimal
 
-from maps.common.exceptions import BrokerAdapterError, ExecutionBlockedError
+from maps.common.exceptions import BrokerAdapterError, ExecutionBlockedError, DataQualityError
 from maps.common.models import (
     AccountAdjustment, AccountObservation, ExecutionAccountState, ExecutionSafetyEvent,
     KillSwitchLog, OrderIntent, OrderLog,
@@ -76,6 +76,9 @@ def apply_result(db, row: OrderLog, result) -> bool:
             intent.reserved_amount = money(intent.request.get("price_bound", 0)) * remaining if intent.side == "buy" else 0
             intent.version += 1
             intent.updated_at = utcnow()
+            if intent.request.get("source") == "fujimoto":
+                from maps.fujimoto.service import apply_broker_result
+                apply_broker_result(db, intent, row, result)
     return bool(changed)
 
 
@@ -142,13 +145,14 @@ def reconcile(db, broker, settings=None):
                     mode="mock" if settings.is_paper_account else "live", order_price=result.order_price)
                 db.add(row)
                 db.flush()
-            updated += apply_result(db, row, result)
+            with db.begin_nested():
+                updated += apply_result(db, row, result)
             if legacy_row is not None and legacy_row.id != row.id:
                 updated += apply_result(db, legacy_row, result)
             seen.add(oid)
             orders[oid] = {"ticker": result.ticker, "side": result.side.value,
                 "qty": result.filled_quantity, "notional": str(money(result.filled_quantity) * money(result.avg_price))}
-        except (ExecutionBlockedError, ValueError) as exc:
+        except (ExecutionBlockedError, DataQualityError, ValueError) as exc:
             reasons.append(getattr(exc, "reason_code", "invalid_order_evidence"))
     db.flush()
     for intent in intents:
@@ -171,6 +175,11 @@ def reconcile(db, broker, settings=None):
             if any(p.quantity < 0 or money(p.market_value) < 0 for p in snapshot.positions.values()):
                 raise ExecutionBlockedError("invalid_position_evidence")
             holdings = {t: {"qty": p.quantity, "value": str(money(p.market_value))} for t, p in snapshot.positions.items()}
+            from maps.fujimoto.repository import FujimotoRepository
+            fujimoto = FujimotoRepository(db)
+            for ticker in {c.ticker for c in fujimoto.cycles(key)}:
+                if fujimoto.owned_quantity(key, ticker) > holdings.get(ticker, {}).get("qty", 0):
+                    reasons.append("fujimoto_ownership_disagreement")
             evidence = {"positions": holdings, "orders": orders, "costs": str(activity.costs),
                 "unsupported": list(activity.unsupported), "adjustment_timing": "end_of_interval"}
             observation = AccountObservation(account_key=key, observed_at=now, ref_date=today,

@@ -45,3 +45,9 @@ pytest --tb=short                         # 배포 전 표준
 
 > ⚠️ Alembic `fileConfig` 가 기존 로거를 비활성화해 **테스트 순서 의존성**이 생긴 적이 있다
 > (2026-08-11). 마이그레이션 관련 테스트를 만질 때는 전체 스위트로 확인한다.
+
+Fujimoto runtime boundary checks are `test_fujimoto_execution`, `feed`, `sources`,
+and `api`; existing rules/evidence/ledger/replay tests cover the shared domain.
+Use `python scripts/run_isolated_tests.py <test paths> -q` to disable dotenv/network
+and isolate DB/locks. Mock activation evidence in the integrated order-flow test
+is explicitly a fixture, never a production gate or profitability claim.

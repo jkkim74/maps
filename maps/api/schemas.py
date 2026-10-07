@@ -12,6 +12,37 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
+class FujimotoConfigRequest(BaseModel):
+    """Explicit account dedication; both strategies receive exactly half."""
+    budget: float = Field(gt=0, allow_inf_nan=False)
+    deposit: float = Field(default=0, allow_inf_nan=False)
+    with_orderbook: bool = True
+
+
+class FujimotoActivationRequest(BaseModel):
+    """Approval applies only to new Fujimoto-owned shares."""
+    execution_mode: Literal["paper", "live"]
+    replay_id: int = Field(gt=0)
+    sell_consent: bool = False
+
+
+class FujimotoComparabilityRequest(BaseModel):
+    """Auditable corporate-action provenance, available only after actual observation."""
+    ticker: str = Field(pattern=r"^\d{6}$")
+    receipts: list[str] = Field(min_length=3, max_length=20)
+    source_url: str = Field(max_length=2000)
+    document_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    explanation: str = Field(min_length=20, max_length=4000)
+
+
+class FujimotoCostRequest(BaseModel):
+    """Exact order-specific actual cumulative amounts, never daily allocations."""
+    gross: float = Field(ge=0, allow_inf_nan=False)
+    fees: float = Field(ge=0, allow_inf_nan=False)
+    tax: float = Field(ge=0, allow_inf_nan=False)
+    evidence: dict
+
+
 class SafetyResolutionRequest(BaseModel):
     version: int = Field(ge=1)
     reason: str = Field(min_length=8, max_length=1000)

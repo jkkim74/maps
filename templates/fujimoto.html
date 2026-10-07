@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block extra_head %}
+<style>
+.fj-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}.fj-panel{background:var(--bg-card,#fff);border:1px solid var(--border,#ddd);border-radius:10px;padding:24px;margin-bottom:20px}.fj-panel h2{font-size:19px;margin:0 0 16px}.fj-label{color:#b0b9cc;font-size:13px}.fj-stat{font-size:26px;margin:7px 0 20px}.fj-warn{padding:14px 18px;background:#fff4dc;color:#694c16;border-left:4px solid #c99636;margin-bottom:20px;line-height:1.7}.fj-panel label{display:block;margin:12px 0 5px}.fj-panel input,.fj-panel select,.fj-panel button{padding:9px;border:1px solid #a8b5ae;border-radius:5px}.fj-panel button{background:#173e34;color:white;cursor:pointer;margin:12px 8px 0 0}.fj-panel table{width:100%;border-collapse:collapse;font-size:13px}.fj-panel th,.fj-panel td{padding:10px 6px;text-align:left;border-bottom:1px solid #dce3de}.fj-panel pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:300px;overflow:auto;font-size:12px}.fj-muted{color:#b0b9cc}.fj-inline{display:flex;gap:24px}.fj-panel .fj-danger{background:#842f2b}#fj-message{white-space:pre-wrap;margin:12px 0;color:var(--color-fail)}
+</style>
+{% endblock %}
+{% block content %}
+<div style="margin-bottom:24px"><p class="fj-label">MAPS · 검증 우선 분할매매</p><h1 style="margin:8px 0">후지모토 전략 운영</h1><p class="fj-muted">동일 계좌, 독립된 두 원장. 실제 체결로만 차수가 진행됩니다.</p></div>
+<div id="fj-message" role="status" aria-live="polite"></div>
+<div class="fj-warn" id="fj-status">저장된 운영 상태를 불러오는 중입니다.</div>
+<div class="fj-grid" id="fj-modes"></div>
+<div class="fj-grid">
+<section class="fj-panel"><h2>예산 · 신규 진입 제어</h2>
+<p class="fj-label">전용 예산을 50:50으로 배분합니다. 초기 예산은 자동 설정되지 않습니다.</p>
+<form id="fj-config"><label for="fj-budget">전용 총예산 (원)</label><input id="fj-budget" type="number" min="1" required placeholder="운영자가 지정한 금액">
+<label for="fj-deposit">이전 예산 대비 입출금 (원)</label><input id="fj-deposit" type="number" value="0">
+<label><input id="fj-book" type="checkbox" checked> 기록된 호가 익절 사용 (별도 표본 검증 필요)</label>
+<button type="submit">예산 저장 · 신규 진입 중지</button></form>
+<button id="fj-stop" class="fj-danger">신규 진입 중지</button><button id="fj-refresh">새로고침</button>
+<p class="fj-label">중지 후에도 미체결 예약과 승인된 전략 보유분의 청산 규칙은 유지됩니다.</p></section>
+<section class="fj-panel"><h2>모의 · 실거래 활성화</h2><p class="fj-label">두 전략의 기존 승격 조건과 현재 계좌·비용·코드·데이터 합산 검증이 모두 필요합니다.</p>
+<form id="fj-activate"><label for="fj-mode">대상 환경</label><select id="fj-mode"><option value="paper">모의 계좌</option><option value="live">실거래 계좌</option></select>
+<label for="fj-replay">측정 리플레이 근거 ID</label><input id="fj-replay" type="number" min="1" required>
+<label><input id="fj-consent" type="checkbox" required> 이 전략이 새로 취득한 수량에 한해 명시된 자동 청산 규칙을 승인합니다.</label>
+<button type="submit">현재 근거 검증 · 활성화</button></form><p class="fj-label">기존 계좌 보유분은 편입되지 않습니다. 실거래 계좌를 모의 모드로 사용하는 것은 차단됩니다.</p></section></div>
+<section class="fj-panel"><h2>사이클 · 차수 · 소유 수량</h2><div id="fj-cycles"></div></section>
+<div class="fj-grid"><section class="fj-panel"><h2>시장 전체 선별 · 데이터 범위</h2><div id="fj-screen"></div><h3>최근 후보 근거</h3><div id="fj-candidates"></div></section>
+<section class="fj-panel"><h2>검증 · 피드 품질</h2><div id="fj-quality"></div><div id="fj-validation"></div><p class="fj-label">호가 공백·재연결·지연은 30초 연속성을 초기화합니다. 비용 미확정은 신규 매수와 호가 익절을 차단하며 원가·손익을 잠정 표시합니다.</p></section></div>
+<section class="fj-panel"><h2>근거 · 차단 이력</h2><p class="fj-label">공시 원문과 비교 가능한 주식 단위 검토가 없으면 연간 배당 조건은 미검증입니다. 실제 공시 출처, 문서 해시, 대상 연도와 주식 단위 검토 근거를 준비하세요. 확인된 근거는 기록 이후 다음 거래일부터 사용할 수 있습니다.</p><div id="fj-evidence"></div></section>
+<script>
+(() => {
+const $=id=>document.getElementById(id), base='/api/v1/fujimoto';
+const esc=s=>String(s??'—').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let syncForm=true;
+const labels={observe:'관찰',paper:'모의',live:'실거래',safe:'안전형',original:'원문 기반형',confirmed:'확정',provisional_costs_missing:'비용 미확정',account_not_reconciled:'계좌 대조 전',dedicated_budget_required:'전용 예산 미지정',new_entries_stopped:'신규 진입 중지',fujimoto_runtime_disabled:'실시간 수집 꺼짐',screening_coverage_missing:'선별 근거 수집 전',actual_order_costs_unresolved:'실제 주문 비용 확인 필요',no_recorded_feed:'호가 기록 없음',tape_capacity_exhausted:'호가 기록 용량 도달',candidate_capacity_exhausted:'후보 기록 용량 도달',missing_observed_universe:'해당 거래일 종목 목록 없음',reconnect:'재연결 · 연속성 재확인',disconnect:'연결 끊김',COMPLETE:'측정 완료',INSUFFICIENT:'검증 부족',with_orderbook:'사용',without_orderbook:'미사용',candidate:'후보',control:'운영 제어',quote:'호가',screen:'전 시장 선별',annual_source:'연간 공시',comparability:'주식 단위 검토',order_cost:'실제 비용',decision:'판단',block:'차단',feed_quality:'피드 품질',replay:'리플레이',universe:'시장 종목 목록'};
+const label=s=>labels[s]||'근거 확인 필요';
+const detail=o=>'<details><summary>원본 근거 보기</summary><pre>'+esc(JSON.stringify(o,null,2))+'</pre></details>';
+const won=n=>n==null?'미지정':Number(n).toLocaleString('ko-KR')+'원';
+async function call(path,method='GET',body){const r=await fetch(base+path,{method,headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});const data=await r.json();if(!r.ok)throw new Error(typeof data.detail==='string'?data.detail:JSON.stringify(data.detail));return data;}
+const table=(headers,rows)=>rows.length?'<table><thead><tr>'+headers.map(h=>'<th>'+esc(h)+'</th>').join('')+'</tr></thead><tbody>'+rows.map(r=>'<tr>'+r.map(c=>'<td>'+esc(c)+'</td>').join('')+'</tr>').join('')+'</tbody></table>':'<p class="fj-muted">아직 기록된 데이터가 없습니다.</p>';
+async function load(){try{const [s,c,v,e]=await Promise.all([call('/status'),call('/candidates?limit=15'),call('/validation'),call('/evidence?limit=15')]);
+$('fj-status').textContent='운영: '+label(s.control.execution_mode)+' · 신규 진입: '+(s.control.entries_enabled?'허용':'중지')+' | '+s.block_reasons.map(label).join(' · ');
+if(syncForm){$('fj-budget').value=s.modes[0].budget==null?'':s.modes.reduce((n,m)=>n+(m.budget||0),0);$('fj-book').checked=s.modes[0].settings.with_orderbook;$('fj-deposit').value=0;syncForm=false;}
+$('fj-modes').innerHTML=s.modes.map(m=>'<section class="fj-panel"><h2>'+(m.mode==='safe'?'안전형':'원문 기반 · 계좌 한도 적용형')+'</h2><p class="fj-label">'+(m.mode==='safe'?'반전 확인 후 추가 매수 · 가격 손절 8% / ATR × 3':'실적 유지 시 하락 추가 매수 · 가격 손절 없음')+'</p><div class="fj-stat">'+won(m.budget)+'</div><div class="fj-inline"><div>현금<br><strong>'+won(m.cash)+'</strong></div><div>예약 현금<br><strong>'+won(m.reserved_cash)+'</strong></div></div></section>').join('');
+$('fj-cycles').innerHTML=table(['ID','모드','종목','매수 차수','소유 수량','예약','원가','실현손익','정산'],s.modes.flatMap(m=>m.cycles.map(c=>[c.id,label(c.mode),c.ticker,c.state.buy_stage,c.state.quantity,c.state.pending_order?'미해결':'없음',won(c.cost_basis),won(c.realized_pnl),label(c.accounting)])));
+$('fj-screen').innerHTML=s.screen?esc('기준일 '+s.screen.ref_date+' · 선별 '+(s.screen.screened||0)+'종목 · 통과 '+s.screen.selected+'종목'+(s.screen.reason?' · '+label(s.screen.reason):''))+detail(s.screen):'전 시장 선별 근거 없음. 장마감 데이터 수집과 후지모토 선별 작업을 확인하세요.';
+$('fj-candidates').innerHTML=table(['종목','기준일','선별','차단 사유'],c.map(r=>[r.ticker,r.payload.ref_date,r.payload.rule?.selection_passed?'통과':'대기',(r.payload.rule?.blocking_reasons||[]).map(label).join(', ')]));
+$('fj-quality').innerHTML='<p>'+esc(label(s.feed_quality.reason))+'</p><p class="fj-label">기록 한도: 호가 '+s.storage_limits.quote_rows.toLocaleString()+'건 · 후보 '+s.storage_limits.candidate_rows.toLocaleString()+'건</p>'+detail({blocks:s.block_reasons,feed:s.feed_quality,costs:s.unresolved_cost_orders});
+$('fj-validation').innerHTML=table(['전략','실행일','상태','호가 조건'],v.map(r=>[r.strategy_id,r.run_date,label(r.status),label(r.manifest.variant)]));
+$('fj-evidence').innerHTML=table(['ID','종류','종목','관측 시각','근거'],e.map(r=>[r.id,label(r.kind),r.ticker,r.observed_at,r.payload.reason?label(r.payload.reason):'원본 근거 참조']))+detail(e);
+}catch(err){$('fj-message').style.color='var(--color-fail)';$('fj-message').textContent=err.message;}}
+async function change(path,method,body){$('fj-message').textContent='처리 중…';try{await call(path,method,body);$('fj-message').style.color='var(--color-pass)';$('fj-message').textContent='저장되었습니다.';syncForm=true;await load();}catch(err){$('fj-message').style.color='var(--color-fail)';$('fj-message').textContent=err.message;}}
+$('fj-config').onsubmit=e=>{e.preventDefault();change('/config','PUT',{budget:Number($('fj-budget').value),deposit:Number($('fj-deposit').value),with_orderbook:$('fj-book').checked});};
+$('fj-activate').onsubmit=e=>{e.preventDefault();change('/activate','POST',{execution_mode:$('fj-mode').value,replay_id:Number($('fj-replay').value),sell_consent:$('fj-consent').checked});};
+$('fj-stop').onclick=()=>change('/stop','POST');$('fj-refresh').onclick=load;load();
+})();
+</script>
+{% endblock %}

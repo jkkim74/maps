@@ -65,3 +65,15 @@
 >
 > ⚠️ 예외 메시지에 연결 문자열이 섞여 로그에 남은 적이 있다(2026-08-11). 자격증명이 찍힐
 > 수 있는 출력은 `redact_stream_secrets.py` 를 거치게 한다.
+
+## Fujimoto offline research
+
+`fujimoto_research.py --demo --output report.json` writes an intentionally
+insufficient offline report without DB/broker access. `--export --database URL
+--account-key HASH --budget AMOUNT --output observations.json` reads only recorded
+source/screen/tape snapshots; it never rebuilds history from current metadata.
+`--input observations.json --output report.json` replays both variants. Explicit
+`--persist --database URL --account-key HASH` stores replay/validation only; choose
+`--without-orderbook` and `--account-mdd-limit` consistently with runtime config.
+No promotion, activation or order path exists. Use an isolated DB for development;
+real coverage and measured performance are not supplied by the demo.

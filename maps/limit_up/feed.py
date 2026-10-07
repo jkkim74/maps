@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from collections import defaultdict, deque
 from dataclasses import dataclass
+from datetime import datetime, timezone, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +77,11 @@ class FeedQuote:
     best_bid_price: int
     best_bid_qty: int
     received_at: float
+    total_ask_qty: int | None = None
+    total_bid_qty: int | None = None
+    received_utc: datetime | None = None
+    exchange_at: datetime | None = None
+    gap: bool = False
 
 
 @dataclass(frozen=True)
@@ -97,7 +103,7 @@ class TapeSnapshot:
 
 
 def parse_kis_ws_message(
-    raw: str, *, received_at: float
+    raw: str, *, received_at: float, received_utc: datetime | None = None
 ) -> list[FeedTrade | FeedQuote | FeedIndex]:
     """Parse unencrypted H0STCNT0/H0STASP0/H0UPCNT0 rows and ignore control JSON."""
     if not raw.startswith("0|"):
@@ -137,6 +143,7 @@ def parse_kis_ws_message(
             tr_id, width, len(columns), width - len(columns), values[len(columns):width],
         )
     records: list[FeedTrade | FeedQuote | FeedIndex] = []
+    received_utc = received_utc or datetime.now(timezone.utc)
     for offset in range(0, len(values), width):
         row = dict(zip(columns, values[offset:offset + len(columns)], strict=True))
         if tr_id == "H0UPCNT0":
@@ -167,9 +174,23 @@ def parse_kis_ws_message(
                     best_bid_price=_as_int(row["BIDP1"]),
                     best_bid_qty=_as_int(row["BIDP_RSQN1"]),
                     received_at=received_at,
+                    total_ask_qty=_as_int(row["TOTAL_ASKP_RSQN"]),
+                    total_bid_qty=_as_int(row["TOTAL_BIDP_RSQN"]),
+                    received_utc=received_utc,
+                    exchange_at=_exchange_timestamp(row["BSOP_HOUR"], received_utc),
                 )
             )
     return records
+
+
+def _exchange_timestamp(clock: str, received: datetime) -> datetime | None:
+    """Date-less KIS book clock uses the receipt KST day; invalid clocks stay absent."""
+    try:
+        parsed = datetime.strptime(clock, "%H%M%S").time()
+        local = received.astimezone(timezone(timedelta(hours=9)))
+        return datetime.combine(local.date(), parsed, local.tzinfo).astimezone(timezone.utc)
+    except ValueError:
+        return None
 
 
 class TapeBuffer:

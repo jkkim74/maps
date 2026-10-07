@@ -161,3 +161,19 @@ gap and interval violations. Initial gaps are unknown. HTTP 200 business rejecti
 count as failed attempts (`api_error` or `rate_limited`), without changing retries.
 Authentication/hash requests share the gate but remain outside trading/query
 attempt totals. Totals are process-local attempts, not failed scheduler jobs.
+
+## Fujimoto source and actual costs
+
+OrderManager validates `source=fujimoto`, cycle source_id and reservation event
+on both BUY and SELL; a Fujimoto strategy name cannot use the mock/catalog source
+to bypass this guard. Classification limits still apply. Unbound committed BUY
+reservations are visible to all strategies and linked broker/intent/reservation
+exposure is counted once. Reconciliation binds the exact reservation and invokes
+the common cumulative fill ledger; more Fujimoto-owned shares than actual broker
+shares block reconciliation. No old position adoption exists.
+OrderResult adds optional cumulative_gross/tax and costs_complete (default false).
+KIS history total consideration is read when present; missing per-order fees/taxes
+remain unknown. MockBroker supplies confirmed cost fields. Terminal quantity truth
+allows consented protective exits with provisional cost, while new BUY and
+net-profit book exits wait for settlement. Exact audited settlement is documented
+in `maps/fujimoto/CLAUDE.md`; ambiguous late cost reconstruction remains blocked.

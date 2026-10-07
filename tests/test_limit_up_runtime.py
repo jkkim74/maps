@@ -176,6 +176,8 @@ def _control_loop_runtime(
                 self.unhealthy += 1
 
     runtime = object.__new__(KISIntradayRuntime)
+    runtime.fujimoto = None
+    runtime.upper_enabled = True
     adapter = _Adapter()
     service = _Service()
     runtime.adapter = adapter
@@ -283,6 +285,8 @@ async def test_reconnect_clears_subscriptions_so_tickers_resubscribe() -> None:
     from maps.limit_up.runtime import KISIntradayRuntime
 
     runtime = object.__new__(KISIntradayRuntime)
+    runtime.fujimoto = None
+    runtime.upper_enabled = True
     runtime._subscribed = {"005930"}
     sent: list[str] = []
 
@@ -328,6 +332,8 @@ def _pump_runtime():
     from maps.limit_up.runtime import KISIntradayRuntime
 
     runtime = object.__new__(KISIntradayRuntime)
+    runtime.fujimoto = None
+    runtime.upper_enabled = True
     runtime._stop = _asyncio.Event()
     runtime._service_queue = _asyncio.PriorityQueue()
     runtime._service_sequence = _itertools.count()
@@ -461,7 +467,7 @@ async def test_reading_the_next_frame_does_not_wait_for_the_previous_one() -> No
     import maps.limit_up.runtime as runtime_module
 
     original = runtime_module.parse_kis_ws_message
-    runtime_module.parse_kis_ws_message = lambda raw, received_at: [object()]
+    runtime_module.parse_kis_ws_message = lambda raw, received_at, received_utc=None: [object()]
     try:
         # the dispatch returns immediately even though the work is still running
         assert await asyncio.wait_for(runtime.dispatch_message_async("x"), timeout=1) == 1
@@ -550,6 +556,8 @@ def _scan_runtime(db, rows: list[dict], ranked_count: int, listed: set[str]):
             return list(rows), ranked_count
 
     runtime = object.__new__(KISIntradayRuntime)
+    runtime.fujimoto = None
+    runtime.upper_enabled = True
     runtime.db = db
     runtime.adapter = _Adapter()
     runtime.service = LimitUpService(
@@ -945,6 +953,8 @@ async def test_index_subscription_is_sent_once_per_connection() -> None:
             self.sent.append(raw)
 
     runtime = object.__new__(KISIntradayRuntime)
+    runtime.fujimoto = None
+    runtime.upper_enabled = True
     runtime._subscribed = set()
     socket = _Socket()
 
@@ -974,6 +984,8 @@ async def test_ws_index_frames_feed_the_guard_at_most_once_per_second() -> None:
             calls.append(kwargs)
 
     runtime = object.__new__(KISIntradayRuntime)
+    runtime.fujimoto = None
+    runtime.upper_enabled = True
     runtime.settings = MapsSettings(maps_limit_up_index_ws_enabled=True)
     runtime.service = _Service()
     runtime.wall_now = _session_wall
@@ -1009,6 +1021,8 @@ async def test_startup_recovery_runs_with_patient_kis_reads() -> None:
             seen.append(kis_adapter._PATIENT_READS.get())
 
     runtime = object.__new__(KISIntradayRuntime)
+    runtime.fujimoto = None
+    runtime.upper_enabled = True
     runtime.service = _Service()
     runtime.wall_now = _session_wall
     runtime.monotonic = lambda: 0.0

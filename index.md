@@ -44,7 +44,7 @@
 
 ## 2. 패키지 지도
 
-후지모토 시점 근거·지표·순수 분할매매 판단: [maps/fujimoto/CLAUDE.md](maps/fujimoto/CLAUDE.md).
+후지모토 근거 수집·공유 피드·분할매매·운영 API: [maps/fujimoto/CLAUDE.md](maps/fujimoto/CLAUDE.md). `/fujimoto` 화면은 기본 관찰 상태이며 전용 예산과 검증·동의 없이는 주문하지 않는다.
 
 | 패키지 | 한 줄 | 문서 |
 |---|---|---|
@@ -92,7 +92,7 @@
 | 운영 설정값 | `docs/OPERATIONS_CONFIG.md` |
 | 서버 런북 | `docs/AWS_LIGHTSAIL_RUNBOOK.md` |
 | 전략 설명 원고 | `docs/strategy_guides/` |
-| 후지모토식 매매 설계·다음 세션 인계 | [전용 인계 문서](docs/HANDOFF_fujimoto_trading.md) → [설계서](docs/superpowers/specs/2026-10-07-fujimoto-trading-design.md) (구현 전) |
+| 후지모토식 매매 운영·다음 세션 인계 | [전용 인계 문서](docs/HANDOFF_fujimoto_trading.md) → [운영 계약](maps/fujimoto/CLAUDE.md) → [설계서](docs/superpowers/specs/2026-10-07-fujimoto-trading-design.md) |
 
 ## 5. 자주 밟는 지뢰
 
