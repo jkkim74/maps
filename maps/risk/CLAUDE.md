@@ -75,6 +75,16 @@ RiskManager(broker, db, config?, notifier?)
 | `_log_kill_switch(event)` | `kill_switch_log` 테이블에 감사 로그 기록 |
 | `_notify_kill_switch(event)` | `SlackNotifier.send_kill_switch()` 호출 |
 
+## 워치리스트의 업종·테마 예외
+
+`OrderManager`가 DB의 픽과 대조해 검증한 `ExecutionContext.source="analysis_pick"`
+매수(단일·분할)는 `check_before_order(check_classification_limits=False)`로
+업종·테마 분류 누락 검사와 비중 한도를 생략한다. 전역 업종·테마 설정과 무관한 정책이며
+전략 이름만으로 적용하지 않는다. 기본값은 `True`로 다른 주문은 기존 분류 검사를 유지한다.
+
+현금·단일 종목 누적노출·총노출·손실·킬스위치 검사는 그대로 적용한다. 워치리스트 보유분도
+다른 전략의 업종·테마 노출 계산에 포함된다. 매도는 기존 경로를 유지한다.
+
 ## Kill Switch 원칙
 
 - **신규 진입 차단**: 자동 (사용자 승인 불필요)

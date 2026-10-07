@@ -126,6 +126,7 @@ class RiskManager:
         risk_strategy_id: str | None = None,
         positions=None,
         pending_orders=None,
+        check_classification_limits: bool = True,
     ) -> None:
         """주문 전 리스크 체크. 위반 시 예외 발생.
 
@@ -138,6 +139,8 @@ class RiskManager:
             order: 제출할 주문.
             account: 현재 계좌 잔고.
             daily_pnl: 당일 손익률 (음수 = 손실). 기본 0.0.
+            check_classification_limits: 검증된 워치리스트 주문만 False로 전달한다.
+                업종·테마 분류/비중 검사만 생략하고 나머지 리스크 검사는 유지한다.
 
         Raises:
             KillSwitchError: Kill Switch 활성 또는 일일 손실 한도 초과.
@@ -201,6 +204,8 @@ class RiskManager:
             raise ExposureCapError(order.ticker, float(value / total), "insufficient_cash")
         if (D(account.positions_value) + sum(pending.values(), Decimal(0)) + value) / total > D(self._cfg.max_portfolio_exposure):
             raise ExposureCapError(order.ticker, None, "portfolio_exposure_exceeded")
+        if not check_classification_limits:
+            return
         from maps.common.models import SecurityMetadata
         for enabled, field, limit in (
             (self._cfg.sector_exposure_limit_enabled, "sector", self._cfg.sector_exposure_limit),

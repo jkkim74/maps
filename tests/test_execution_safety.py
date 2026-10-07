@@ -8,7 +8,7 @@ from unittest.mock import Mock
 import pytest
 
 from maps.common.exceptions import BrokerOrderUnknownError, ExecutionBlockedError, ExposureCapError
-from maps.common.models import AccountObservation, AccountAdjustment, ExecutionAccountState, OrderIntent, OrderLog
+from maps.common.models import AccountObservation, AccountAdjustment, AnalysisPick, ExecutionAccountState, OrderIntent, OrderLog, SecurityMetadata
 from maps.common.settings import MapsSettings, get_settings, reload_settings
 from maps.execution.broker_adapter import Order, OrderSide, OrderType, OrderResult, OrderStatus, PendingOrder, Position, AccountBalance
 from maps.execution.mock_broker import MockBroker
@@ -51,6 +51,80 @@ def order(side=OrderSide.BUY, quantity=10, ticker="AAA", strategy="test"):
 
 def context(key="entry"):
     return ExecutionContext(key, source="mock", valid_until=utcnow() + dt.timedelta(hours=1))
+
+
+@pytest.mark.parametrize("source", ["catalog", "mock"])
+@pytest.mark.parametrize("field", ["sector", "theme"])
+@pytest.mark.parametrize("classified", [False, True])
+def test_watchlist_strategy_name_does_not_exempt_other_sources(
+    db, setup, source: str, field: str, classified: bool,
+) -> None:
+    """Only a validated pick source may bypass classification, never its name."""
+    broker, manager = setup
+    setattr(manager._risk._cfg, f"{field}_exposure_limit_enabled", True)
+    setattr(manager._risk._cfg, f"{field}_exposure_limit", 0.005)
+    if classified:
+        db.add(SecurityMetadata(
+            ticker="AAA", name="Example", market="KOSPI", security_type="STOCK",
+            sector="electronics", theme="semiconductors",
+        ))
+        db.commit()
+    reason = f"{field}_exposure_exceeded" if classified else f"{field}_classification_missing"
+    with pytest.raises(ExposureCapError, match=reason):
+        manager.submit(order(strategy="strategy_trade"), context=ExecutionContext("entry", source=source))
+    assert broker.filled_orders == []
+    assert db.query(OrderIntent).count() == 0
+
+
+@pytest.mark.parametrize("invalid", ["missing", "ticker", "state", "stale"])
+def test_classification_exemption_requires_a_valid_watchlist_pick(db, setup, invalid: str) -> None:
+    """An unvalidated analysis_pick context must not reach the broker."""
+    broker, manager = setup
+    manager._settings = manager._settings.model_copy(update={"maps_strategy_trade_enabled": True})
+    manager._risk._cfg.sector_exposure_limit_enabled = True
+    manager._risk._cfg.theme_exposure_limit_enabled = True
+    pick = AnalysisPick(
+        ticker="BBB" if invalid == "ticker" else "AAA", name="Example", source="manual",
+        ref_date=dt.date.today() - dt.timedelta(days=60 if invalid == "stale" else 0),
+        state="WATCH" if invalid == "state" else "ARMED", strategy_trade_enabled=True,
+    )
+    db.add(pick)
+    db.commit()
+    source_id = pick.id + 1 if invalid == "missing" else pick.id
+    with pytest.raises(ExecutionBlockedError, match="analysis_pick_not_armed"):
+        manager.submit(order(), context=ExecutionContext("entry", source="analysis_pick", source_id=source_id))
+    assert broker.filled_orders == []
+    assert db.query(OrderIntent).count() == 0
+
+
+@pytest.mark.parametrize("field", ["sector", "theme"])
+def test_catalog_classification_cap_still_counts_watchlist_holdings(db, setup, field: str) -> None:
+    """Exempting a watchlist buy must not erase its exposure for other sources."""
+    broker, manager = setup
+    manager._settings = manager._settings.model_copy(update={"maps_strategy_trade_enabled": True})
+    setattr(manager._risk._cfg, f"{field}_exposure_limit_enabled", True)
+    setattr(manager._risk._cfg, f"{field}_exposure_limit", 0.005)
+    pick = AnalysisPick(
+        ticker="AAA", name="Example", source="manual", ref_date=dt.date.today(),
+        state="ARMED", strategy_trade_enabled=True,
+    )
+    db.add(pick)
+    db.add_all([SecurityMetadata(
+        ticker=ticker, name=ticker, market="KOSPI", security_type="STOCK",
+        sector="electronics", theme="semiconductors",
+    ) for ticker in ("AAA", "BBB")])
+    db.commit()
+
+    result = manager.submit(order(), context=ExecutionContext("pick-entry", source="analysis_pick", source_id=pick.id))
+    assert result.status == OrderStatus.FILLED
+    assert broker.get_position("AAA").quantity == 10
+    # BBB's 1,000 alone fits the 5,000 cap, but the watchlist already holds 10,000.
+    with pytest.raises(ExposureCapError, match=f"{field}_exposure_exceeded"):
+        manager.submit(order(ticker="BBB", quantity=1), context=ExecutionContext("catalog-entry", source="catalog"))
+    assert broker.get_position("BBB") is None
+    intent = db.query(OrderIntent).one()
+    assert intent.request["source"] == "analysis_pick"
+    assert intent.request["source_id"] == pick.id
 
 
 @pytest.mark.parametrize("setting", ["maps_dry_run", "maps_live_trading_enabled"])
@@ -130,13 +204,19 @@ def test_idempotency_payload_conflict(db, setup):
         manager.submit(order(quantity=11), context=context())
 
 
-def test_cumulative_exposure_includes_holding_pending_and_new(db, setup):
+@pytest.mark.parametrize("check_classification_limits", [True, False])
+def test_cumulative_exposure_includes_holding_pending_and_new(
+    db, setup, check_classification_limits: bool,
+) -> None:
+    """Classification exemption still caps holdings plus pending and new buys."""
     broker, manager = setup
     risk = manager._risk
-    with pytest.raises(ExposureCapError):
+    with pytest.raises(ExposureCapError) as error:
         risk.check_before_order(order(quantity=100), AccountBalance(600000, 400000),
-            positions={"AAA": Position("AAA", 400, 1000)},
-            pending_orders=[PendingOrder("p", "AAA", OrderSide.BUY, 50, 50, 1000)])
+            positions={"AAA": Position("AAA", 400, 1000, current_price=1000)},
+            pending_orders=[PendingOrder("p", "AAA", OrderSide.BUY, 50, 50, 1000)],
+            check_classification_limits=check_classification_limits)
+    assert error.value.exposure == pytest.approx(0.55)
 
 
 def test_missing_market_price_is_blocked(db, setup):
