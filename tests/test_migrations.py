@@ -40,7 +40,13 @@ def test_fresh_database_reaches_current_schema(tmp_path, monkeypatch) -> None:
         revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
     engine.dispose()
 
-    assert revision == "0038_limit_up_shadow_probes"
+    assert revision == "0040_merge_classification_shadow"
+    assert {"classification_run", "classification_member"} <= set(inspector.get_table_names())
+    assert "classification_quality" in {c["name"] for c in inspector.get_columns("collection_log")}
+    assert {"order_intent", "execution_account_state", "account_observation", "account_adjustment",
+            "validation_run", "execution_safety_event"} <= set(inspector.get_table_names())
+    assert {"account_key", "intent_id", "environment", "code_hash", "params_hash"} <= order_columns
+    assert "execution_version" in pick_columns
     assert {"dart_financial_snapshot", "dart_filing_receipt", "dart_collection_state"} <= set(inspector.get_table_names())
     assert {"score_version", "score_scope", "score_evidence"} <= {c["name"] for c in inspector.get_columns("candidate_snapshot")}
     assert "metadata_quality" in {c["name"] for c in inspector.get_columns("collection_log")}
@@ -133,6 +139,27 @@ def test_fresh_database_reaches_current_schema(tmp_path, monkeypatch) -> None:
     assert {"username", "password_hash", "role", "status", "plan", "preferences"} <= user_columns
     assert "owner_user_id" in pick_columns
     assert "owner_user_id" in history_columns
+
+
+@pytest.mark.parametrize("starting_revision", [
+    "0038_limit_up_shadow_probes", "0039_classification_snapshots",
+])
+def test_both_existing_branches_upgrade_to_merged_schema(tmp_path, monkeypatch, starting_revision):
+    """Existing installations on either branch retain both feature schemas."""
+    db_path = tmp_path / "maps-merge.db"
+    monkeypatch.setenv("MAPS_DB_URL", f"sqlite:///{db_path.as_posix()}")
+    config = Config("alembic.ini")
+    command.upgrade(config, starting_revision)
+    command.upgrade(config, "head")
+    engine = create_engine(f"sqlite:///{db_path.as_posix()}")
+    try:
+        inspector = inspect(engine)
+        assert "shadow_probes" in {c["name"] for c in inspector.get_columns("limit_up_session")}
+        assert {"classification_run", "classification_member", "order_intent"} <= set(inspector.get_table_names())
+        with engine.connect() as connection:
+            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0040_merge_classification_shadow"
+    finally:
+        engine.dispose()
 
 
 def test_split_plan_migration_reports_existing_active_ticker_duplicates(

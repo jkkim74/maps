@@ -8,10 +8,13 @@ from dataclasses import dataclass
 
 from sqlalchemy import or_
 
-from maps.common.exceptions import BrokerAdapterError
-from maps.common.models import LimitUpOrderLeg, LimitUpSession, OrderLog
+from maps.execution.safety import ExecutionContext, account_key
+from maps.execution.reconciliation import audit_id
+from maps.common.exceptions import ExecutionBlockedError, BrokerOrderUnknownError, BrokerAdapterError
+from maps.common.models import OrderIntent, LimitUpOrderLeg, LimitUpSession, OrderLog
 from maps.common.settings import get_settings
 from maps.execution.broker_adapter import (
+    OrderResult,
     BrokerAdapter,
     Order,
     OrderSide,
@@ -165,23 +168,18 @@ class LimitUpCommandWorker:
             )
         self.repository.db.commit()
 
-        ambiguous_intent = False
         for spec in grid:
             leg = self._leg(session, spec.name)
-            if (
-                not leg.broker_order_id
-                and self.repository.event_exists(
-                    session,
-                    action="submit_buy",
-                    state_version=session.state_version,
-                    leg=spec.name,
-                )
-            ):
+            intent = self.repository.db.query(OrderIntent).filter_by(account_key=account_key(),
+                event_key=f"limit_up:{session.id}:entry:{spec.name}").first()
+            legacy_unknown = (intent is None and self.repository.event_exists(session,
+                action="submit_buy", state_version=session.state_version, leg=spec.name)
+                and not self.repository.event_exists(session, action="entry_blocked",
+                    state_version=session.state_version, leg=spec.name))
+            if not leg.broker_order_id and (legacy_unknown or (intent is not None and intent.status in ("SENDING", "UNKNOWN"))):
                 leg.status = "reconciling"
-                ambiguous_intent = True
-        if ambiguous_intent:
-            self.repository.db.commit()
-            return self.reconcile(session)
+                self.repository.db.commit()
+                return self.reconcile(session)
 
         for spec in grid:
             leg = self._leg(session, spec.name)
@@ -220,9 +218,20 @@ class LimitUpCommandWorker:
                     order,
                     daily_pnl=daily_pnl_ratio,
                     risk_strategy_id="limit_up_v1",
+                    context=ExecutionContext(f"limit_up:{session.id}:entry:{spec.name}", source="limit_up", source_id=session.id),
                 )
+            except ExecutionBlockedError:
+                leg.status = "created"
+                self.repository.append_event(session, action="entry_blocked",
+                    state_version=session.state_version, leg=spec.name)
+                self.repository.db.commit()
+                return self.reconcile(session)
+            except BrokerOrderUnknownError:
+                leg.status = "reconciling"
+                self.repository.db.commit()
+                return self.cancel_pending_buys(session).reconciliation
             except Exception:
-                leg.status = "rejected"
+                leg.status = "reconciling"
                 self.repository.db.commit()
                 return self.cancel_pending_buys(session).reconciliation
             leg.broker_order_id = result.order_id
@@ -270,27 +279,40 @@ class LimitUpCommandWorker:
 
     def reconcile(self, session: LimitUpSession) -> ReconcileResult:
         """Apply daily fills, then open orders, then the actual broker holding."""
-        daily_results = self.broker.get_daily_order_results()
-        result_by_id = {
-            raw_broker_order_id(result.order_id): result for result in daily_results
-        }
+        self.order_manager.sync_broker_state()
+        logs = self.repository.db.query(OrderLog).filter_by(account_key=account_key()).populate_existing().all()
+        result_by_id = {row.order_id: OrderResult(row.order_id, row.strategy_id, row.ticker,
+            OrderSide(row.side), OrderStatus(row.status), row.fill_qty or 0, row.fill_price or 0,
+            submitted_at=row.created_at.replace(tzinfo=dt.timezone.utc))
+            for row in logs if row.status in {s.value for s in OrderStatus}}
         open_orders = self.broker.get_open_orders()
         open_by_id = {
             raw_broker_order_id(order.order_id): order for order in open_orders
         }
         for leg in self.legs(session):
             if not leg.broker_order_id:
-                continue
+                intent = self.repository.db.query(OrderIntent).filter_by(account_key=account_key(),
+                    event_key=f"limit_up:{session.id}:entry:{leg.name}").first()
+                if intent is not None and intent.broker_order_id:
+                    leg.broker_order_id = intent.broker_order_id
+                else:
+                    continue
             raw_id = raw_broker_order_id(leg.broker_order_id)
-            result = result_by_id.get(raw_id)
+            result = result_by_id.get(leg.broker_order_id)
             if result is not None:
+                if result.ticker != session.ticker or result.side != OrderSide.BUY:
+                    raise ExecutionBlockedError("leg_identity_mismatch")
+                if result.filled_quantity < leg.filled_quantity:
+                    continue
+                if leg.status in ("filled", "cancelled", "rejected") and result.status.value not in ("filled", "cancelled", "rejected"):
+                    continue
                 leg.filled_quantity = result.filled_quantity
                 leg.avg_fill_price = result.avg_price or leg.avg_fill_price
                 leg.status = result.status.value
                 continue
             pending = open_by_id.get(raw_id)
-            if pending is not None:
-                leg.filled_quantity = max(0, pending.quantity - pending.remaining_quantity)
+            if pending is not None and leg.status not in ("filled", "cancelled", "rejected"):
+                # Pending quantities reserve shares; they do not prove a fill price.
                 leg.status = (
                     OrderStatus.PARTIALLY_FILLED.value
                     if leg.filled_quantity
@@ -377,7 +399,8 @@ class LimitUpCommandWorker:
             current_price=position.current_price or position.avg_price,
             decision_context={"limit_up_session_id": session.id, "reason": reason},
         )
-        result = self.order_manager.submit_exit(order, exit_reason=exit_audit_code(reason))
+        result = self.order_manager.submit_exit(order, exit_reason=exit_audit_code(reason),
+            context=ExecutionContext(f"limit_up:{session.id}:{session.state_version}:exit:{reason}", source="limit_up", source_id=session.id))
         self._record_exit_order(session, result.order_id)
         self.repository.db.commit()
         return self.reconcile(session)
@@ -424,7 +447,7 @@ class LimitUpCommandWorker:
         for order_id in (session.exit_order_ids or "").split(","):
             if not order_id:
                 continue
-            result = result_by_id.get(raw_broker_order_id(order_id))
+            result = result_by_id.get(order_id)
             if result is None or result.filled_quantity <= 0:
                 continue
             stamp = result.filled_at or result.submitted_at
@@ -498,19 +521,17 @@ class LimitUpCommandWorker:
                 continue
             raw_id = raw_broker_order_id(order.order_id)
             owner = self._order_owner(order.order_id)
-            if raw_id not in recorded and owner is not None and not owner.startswith(
-                "limit_up_v1"
-            ):
-                # 공유 계좌다. 다른 전략이나 사람이 낸 매도를 취소하면 그쪽 로직이 깨진다.
-                continue
             if raw_id not in recorded:
-                # 브로커는 접수했는데 주문 ID 를 저장하기 전에 죽은 우리 매도이거나,
-                # 출처를 모르는 주문이다. 살아 있는 채로 전량매도를 덧대면 보유보다
-                # 많이 팔게 되므로 취소를 시도하되, 실패하면 새 매도를 내지 않는다.
-                logger.warning(
-                    "출처가 확인되지 않은 열린 매도 [%s] id=%s owner=%s",
-                    session.ticker, order.order_id, owner,
-                )
+                links = self.repository.db.query(OrderLog, OrderIntent).join(
+                    OrderIntent, OrderLog.intent_id == OrderIntent.id).filter(
+                    OrderLog.account_key == account_key(), OrderLog.side == "sell").all()
+                verified = any(raw_broker_order_id(row.order_id) == raw_id
+                    and intent.request.get("source") == "limit_up"
+                    and intent.request.get("source_id") == session.id for row, intent in links)
+                if not verified:
+                    if owner is None:
+                        stranded += 1
+                    continue
             try:
                 if not self.order_manager.cancel(order.order_id):
                     stranded += 1
@@ -534,23 +555,10 @@ class LimitUpCommandWorker:
         # 준다. 정규화하지 않으면 KIS 에서 **항상 None** 이 되어 소유권 가드가 구조적으로
         # 죽는다 — 공유 계좌에서 남의 매도를 취소하게 된다.
         settings = get_settings()
-        raw_id = raw_broker_order_id(order_id)
-        # ODNO 재사용 때문에 접미사 매칭은 과거 주문을 집을 수 있다 — 계좌·날짜까지 맞춘다.
-        same_day_audit_id = order_log_id(
-            raw_id,
-            broker=settings.maps_broker_mode,
-            account_no=settings.kis_account_no,
-            submitted_at=dt.datetime.now(_KST),
-        )
-        row = (
-            self.repository.db.query(OrderLog.strategy_id)
-            .filter(or_(
-                OrderLog.order_id == order_id,
-                OrderLog.order_id == same_day_audit_id,
-            ))
-            .first()
-        )
-        return str(row[0]) if row else None
+        rows = self.repository.db.query(OrderLog).filter_by(account_key=account_key(settings)).all()
+        matches = [row for row in rows if row.order_id == order_id or
+                   (row.status in ("pending", "partially_filled") and raw_broker_order_id(row.order_id) == order_id)]
+        return matches[0].strategy_id if len(matches) == 1 else None
 
     def sell_overnight_excess(
         self, session: LimitUpSession, *, quantity: int, price: int
@@ -592,7 +600,8 @@ class LimitUpCommandWorker:
             },
         )
         result = self.order_manager.submit_exit(
-            order, exit_reason=exit_audit_code("overnight_cap")
+            order, exit_reason=exit_audit_code("overnight_cap"),
+            context=ExecutionContext(f"limit_up:{session.id}:{session.state_version}:trim", source="limit_up", source_id=session.id)
         )
         self._record_exit_order(session, result.order_id)
         self.repository.db.commit()

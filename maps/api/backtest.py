@@ -17,6 +17,7 @@ import statistics
 import uuid
 from collections import Counter
 from typing import Literal
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException
@@ -136,8 +137,25 @@ def _resolve_universe_pool(db: Session, req: BacktestRunRequest) -> tuple[list[s
     elif universe == "theme":
         if not arg:
             raise HTTPException(status_code=400, detail="theme은 테마명이 필요합니다.")
-        query = query.filter(SecurityMetadata.theme == arg)
-        label = f"theme:{arg}"
+        from maps.data.classifications import ClassificationRepository
+
+        start = req.start or db.query(func.min(HistoricalOHLCV.date)).scalar()
+        if start is None:
+            raise HTTPException(status_code=400, detail="theme_snapshot_unavailable: 백테스트 시작일을 확인할 수 없습니다.")
+        available_at = dt.datetime.combine(start, dt.time.min, tzinfo=ZoneInfo("Asia/Seoul"))
+        repository = ClassificationRepository(db)
+        snapshot = repository.latest("theme", available_at=available_at)
+        if snapshot is None:
+            raise HTTPException(status_code=400, detail="theme_snapshot_unavailable: 시작 시점에 이용 가능한 테마 스냅샷이 없습니다.")
+        catalog = repository.theme_names(snapshot)
+        matches = [arg] if arg in catalog else [code for code, name in catalog.items() if name == arg]
+        if len(matches) != 1:
+            raise HTTPException(status_code=400, detail="테마가 없거나 이름이 중복됩니다. 스냅샷의 테마 ID를 지정하세요.")
+        memberships = repository.memberships(snapshot)
+        pool = sorted(ticker for ticker, groups in memberships.items() if matches[0] in groups)
+        if not pool:
+            raise HTTPException(status_code=400, detail="선택한 시점의 테마에 해당하는 종목이 없습니다.")
+        return pool, f"theme:{matches[0]}"[:32]
     elif universe == "recent_ipo":
         try:
             days = int(arg) if arg else 90  # 기본 90일 — IPO 전략 관례
@@ -319,6 +337,11 @@ def get_backtest_runs(
         )
         return sorted({row[0] for row in rows if row[0]})
 
+    from maps.data.classifications import ClassificationRepository
+
+    classifications = ClassificationRepository(db)
+    theme_snapshot = classifications.latest("theme", available_at=dt.datetime.now(dt.timezone.utc))
+    theme_names = sorted(set(classifications.theme_names(theme_snapshot).values())) if theme_snapshot else []
     return BacktestResponse(
         recent_runs=runs,
         available_strategies=list(RUNNABLE_STRATEGIES.keys()),
@@ -330,7 +353,7 @@ def get_backtest_runs(
             "markets": ["KOSPI", "KOSDAQ"],
             "indices": sorted(_INDEX_CODES),
             "sectors": _distinct(SecurityMetadata.sector),
-            "themes": _distinct(SecurityMetadata.theme),
+            "themes": theme_names,
         },
     )
 

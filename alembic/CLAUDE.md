@@ -1,6 +1,6 @@
 # alembic/
 
-DB 스키마 마이그레이션. `alembic/versions/` 에 리비전 43개가 있고 **head 는 하나**다.
+DB 스키마 마이그레이션. `alembic/versions/` 의 리비전은 하나의 head로 합쳐진다.
 
 ## 명령
 
@@ -18,11 +18,15 @@ alembic downgrade -1                             # 한 단계 되돌리기
 | 번호식 | `0023_score_readiness_feeds.py` | 손으로 만든 주류 형식 |
 | 해시식 | `c8a1f2b3d4e5_add_security_fundamental.py` | `--autogenerate` 가 만든 것 |
 
-**둘은 한 줄로 이어져 있다** — 파일명 정렬 순서가 곧 적용 순서가 아니다. 순서를 알고 싶으면
+**분기와 병합을 포함한 하나의 이력이다** — 파일명 정렬 순서가 곧 적용 순서가 아니다. 순서를 알고 싶으면
 파일명이 아니라 각 파일의 `down_revision` 을 따라간다. 예: `efca8676041a` 의
 `down_revision` 은 `0005_stock_report_runs` 다.
 
-현재 head: **`0038_limit_up_shadow_probes`**.
+현재 head: **`0040_merge_classification_shadow`**.
+
+`0040_merge_classification_shadow`는 `0038_limit_up_shadow_probes`와
+`0039_classification_snapshots` 이력을 연결하는 병합 리비전이다. 자체 DDL은 없고,
+어느 쪽에서 업그레이드해도 빠진 분기의 마이그레이션만 적용한다.
 
 `0038_limit_up_shadow_probes` 는 `limit_up_session.shadow_probes`(nullable JSON) 하나를 더한다.
 기존 행은 NULL 로 남고 backfill 은 없다.
@@ -48,3 +52,10 @@ preserved; no financial or score backfill is performed.
 
 > ⚠️ `env.py` 의 `fileConfig` 는 `disable_existing_loggers=False` 로 둔다. 기본값이면
 > 앱 로거를 죽여 테스트 순서 의존성이 생긴다(2026-08-11 실제 발생).
+
+0038_execution_safety adds account-scoped durable intents, observations, adjustments,
+validation snapshots, safety outbox events and nullable legacy audit links. No backfill.
+
+`0039_classification_snapshots` adds `classification_run`, `classification_member`,
+and nullable `collection_log.classification_quality`. It follows `0038_execution_safety`
+and performs no historical backfill. Downgrade removes only these additive objects.

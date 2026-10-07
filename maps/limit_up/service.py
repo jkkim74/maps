@@ -55,6 +55,8 @@ def automatic_mode_blocked_reason(settings: "MapsSettings") -> str | None:
     Returns:
         A short machine-readable reason, or ``None`` when automatic is allowed.
     """
+    if settings.maps_dry_run:
+        return "dry_run"
     if not settings.maps_live_trading_enabled:
         return "live_trading_disabled"
     if settings.maps_broker_mode != "kis":

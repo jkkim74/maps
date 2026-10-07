@@ -91,6 +91,8 @@ def test_mc_within_limit_pass(gate: PromotionGate) -> None:
             "return": 1.0,
             "mc_mdd_p95": limit - 0.05,  # 한도 이내
             "mock_months": 3.0,
+            "evidence_valid": True, "wfa_passed": True, "mc_passed": True,
+            "plateau_grade": "A", "oos_sharpe": 1.0, "validation_run_id": "verified-fixture",
         },
         PromotionStage.MOCK_CANDIDATE,
     )
@@ -133,6 +135,8 @@ def test_mock_to_live_small_accepts_equivalent_replay(gate: PromotionGate) -> No
             "mock_months": 0.0,
             "replay_equivalent_passed": 1.0,
             "replay_trading_days": 63,
+            "evidence_valid": True, "wfa_passed": True, "mc_passed": True,
+            "plateau_grade": "A", "oos_sharpe": 1.0, "validation_run_id": "verified-fixture",
         },
         PromotionStage.MOCK_CANDIDATE,
     )
@@ -215,7 +219,9 @@ from maps.common.models import PromotionHistory
 _LOW_METRICS = {
     # 점수 = (0.3·0.4 + 0.3·0.4 + 0.2·0.4 + 0.2·0.4)·100 = 40 < 강등 임계 50
     "robustness": 0.4, "risk": 0.4, "recovery": 0.4, "return": 0.4,
-    "mc_mdd_p95": 0.10, "mock_months": 3.0, "mock_sharpe": 0.2,
+    "mc_mdd_p95": 0.10, "mock_months": 3.0,
+            "evidence_valid": True, "wfa_passed": True, "mc_passed": True,
+            "plateau_grade": "A", "oos_sharpe": 1.0, "validation_run_id": "verified-fixture", "mock_sharpe": 0.2,
 }
 
 

@@ -108,6 +108,7 @@ def test_metadata_partial_log_remains_after_successful_retry(db, monkeypatch):
     import maps.market.feeds as feeds
     monkeypatch.setattr(feeds, "collect_market_news_sentiment", lambda *args: None)
     adapter = MockKRXAdapter()
+    adapter.set_sectors({"005930": "Tech", "000660": "Tech", "035420": "Services"})
     day = datetime.date(2026, 9, 30)
     adapter.set_investor_flows({"005930": InvestorFlowData(day, "005930", "KOSPI", 1, 1, 1)})
     original = adapter.get_security_meta

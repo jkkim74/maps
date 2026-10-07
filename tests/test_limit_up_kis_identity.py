@@ -14,6 +14,8 @@ import pytest
 from maps.common.models import CollectionLog, LimitUpSession, OrderLog
 from maps.execution.broker_adapter import OrderSide, OrderStatus, raw_broker_order_id
 from maps.execution.order_manager import OrderManager
+from maps.common.settings import MapsSettings
+from tests.execution_contract import prime_account, record_owned_leg
 from maps.limit_up.domain import LimitUpConfig, LimitUpState, build_grid
 from maps.limit_up.repository import LimitUpRepository
 from maps.limit_up.service import Candidate, LimitUpMode, LimitUpService
@@ -26,6 +28,7 @@ KST = dt.timezone(dt.timedelta(hours=9))
 
 def _worker(db, broker) -> tuple[LimitUpCommandWorker, LimitUpSession]:
     repo = LimitUpRepository(db)
+    broker._scenario_db = db
     session = repo.create_or_get_session(
         ref_date=dt.date(2026, 8, 28),
         ticker="005930",
@@ -35,7 +38,9 @@ def _worker(db, broker) -> tuple[LimitUpCommandWorker, LimitUpSession]:
         total_listed_shares=10_000_000,
     )
     db.commit()
-    manager = OrderManager(broker, RiskManager(broker, db), db)
+    manager = OrderManager(broker, RiskManager(broker, db), db, settings=MapsSettings(
+        maps_limit_up_enabled=True, maps_limit_up_mode="automatic", maps_live_trading_enabled=True))
+    prime_account(manager, db)
     return LimitUpCommandWorker(manager, broker, repo), session
 
 
@@ -45,7 +50,10 @@ def _service(db, broker, mode=LimitUpMode.AUTOMATIC) -> LimitUpService:
                                                       for m in ("KOSPI", "KOSDAQ")}}))
     db.commit()
     repo = LimitUpRepository(db)
-    manager = OrderManager(broker, RiskManager(broker, db), db)
+    broker._scenario_db = db
+    manager = OrderManager(broker, RiskManager(broker, db), db, settings=MapsSettings(
+        maps_limit_up_enabled=True, maps_limit_up_mode="automatic", maps_live_trading_enabled=True))
+    prime_account(manager, db)
     return LimitUpService(
         mode=mode,
         config=LimitUpConfig(),
@@ -291,6 +299,7 @@ def test_a_live_carry_stays_sellable_after_restarting_in_recommend_mode(db, kis_
     )
     row.state = LimitUpState.OVERNIGHT.value
     db.commit()
+    broker.seed_position("005930", 20, 98_000.0)
     now = dt.datetime(2026, 8, 31, 9, 5, tzinfo=KST)
     service.recover(ref_date=dt.date(2026, 8, 31), now_monotonic=100.0, now_kst=now)
     service.machine("005930").filled_quantity = 20

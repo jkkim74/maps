@@ -32,6 +32,8 @@ from maps.common.settings import MapsSettings
 from maps.execution.broker_adapter import Order, OrderSide, OrderType
 from maps.execution.mock_broker import MockBroker
 from maps.execution.order_manager import OrderManager
+from maps.execution.safety import account_key
+from tests.execution_contract import prime_account
 from maps.market.regime import RegimeLabel, RegimeResult, WeeklyTrendLabel
 from maps.ops.scheduler import MapsOperationalScheduler, OperationalPipeline, StrategySignal
 from maps.risk.manager import RiskManager
@@ -292,6 +294,11 @@ def test_order_cycle_submits_promoted_candidate_when_live_enabled(monkeypatch) -
     finally:
         db.close()
 
+    broker = MockBroker()
+    monkeypatch.setattr("maps.ops.scheduler.get_broker", lambda mode: broker)
+    with factory() as evidence_db:
+        prime_account(OrderManager(broker, RiskManager(broker, evidence_db), evidence_db, settings=settings), evidence_db)
+
     run = pipeline.run_order_cycle(ref_date)
 
     assert run.status == "success"
@@ -456,6 +463,11 @@ def test_order_cycle_applies_slippage_to_limit_price(monkeypatch) -> None:
     finally:
         db.close()
 
+    broker = MockBroker()
+    monkeypatch.setattr("maps.ops.scheduler.get_broker", lambda mode: broker)
+    with factory() as evidence_db:
+        prime_account(OrderManager(broker, RiskManager(broker, evidence_db), evidence_db, settings=settings), evidence_db)
+
     run = pipeline.run_order_cycle(ref_date)
 
     assert run.status == "success"
@@ -537,6 +549,7 @@ def test_submit_exit_orders_sells_position_when_stop_loss_is_reached() -> None:
     db = factory()
     try:
         db.add(OrderLog(
+            account_key=account_key(),
             order_id="entry-AAAA",
             strategy_id="pullback_v3",
             ticker="AAAA",
@@ -601,6 +614,7 @@ def test_broker_sync_submits_stop_loss_exit_during_market_hours(monkeypatch) -> 
     db = factory()
     try:
         db.add(OrderLog(
+            account_key=account_key(),
             order_id="entry-AAAA",
             strategy_id="pullback_v3",
             ticker="AAAA",
@@ -744,6 +758,7 @@ def test_broker_sync_does_not_submit_exit_when_market_is_closed(monkeypatch) -> 
     db = factory()
     try:
         db.add(OrderLog(
+            account_key=account_key(),
             order_id="entry-AAAA",
             strategy_id="pullback_v3",
             ticker="AAAA",
@@ -1365,11 +1380,15 @@ def test_kill_switch_triggers_when_daily_pnl_exceeds_limit(monkeypatch) -> None:
     prev_date = dt.date(2026, 5, 7)
 
     # 전일 스냅샷 100M, 오늘 브로커 잔고 98M (-2%) 시뮬레이션
-    loss_broker = MockBroker(initial_cash=98_000_000)
+    loss_broker = MockBroker(initial_cash=100_000_000)
+    loss_broker.place_order(Order(ticker="HELD", side=OrderSide.BUY, quantity=1000,
+        order_type=OrderType.LIMIT, limit_price=10_000, strategy_id="baseline"))
     monkeypatch.setattr(scheduler_module, "get_broker", lambda _mode: loss_broker)
 
     db = factory()
     try:
+        prime_account(OrderManager(loss_broker, RiskManager(loss_broker, db), db, settings=settings), db)
+        loss_broker.set_price("HELD", 8_000)
         db.add(PortfolioSnapshot(
             ref_date=prev_date, source="broker",
             total_assets=100_000_000, cash=100_000_000, positions_value=0,
@@ -1399,9 +1418,9 @@ def test_kill_switch_triggers_when_daily_pnl_exceeds_limit(monkeypatch) -> None:
     db = factory()
     try:
         from maps.common.models import KillSwitchLog
-        ks = db.query(KillSwitchLog).filter(KillSwitchLog.strategy_id == "pullback_v3").first()
+        ks = db.query(KillSwitchLog).filter(KillSwitchLog.scope == "account").first()
         assert ks is not None, "Kill Switch 로그가 기록되어야 함"
-        assert ks.reason == "daily_loss_limit"
+        assert ks.reason == "account_loss_limit"
     finally:
         db.close()
         Base.metadata.drop_all(engine)
@@ -2160,6 +2179,11 @@ def test_order_cycle_caps_buy_quantity_by_liquidity(monkeypatch) -> None:
     finally:
         db.close()
 
+    broker = MockBroker()
+    monkeypatch.setattr("maps.ops.scheduler.get_broker", lambda mode: broker)
+    with factory() as evidence_db:
+        prime_account(OrderManager(broker, RiskManager(broker, evidence_db), evidence_db, settings=settings), evidence_db)
+
     pipeline.run_order_cycle(ref_date)
 
     db = factory()
@@ -2251,6 +2275,7 @@ def test_exit_orders_are_not_capped_by_liquidity() -> None:
     db = factory()
     try:
         db.add(OrderLog(
+            account_key=account_key(),
             order_id="entry-THIN",
             strategy_id="pullback_v3",
             ticker="THIN",

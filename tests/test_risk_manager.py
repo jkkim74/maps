@@ -4,6 +4,7 @@
 """
 
 from __future__ import annotations
+from maps.execution.safety import account_key
 
 import datetime as dt
 from unittest.mock import MagicMock
@@ -21,15 +22,16 @@ from maps.risk.manager import KillSwitchReason, RiskConfig, RiskManager
 
 
 @pytest.fixture
-def manager() -> RiskManager:
+def manager(db) -> RiskManager:
     broker = MagicMock()
     broker.get_balance.return_value = 10_000_000
-    db = MagicMock()
+    broker.get_position_details.return_value = {}
+    broker.get_open_orders.return_value = []
     cfg = RiskConfig(daily_loss_limit=0.015, mdd_limit=0.15, position_size_limit=0.10)
     return RiskManager(broker=broker, db=db, config=cfg)
 
 
-def _order(ticker: str = "AAAA", qty: int = 10, price: float | None = None) -> Order:
+def _order(ticker: str = "AAAA", qty: int = 10, price: float | None = 10_000) -> Order:
     return Order(
         strategy_id="strat_a",
         ticker=ticker,
@@ -48,13 +50,15 @@ def _account(cash: float = 10_000_000, positions: float = 0.0) -> AccountBalance
 # 1. 일일 손실 한도 → Kill Switch
 # ---------------------------------------------------------------------------
 
-def test_daily_loss_trigger(manager: RiskManager) -> None:
+@pytest.mark.parametrize("check_classification_limits", [True, False])
+def test_daily_loss_trigger(manager: RiskManager, check_classification_limits: bool) -> None:
     """일일 손실 1.5% 초과 시 check_before_order가 KillSwitchError를 발생시킨다."""
     order = _order()
     account = _account()
 
     with pytest.raises(KillSwitchError):
-        manager.check_before_order(order, account, daily_pnl=-0.02)  # -2% > -1.5%
+        manager.check_before_order(order, account, daily_pnl=-0.02,
+                                  check_classification_limits=check_classification_limits)
 
     assert manager.is_new_entry_blocked("strat_a")
 
@@ -118,7 +122,8 @@ def test_deactivate_without_active_kill_switch_raises(manager: RiskManager) -> N
 # 4. 단일 종목 노출 한도 초과 → ExposureCapError
 # ---------------------------------------------------------------------------
 
-def test_exposure_cap(manager: RiskManager) -> None:
+@pytest.mark.parametrize("check_classification_limits", [True, False])
+def test_exposure_cap(manager: RiskManager, check_classification_limits: bool) -> None:
     """단일 종목 주문 금액이 총 자산의 10%를 초과하면 ExposureCapError."""
     # 총 자산 = 10_000_000, 10% = 1_000_000
     # 주문: 200주 @ 10_000 = 2_000_000 (20%) → 초과
@@ -126,7 +131,7 @@ def test_exposure_cap(manager: RiskManager) -> None:
     account = _account(cash=10_000_000)
 
     with pytest.raises(ExposureCapError):
-        manager.check_before_order(order, account)
+        manager.check_before_order(order, account, check_classification_limits=check_classification_limits)
 
 
 def test_exposure_cap_within_limit_ok(manager: RiskManager) -> None:
@@ -141,7 +146,8 @@ def test_exposure_cap_within_limit_ok(manager: RiskManager) -> None:
 # 5. C-3: 가용 현금 / 포트폴리오 총 노출 한도
 # ---------------------------------------------------------------------------
 
-def test_cash_insufficient_blocks_order(manager: RiskManager) -> None:
+@pytest.mark.parametrize("check_classification_limits", [True, False])
+def test_cash_insufficient_blocks_order(manager: RiskManager, check_classification_limits: bool) -> None:
     """단일 종목 비중은 10% 이내라도 가용 현금이 부족하면 차단한다."""
     # 보유 평가액이 커서 total_value가 큼 → 단일 10% 검사만으론 통과되지만 현금 부족
     # total_value = 1_000_000 + 99_000_000 = 100_000_000, 10% = 10_000_000
@@ -149,11 +155,12 @@ def test_cash_insufficient_blocks_order(manager: RiskManager) -> None:
     order = _order(qty=900, price=10_000)
     account = _account(cash=1_000_000, positions=99_000_000)
 
-    with pytest.raises(ExposureCapError, match="현금"):
-        manager.check_before_order(order, account)
+    with pytest.raises(ExposureCapError, match="insufficient_cash"):
+        manager.check_before_order(order, account, check_classification_limits=check_classification_limits)
 
 
-def test_portfolio_total_exposure_cap(manager: RiskManager) -> None:
+@pytest.mark.parametrize("check_classification_limits", [True, False])
+def test_portfolio_total_exposure_cap(manager: RiskManager, check_classification_limits: bool) -> None:
     """현금이 충분해도 포트폴리오 총 노출 한도를 넘으면 차단한다."""
     cfg = RiskConfig(position_size_limit=0.10, max_portfolio_exposure=0.80)
     mgr = RiskManager(broker=MagicMock(), db=MagicMock(), config=cfg)
@@ -163,8 +170,9 @@ def test_portfolio_total_exposure_cap(manager: RiskManager) -> None:
     order = _order(qty=80, price=10_000)
     account = _account(cash=2_500_000, positions=7_500_000)
 
-    with pytest.raises(ExposureCapError, match="총 노출"):
-        mgr.check_before_order(order, account)
+    with pytest.raises(ExposureCapError, match="portfolio_exposure_exceeded"):
+        mgr.check_before_order(order, account, positions={}, pending_orders=[],
+                               check_classification_limits=check_classification_limits)
 
 
 # ---------------------------------------------------------------------------
@@ -182,10 +190,10 @@ def test_failure_count_restored_from_order_log() -> None:
     db = sessionmaker(bind=engine)()
     base = dt.datetime(2026, 6, 30, 1, 0, 0)
     # 오래된 FILLED 1건(리셋 경계) + 최근 REJECTED 4건
-    db.add(OrderLog(order_id="o0", strategy_id="strat_a", ticker="AAAA", side="BUY",
+    db.add(OrderLog(account_key=account_key(), order_id="o0", strategy_id="strat_a", ticker="AAAA", side="BUY",
                     qty=1, status="FILLED", fill_qty=1, created_at=base))
     for i in range(4):
-        db.add(OrderLog(order_id=f"r{i}", strategy_id="strat_a", ticker="AAAA", side="BUY",
+        db.add(OrderLog(account_key=account_key(), order_id=f"r{i}", strategy_id="strat_a", ticker="AAAA", side="BUY",
                         qty=1, status="REJECTED", fill_qty=0,
                         created_at=base + dt.timedelta(minutes=i + 1)))
     db.commit()
@@ -212,12 +220,12 @@ def test_failure_count_restore_stops_at_success() -> None:
     db = sessionmaker(bind=engine)()
     base = dt.datetime(2026, 6, 30, 1, 0, 0)
     # REJECTED(오래됨) → FILLED → REJECTED 2건(최근): 복원값은 2여야 함
-    db.add(OrderLog(order_id="r_old", strategy_id="strat_b", ticker="BBBB", side="BUY",
+    db.add(OrderLog(account_key=account_key(), order_id="r_old", strategy_id="strat_b", ticker="BBBB", side="BUY",
                     qty=1, status="REJECTED", fill_qty=0, created_at=base))
-    db.add(OrderLog(order_id="f1", strategy_id="strat_b", ticker="BBBB", side="BUY",
+    db.add(OrderLog(account_key=account_key(), order_id="f1", strategy_id="strat_b", ticker="BBBB", side="BUY",
                     qty=1, status="FILLED", fill_qty=1, created_at=base + dt.timedelta(minutes=1)))
     for i in range(2):
-        db.add(OrderLog(order_id=f"rn{i}", strategy_id="strat_b", ticker="BBBB", side="BUY",
+        db.add(OrderLog(account_key=account_key(), order_id=f"rn{i}", strategy_id="strat_b", ticker="BBBB", side="BUY",
                         qty=1, status="REJECTED", fill_qty=0,
                         created_at=base + dt.timedelta(minutes=2 + i)))
     db.commit()

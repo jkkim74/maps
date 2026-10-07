@@ -5,10 +5,11 @@ from __future__ import annotations
 import datetime
 import logging
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from maps.api.deps import get_db
+from maps.api.schemas import IntentResolutionRequest, AdjustmentClassificationRequest, SafetyResolutionRequest
 from maps.api.schemas import ActiveKillItem, HoldingItem, RiskGaugeItem, RiskResponse
 from maps.common.constants import ALLOWED_MDD, STRATEGY_GROUP_MAP
 from maps.common.exceptions import BrokerAdapterError
@@ -27,6 +28,113 @@ from maps.strategy.live_rules import effective_stop_price
 
 router = APIRouter(prefix="/api/v1/risk", tags=["SCR-06 Risk"])
 logger = logging.getLogger(__name__)
+
+
+@router.get("/execution-safety")
+def execution_safety(db: Session = Depends(get_db)):
+    from maps.common.models import ExecutionAccountState, OrderIntent, AccountAdjustment, ExecutionSafetyEvent
+    from maps.execution.safety import account_key, utcnow, execution_environment
+    settings = get_settings()
+    key = account_key(settings)
+    state = db.get(ExecutionAccountState, key)
+    stale = state is None or state.checked_at is None or (utcnow() - state.checked_at).total_seconds() > settings.maps_execution_reconciliation_max_age_seconds
+    reasons = list(state.block_reasons if state else ["account_unobserved"])
+    if stale:
+        reasons.append("reconciliation_stale")
+    if settings.maps_dry_run or not settings.maps_live_trading_enabled:
+        reasons.append("execution_disabled")
+    intents = db.query(OrderIntent).filter(OrderIntent.account_key == key,
+        OrderIntent.status.in_(("SENDING", "UNKNOWN"))).all()
+    adjustments = db.query(AccountAdjustment).filter_by(account_key=key, status="unclassified").all()
+    legacy = db.query(OrderLog).filter(OrderLog.account_key.is_(None),
+        OrderLog.status.in_(("unknown", "pending", "partially_filled"))).all()
+    return {"environment": execution_environment(settings), "status": "BLOCKED" if reasons else "READY",
+        "block_reasons": reasons, "version": state.version if state else None,
+        "checked_at": state.checked_at if state else None,
+        "last_complete_at": state.last_complete_at if state else None,
+        "daily_return": state.daily_return if state and not stale else None,
+        "observed_drawdown": state.drawdown if state and not stale else None,
+        "kill_switch": state.killed if state else None,
+        "unknown_orders": [{"id": i.id, "ticker": i.ticker, "side": i.side, "quantity": i.quantity,
+            "status": i.status, "version": i.version, "created_at": i.created_at} for i in intents],
+        "adjustments": [{"id": a.id, "amount": a.amount, "evidence": a.evidence, "version": a.version} for a in adjustments],
+        "legacy_orders": [{"id": r.id, "order_id": r.order_id, "ticker": r.ticker, "status": r.status} for r in legacy],
+        "undelivered_alerts": db.query(ExecutionSafetyEvent).filter_by(account_key=key, delivered_at=None).count()}
+
+
+def _safety_actor(request):
+    identity = getattr(request.state, "user", None)
+    if identity is None or not identity.is_admin:
+        raise HTTPException(403, "Administrator required")
+    return identity.username
+
+
+@router.post("/execution-safety/legacy/{log_id}/resolve")
+def resolve_legacy_execution(log_id: int, body: "IntentResolutionRequest",
+                             request: Request, db: Session = Depends(get_db)):
+    from maps.execution.safety_admin import resolve_legacy_order
+    actor, settings = _safety_actor(request), get_settings()
+    try:
+        return resolve_legacy_order(db, get_broker(settings.maps_broker_mode), settings, log_id, body, actor)
+    except BrokerAdapterError as exc:
+        db.rollback()
+        raise HTTPException(409, str(exc)) from exc
+
+
+
+
+@router.post("/execution-safety/intents/{intent_id}/resolve")
+def resolve_execution_intent(intent_id: str, body: IntentResolutionRequest,
+                             request: Request, db: Session = Depends(get_db)):
+    from maps.execution.safety_admin import resolve_intent
+    actor = _safety_actor(request)
+    try:
+        settings = get_settings()
+        return resolve_intent(db, get_broker(settings.maps_broker_mode), settings, intent_id, body, actor)
+    except BrokerAdapterError as exc:
+        db.rollback()
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.post("/execution-safety/adjustments/{adjustment_id}/classify")
+def classify_account_adjustment(adjustment_id: int, body: AdjustmentClassificationRequest,
+                               request: Request, db: Session = Depends(get_db)):
+    from maps.execution.safety_admin import classify_adjustment
+    actor = _safety_actor(request)
+    try:
+        return classify_adjustment(db, get_settings(), adjustment_id, body, actor)
+    except BrokerAdapterError as exc:
+        db.rollback()
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.post("/execution-safety/release-kill")
+def release_account_kill(body: SafetyResolutionRequest, request: Request, db: Session = Depends(get_db)):
+    from maps.common.models import ExecutionAccountState
+    from maps.execution.safety import account_key, account_execution_lock, utcnow
+    from maps.execution.safety_admin import require_version
+    from maps.execution.reconciliation import event
+    actor, settings = _safety_actor(request), get_settings()
+    key = account_key(settings)
+    with account_execution_lock(key):
+        db.expire_all()
+        state = db.get(ExecutionAccountState, key)
+        try:
+            require_version(state, body.version)
+        except BrokerAdapterError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        if (state.checked_at is None or (utcnow() - state.checked_at).total_seconds() > settings.maps_execution_reconciliation_max_age_seconds
+                or set(state.block_reasons) - {"account_kill_switch"}
+                or state.daily_return is None or state.daily_return <= -settings.daily_loss_limit
+                or state.drawdown is None or state.drawdown >= settings.maps_account_mdd_limit):
+            raise HTTPException(409, "Fresh reconciled account below loss limits required")
+        state.killed = False
+        state.version += 1
+        event(db, key, "account_kill_released", {"actor": actor, "reason": body.reason, "evidence": body.evidence})
+        db.add(KillSwitchLog(account_key=key, scope="account", strategy_id=f"account:{key[:16]}",
+            event_type="deactivate", reason="manual", approved_by=actor, value=body.reason, new_entry_blocked=False))
+        db.commit()
+        return {"version": state.version, "status": "awaiting_reconciliation"}
 
 
 def _atr14_for_ticker(db: Session, ticker: str) -> float | None:

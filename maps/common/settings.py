@@ -72,6 +72,10 @@ class MapsSettings(BaseSettings):
     maps_scheduler_enabled: bool = False
     maps_scheduler_timezone: str = "Asia/Seoul"
     maps_data_collection_time: str = "16:10"
+    maps_theme_collection_enabled: bool = False
+    maps_theme_collection_time: str = "17:00"
+    maps_classification_check_time: str = "17:25"
+    maps_classification_snapshot_enforced: bool = False
     maps_candidate_time: str = "16:20"
     maps_validation_time: str = "16:40"
     maps_order_time: str = "08:55"
@@ -256,11 +260,29 @@ class MapsSettings(BaseSettings):
 
     # 12단계: 드라이런/백테스트 비교 모드
     maps_dry_run: bool = False
+    maps_execution_snapshot_max_age_seconds: int = Field(default=30, ge=1)
+    maps_execution_quote_max_age_seconds: int = Field(default=15, ge=1)
+    maps_execution_reconciliation_max_age_seconds: int = Field(default=120, ge=1)
+    maps_account_mdd_limit: float = Field(default=0.15, gt=0, le=1)
+    maps_validation_max_age_trading_days: int = Field(default=20, ge=1, le=20)
+    maps_validation_min_completed_trades: int = Field(default=20, ge=20)
+    maps_execution_lock_dir: str = ".execution-locks"
     maps_backtest_mode: bool = False
 
     daily_loss_limit: float = Field(default=0.015, ge=0.0)
     max_single_exposure: float = Field(default=0.10, ge=0.0)
     account_risk_per_trade: float = Field(default=0.005, ge=0.0)
+
+    @model_validator(mode="after")
+    def _validate_classification_times(self) -> "MapsSettings":
+        """Reject malformed collection/check clock values at configuration load."""
+        for value in (self.maps_theme_collection_time, self.maps_classification_check_time):
+            try:
+                hour, minute = map(int, value.split(":"))
+                dt.time(hour, minute)
+            except (ValueError, TypeError) as exc:
+                raise ValueError(f"Invalid classification HH:MM: {value!r}") from exc
+        return self
 
     @model_validator(mode="after")
     def _map_legacy_ai_scoring_settings(self) -> "MapsSettings":

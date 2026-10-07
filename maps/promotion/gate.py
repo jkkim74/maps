@@ -11,6 +11,7 @@ from __future__ import annotations
 import datetime
 import json
 import logging
+import math
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -60,6 +61,7 @@ class PromotionDecision:
     evaluated_at: datetime.datetime = field(default_factory=datetime.datetime.now)
     # 이번 평가에서 자동 강등(mock_candidate → research)이 발동했는가
     demoted: bool = False
+    validation_run_id: str | None = None
 
 
 class PromotionGate:
@@ -122,6 +124,8 @@ class PromotionGate:
         # ── MC 한도 검증 (MOCK_CANDIDATE 이상) ──
         if current_stage.value in _MC_CHECK_STAGES and resolved_group:
             self._check_mc_limit(metrics, resolved_group, reasons)
+            from maps.promotion.evidence import hard_gate_errors
+            reasons.extend(hard_gate_errors(metrics, full_live=current_stage in (PromotionStage.LIVE_CANDIDATE, PromotionStage.LIVE)))
 
         # Mock -> Live Small: real account entry requires either three months
         # of mock trading or an explicitly approved replay equivalent.
@@ -160,6 +164,7 @@ class PromotionGate:
             target_stage=target_stage if passed else current_stage,
             passed=passed,
             reasons=reasons,
+            validation_run_id=metrics.get("validation_run_id"),
         )
         self._log_decision(decision)
         # 승격의 비대칭 보완: 점수가 강등 임계 미만으로 N회 연속이면 mock → research.
@@ -225,6 +230,9 @@ class PromotionGate:
             if value is None:
                 reasons.append(f"메트릭 누락: '{key}'")
                 continue
+            if not math.isfinite(float(value)):
+                reasons.append(f"nonfinite_metric:{key}")
+                continue
             score += float(value) * weight
         return score * 100
 
@@ -283,6 +291,7 @@ class PromotionGate:
         self._db.add(
             PromotionHistory(
                 strategy_id=decision.strategy_id,
+                validation_run_id=decision.validation_run_id,
                 from_stage=PromotionStage.MOCK_CANDIDATE.value,
                 to_stage=PromotionStage.RESEARCH.value,
                 tradeability_score=decision.score,
@@ -306,6 +315,7 @@ class PromotionGate:
         self._db.add(
             PromotionHistory(
                 strategy_id=decision.strategy_id,
+                validation_run_id=decision.validation_run_id,
                 from_stage=decision.current_stage.value,
                 to_stage=decision.target_stage.value,
                 tradeability_score=decision.score,

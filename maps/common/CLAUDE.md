@@ -168,3 +168,12 @@ metadata collection quality independently of price/flow success.
 ## logging_config.py
 
 `configure_logging(settings?)` — 콘솔 + RotatingFileHandler를 루트 로거에 등록. 멱등(기존 MAPS 핸들러 교체). SQLAlchemy 엔진 로그는 WARNING으로 제한.
+
+## Classification persistence
+
+`ClassificationRun` records durable sector/theme attempts, publication/notification
+UTC naive timestamps, exact reference day, expected universe, historical catalog and
+quality counts/errors. `ClassificationMember` stores unique `(run_id,ticker,code)`
+relations and historical labels. Only complete published runs are usable snapshots;
+failed attempts do not supersede success. `CollectionLog.classification_quality` is
+nullable additive JSON independent of `metadata_quality`.

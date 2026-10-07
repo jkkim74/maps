@@ -8,6 +8,7 @@ from __future__ import annotations
 import datetime
 import logging
 import uuid
+from decimal import Decimal
 from dataclasses import dataclass, field
 
 from maps.common.exceptions import (
@@ -25,7 +26,10 @@ from maps.execution.broker_adapter import (
     OrderStatus,
     PendingOrder,
     Position,
+    BuyingPower,
+    AccountActivity,
 )
+from maps.execution.safety import require_execution_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +80,7 @@ class MockBroker(BrokerAdapter):
         self._after_hours_volume: dict[str, int] = {}
         self._positions: dict[str, _PositionState] = {}
         self._filled: list[OrderResult] = []
+        self._cancelled: list[OrderResult] = []
         self._pending: dict[str, Order] = {}
         self._kill_switch: bool = False
         self._kill_switch_approver: str | None = None
@@ -93,8 +98,9 @@ class MockBroker(BrokerAdapter):
             DuplicateOrderError: 당일 동일 전략+종목+방향 중복.
             BrokerAdapterError: 가격 정보 없음.
         """
+        require_execution_enabled()
         # 1. Kill Switch
-        if self._kill_switch:
+        if self._kill_switch and order.side == OrderSide.BUY:
             raise KillSwitchError("Kill Switch 발동 — 신규 주문 차단")
 
         # 2. 중복 주문
@@ -144,8 +150,12 @@ class MockBroker(BrokerAdapter):
 
     def cancel_order(self, order_id: str) -> bool:
         """미체결 주문을 취소한다. (MockBroker는 즉시 체결이라 대부분 False.)"""
+        require_execution_enabled()
         if order_id in self._pending:
-            del self._pending[order_id]
+            order = self._pending.pop(order_id)
+            result = self._make_result(order, OrderStatus.CANCELLED, 0, 0, 0)
+            result.order_id = order_id
+            self._cancelled.append(result)
             logger.info("주문 취소: %s", order_id)
             return True
         return False
@@ -203,7 +213,18 @@ class MockBroker(BrokerAdapter):
         ]
 
     def get_daily_order_results(self) -> list[OrderResult]:
-        return list(self._filled)
+        return list(self._filled) + list(self._cancelled)
+
+    def get_order_history(self, start, end) -> list[OrderResult]:
+        return [r for r in self.get_daily_order_results() if start <= r.submitted_at.date() <= end]
+
+    def get_buying_power(self, order: Order) -> BuyingPower:
+        price = Decimal(str(self._resolve_price(order)))
+        cash = Decimal(str(self._cash))
+        return BuyingPower(cash, int(cash // price), price, datetime.datetime.now(datetime.timezone.utc))
+
+    def get_account_activity(self, start, end) -> AccountActivity:
+        return AccountActivity(complete=True, costs=Decimal(0))
 
     # ------------------------------------------------------------------
     # MockBroker 전용 메서드
@@ -222,8 +243,10 @@ class MockBroker(BrokerAdapter):
 
     def eod_cleanup(self) -> None:
         """장 마감 정리: 중복 탐지 초기화, 미체결 주문 전량 취소."""
+        require_execution_enabled()
         cancelled = list(self._pending.keys())
-        self._pending.clear()
+        for order_id in cancelled:
+            self.cancel_order(order_id)
         self._today_orders.clear()
         if cancelled:
             logger.info("EOD 정리: %d건 미체결 취소", len(cancelled))
@@ -261,7 +284,7 @@ class MockBroker(BrokerAdapter):
     @property
     def filled_orders(self) -> list[OrderResult]:
         """체결된 주문 목록."""
-        return list(self._filled)
+        return list(self._filled) + list(self._cancelled)
 
     @property
     def kill_switch_active(self) -> bool:
@@ -304,4 +327,7 @@ class MockBroker(BrokerAdapter):
             commission=commission,
             submitted_at=now,
             filled_at=now if status == OrderStatus.FILLED else None,
+            quantity=order.quantity,
+            order_price=order.limit_price,
+            remaining_quantity=order.quantity - filled_qty,
         )

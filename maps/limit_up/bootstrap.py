@@ -85,12 +85,9 @@ def build_runtime(settings: MapsSettings) -> KISIntradayRuntime:
     risk = RiskManager(
         broker=broker,
         db=db,
-        config=RiskConfig(
-            daily_loss_limit=settings.daily_loss_limit,
-            position_size_limit=settings.max_single_exposure,
-        ),
+        config=RiskConfig.from_settings(settings),
     )
-    worker = LimitUpCommandWorker(OrderManager(broker=broker, risk=risk, db=db), broker, repository)
+    worker = LimitUpCommandWorker(OrderManager(broker=broker, risk=risk, db=db, settings=settings), broker, repository)
     service = LimitUpService(
         mode=LimitUpMode(settings.maps_limit_up_mode),
         config=LimitUpConfig(

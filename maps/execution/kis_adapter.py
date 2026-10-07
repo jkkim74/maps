@@ -20,12 +20,13 @@ from contextvars import ContextVar
 import threading
 import time
 from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 import requests
 
-from maps.common.exceptions import BrokerAdapterError, BrokerOrderUnknownError
+from maps.common.exceptions import BrokerOrderRejectedError, BrokerAdapterError, BrokerOrderUnknownError
 from maps.execution.kis_request_stats import KIS_REQUEST_STATS
 from maps.common.settings import MapsSettings, get_settings
 from maps.market.trading_rules import is_krx_closed_date, krx_tick_size
@@ -43,7 +44,10 @@ from maps.execution.broker_adapter import (
     PositionSnapshot,
     SameDayBuy,
     raw_broker_order_id,
+    BuyingPower,
+    AccountActivity,
 )
+from maps.execution.safety import require_execution_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -290,6 +294,7 @@ class KISAdapter(BrokerAdapter):
 
     def place_order(self, order: Order) -> OrderResult:
         """Submit a domestic cash stock order through KIS."""
+        require_execution_enabled(self._settings)
         tr_id = self._tr_id("buy" if order.side == OrderSide.BUY else "sell")
         order_price = self._resolve_order_price(order)
         body = {
@@ -306,6 +311,8 @@ class KISAdapter(BrokerAdapter):
         self._invalidate_balance_cache()
         output = self._output(data)
         order_id = str(output.get("ODNO") or output.get("odno") or "")
+        if not order_id:
+            raise BrokerOrderUnknownError("KIS accepted response has no order identifier")
         submitted = self._parse_kis_datetime(
             output.get("ORD_TMD") or output.get("ord_tmd"),
             fallback=_kst_now_naive(),
@@ -331,6 +338,7 @@ class KISAdapter(BrokerAdapter):
         the exchange-forwarding organization number; " " is accepted by the
         common domestic stock flow when that value is not supplied.
         """
+        require_execution_enabled(self._settings)
         body = {
             "CANO": self._account_prefix,
             "ACNT_PRDT_CD": self._account_product_code,
@@ -342,7 +350,8 @@ class KISAdapter(BrokerAdapter):
             "ORD_UNPR": "0",
             "QTY_ALL_ORD_YN": "Y",
         }
-        self._request("POST", _CANCEL_PATH, tr_id=self._tr_id("cancel"), json=body, hash_body=body)
+        self._request("POST", _CANCEL_PATH, tr_id=self._tr_id("cancel"), json=body,
+                      hash_body=body, idempotent=False)
         self._invalidate_balance_cache()
         return True
 
@@ -550,13 +559,32 @@ class KISAdapter(BrokerAdapter):
 
     def get_daily_order_results(self) -> list[OrderResult]:
         """Return same-day KIS order/fill states, including partial fills."""
+        today = dt.datetime.now(_KST).date()
+        return self.get_order_history(today, today)
+
+    def get_order_history(self, start: dt.date, end: dt.date) -> list[OrderResult]:
         results: list[OrderResult] = []
-        for row in self._fetch_daily_order_rows():
+        rows: list[dict] = []
+        # The current TR supports recent history only; never claim older coverage.
+        if start > end or (dt.datetime.now(_KST).date() - start).days > 90:
+            raise BrokerAdapterError("order_history_range_unsupported")
+        day = start
+        while day <= end:
+            stop = min(day + dt.timedelta(days=29), end)
+            rows.extend(self._fetch_daily_order_rows(start=day, end=stop))
+            day = stop + dt.timedelta(days=1)
+        for row in rows:
             order_qty = self._row_order_qty(row)
             filled_qty = self._row_filled_qty(row)
             remaining = self._row_remaining_qty(row)
             status = self._row_status(row, order_qty=order_qty, filled_qty=filled_qty, remaining=remaining)
             submitted_at = self._parse_kis_datetime(row.get("ord_tmd"), fallback=_kst_now_naive())
+            order_day = str(row.get("ord_dt") or "")
+            if order_day:
+                parsed_day = dt.datetime.strptime(order_day, "%Y%m%d").date()
+                submitted_at = dt.datetime.combine(parsed_day, submitted_at.time())
+            elif start != end or start != dt.datetime.now(_KST).date():
+                raise BrokerAdapterError("historical_order_date_missing")
             results.append(
                 OrderResult(
                     order_id=self._row_order_id(row),
@@ -572,17 +600,20 @@ class KISAdapter(BrokerAdapter):
                     commission=0.0,
                     submitted_at=submitted_at or _kst_now_naive(),
                     filled_at=submitted_at if filled_qty > 0 else None,
+                    quantity=order_qty,
+                    order_price=self._to_float_or_none(row.get("ord_unpr")),
+                    remaining_quantity=remaining,
                 )
             )
         return results
 
-    def _fetch_daily_order_rows(self, *, ccld_dvsn: str = "00") -> list[dict[str, Any]]:
+    def _fetch_daily_order_rows(self, *, ccld_dvsn: str = "00", start=None, end=None) -> list[dict[str, Any]]:
         # ccld_dvsn: "00"=전체, "01"=체결, "02"=미체결
         params = {
             "CANO": self._account_prefix,
             "ACNT_PRDT_CD": self._account_product_code,
-            "INQR_STRT_DT": dt.datetime.now(_KST).strftime("%Y%m%d"),
-            "INQR_END_DT": dt.datetime.now(_KST).strftime("%Y%m%d"),
+            "INQR_STRT_DT": (start or dt.datetime.now(_KST)).strftime("%Y%m%d"),
+            "INQR_END_DT": (end or dt.datetime.now(_KST)).strftime("%Y%m%d"),
             "SLL_BUY_DVSN_CD": "00",
             "INQR_DVSN": "00",
             "PDNO": "",
@@ -673,6 +704,59 @@ class KISAdapter(BrokerAdapter):
         data, _observed_at = self._fetch_balance_data()
         return self._parse_balance_data(data)
 
+    def get_execution_snapshot(self) -> PositionSnapshot:
+        data, observed_at = self._fetch_balance_data(max_age_seconds=0)
+        summary = self._first(data.get("output2"))
+        if "output1" not in data or not summary:
+            raise BrokerAdapterError("account_snapshot_incomplete")
+        cash_field = next((name for name in ("prvs_rcdl_excc_amt", "dnca_tot_amt")
+                           if name in summary and summary[name] not in (None, "")), None)
+        nav_field = next((name for name in ("tot_evlu_amt", "nass_amt")
+                          if name in summary and summary[name] not in (None, "")), None)
+        if cash_field is None or nav_field is None:
+            raise BrokerAdapterError("account_valuation_missing")
+        positions, balance = self._parse_balance_data(data)
+        cash, nav = Decimal(str(summary[cash_field])), Decimal(str(summary[nav_field]))
+        if not cash.is_finite() or not nav.is_finite() or cash < 0 or nav <= 0:
+            raise BrokerAdapterError("account_valuation_invalid")
+        balance.cash, balance.total_assets = float(cash), float(nav)
+        return PositionSnapshot(positions, balance, observed_at)
+
+    def get_buying_power(self, order: Order) -> BuyingPower:
+        result = self._request("GET", "/uapi/domestic-stock/v1/trading/inquire-psbl-order",
+            tr_id="TTTC8908R" if self._settings.kis_real_trading else "VTTC8908R",
+            params={"CANO": self._account_prefix, "ACNT_PRDT_CD": self._account_product_code,
+                    "PDNO": order.ticker, "ORD_UNPR": str(self._resolve_order_price(order)),
+                    "ORD_DVSN": self._order_division(order), "CMA_EVLU_AMT_ICLD_YN": "N",
+                    "OVRS_ICLD_YN": "N"})
+        out = self._output(result)
+        amount = Decimal(str(out.get("nrcvb_buy_amt", "NaN")))
+        quantity = self._to_int(out.get("nrcvb_buy_qty"))
+        bound = Decimal(str(out.get("psbl_qty_calc_unpr") or order.limit_price or "NaN"))
+        if not amount.is_finite() or not bound.is_finite() or bound <= 0 or amount < 0:
+            raise BrokerAdapterError("buying_power_incomplete")
+        return BuyingPower(amount, quantity, bound, dt.datetime.now(dt.timezone.utc))
+
+    def get_account_activity(self, start: dt.date, end: dt.date) -> AccountActivity:
+        if not self._settings.kis_real_trading:
+            # Paper has no cost-history endpoint. Zero is the observed cost base;
+            # any cash residual still blocks entry until explicitly classified.
+            return AccountActivity(complete=True, costs=Decimal(0),
+                unsupported=("paper_cost_history", "cash_transfers", "security_transfers"))
+        data = self._fetch_paged("/uapi/domestic-stock/v1/trading/inquire-period-profit",
+            tr_id="TTTC8708R", params={"CANO": self._account_prefix,
+                "ACNT_PRDT_CD": self._account_product_code,
+                "INQR_STRT_DT": start.strftime("%Y%m%d"), "INQR_END_DT": end.strftime("%Y%m%d"),
+                "SORT_DVSN": "00", "INQR_DVSN": "00", "CBLC_DVSN": "00", "PDNO": "",
+                "CTX_AREA_FK100": "", "CTX_AREA_NK100": ""})
+        rows = self._as_list(data.get("output1"))
+        if "output1" not in data or any(any(k not in row for k in ("fee", "tl_tax", "loan_int")) for row in rows):
+            raise BrokerAdapterError("account_costs_incomplete")
+        costs = sum((Decimal(str(row[k] or 0)) for row in rows for k in ("fee", "tl_tax", "loan_int")), Decimal(0))
+        if not costs.is_finite() or costs < 0:
+            raise BrokerAdapterError("account_costs_invalid")
+        return AccountActivity(complete=True, costs=costs)
+
     def _parse_balance_data(
         self, data: dict[str, Any]
     ) -> tuple[dict[str, Position], AccountBalance]:
@@ -689,6 +773,7 @@ class KISAdapter(BrokerAdapter):
                 name=str(row.get("prdt_name") or ""),
                 current_price=self._to_float(row.get("prpr") or row.get("stck_prpr")),
                 evaluation_value=self._to_float(row.get("evlu_amt")) or None,
+                sellable_quantity=self._to_int(row.get("ord_psbl_qty")),
             )
 
         summary = self._first(data.get("output2"))
@@ -770,6 +855,8 @@ class KISAdapter(BrokerAdapter):
         tr_cont = ""
         for page in range(1, _MAX_TR_CONT_PAGES + 1):
             data = self._request("GET", path, tr_id=tr_id, params=params, tr_cont=tr_cont)
+            if list_key not in data or not isinstance(data[list_key], (list, dict)):
+                raise BrokerAdapterError("broker_page_content_incomplete")
             if merged is None:
                 merged = data
             else:
@@ -787,7 +874,7 @@ class KISAdapter(BrokerAdapter):
             params["CTX_AREA_NK100"] = str(data.get("ctx_area_nk100") or "")
             tr_cont = "N"
         logger.warning("KIS 연속조회가 %d페이지 상한에 도달: %s", _MAX_TR_CONT_PAGES, path)
-        return merged if merged is not None else {}
+        raise BrokerAdapterError("broker_pagination_incomplete")
 
     def _invalidate_balance_cache(self) -> None:
         """주문·취소로 포지션이 바뀐 뒤 오래된 잔고 캐시를 제거한다."""
@@ -1003,6 +1090,8 @@ class KISAdapter(BrokerAdapter):
             attempt += 1
             gate_started = time.monotonic()
             self._pace_request()
+            if path in (_ORDER_PATH, _CANCEL_PATH):
+                require_execution_enabled(self._settings)
             started, start_gap_ms = self._http_start()
             diagnostics = dict(
                 path=path, tr_id=headers.get("tr_id", ""), attempt=attempt,
@@ -1136,7 +1225,7 @@ class KISAdapter(BrokerAdapter):
         message = str(payload.get("msg1") or payload.get("error_description") or payload)
         hint = _KIS_ERROR_HINTS.get(code)
         suffix = f" ({hint})" if hint else ""
-        raise BrokerAdapterError(f"{prefix}: {code} {message}{suffix}".strip())
+        raise BrokerOrderRejectedError(f"{prefix}: {code} {message}{suffix}".strip())
 
     def _tr_id(self, key: str) -> str:
         return _TR_IDS["real" if self._real else "paper"][key]
@@ -1185,21 +1274,17 @@ class KISAdapter(BrokerAdapter):
 
     @classmethod
     def _row_filled_qty(cls, row: dict[str, Any]) -> int:
-        filled = cls._to_int(row.get("tot_ccld_qty") or row.get("ccld_qty") or 0)
-        if filled == 0:
-            order_qty = cls._row_order_qty(row)
-            explicit_remaining = cls._to_int(row.get("rmn_qty") or row.get("ord_unprcs_qty"))
-            if order_qty > 0 and explicit_remaining > 0:
-                return max(order_qty - explicit_remaining, 0)
-        return filled
+        for key in ("tot_ccld_qty", "ccld_qty"):
+            if key in row:
+                return cls._to_int(row[key])
+        raise BrokerAdapterError("filled_quantity_missing")
 
     @classmethod
     def _row_remaining_qty(cls, row: dict[str, Any]) -> int:
-        order_qty = cls._row_order_qty(row)
-        remaining = cls._to_int(row.get("rmn_qty") or row.get("ord_unprcs_qty"))
-        if remaining == 0 and order_qty > 0:
-            remaining = max(order_qty - cls._row_filled_qty(row), 0)
-        return remaining
+        for key in ("rmn_qty", "ord_unprcs_qty"):
+            if key in row:
+                return cls._to_int(row[key])
+        return max(cls._row_order_qty(row) - cls._row_filled_qty(row), 0)
 
     @staticmethod
     def _row_side(row: dict[str, Any]) -> OrderSide:

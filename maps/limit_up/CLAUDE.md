@@ -34,6 +34,13 @@ unconditional even when optional score-readiness checks are disabled. Missing,
 failed, or insufficient metadata blocks new submission while broker reconciliation
 of ambiguous intents and all exit/cancellation paths remain available.
 
+상한가 V1 매수는 `OrderManager`가 `ExecutionContext.source="limit_up"`의 DB 세션 존재·
+종목 일치·`execution_mode="automatic"`과 엔진 활성/자동 모드를 확인한 뒤 업종·테마
+분류 누락 및 비중 한도를 생략한다. 전략 이름만으로는 적용하지 않는다. 현금·단일 종목
+누적노출·총노출·계좌 손실·킬스위치와 위 메타데이터 품질 게이트, V1 진입 조건·일일 가드·
+오버나이트 한도·청산 및 매도 소유권 검증은 그대로 유지한다. V1 보유분은 다른 전략의
+업종·테마 노출 계산에 계속 포함한다. 설정과 스키마 변경은 없다.
+
 ## Directory structure
 
 ```

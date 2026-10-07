@@ -18,6 +18,7 @@ from maps.common.models import (
     KillSwitchLog,
     MarketRegimeLog,
     OrderLog,
+    SecurityMetadata,
 )
 from maps.common.settings import MapsSettings
 from maps.execution.broker_adapter import Order, OrderResult, OrderSide, OrderStatus, OrderType
@@ -25,6 +26,8 @@ from maps.execution.mock_broker import MockBroker
 from maps.execution.order_manager import OrderManager
 from maps.market.trading_rules import trading_days_ago, previous_trading_day
 from maps.ops.scheduler import OperationalPipeline
+from tests.execution_contract import prime_account
+from maps.execution.safety import account_key
 
 # 픽 기준일은 today 상대값이어야 한다. 고정 날짜로 두면 신선도 가드가 들어온 뒤
 # 시간이 흐르면서 전 테스트가 조용히 만료 픽을 쓰게 된다.
@@ -36,7 +39,8 @@ def env():
     engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(engine)
     factory = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-    pipeline = OperationalPipeline(session_factory=factory)
+    pipeline = OperationalPipeline(session_factory=factory,
+        settings=MapsSettings(maps_strategy_trade_enabled=True, maps_live_trading_enabled=True))
     broker = MockBroker(initial_cash=100_000_000, price_feed={})
     db = factory()
     db.add(CollectionLog(ref_date=previous_trading_day(_TODAY, extra_closed_dates=pipeline._settings.krx_closed_dates),
@@ -45,7 +49,8 @@ def env():
                              for market in ("KOSPI", "KOSDAQ")}}))
     db.commit()
     risk = pipeline._make_risk_manager(broker, db)
-    manager = OrderManager(broker=broker, risk=risk, db=db)
+    manager = OrderManager(broker=broker, risk=risk, db=db, settings=pipeline._settings)
+    prime_account(manager, db)
     try:
         yield pipeline, broker, manager, db
     finally:
@@ -88,6 +93,42 @@ def test_incomplete_market_score_blocks_new_strategy_buy(env):
 
     assert (submitted, closed) == (0, 0)
     assert db.query(OrderLog).count() == 0
+
+
+@pytest.mark.parametrize("split", [False, True])
+@pytest.mark.parametrize("classification", ["missing", "sector_cap", "theme_cap"])
+@pytest.mark.parametrize("exit_price", [81_000, 59_000])
+def test_watchlist_classification_policy_allows_entry_and_exit(
+    env, split: bool, classification: str, exit_price: int,
+) -> None:
+    """Classification gates must not strand single or split watchlist trades."""
+    pipeline, broker, manager, db = env
+    pick = _split_pick(db) if split else _pick(db)
+    cfg = manager._risk._cfg
+    cfg.sector_exposure_limit_enabled = True
+    cfg.theme_exposure_limit_enabled = True
+    if classification != "missing":
+        db.add(SecurityMetadata(
+            ticker=pick.ticker, name="Example", market="KOSPI", security_type="STOCK",
+            sector="electronics", theme="semiconductors",
+        ))
+        db.commit()
+        if classification == "sector_cap":
+            cfg.sector_exposure_limit = 0.001
+        else:
+            cfg.theme_exposure_limit = 0.001
+
+    assert _run(pipeline, broker, manager, db, [pick], {pick.ticker: 70_000}) == (1, 0)
+    if split:
+        # Later legs also see the already-held, potentially unclassified shares.
+        assert _run(pipeline, broker, manager, db, [pick], {pick.ticker: 67_000}) == (1, 0)
+        assert _run(pipeline, broker, manager, db, [pick], {pick.ticker: 64_000}) == (1, 0)
+    assert broker.get_position(pick.ticker).quantity == (30 if split else 10)
+    assert _run(pipeline, broker, manager, db, [pick], {pick.ticker: exit_price}) == (0, 1)
+    assert pick.state == "CLOSED"
+    assert broker.get_position(pick.ticker) is None
+    exit_row = db.query(OrderLog).filter_by(side="sell").one()
+    assert exit_row.exit_reason == ("take_profit" if exit_price == 81_000 else "stop_loss")
 
 
 def test_incomplete_market_score_does_not_block_exit(env):
@@ -163,7 +204,9 @@ def _split_pick(db, *, ticker="005930", state="ARMED"):
 
 def _seed_leg_order(db, leg, *, status, fill_qty, order_id="leg-order-1"):
     leg.order_id = order_id
+    leg.pick.entry_order_id = order_id
     db.add(OrderLog(
+        account_key=account_key(),
         order_id=order_id,
         strategy_id=f"strategy_trade:{leg.pick_id}:leg:{leg.sequence}",
         ticker=leg.pick.ticker,
@@ -191,7 +234,7 @@ def test_split_submits_only_first_eligible_leg_per_cycle(env):
     assert pick.legs[2].order_id is None
 
 
-def test_split_daily_loss_uses_stable_pick_kill_switch(env):
+def test_split_does_not_trust_caller_supplied_daily_loss(env):
     pipeline, broker, manager, db = env
     pick = _split_pick(db)
 
@@ -205,11 +248,8 @@ def test_split_daily_loss_uses_stable_pick_kill_switch(env):
         daily_pnl=-0.02,
     )
 
-    assert (submitted, closed) == (0, 0)
-    assert db.query(OrderLog).count() == 0
-    kill = db.query(KillSwitchLog).one()
-    assert kill.strategy_id == f"strategy_trade:{pick.id}"
-    assert kill.reason == "daily_loss_limit"
+    assert (submitted, closed) == (1, 0)
+    assert db.query(KillSwitchLog).count() == 0
 
 
 def test_split_market_block_policy_warns_but_allows(env, caplog):

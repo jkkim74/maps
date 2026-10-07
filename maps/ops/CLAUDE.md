@@ -7,6 +7,8 @@
 
 ```
 ops/
+├── classification_jobs.py   # sector/theme collection and durable diagnostics
+├── safety_notifications.py # 실행 안전 이벤트의 영속 알림 재시도
 ├── __init__.py             # 빈 패키지 마커
 ├── candidate_selection.py  # AI 모드별 후보 주문 자격 SQL 식
 ├── close_report.py         # 장마감 텔레그램 리포트 — 다이제스트 + 당일 실패 잡 렌더
@@ -322,3 +324,28 @@ maps.indicator.*      → TrendStrengthCalculator
 maps.stock_report.*   → run_all_reports_if_idle
 apscheduler           → BackgroundScheduler, CronTrigger, IntervalTrigger
 ```
+
+
+## Classification snapshot operations
+
+`OperationalPipeline.collect_themes(ref_date)` is independent from candidate generation and V1.
+`MAPS_THEME_COLLECTION_ENABLED=false` and `MAPS_CLASSIFICATION_SNAPSHOT_ENFORCED=false`
+are staged rollout defaults. Theme collection runs at `MAPS_THEME_COLLECTION_TIME` (17:00 KST),
+using only the same-day published sector expected universe. The running attempt is committed
+before HTTP; no DB transaction spans network collection. Publication remains atomic.
+
+`classification_check` runs at sector collection +20 minutes and at
+`MAPS_CLASSIFICATION_CHECK_TIME` (17:25), on startup, and every 60 seconds. Checks use the
+calendar-only KRX closure helper and never collect network data or restart V1. Current day
+missing evidence becomes `missed` once due. Unresolved historical evidence (up to 500 attempts) and the latest 100 recovery candidates are
+also reconciled; historical missing rows are not fabricated during rollout. Running attempts
+expire after their own 20-minute deadline once the scheduled watchdog deadline is due.
+Conditional updates never overwrite concurrently completed runs.
+
+Failures/partial/misses and one subsequent recovery use the configured notifier. Successful
+delivery alone sets durable `ClassificationRun.notified_at`; failed delivery is retried.
+`JobRunLog` persists theme results; successful diagnostic heartbeat jobs do not add noise.
+Batch monitor exposes `classification_quality` with latest attempt and last successful run
+separately, metrics/provider/timestamps/errors, state and stale flag. Before the current day's
+deadline, freshness compares the previous completed trading day. Disabled collection is
+visible as `disabled` and does not produce theme missed alerts.

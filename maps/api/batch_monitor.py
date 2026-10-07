@@ -41,6 +41,7 @@ _JOBS: list[tuple[str, str, str, int, bool, str]] = [
     ("eod_cleanup", "EOD 정리", "maps_eod_time", 30, True, "pipeline"),
     ("analyze", "분석 픽 (/analyze)", "16:00", 90, False, "analyze"),
     ("data_collection", "데이터 수집", "maps_data_collection_time", 30, True, "pipeline"),
+    ("theme_collection", "테마 수집", "maps_theme_collection_time", 25, True, "pipeline"),
     ("candidate_generation", "후보 생성", "maps_candidate_time", 30, True, "pipeline"),
     ("validation", "검증", "maps_validation_time", 60, True, "pipeline"),
     ("stock_report", "종목 리포트", "maps_stock_report_time", 60, False, "stock_report"),
@@ -185,6 +186,9 @@ def get_batch_monitor(
             )
             for d in dates
         ]
+        if name == "theme_collection" and not get_settings().maps_theme_collection_enabled:
+            for cell in cells:
+                cell.status = "disabled"
         for cell, day in zip(cells, dates):
             warnings = partial_history.get((name, day), [])
             if warnings:
@@ -203,7 +207,9 @@ def get_batch_monitor(
             BatchJobRow(name=name, label=label, schedule=schedule, rerunnable=rerunnable, cells=cells)
         )
 
+    from maps.ops.classification_jobs import quality_summary
     return BatchMonitorResponse(
+        classification_quality=quality_summary(db, get_settings(), now),
         days=[d.isoformat() for d in dates],
         jobs=jobs,
         generated_at=now.isoformat(),

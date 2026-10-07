@@ -6,8 +6,8 @@ import datetime as dt
 
 import pytest
 
-from maps.common.exceptions import BrokerAdapterError
-from maps.common.models import CollectionLog, OrderLog
+from maps.common.exceptions import BrokerAdapterError, BrokerOrderRejectedError
+from maps.common.models import CollectionLog, OrderLog, SecurityMetadata
 from maps.common.settings import get_settings
 from maps.market.trading_rules import previous_trading_day
 from maps.execution.broker_adapter import (
@@ -21,13 +21,16 @@ from maps.execution.broker_adapter import (
     Position,
 )
 from maps.execution.order_manager import OrderManager
+from maps.common.settings import MapsSettings
+from tests.execution_contract import SyntheticAccountContract, prime_account, record_owned_leg
+from maps.execution.safety import account_key
 from maps.limit_up.domain import build_grid
 from maps.limit_up.repository import LimitUpRepository
 from maps.limit_up.worker import LimitUpCommandWorker
 from maps.risk.manager import RiskManager
 
 
-class ScriptedBroker(BrokerAdapter):
+class ScriptedBroker(SyntheticAccountContract, BrokerAdapter):
     """Deterministic broker boundary used to exercise the real worker and manager."""
 
     def __init__(self) -> None:
@@ -44,22 +47,29 @@ class ScriptedBroker(BrokerAdapter):
         """Record an order or raise on the selected buy sequence number."""
         buy_number = sum(item.side is OrderSide.BUY for item in self.orders) + 1
         if order.side is OrderSide.BUY and self.fail_buy_number == buy_number:
-            raise BrokerAdapterError("scripted second-leg rejection")
+            raise BrokerOrderRejectedError("scripted second-leg rejection")
         self.orders.append(order)
-        return OrderResult(
+        result = OrderResult(
             order_id=str(1000 + len(self.orders)),
             strategy_id=order.strategy_id,
             ticker=order.ticker,
             side=order.side,
             status=OrderStatus.PENDING,
-            submitted_at=dt.datetime(2026, 8, 28, 10, 0, len(self.orders)),
+            submitted_at=dt.datetime.now(), quantity=order.quantity,
         )
+        self.daily_results.append(result)
+        self.open_orders.append(PendingOrder(result.order_id, order.ticker, order.side,
+            order.quantity, order.quantity, order.limit_price or order.current_price))
+        return result
 
     def cancel_order(self, order_id: str) -> bool:
         """Record a cancellation or emulate the fill/cancel race error."""
         if self.cancel_error:
             raise BrokerAdapterError("already filled")
         self.cancelled.append(order_id)
+        from dataclasses import replace
+        self.daily_results = [replace(r, status=OrderStatus.CANCELLED) if r.order_id == order_id else r for r in self.daily_results]
+        self.open_orders = [o for o in self.open_orders if o.order_id != order_id]
         return True
 
     def get_position(self, ticker: str) -> Position | None:
@@ -93,7 +103,9 @@ def _worker(db, broker: ScriptedBroker) -> tuple[LimitUpCommandWorker, object]:
         upper_limit_price=100_000,
         trigger_price=99_700,
     )
-    manager = OrderManager(broker, RiskManager(broker, db), db)
+    manager = OrderManager(broker, RiskManager(broker, db), db, settings=MapsSettings(
+            maps_limit_up_enabled=True, maps_limit_up_mode="automatic", maps_live_trading_enabled=True))
+    prime_account(manager, db)
     db.add(CollectionLog(ref_date=previous_trading_day(session.ref_date, extra_closed_dates=get_settings().krx_closed_dates),
                          source="krx", status="success", metadata_quality={"markets": {
                              market: {"expected_count": 100, "valid_count": 100, "error": None}
@@ -122,6 +134,29 @@ def test_grid_metadata_failure_blocks_new_buys(db, failure):
     assert broker.orders == []
     assert result.position_quantity == 0
     assert not worker.repository.event_exists(session, action="submit_buy", state_version=session.state_version, leg="S")
+
+
+@pytest.mark.parametrize("field", ["sector", "theme"])
+@pytest.mark.parametrize("classified", [False, True])
+def test_grid_ignores_classification_limits(db, field: str, classified: bool) -> None:
+    """Validated V1 buys submit both legs despite missing or over-cap classification."""
+    broker = ScriptedBroker()
+    worker, session = _worker(db, broker)
+    setattr(worker.order_manager._risk._cfg, f"{field}_exposure_limit_enabled", True)
+    setattr(worker.order_manager._risk._cfg, f"{field}_exposure_limit", 0.005)
+    if classified:
+        db.add(SecurityMetadata(
+            ticker=session.ticker, name="Example", market="KOSPI", security_type="STOCK",
+            sector="electronics", theme="semiconductors",
+        ))
+        db.commit()
+
+    worker.fire_grid(session, build_grid(upper_limit_price=100_000, budget_krw=2_000_000))
+
+    assert [order.strategy_id for order in broker.orders] == ["limit_up_v1:S", "limit_up_v1:A"]
+    assert [(leg.name, leg.broker_order_id, leg.status) for leg in worker.legs(session)] == [
+        ("A", "1002", "pending"), ("S", "1001", "pending"),
+    ]
 
 
 def test_grid_submits_s_then_a_and_persists_broker_ids(db) -> None:
@@ -283,7 +318,7 @@ def test_unfilled_exit_leaves_realized_pnl_unknown_rather_than_zero(db) -> None:
     assert not (session.realized_pnl_by_date or {})
 
 
-def test_recovery_cancels_an_exit_whose_id_was_never_recorded(db) -> None:
+def test_recovery_leaves_unknown_manual_exit_for_review(db) -> None:
     """Crashing after the broker accepted a sell but before the id was stored.
 
     Trusting only the ledger left that sell live, so the recovery exit stacked a
@@ -306,10 +341,10 @@ def test_recovery_cancels_an_exit_whose_id_was_never_recorded(db) -> None:
 
     result = worker.cancel_open_exits(session)
 
-    assert (result.cancelled, result.stranded) == (1, 0)
-    assert result.is_clear
-    assert broker.cancelled == ["9001"]
-    assert "9001" in (session.exit_order_ids or "")
+    assert (result.cancelled, result.stranded) == (0, 1)
+    assert not result.is_clear
+    assert broker.cancelled == []
+    assert not session.exit_order_ids
 
 
 def test_cancel_open_exits_ignores_other_tickers_and_buys(db) -> None:
@@ -341,6 +376,7 @@ def test_another_strategys_sell_is_left_alone(db) -> None:
     db.add(
         OrderLog(
             order_id="8001",
+            account_key=account_key(),
             strategy_id="pullback_v3",
             ticker="005930",
             side="sell",
@@ -454,11 +490,12 @@ def test_net_session_ownership_subtracts_exits_before_shared_account_position(db
         )
         leg.filled_quantity = quantity
         leg.avg_fill_price = 98_800.0
+        record_owned_leg(db, session, leg, quantity, 98_800)
     session.exit_order_ids = "exit-1"
     broker.daily_results = [OrderResult(
         order_id="exit-1", strategy_id="", ticker="005930",
         side=OrderSide.SELL, status=OrderStatus.FILLED,
-        filled_quantity=40, avg_price=100_000,
+        filled_quantity=40, avg_price=100_000, quantity=40,
         submitted_at=dt.datetime(2026, 8, 28, 15, 0),
     )]
     broker.position = Position("005930", quantity=360, avg_price=98_800)

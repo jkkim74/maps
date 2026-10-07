@@ -11,6 +11,18 @@ risk/
 └── manager.py        # RiskManager, KillSwitchEvent, RiskConfig, KillSwitchReason
 ```
 
+## Classification snapshots (2026-10-07)
+
+`MAPS_CLASSIFICATION_SNAPSHOT_ENFORCED=true` switches enabled sector/theme caps to
+published `ClassificationRun` snapshots for the previous KRX trading day. A missing
+or stale publication blocks normal BUY entries; each held/pending/new ticker must
+belong to that snapshot's explicit universe. A validated empty theme membership is
+allowed. Multi-theme holdings count their full exposure once per shared theme.
+`RiskConfig.from_settings()` carries the rollout flag; its default is false so
+collection can be commissioned before switching enforcement. Watchlist and V1
+classification exemptions return before either legacy or snapshot checks. Cash,
+single-stock/account limits and exit behavior remain unchanged.
+
 ## holding_regime_overlay.py
 
 `evaluate_holding_regime()`은 자동후보 진입 당시 장세와 최근 두 장마감 관측을 비교한다.
@@ -74,6 +86,17 @@ RiskManager(broker, db, config?, notifier?)
 | `_trigger_kill(strategy_id, reason, detail)` | Kill Switch 발동 + 로그 + Slack 알림 |
 | `_log_kill_switch(event)` | `kill_switch_log` 테이블에 감사 로그 기록 |
 | `_notify_kill_switch(event)` | `SlackNotifier.send_kill_switch()` 호출 |
+
+## 워치리스트·상한가 V1의 업종·테마 예외
+
+`OrderManager`가 DB의 픽과 대조해 검증한 `ExecutionContext.source="analysis_pick"`
+매수(단일·분할)와 자동 세션을 검증한 `source="limit_up"` 매수는
+`check_before_order(check_classification_limits=False)`로
+업종·테마 분류 누락 검사와 비중 한도를 생략한다. 전역 업종·테마 설정과 무관한 정책이며
+전략 이름만으로 적용하지 않는다. 기본값은 `True`로 다른 주문은 기존 분류 검사를 유지한다.
+
+현금·단일 종목 누적노출·총노출·손실·킬스위치 검사는 그대로 적용한다. 두 소스의 보유분도
+다른 전략의 업종·테마 노출 계산에 포함된다. 매도는 기존 경로를 유지한다.
 
 ## Kill Switch 원칙
 

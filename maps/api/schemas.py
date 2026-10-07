@@ -2,10 +2,31 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
+
+
+
 import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
+
+
+class SafetyResolutionRequest(BaseModel):
+    version: int = Field(ge=1)
+    reason: str = Field(min_length=8, max_length=1000)
+    evidence: dict = Field(min_length=1)
+
+
+class IntentResolutionRequest(SafetyResolutionRequest):
+    outcome: Literal["not_accepted", "link"]
+    broker_order_id: str | None = None
+
+
+class AdjustmentClassificationRequest(SafetyResolutionRequest):
+    kind: Literal["deposit", "withdrawal", "fee", "dividend", "security_transfer", "correction"]
+    amount: Decimal = Field(allow_inf_nan=False)
+    quantity_changes: dict[str, int] = Field(default_factory=dict)
 
 from maps.common.settings import LimitUpModeSetting
 from maps.limit_up.domain import MIN_TURNOVER_FLOOR_KRW
@@ -1298,6 +1319,7 @@ class BatchJobRow(BaseModel):
 
 
 class BatchMonitorResponse(BaseModel):
+    classification_quality: dict = Field(default_factory=dict)
     days: list[str]                    # 최신순
     jobs: list[BatchJobRow]
     generated_at: str

@@ -18,6 +18,7 @@ from sqlalchemy import (
     Integer,
     Index,
     JSON,
+    LargeBinary,
     Numeric,
     String,
     Text,
@@ -92,7 +93,7 @@ class SecurityMetadata(Base):
     listing_date: Mapped[datetime.date | None] = mapped_column(Date, nullable=True)
     delisting_date: Mapped[datetime.date | None] = mapped_column(Date, nullable=True)
     has_adjusted_price: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    sector: Mapped[str | None] = mapped_column(String(100), nullable=True)      # WICS 업종 분류
+    sector: Mapped[str | None] = mapped_column(String(100), nullable=True)      # KRX 업종의 호환용 최신 값
     theme: Mapped[str | None] = mapped_column(String(64), nullable=True)        # 8단계: 테마 분류 (AI반도체·HBM 등)
     updated_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc),
@@ -328,6 +329,7 @@ class CollectionLog(Base):
     status: Mapped[str] = mapped_column(String(16), nullable=False)   # success | partial | failed
     items: Mapped[int | None] = mapped_column(Integer, nullable=True)
     metadata_quality: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    classification_quality: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc)
@@ -337,6 +339,37 @@ class CollectionLog(Base):
 # ---------------------------------------------------------------------------
 # 스케줄러 잡 실행 이력 (SCR-21 배치 모니터)
 # ---------------------------------------------------------------------------
+class ClassificationRun(Base):
+    """Durable collection attempt; published complete snapshots are immutable."""
+
+    __tablename__ = "classification_run"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    kind: Mapped[str] = mapped_column(String(16), index=True)
+    provider: Mapped[str] = mapped_column(String(64))
+    ref_date: Mapped[datetime.date] = mapped_column(Date, index=True)
+    status: Mapped[str] = mapped_column(String(16), index=True)
+    started_at: Mapped[datetime.datetime] = mapped_column(DateTime)
+    finished_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)
+    published_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)
+    expected_tickers: Mapped[list] = mapped_column(JSON, default=list)
+    catalog: Mapped[dict] = mapped_column(JSON, default=dict)
+    metrics: Mapped[dict] = mapped_column(JSON, default=dict)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    notified_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class ClassificationMember(Base):
+    """Snapshot relation with historical provider code and label."""
+
+    __tablename__ = "classification_member"
+    __table_args__ = (UniqueConstraint("run_id", "ticker", "code", name="uq_classification_member"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("classification_run.id"), index=True)
+    ticker: Mapped[str] = mapped_column(String(16), index=True)
+    code: Mapped[str] = mapped_column(String(128))
+    name: Mapped[str] = mapped_column(String(256))
+
+
 class JobRunLog(Base):
     """job_run_log — 스케줄러 잡 실행 이력.
 
@@ -391,6 +424,7 @@ class ParameterPlateauResults(Base):
     """parameter_plateau_results — Plateau 그리드 탐색 결과."""
 
     __tablename__ = "parameter_plateau_results"
+    validation_run_id: Mapped[str | None] = mapped_column(String(36), index=True)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     strategy_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
@@ -409,6 +443,7 @@ class WalkForwardResults(Base):
     """walk_forward_results — WFA 요약 결과."""
 
     __tablename__ = "walk_forward_results"
+    validation_run_id: Mapped[str | None] = mapped_column(String(36), index=True)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     strategy_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
@@ -453,6 +488,7 @@ class MonteCarloSequenceResults(Base):
     """monte_carlo_sequence_results — MC 시뮬레이션 결과."""
 
     __tablename__ = "monte_carlo_sequence_results"
+    validation_run_id: Mapped[str | None] = mapped_column(String(36), index=True)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     strategy_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
@@ -507,6 +543,7 @@ class PromotionHistory(Base):
     """promotion_history — 전략 승격 결정 감사 로그."""
 
     __tablename__ = "promotion_history"
+    validation_run_id: Mapped[str | None] = mapped_column(String(36), index=True)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     strategy_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
@@ -546,6 +583,11 @@ class OrderLog(Base):
     __tablename__ = "order_log"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    intent_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    account_key: Mapped[str | None] = mapped_column(String(64), index=True)
+    environment: Mapped[str | None] = mapped_column(String(16))
+    code_hash: Mapped[str | None] = mapped_column(String(64))
+    params_hash: Mapped[str | None] = mapped_column(String(64))
     order_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
     strategy_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     ticker: Mapped[str] = mapped_column(String(16), nullable=False)
@@ -646,6 +688,8 @@ class KillSwitchLog(Base):
     """kill_switch_log — Kill Switch 발동/해제 감사 로그."""
 
     __tablename__ = "kill_switch_log"
+    account_key: Mapped[str | None] = mapped_column(String(64), index=True)
+    scope: Mapped[str | None] = mapped_column(String(16))
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     strategy_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
@@ -710,6 +754,7 @@ class AnalysisPick(Base):
     """
 
     __tablename__ = "analysis_pick"
+    execution_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     __table_args__ = (
         Index(
             "uq_analysis_pick_active_ticker",
@@ -1208,3 +1253,101 @@ class LimitUpTape(Base):
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc)
     )
+
+
+# Execution records are account/environment scoped; legacy rows are not guessed.
+class OrderIntent(Base):
+    __tablename__ = "order_intent"
+    __table_args__ = (UniqueConstraint("account_key", "event_key", name="uq_order_intent_event"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    account_key: Mapped[str] = mapped_column(String(64), index=True)
+    environment: Mapped[str] = mapped_column(String(16))
+    event_key: Mapped[str] = mapped_column(String(128))
+    strategy_id: Mapped[str] = mapped_column(String(64))
+    ticker: Mapped[str] = mapped_column(String(16), index=True)
+    side: Mapped[str] = mapped_column(String(8))
+    status: Mapped[str] = mapped_column(String(24), index=True)
+    request: Mapped[dict] = mapped_column(JSON)
+    broker_order_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    quantity: Mapped[int] = mapped_column(Integer)
+    filled_quantity: Mapped[int] = mapped_column(Integer, default=0)
+    reserved_amount: Mapped[Decimal] = mapped_column(Numeric(24, 4), default=0)
+    reserved_quantity: Mapped[int] = mapped_column(Integer, default=0)
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False)
+    validation_run_id: Mapped[str | None] = mapped_column(String(36))
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    valid_until: Mapped[datetime.datetime] = mapped_column(DateTime)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime)
+    updated_at: Mapped[datetime.datetime] = mapped_column(DateTime)
+
+
+class ExecutionAccountState(Base):
+    __tablename__ = "execution_account_state"
+    account_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    environment: Mapped[str] = mapped_column(String(16))
+    status: Mapped[str] = mapped_column(String(16), default="WARMUP")
+    block_reasons: Mapped[list] = mapped_column(JSON, default=list)
+    checked_at: Mapped[datetime.datetime | None] = mapped_column(DateTime)
+    last_complete_at: Mapped[datetime.datetime | None] = mapped_column(DateTime)
+    ref_date: Mapped[datetime.date | None] = mapped_column(Date)
+    value_index: Mapped[Decimal | None] = mapped_column(Numeric(24, 10))
+    high_water: Mapped[Decimal | None] = mapped_column(Numeric(24, 10))
+    day_open_index: Mapped[Decimal | None] = mapped_column(Numeric(24, 10))
+    daily_return: Mapped[Decimal | None] = mapped_column(Numeric(24, 10))
+    drawdown: Mapped[Decimal | None] = mapped_column(Numeric(24, 10))
+    killed: Mapped[bool] = mapped_column(Boolean, default=False)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+
+
+class AccountObservation(Base):
+    __tablename__ = "account_observation"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_key: Mapped[str] = mapped_column(String(64), index=True)
+    observed_at: Mapped[datetime.datetime] = mapped_column(DateTime, index=True)
+    ref_date: Mapped[datetime.date] = mapped_column(Date)
+    nav: Mapped[Decimal] = mapped_column(Numeric(24, 4))
+    cash: Mapped[Decimal] = mapped_column(Numeric(24, 4))
+    evidence: Mapped[dict] = mapped_column(JSON)
+    complete: Mapped[bool] = mapped_column(Boolean)
+
+
+class AccountAdjustment(Base):
+    __tablename__ = "account_adjustment"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_key: Mapped[str] = mapped_column(String(64), index=True)
+    observation_id: Mapped[int] = mapped_column(Integer, unique=True)
+    status: Mapped[str] = mapped_column(String(16), default="unclassified")
+    kind: Mapped[str | None] = mapped_column(String(32))
+    amount: Mapped[Decimal] = mapped_column(Numeric(24, 4))
+    evidence: Mapped[dict] = mapped_column(JSON)
+    resolution: Mapped[dict | None] = mapped_column(JSON)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime)
+
+
+class ValidationRun(Base):
+    __tablename__ = "validation_run"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    strategy_id: Mapped[str] = mapped_column(String(64), index=True)
+    run_date: Mapped[datetime.date] = mapped_column(Date)
+    status: Mapped[str] = mapped_column(String(16))
+    code_hash: Mapped[str] = mapped_column(String(64))
+    params_hash: Mapped[str] = mapped_column(String(64))
+    data_hash: Mapped[str] = mapped_column(String(64))
+    input_snapshot: Mapped[bytes] = mapped_column(LargeBinary)
+    manifest: Mapped[dict] = mapped_column(JSON)
+    metrics: Mapped[dict | None] = mapped_column(JSON)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime)
+
+
+class ExecutionSafetyEvent(Base):
+    __tablename__ = "execution_safety_event"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_key: Mapped[str] = mapped_column(String(64), index=True)
+    reason_code: Mapped[str] = mapped_column(String(64))
+    details: Mapped[dict] = mapped_column(JSON)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime)
+    delivered_at: Mapped[datetime.datetime | None] = mapped_column(DateTime)
+    acknowledged_at: Mapped[datetime.datetime | None] = mapped_column(DateTime)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    next_attempt_at: Mapped[datetime.datetime | None] = mapped_column(DateTime)

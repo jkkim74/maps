@@ -218,6 +218,7 @@ class CollectionResult:
     investor_flow_count: int = 0
     investor_flow_error: str | None = None
     metadata_quality: dict | None = None
+    classification_quality: dict | None = None
 
 
 class KRXAdapterBase(ABC):
@@ -260,6 +261,10 @@ class KRXAdapterBase(ABC):
     @abstractmethod
     def get_sector_classifications(self, ref_date: datetime.date) -> dict[str, str]:
         """ref_date 기준 ticker → WICS 업종명 매핑을 반환한다."""
+
+    def get_sector_classifications_strict(self, ref_date: datetime.date) -> dict[str, str]:
+        """Compatibility adapters expose their mapping; publication checks coverage."""
+        return self.get_sector_classifications(ref_date)
 
     @abstractmethod
     def get_fundamental(self, ref_date: datetime.date) -> list[FundamentalData]:
@@ -469,39 +474,43 @@ class KRXAdapter(KRXAdapterBase):
         return managed
 
     def get_sector_classifications(self, ref_date: datetime.date) -> dict[str, str]:
-        """KOSPI + KOSDAQ 전 종목의 WICS 업종 분류를 반환한다."""
+        """Legacy mapping API retains best-effort behavior."""
+        return self._collect_sectors(ref_date, strict=False)
+
+    def get_sector_classifications_strict(self, ref_date: datetime.date) -> dict[str, str]:
+        """Reject any market, schema, duplicate, or label failure."""
+        return self._collect_sectors(ref_date, strict=True)
+
+    def _collect_sectors(self, ref_date: datetime.date, strict: bool) -> dict[str, str]:
+        from maps.data.classifications import valid_label
         try:
             from pykrx import stock as _krx
-        except ImportError as e:
-            raise DataCollectionError("pykrx 라이브러리가 필요합니다: pip install pykrx") from e
-
-        date_str = ref_date.strftime("%Y%m%d")
+        except ImportError as exc:
+            raise DataCollectionError("pykrx library is required") from exc
+        ensure_krx_login_guard()
         result: dict[str, str] = {}
+        date_str = ref_date.strftime("%Y%m%d")
         for market in ("KOSPI", "KOSDAQ"):
             try:
-                df = _krx.get_market_sector_classifications(date_str, market=market)
-                if df is None or df.empty:
-                    continue
-                # 컬럼명: '종목코드', '종목명', '시가총액', ..., '업종명'
-                sector_col = next(
-                    (c for c in df.columns if "업종" in c and "명" in c), None
-                )
-                ticker_col = next(
-                    (c for c in df.columns if "종목코드" in c or "티커" in c or c == "Symbol"), None
-                )
+                frame = _krx.get_market_sector_classifications(date_str, market=market)
+                if frame is None or frame.empty:
+                    raise DataCollectionError(f"empty sector market: {market}")
+                sector_col = next((c for c in frame.columns if "업종" in c and "명" in c), None)
+                ticker_col = next((c for c in frame.columns if "종목코드" in c or "티커" in c or c == "Symbol"), None)
                 if sector_col is None:
-                    logger.warning("업종명 컬럼 없음 [%s %s] 컬럼=%s", market, date_str, list(df.columns))
-                    continue
-                if ticker_col is not None:
-                    for _, row in df.iterrows():
-                        result[str(row[ticker_col])] = str(row[sector_col])
-                else:
-                    # 인덱스가 ticker인 경우
-                    for ticker, row in df.iterrows():
-                        result[str(ticker)] = str(row[sector_col])
+                    raise DataCollectionError(f"sector column missing: {market}")
+                for index, row in frame.iterrows():
+                    ticker = row[ticker_col] if ticker_col is not None else index
+                    label = row[sector_col]
+                    if not valid_label(ticker) or not valid_label(label):
+                        raise DataCollectionError(f"invalid sector ticker/label: {market}")
+                    if ticker in result:
+                        raise DataCollectionError(f"duplicate sector ticker: {ticker}")
+                    result[ticker] = label.strip()
             except Exception as exc:
-                logger.warning("업종 수집 오류 [%s %s]: %s", market, date_str, exc)
-        logger.info("업종 분류 수집 완료 [%s]: %d종목", date_str, len(result))
+                if strict:
+                    raise DataCollectionError(f"sector collection failed [{market}]: {exc}") from exc
+                logger.warning("sector collection failed [%s]: %s", market, exc)
         return result
 
     def get_fundamental(self, ref_date: datetime.date) -> list[FundamentalData]:

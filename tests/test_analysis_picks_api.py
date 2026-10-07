@@ -5,6 +5,9 @@ from __future__ import annotations
 import datetime
 
 import pytest
+from tests.execution_contract import SyntheticAccountContract
+from maps.execution.safety import account_key
+from maps.execution.broker_adapter import BrokerAdapter, OrderResult, OrderSide, OrderStatus
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.exc import IntegrityError
@@ -213,6 +216,7 @@ def _seed_bought_pick_with_order(client, *, fill_price, order_price, status="fil
         pick.state = "BOUGHT"
         pick.entry_order_id = "ord-005930-1"
         s.add(OrderLog(
+            account_key=account_key(),
             order_id="ord-005930-1", strategy_id="strategy_trade", ticker="005930",
             side="buy", qty=10, order_price=order_price, fill_price=fill_price,
             fill_qty=10, status=status,
@@ -423,8 +427,9 @@ def _seed_entry_order(client, pid: int, *, order_id: str, status: str, fill_qty:
     with client.session_factory() as s:
         s.get(AnalysisPick, pid).entry_order_id = order_id
         s.add(OrderLog(
+            account_key=account_key(),
             order_id=order_id, strategy_id="strategy_trade", ticker="005930",
-            side="BUY", qty=1000, order_price=70000.0, fill_price=69000.0,
+            side="buy", qty=1000, order_price=70000.0, fill_price=69000.0,
             fill_qty=fill_qty, status=status, broker="mock",
         ))
         s.commit()
@@ -476,7 +481,16 @@ def test_disarm_rejected_when_partially_filled_and_cancel_succeeds(client, monke
     import maps.execution.broker_adapter as ba
     from maps.common.models import AnalysisPick
 
-    class _CancelOkBroker:
+    class _CancelOkBroker(SyntheticAccountContract):
+        def get_execution_snapshot(self):
+            raise NotImplementedError
+
+        def get_daily_order_results(self):
+            return [OrderResult("ord-kis", "", "005930", OrderSide.BUY, OrderStatus.CANCELLED, 21, 70000)]
+
+        def get_open_orders(self):
+            return []
+
         def cancel_order(self, order_id: str) -> bool:
             return True
 
@@ -606,7 +620,7 @@ def _trade_plan_payload(**overrides):
     return payload
 
 
-class _PlanBroker:
+class _PlanBroker(SyntheticAccountContract):
     def __init__(self, cash=12_500_000):
         self.cash = cash
 
@@ -894,6 +908,7 @@ def test_stop_entries_applies_fill_arriving_during_cancel(client, monkeypatch) -
         pick.state = "BOUGHT"
         pick.entry_order_id = leg.order_id
         db.add(OrderLog(
+            account_key=account_key(),
             order_id=leg.order_id,
             strategy_id=f"strategy_trade:{pick.id}:leg:1:try:1",
             ticker=pick.ticker,

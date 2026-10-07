@@ -21,6 +21,7 @@ from maps.common.settings import MapsSettings
 from maps.execution.broker_adapter import Order, OrderSide, OrderType
 from maps.execution.mock_broker import MockBroker
 from maps.execution.order_manager import OrderManager
+from maps.execution.safety import account_key
 from maps.ops.scheduler import OperationalPipeline, plan_exit_decision
 
 
@@ -145,8 +146,8 @@ def _held_pipeline(monkeypatch, *, plan_enabled: bool, target: float | None, pri
         order_type=OrderType.MARKET, quantity=10,
     ))
     db.add(OrderLog(
-        order_id="buy-1", strategy_id="pullback_v3", ticker="AAAA", side=OrderSide.BUY.value,
-        qty=10, order_price=10_000, fill_price=10_000, status="filled",
+        order_id="buy-1", account_key=account_key(), strategy_id="pullback_v3", ticker="AAAA", side=OrderSide.BUY.value,
+        qty=10, fill_qty=10, order_price=10_000, fill_price=10_000, status="filled",
         created_at=dt.datetime(2026, 5, 4, 9, 0),
     ))
     db.add(CandidateSnapshot(

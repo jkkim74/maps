@@ -69,3 +69,6 @@ apps/mobile/keystore.properties
 # OS
 .DS_Store
 Thumbs.db
+
+# Execution writer leases (local host only)
+.execution-locks/

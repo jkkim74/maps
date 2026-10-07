@@ -21,6 +21,8 @@ strategy, which is the only way to catch code that treats
 from __future__ import annotations
 
 import datetime as dt
+from dataclasses import replace
+from tests.execution_contract import SyntheticAccountContract, record_owned_leg
 
 from maps.common.exceptions import BrokerAdapterError
 from maps.execution.broker_adapter import (
@@ -36,7 +38,7 @@ from maps.execution.broker_adapter import (
 )
 
 
-class KISLikeBroker(BrokerAdapter):
+class KISLikeBroker(SyntheticAccountContract, BrokerAdapter):
     """Broker double with KIS-shaped order ids and a shared account."""
 
     def __init__(self, *, cash: float = 20_000_000.0) -> None:
@@ -64,6 +66,16 @@ class KISLikeBroker(BrokerAdapter):
             avg_price=avg_price,
             current_price=self._prices.get(ticker, int(avg_price)),
         )
+
+        if hasattr(self, "_scenario_db"):
+            from maps.common.models import LimitUpSession
+            from maps.limit_up.repository import LimitUpRepository
+            row = self._scenario_db.query(LimitUpSession).filter_by(ticker=ticker).order_by(LimitUpSession.id.desc()).first()
+            if row is not None:
+                leg = LimitUpRepository(self._scenario_db).upsert_leg(row, name="S", price=int(avg_price), quantity=quantity)
+                leg.filled_quantity = quantity
+                leg.avg_fill_price = avg_price
+                record_owned_leg(self._scenario_db, row, leg, quantity, avg_price)
 
     def seed_foreign_position(self, ticker: str, quantity: int, avg_price: float) -> None:
         """Add another strategy's holding to the same account and ticker.
@@ -113,9 +125,10 @@ class KISLikeBroker(BrokerAdapter):
             filled_quantity=quantity,
             avg_price=price,
             submitted_at=dt.datetime.now(),
-            filled_at=dt.datetime.now(),
+            filled_at=dt.datetime.now(), quantity=order.quantity,
         )
         self._open.pop(raw_order_id, None)
+        self._cash += quantity * price * (1 if order.side == OrderSide.SELL else -1)
         held = self._positions.get(order.ticker)
         current = held.quantity if held else 0
         if order.side is OrderSide.SELL and quantity > current:
@@ -174,14 +187,16 @@ class KISLikeBroker(BrokerAdapter):
             remaining_quantity=order.quantity,
             order_price=order.limit_price,
         )
-        return OrderResult(
+        result = OrderResult(
             order_id=raw_id,
             strategy_id=order.strategy_id,
             ticker=order.ticker,
             side=order.side,
             status=OrderStatus.PENDING,
-            submitted_at=dt.datetime.now(),
+            submitted_at=dt.datetime.now(), quantity=order.quantity,
         )
+        self._results[raw_id] = result
+        return result
 
     def cancel_order(self, order_id: str) -> bool:
         """Cancel by broker order id, normalizing an audit id if given one."""
@@ -194,6 +209,7 @@ class KISLikeBroker(BrokerAdapter):
             return False
         self._open.pop(raw_id)
         self.cancelled.append(raw_id)
+        self._results[raw_id] = replace(self._results[raw_id], status=OrderStatus.CANCELLED)
         return True
 
     def get_position(self, ticker: str) -> Position | None:

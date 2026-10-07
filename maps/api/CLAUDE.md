@@ -56,6 +56,15 @@ DbDep = Depends(get_db)                    # 라우터 함수 파라미터로 �
 배치 모니터는 21:10 DART 수집 및 partial 상태를 표시하고, 이후 성공한 재시도도
 같은 날짜의 부분 수집 이력을 숨기지 않는다.
 
+### Theme backtest snapshots
+
+Theme universe options come from the latest published classification catalog;
+`universe_arg` accepts a theme code or unambiguous name. A theme backtest resolves
+membership from a snapshot published by its start-date midnight KST (earliest stored
+price date when start is omitted). It rejects unavailable history with
+`theme_snapshot_unavailable`, rather than using current or legacy single-column
+membership. Other universe selectors retain their existing behavior.
+
 ## 라우터 등록
 
 저장소 루트의 `main.py`(이 패키지 밖이다)에서 각 라우터를 `app.include_router()` 로 등록한다.

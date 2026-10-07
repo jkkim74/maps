@@ -102,6 +102,7 @@ class ParameterPlateauTester:
         metric_key: str = "sharpe",
         mdd_key: str = "mdd",
         param_keys: list[str] | None = None,
+        center_params: dict | None = None,
     ) -> PlateauResult:
         """파라미터 고원을 검사한다.
 
@@ -123,6 +124,11 @@ class ParameterPlateauTester:
 
         # 최선 조합 찾기
         best = max(results_grid, key=lambda x: x.get(metric_key, float("-inf")))
+        if center_params is not None:
+            centers = [row for row in results_grid if all(row.get(k) == center_params.get(k) for k in param_keys)]
+            if len(centers) != 1:
+                raise ValueError("Exactly one deployed-parameter center is required")
+            best = centers[0]
         best_metric = float(best.get(metric_key, 0.0))
         best_mdd = float(best.get(mdd_key, 0.0))
 

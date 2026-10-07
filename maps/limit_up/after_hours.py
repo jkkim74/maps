@@ -17,7 +17,8 @@ from enum import Enum
 
 from sqlalchemy.orm import Session
 
-from maps.common.exceptions import BrokerAdapterError
+from maps.execution.safety import ExecutionContext
+from maps.common.exceptions import ExecutionBlockedError, BrokerOrderUnknownError, BrokerAdapterError
 from maps.common.models import LimitUpSession
 from maps.execution.broker_adapter import (
     AfterHoursQuote,
@@ -103,6 +104,14 @@ def after_hours_exit_price(close_price: int) -> int:
     outright, and rounding up would price us out of the round entirely.
     """
     return round_down_krx_price(close_price * AFTER_HOURS_FLOOR_RATIO)
+
+
+def has_carried_sessions(db: Session, ref_date: dt.date) -> bool:
+    return db.query(LimitUpSession.id).filter(
+        LimitUpSession.ref_date == ref_date,
+        LimitUpSession.state.in_(_WATCHED_STATES),
+        LimitUpSession.execution_mode == "automatic",
+    ).first() is not None
 
 
 def run_after_hours_watch(
@@ -260,7 +269,8 @@ def _submit_after_hours_exit(
     # 제출이 성공한 **뒤** 상태를 확정한다. 먼저 커밋하면 한 번의 제출 실패가
     # 그 종목의 시간외 방어를 그날 내내 비활성화하고(이후 회차는 "주문이 사라졌다"고
     # 오인한다), 로그가 보내지도 않은 주문을 두고 거래소를 탓하게 된다.
-    result = order_manager.submit_exit(order, exit_reason=exit_audit_code("after_hours_break_exit"))
+    result = order_manager.submit_exit(order, exit_reason=exit_audit_code("after_hours_break_exit"),
+        context=ExecutionContext(f"limit_up:{session.id}:afterhours", source="limit_up", source_id=session.id))
     repository.transition(
         session,
         state=LimitUpState.AFTER_HOURS_EXIT,

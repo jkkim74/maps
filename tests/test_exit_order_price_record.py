@@ -31,13 +31,15 @@ from maps.execution.broker_adapter import (
     Position,
 )
 from maps.execution.order_manager import OrderManager
+from maps.execution.safety import account_key
+from tests.execution_contract import SyntheticAccountContract
 from maps.ops.scheduler import OperationalPipeline
 from maps.risk.manager import RiskManager
 
 _ENTRY_PRICE = 10_000.0
 
 
-class _NoQuoteBroker(BrokerAdapter):
+class _NoQuoteBroker(SyntheticAccountContract, BrokerAdapter):
     """보유는 있으나 시세 조회가 비어 있는 브로커 (current_price=None 이 기본)."""
 
     def __init__(self, current_price: float | None = None) -> None:
@@ -76,6 +78,12 @@ class _NoQuoteBroker(BrokerAdapter):
     def is_market_open(self) -> bool:
         return True
 
+    def get_open_orders(self):
+        return []
+
+    def get_daily_order_results(self):
+        return []
+
 
 def _setup(
     monkeypatch,
@@ -99,7 +107,7 @@ def _setup(
     pipeline = OperationalPipeline(settings=settings, session_factory=factory)
     db = factory()
     db.add(OrderLog(
-        order_id="buy-1", strategy_id="pullback_v3", ticker="AAAA",
+        order_id="buy-1", account_key=account_key(), strategy_id="pullback_v3", ticker="AAAA",
         side=OrderSide.BUY.value, qty=10,
         order_price=_ENTRY_PRICE, fill_price=_ENTRY_PRICE, fill_qty=10,
         status="filled", broker="kis", mode="mock",
