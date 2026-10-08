@@ -9,7 +9,7 @@ from decimal import Decimal
 import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class FujimotoConfigRequest(BaseModel):
@@ -24,6 +24,20 @@ class FujimotoActivationRequest(BaseModel):
     execution_mode: Literal["paper", "live"]
     replay_id: int = Field(gt=0)
     sell_consent: bool = False
+
+
+class FujimotoPaperTestRequest(BaseModel):
+    """Only explicit consent is accepted; readiness/dates are server observations."""
+    model_config = {"extra": "forbid"}
+    sell_consent: Literal[True]
+
+    @field_validator("sell_consent", mode="before")
+    @classmethod
+    def explicit_true(cls, value: Any) -> bool:
+        """Require a JSON boolean, never coercing integers or strings into consent."""
+        if value is not True:
+            raise ValueError("explicit_strategy_sell_consent_required")
+        return True
 
 
 class FujimotoComparabilityRequest(BaseModel):

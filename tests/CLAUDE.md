@@ -51,3 +51,7 @@ and `api`; existing rules/evidence/ledger/replay tests cover the shared domain.
 Use `python scripts/run_isolated_tests.py <test paths> -q` to disable dotenv/network
 and isolate DB/locks. Mock activation evidence in the integrated order-flow test
 is explicitly a fixture, never a production gate or profitability claim.
+`test_fujimoto_paper_trial` covers actual-paper-only authorization, genuine persisted
+readiness, 20-session dates, source forgery, stopped/expired partial reservations and
+approved owned exits. Its source/account/feed data are offline fixtures, not recorded
+market history or measured validation. No trial test contacts KIS or grants promotion.

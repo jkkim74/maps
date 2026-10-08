@@ -279,7 +279,44 @@ sell_consent)` requires owner, correct broker environment, explicit consent only
 new Fujimoto acquisitions, both existing promotions and current measured combined
 validation. Paper uses existing mock_candidate-or-later stage and current mock gates
 (60 score; only live track-record requirement excluded). Live retains the existing
-live eligibility gate. Neither path manufactures promotion history.
+live eligibility gate. Neither path manufactures promotion history. Normal activation
+explicitly stores `authorization_policy=validated`, replacing earlier trial permission.
+
+### Explicit bounded actual-paper trial
+
+`activate_paper_test(key,owner,sell_consent=True)` and POST `/activate-paper-test`
+replace only research/promotion prerequisites for this explicit `paper_test` policy.
+The request accepts only true sell consent; caller time, expiry, environment and pass
+flags are forbidden. The configured dedication must be KRW 10,000,000, exactly
+KRW 5,000,000 for each mode. Actual KIS paper, runtime enabled and normal execution
+switches remain mandatory. Neither replay nor validation/promotion PASS is created.
+
+Readiness uses the latest persisted complete READY account with no blocks/kill/UNKNOWN
+or unsettled costs, within the existing snapshot age; the latest completed KRX-session
+screen; immutable universe/candidate source links; rebuilt raw financial, selection
+and technical evidence; actual sent subscriptions and quotes received within three
+seconds; and remaining recording ceilings. A natural BUY trigger is unnecessary.
+GET status stays read-only and does not query the broker. Candidate/source decoding
+reuses `screening_evidence`; actual subscribed quotes reuse `RecordingIndex` and
+`quote_signal`. Missing or malformed evidence produces visible blocks.
+
+Immutable control stores policy, UUID authorization_id, owner/account/config IDs,
+code hash and actual UTC activation time. `starts_at` is 09:00 KST on the next KRX
+session; `expires_at` is 15:20 KST on its twentieth session, using configured closures.
+`authorize_order` is shared by service sizing and OrderManager source validation.
+Trial BUY rechecks bindings, consent/entry switch, dates, sources/account/feed freshness
+and storage; its exact candidate rule and shared decision must match its reservation.
+Before-start quotes retain scheduled permission and cannot create BUY watch cycles.
+Normal costs, risk, sizing, book setting/30-second continuity and 1:2:6 stay intact.
+
+Tick/quote/submission enforce expiry/storage exhaustion under the account lock; tick
+and quote request cancellation of known submitted BUYs once. UNKNOWN/CANCEL_REQUESTED
+and partial ownership/reservations persist until genuine reconciliation. Stop preserves
+identity/dates and original acquisition consent. Paper-only approved owned SELLs retain
+the ordinary ownership/source guards after stop/expiry/exhaustion. Even later validated
+permission cannot route trial-acquired shares to a live account. There is no forced sale.
+Existing ownership or unresolved orders block a new trial; a stopped/expired unowned
+campaign can be explicitly approved anew. Reading/rebooting/ticking never renews dates.
 
 `ranked_admission` is shared by replay and runtime: existing owned/pending/watch
 cycles have priority, then the recorded ranked eligible list reserves the remaining

@@ -165,3 +165,15 @@ hydrates saved budget/book selection once and after writes, preserving draft inp
 State/reasons are Korean labels; raw evidence is folded, costs can be provisional.
 Activation is a measured service operation, never an API override of promotion.
 Source and settlement payload contracts: `maps/fujimoto/CLAUDE.md`.
+
+POST `/activate-paper-test` accepts exactly `{sell_consent:true}` (no replay ID) for
+the fixed KRW 10,000,000 / equal-split actual KIS paper campaign. It retains the same
+administrator/owner scope; missing readiness returns 409; invalid/extra fields 422.
+GET `/status` adds read-only `paper_test`: eligible, block_reasons, authorization_policy,
+state (`not_started`, `scheduled`, `active`, `stopped`, `expired`), authorization_id,
+activated_at (UTC), starts_at/expires_at (KST). `eligible` means a new explicit approval
+is possible; scheduled/active or owned/pending campaigns cannot be reactivated.
+Each cycle includes cumulative `orders` rows: id/status/side, quantity/filled_quantity/
+remaining_quantity, gross/fees/tax, reserved_cash/reserved_quantity and authorization_id.
+Amounts/remaining quantities are persisted truth; terminal unfilled remainder is not
+a live reservation. These views perform no writes, broker calls, activation or renewal.

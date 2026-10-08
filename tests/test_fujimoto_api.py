@@ -68,3 +68,52 @@ def test_configure_split_is_explicit_and_activation_never_manufactures_pass(db):
         assert client.get("/api/v1/fujimoto/status").json()["control"]["entries_enabled"] is False
     finally:
         main.app.dependency_overrides.clear()
+
+
+def test_paper_test_schema_forbids_missing_false_and_caller_evidence(db):
+    """Only true explicit consent is accepted; measured activation still needs replay."""
+    main.app.dependency_overrides[get_db] = lambda: db
+    try:
+        client = TestClient(main.app)
+        for payload in ({}, {"sell_consent": False}, {"sell_consent": 1}, {"sell_consent": "true"},
+                        {"sell_consent": True, "pass": True},
+                        {"sell_consent": True, "expires_at": "2099-01-01"},
+                        {"sell_consent": True, "environment": "paper"}):
+            assert client.post("/api/v1/fujimoto/activate-paper-test", json=payload).status_code == 422
+        assert client.post("/api/v1/fujimoto/activate-paper-test", json={"sell_consent": True}).status_code == 409
+        assert client.post("/api/v1/fujimoto/activate", json={"execution_mode": "paper", "sell_consent": True}).status_code == 422
+    finally:
+        main.app.dependency_overrides.clear()
+
+
+def test_paper_status_and_cumulative_orders_are_persisted_read_only(db, monkeypatch):
+    from maps.common.models import FujimotoEvidence
+    from maps.fujimoto.domain import Decision
+    from maps.fujimoto.repository import FillEvent
+    from datetime import datetime, timezone, date
+    from maps.execution import broker_adapter
+    monkeypatch.setattr(broker_adapter, "get_broker", lambda *a, **kw: pytest.fail("read contacted broker"))
+    repo = FujimotoRepository(db)
+    config = repo.configure(account_key(), None, Mode.ORIGINAL, 5000000)
+    cycle = repo.create_cycle(config.id, "005930")
+    now = datetime.now(timezone.utc)
+    source = repo.record_evidence("execution_decision", cycle.ticker, now, now, {"authorization_id": "trial"})
+    order = repo.reserve_order(cycle.id, Decision("buy", "fixture", buy_stage=1, buy_weight=1,
+        price_cap=1000, timing="next_session"), source.id, 2, 1000)
+    repo.apply_fill(FillEvent(order.id, account_key(), None, 1, 1000, 1, 0, "UNKNOWN", date.today()))
+    db.commit()
+    before = db.query(FujimotoEvidence).count()
+    main.app.dependency_overrides[get_db] = lambda: db
+    try:
+        client = TestClient(main.app)
+        data = client.get("/api/v1/fujimoto/status").json()
+        assert data["paper_test"]["state"] == "not_started"
+        assert data["paper_test"]["eligible"] is False
+        rows = data["modes"][1]["cycles"][0]["orders"]
+        assert rows[0]["status"] == "UNKNOWN"
+        assert rows[0]["filled_quantity"] == rows[0]["remaining_quantity"] == 1
+        assert rows[0]["gross"] == 1000 and rows[0]["reserved_cash"] > 1000
+        assert rows[0]["authorization_id"] == "trial"
+        assert db.query(FujimotoEvidence).count() == before
+    finally:
+        main.app.dependency_overrides.clear()

@@ -8,12 +8,12 @@ from sqlalchemy.orm import Session
 from maps.api.auth import current_identity
 from maps.api.deps import get_db
 from maps.api.schemas import (FujimotoConfigRequest, FujimotoActivationRequest,
-                              FujimotoComparabilityRequest, FujimotoCostRequest)
+                              FujimotoComparabilityRequest, FujimotoCostRequest, FujimotoPaperTestRequest)
 from maps.common.exceptions import DataQualityError, ExecutionBlockedError
 from maps.common.models import FujimotoCycle, FujimotoEvidence, ValidationRun, ExecutionAccountState
 from maps.execution.safety import account_key, utcnow
 from maps.fujimoto.domain import Mode
-from maps.fujimoto.repository import json_data
+from maps.fujimoto.repository import json_data, TERMINAL, money
 from maps.fujimoto.service import FujimotoService
 
 router = APIRouter(prefix="/api/v1/fujimoto", tags=["Fujimoto"])
@@ -47,7 +47,17 @@ def cycle_row(service, cycle) -> dict:
     return {"id": cycle.id, "mode": cycle.mode, "ticker": cycle.ticker,
         "config_id": cycle.config_id, "budget": float(cycle.budget), "state": cycle.state,
         "cost_basis": float(cycle.cost_basis), "realized_pnl": float(cycle.realized_pnl),
-        "accounting": "provisional_costs_missing" if provisional else "confirmed"}
+        "accounting": "provisional_costs_missing" if provisional else "confirmed",
+        "orders": [{"id": o.id, "status": o.status, "side": o.decision["action"],
+            "quantity": o.quantity, "filled_quantity": o.filled_quantity,
+            "remaining_quantity": o.quantity - o.filled_quantity,
+            "gross": float(o.gross), "fees": float(o.fees), "tax": float(o.tax),
+            "reserved_cash": (float((o.quantity - o.filled_quantity) * o.limit_price * (1 + money(o.fee_rate)))
+                if o.status not in TERMINAL and o.decision["action"] == "buy" else 0),
+            "reserved_quantity": (o.quantity - o.filled_quantity
+                if o.status not in TERMINAL and o.decision["action"] == "sell" else 0),
+            "authorization_id": (service.db.get(FujimotoEvidence, o.evidence_id).payload.get("authorization_id"))}
+            for o in service.repo.orders(cycle.account_key) if o.cycle_id == cycle.id]}
 
 
 @router.get("/status")
@@ -81,6 +91,7 @@ def status(scope=Depends(scoped)) -> dict:
     if costs:
         reasons.append("actual_order_costs_unresolved")
     return {"control": control, "modes": modes, "block_reasons": reasons,
+        "paper_test": service.paper_test_status(key),
         "screen": screens[-1].payload if screens else None,
         "feed_quality": quality[-1].payload if quality else {"reason": "no_recorded_feed"},
         "unresolved_cost_orders": costs,
@@ -108,6 +119,13 @@ def activate(payload: FujimotoActivationRequest, scope=Depends(scoped)) -> dict:
     """Recompute current combined evidence outside the feed pump/account lock."""
     service, key, owner = scope
     return mutation(service.activate, key, owner, **payload.model_dump())
+
+
+@router.post("/activate-paper-test")
+def activate_paper_test(payload: FujimotoPaperTestRequest, scope=Depends(scoped)) -> dict:
+    """Approve the bounded actual KIS paper trial from observed readiness only."""
+    service, key, owner = scope
+    return mutation(service.activate_paper_test, key, owner, **payload.model_dump())
 
 
 @router.get("/cycles/{cycle_id}")

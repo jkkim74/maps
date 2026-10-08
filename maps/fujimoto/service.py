@@ -5,11 +5,15 @@ or drops a pending reservation. Only OrderManager can communicate an order.
 """
 from __future__ import annotations
 
+import base64
+import json
+import logging
+import zlib
 from dataclasses import replace
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
+from uuid import uuid4
 from zoneinfo import ZoneInfo
-import logging
 
 from sqlalchemy.orm import Session
 
@@ -211,6 +215,226 @@ class FujimotoService:
                 "runtime_parameters": expected_execution,
                 "validation_runs": runs, "config_ids": {m: c.id for m, c in configs.items()}}
 
+    def _paper_environment(self, key: str) -> list[str]:
+        """Actual KIS paper only, with the ordinary execution switches intact."""
+        from maps.execution.safety import require_execution_enabled
+        reasons = []
+        if key != account_key(self.settings):
+            reasons.append("account_identity_mismatch")
+        if (self.settings.maps_broker_mode != "kis" or self.settings.kis_real_trading
+                or not self.settings.is_paper_account):
+            reasons.append("paper_environment_required")
+        if not self.settings.maps_fujimoto_enabled:
+            reasons.append("fujimoto_runtime_disabled")
+        try:
+            require_execution_enabled(self.settings)
+        except ExecutionBlockedError as exc:
+            reasons.append(str(exc))
+        return reasons
+
+    def _paper_readiness(self, key: str, now: datetime, *, ticker: str | None = None) -> list[str]:
+        """Read only persisted source/account/feed truth; a BUY signal is unnecessary."""
+        from maps.common.models import AccountObservation, ExecutionAccountState
+        from maps.fujimoto.replay import RecordingIndex, quote_signal, screening_evidence
+        from maps.market.trading_rules import is_krx_closed_date
+        reasons = self._paper_environment(key)
+        configs = self.current_configs(key)
+        if set(configs) != {m.value for m in Mode} or any(c.budget != money(5000000) for c in configs.values()):
+            reasons.append("paper_test_dedicated_budget_required")
+        elif (not isinstance(configs["safe"].settings.get("with_orderbook", True), bool)
+                or configs["safe"].settings.get("with_orderbook", True) != configs["original"].settings.get("with_orderbook", True)):
+            reasons.append("configuration_variant_mismatch")
+        state = self.db.get(ExecutionAccountState, key)
+        observation = self.db.query(AccountObservation).filter_by(account_key=key).order_by(AccountObservation.id.desc()).first()
+        def fresh(stamp: datetime | None, seconds: int) -> bool:
+            """Use the existing account and actual-feed freshness boundaries."""
+            return stamp is not None and 0 <= (utc_naive(now) - utc_naive(stamp)).total_seconds() <= seconds
+        age = self.settings.maps_execution_snapshot_max_age_seconds
+        if (state is None or state.environment != "kis_paper" or state.status != "READY"
+                or state.killed or state.block_reasons or not fresh(state.checked_at, age)
+                or not fresh(state.last_complete_at, age) or observation is None
+                or not observation.complete or not fresh(observation.observed_at, age)
+                or observation.nav <= 0 or observation.cash < 0
+                or not isinstance(observation.evidence, dict)
+                or not {"positions", "orders", "costs", "unsupported"} <= observation.evidence.keys()
+                or observation.evidence.get("costs") is None or observation.evidence.get("unsupported")):
+            reasons.extend(state.block_reasons if state and state.block_reasons else ["account_not_fresh_reconciled"])
+        if self.db.query(OrderIntent.id).filter_by(account_key=key, status="UNKNOWN").first():
+            reasons.append("account_unknown_order")
+        if any(o.status == "UNKNOWN" for o in self.repo.orders(key)):
+            reasons.append("fujimoto_unknown_order")
+        if self.unresolved_costs(key):
+            reasons.append("actual_order_costs_unresolved")
+        candidates = self.db.query(FujimotoEvidence.id).filter_by(kind="candidate").count()
+        quotes = self.db.query(FujimotoEvidence.id).filter_by(kind="quote", account_key=key).count()
+        if quotes >= self.settings.maps_fujimoto_tape_rows or candidates >= self.settings.maps_fujimoto_candidate_rows:
+            reasons.append("paper_test_recording_capacity_exhausted")
+        wall = utc_naive(now).replace(tzinfo=timezone.utc).astimezone(KST)
+        completed = wall.date() if wall.time().replace(tzinfo=None) >= time(15, 30) else wall.date() - timedelta(days=1)
+        while is_krx_closed_date(completed, extra_closed_dates=tuple(self.settings.krx_closed_dates)):
+            completed -= timedelta(days=1)
+        screens = self.repo.evidence_as_of("screen", "*", now)
+        screen = screens[-1] if screens else None
+        if (screen is None or screen.payload.get("ref_date") != completed.isoformat()
+                or screen.payload.get("reason") or fingerprint(screen.payload) != screen.fingerprint):
+            reasons.append("screening_coverage_missing_or_stale")
+            return sorted(set(reasons))
+        recording = self.repo.evidence_as_of("feed_recording", "*", now, account_key=key)
+        index = RecordingIndex(tuple(r.payload for r in recording))
+        quality = self.repo.evidence_as_of("feed_quality", "*", now, account_key=key)
+        last_subscription = max((r.observed_at for r in recording if r.payload.get("kind") == "subscriptions"), default=None)
+        disconnected = bool(quality and quality[-1].payload.get("reason") in {"disconnect", "reconnect"}
+                            and (last_subscription is None or quality[-1].observed_at >= last_subscription))
+        recent = {r.ticker: r for r in self.db.query(FujimotoEvidence).filter(
+            FujimotoEvidence.kind == "quote", FujimotoEvidence.account_key == key,
+            FujimotoEvidence.observed_at >= utc_naive(now) - timedelta(seconds=3),
+            FujimotoEvidence.observed_at <= utc_naive(now), FujimotoEvidence.available_at <= utc_naive(now)
+        ).order_by(FujimotoEvidence.id)}
+        usable, subscribed = False, False
+        for name in ([ticker] if ticker else screen.payload.get("ranked", ())):
+            quote = recent.get(name)
+            if usable and quote is None:
+                continue
+            rows = self.repo.evidence_as_of("candidate", name, now)
+            candidate = rows[-1] if rows else None
+            try:
+                if candidate is None or name not in screen.payload.get("ranked", ()):
+                    continue
+                universe = self.db.get(FujimotoEvidence, candidate.payload.get("universe_id"))
+                if (candidate.payload.get("ref_date") != completed.isoformat()
+                        or candidate.payload.get("universe_id") != screen.payload.get("universe_id")
+                        or universe is None or universe.kind != "universe"
+                        or utc_naive(universe.observed_at) > utc_naive(now) or utc_naive(universe.available_at) > utc_naive(now)
+                        or fingerprint(universe.payload) != universe.fingerprint
+                        or universe.payload.get("ref_date") != completed.isoformat()
+                        or not any(m.get("ticker") == name and m.get("eligible") is True for m in universe.payload.get("members", ()))
+                        or fingerprint(candidate.payload) != candidate.fingerprint):
+                    continue
+                raw = json.loads(zlib.decompress(base64.b64decode(candidate.payload["raw_zlib"])))
+                rule = screening_evidence(raw, name, completed, closed_dates=tuple(self.settings.krx_closed_dates))
+                if (json_data(rule) != candidate.payload.get("rule") or not rule.selection_passed
+                        or rule.financial_status != "maintained" or rule.close is None or rule.blocking_reasons):
+                    continue
+                usable = True
+                if (quote and fresh(quote.observed_at, 3) and not disconnected
+                        and quote.payload.get("ticker") == name
+                        and fingerprint(quote.payload) == quote.fingerprint
+                        and fresh(datetime.fromisoformat(quote.payload["received_at"]), 3)
+                        and index.subscribed(name, quote.observed_at)
+                        and quote.payload.get("ask_size", 0) > 0
+                        and quote_signal(None, None, quote.payload, 0, 0, 0)[2] is not None):
+                    subscribed = True
+                    break
+            except (KeyError, TypeError, ValueError, zlib.error, DataQualityError):
+                continue  # malformed evidence is reported as unusable below, never accepted
+        if not usable:
+            reasons.append("usable_screen_candidate_source_missing")
+        if not subscribed:
+            reasons.append("fresh_subscribed_recording_missing")
+        return sorted(set(reasons))
+
+    def paper_test_status(self, key: str, *, now: datetime | None = None) -> dict:
+        """Read-only readiness/campaign view; never stop, reconcile or renew here."""
+        now = now or utcnow()
+        control = self.control(key)
+        trial = control.get("authorization_policy") == "paper_test"
+        state = "not_started"
+        if trial:
+            if utc_naive(now) >= utc_naive(datetime.fromisoformat(control["expires_at"])):
+                state = "expired"
+            elif not control.get("entries_enabled"):
+                state = "stopped"
+            elif utc_naive(now) < utc_naive(datetime.fromisoformat(control["starts_at"])):
+                state = "scheduled"
+            else:
+                state = "active"
+        reasons = self._paper_readiness(key, now)
+        if trial and state in {"scheduled", "active"} and self._trial_binding(key, control):
+            reasons.append("paper_test_binding_changed")
+        if trial and state in {"scheduled", "active"}:
+            reasons.append("paper_test_already_authorized")
+        if any(self.repo.state(c.id).quantity or self.repo.state(c.id).pending_order for c in self.repo.cycles(key)):
+            reasons.append("paper_test_existing_ownership_or_orders")
+        return {"eligible": not reasons, "block_reasons": sorted(set(reasons)), "state": state,
+            "authorization_policy": control.get("authorization_policy", "validated"),
+            **{k: control.get(k) if trial else None for k in ("authorization_id", "activated_at", "starts_at", "expires_at")}}
+
+    def activate_paper_test(self, key: str, owner: int | None, *, sell_consent: bool) -> dict:
+        """Explicit fixed-budget, next-session 20-session approval, without a replay."""
+        from maps.fujimoto.replay import code_fingerprint
+        with account_execution_lock(key):
+            self.owner(key, owner)
+            if sell_consent is not True:
+                raise ExecutionBlockedError("explicit_strategy_sell_consent_required")
+            now = utcnow()
+            status = self.paper_test_status(key, now=now)
+            if status["block_reasons"]:
+                raise ExecutionBlockedError(";".join(status["block_reasons"]))
+            start = next_session(now.replace(tzinfo=timezone.utc).astimezone(KST).date(), tuple(self.settings.krx_closed_dates))
+            end = start
+            for _ in range(19):
+                end = next_session(end, tuple(self.settings.krx_closed_dates))
+            return self._control(key, {"authorization_policy": "paper_test", "execution_mode": "paper",
+                "entries_enabled": True, "sell_consent": True, "owner_user_id": owner, "account_key": key,
+                "config_ids": {m: c.id for m, c in self.current_configs(key).items()}, "code_hash": code_fingerprint(),
+                "authorization_id": str(uuid4()), "activated_at": now.replace(tzinfo=timezone.utc).isoformat(),
+                "starts_at": datetime.combine(start, time(9), KST).isoformat(),
+                "expires_at": datetime.combine(end, time(15, 20), KST).isoformat(),
+                "consent_scope": "new_fujimoto_acquisitions_only"})
+
+    def _trial_binding(self, key: str, control: dict) -> bool:
+        """Return whether account/owner/configuration/code differs from explicit approval."""
+        from maps.fujimoto.replay import code_fingerprint
+        configs = self.current_configs(key)
+        return (control.get("account_key") != key or key != account_key(self.settings)
+            or control.get("code_hash") != code_fingerprint()
+            or control.get("config_ids") != {m: c.id for m, c in configs.items()}
+            or any(c.owner_user_id != control.get("owner_user_id") for c in configs.values()))
+
+    def _enforce_trial_window(self, key: str, now: datetime) -> dict:
+        """Expire entries durably, preserving identity, ownership and all reservations."""
+        with account_execution_lock(key):
+            control = self.control(key)
+            if control.get("authorization_policy") == "paper_test" and control.get("entries_enabled"):
+                exhausted = (self.db.query(FujimotoEvidence.id).filter_by(kind="quote", account_key=key).count() >= self.settings.maps_fujimoto_tape_rows
+                    or self.db.query(FujimotoEvidence.id).filter_by(kind="candidate").count() >= self.settings.maps_fujimoto_candidate_rows)
+                if utc_naive(now) >= utc_naive(datetime.fromisoformat(control["expires_at"])) or exhausted:
+                    control = self._control(key, {**control, "entries_enabled": False,
+                        "stop_reason": "recording_capacity_exhausted" if exhausted else "paper_test_expired"})
+            return control
+
+    def authorize_order(self, key: str, *, buy: bool, now: datetime | None = None,
+                        ticker: str | None = None) -> dict:
+        """One shared permission path for service sizing and OrderManager source guards."""
+        now = now or utcnow()
+        control = self._enforce_trial_window(key, now)
+        if (not self.settings.maps_fujimoto_enabled or control.get("execution_mode") not in {"paper", "live"}
+                or control.get("sell_consent") is not True):
+            raise ExecutionBlockedError("fujimoto_not_approved")
+        if (control["execution_mode"] == "paper") != self.settings.is_paper_account:
+            raise ExecutionBlockedError("fujimoto_environment_mismatch")
+        if control.get("authorization_policy", "validated") == "paper_test":
+            reasons = self._paper_environment(key)
+            if reasons:
+                raise ExecutionBlockedError(";".join(reasons))
+            if buy:
+                if self._trial_binding(key, control):
+                    raise ExecutionBlockedError("paper_test_binding_changed")
+                if not control.get("entries_enabled"):
+                    raise ExecutionBlockedError("fujimoto_entries_stopped_or_costs_unresolved")
+                if utc_naive(now) < utc_naive(datetime.fromisoformat(control["starts_at"])):
+                    raise ExecutionBlockedError("paper_test_before_start")
+                reasons = self._paper_readiness(key, now, ticker=ticker)
+                if reasons:
+                    raise ExecutionBlockedError(";".join(reasons))
+        elif buy:
+            if not control.get("entries_enabled") or self.unresolved_costs(key):
+                raise ExecutionBlockedError("fujimoto_entries_stopped_or_costs_unresolved")
+            gate = self.validation_gate(key, control["replay_id"])
+            if gate["config_ids"] != control.get("config_ids") or gate["fingerprint"] != control.get("fingerprint"):
+                raise ExecutionBlockedError("fujimoto_activation_stale")
+        return control
+
     def activate(self, key: str, owner: int | None, *, execution_mode: str,
                  replay_id: int, sell_consent: bool) -> dict:
         """Explicit approval never bypasses account, measured or promotion gates."""
@@ -239,6 +463,7 @@ class FujimotoService:
             if self.validation_gate(key, replay_id, binding=gate) != gate:
                 raise ExecutionBlockedError("validation_changed_during_activation")
             return self._control(key, {**gate, "execution_mode": execution_mode,
+                "authorization_policy": "validated",
                 "entries_enabled": True, "sell_consent": True, "owner_user_id": owner,
                 "consent_scope": "new_fujimoto_acquisitions_only"})
 
@@ -285,9 +510,11 @@ class FujimotoService:
         """Reconcile approved activity and cancel expired entries without blind expiry."""
         key = account_key(self.settings)
         with account_execution_lock(key):
-            control = self.control(key)
+            control = self._enforce_trial_window(key, now)
             if self.manager is None or control["execution_mode"] == "observe":
                 return
+            if control.get("authorization_policy") == "paper_test":
+                self._cancel_stopped_buys(key, control)
             if self._last_sync is not None and (utc_naive(now) - self._last_sync).total_seconds() < 15:
                 return
             self._last_sync = utc_naive(now)
@@ -305,6 +532,18 @@ class FujimotoService:
                     self.db.expire_all()
             self.expire_empty_cycles(key, now.astimezone(KST).date())
 
+    def _cancel_stopped_buys(self, key: str, control: dict) -> None:
+        """Request known BUY cancellation once; ambiguous outcomes retain reservations."""
+        if self.manager is None or control.get("entries_enabled"):
+            return
+        for order in self.repo.orders(key):
+            if (order.status not in TERMINAL | {"UNKNOWN", "CANCEL_REQUESTED"}
+                    and order.decision["action"] == "buy" and order.broker_order_id):
+                order.status = "CANCEL_REQUESTED"
+                self.db.commit()
+                self.manager.cancel(order.broker_order_id)
+                self.db.expire_all()
+
     def on_quote(self, quote, *, now: datetime | None = None) -> None:
         """Persist shared quote then evaluate confirmed owned cycles and actual candidates."""
         now = now or datetime.now(timezone.utc)
@@ -313,10 +552,15 @@ class FujimotoService:
             self.db.expire_all()
             fresh_bid, _ = self.feed.on_quote(quote, now=now)
             self.db.commit()
-            control = self.control(key)
+            control = self._enforce_trial_window(key, now)
+            if control.get("authorization_policy") == "paper_test":
+                self._cancel_stopped_buys(key, control)
             if control["execution_mode"] == "observe" or self.manager is None:
                 return
             wall = now.astimezone(KST)
+            entries_open = control.get("entries_enabled") and not (
+                control.get("authorization_policy") == "paper_test"
+                and utc_naive(now) < utc_naive(datetime.fromisoformat(control["starts_at"])))
             if not time(9) <= wall.time().replace(tzinfo=None) < time(15, 20):
                 return
             self.expire_empty_cycles(key, wall.date())
@@ -338,7 +582,7 @@ class FujimotoService:
             expired_ids = {r.payload.get("cycle_id") for r in self.db.query(FujimotoEvidence).filter_by(
                 kind="cycle_expired", account_key=key)}
             cycles = [c for c in cycles if c.id not in expired_ids]
-            if (control.get("entries_enabled") and source and fresh_bid is not None
+            if (entries_open and source and fresh_bid is not None
                     and any(mode.value in current and not any(c.mode == mode.value for c in cycles) for mode in Mode)):
                 screens = self.repo.evidence_as_of("screen", "*", now)
                 ranked = screens[-1].payload.get("ranked", ()) if screens else ()
@@ -402,7 +646,7 @@ class FujimotoService:
                     if source:
                         self.repo.record_decision(cycle.id, source.id, decision)
                     continue
-                if decision.action == "buy" and (not control.get("entries_enabled") or cost_gaps):
+                if decision.action == "buy" and (not entries_open or cost_gaps):
                     continue
                 try:
                     self._submit_decision(cycle, live, decision, bid, source, now)
@@ -423,7 +667,7 @@ class FujimotoService:
         key = cycle.account_key
         stop = None
         if decision.action == "buy":
-            self.validation_gate(key, self.control(key)["replay_id"])
+            self.authorize_order(key, buy=True, now=now, ticker=cycle.ticker)
             snapshot = self.manager._broker.get_execution_snapshot()
             age = (datetime.now(timezone.utc) - snapshot.as_of.astimezone(timezone.utc)).total_seconds()
             if not 0 <= age <= self.settings.maps_execution_snapshot_max_age_seconds:
@@ -442,10 +686,13 @@ class FujimotoService:
                 raise ExecutionBlockedError(plan.reason)
             quantity, price, stop = plan.quantity, plan.limit_price, plan.stop_price
         else:
+            self.authorize_order(key, buy=False, now=now, ticker=cycle.ticker)
             from maps.market.trading_rules import round_down_krx_price
             quantity, price = decision.sell_quantity, round_down_krx_price(bid)
         actual = self.repo.record_evidence("execution_decision", cycle.ticker, now, now,
-            {"rule": evidence, "decision": decision, "candidate_id": source.id if source else None}, account_key=key)
+            {"rule": evidence, "decision": decision, "candidate_id": source.id if source else None,
+             "authorization_id": self.control(key).get("authorization_id"),
+             "approval_id": self.control(key).get("control_id")}, account_key=key)
         reservation = self.repo.reserve_order(cycle.id, decision, actual.id, quantity, price,
             signal_date=evidence.as_of, stop_price=stop)
         self.db.commit()
@@ -591,18 +838,34 @@ def validate_source(db: Session, order: Order, context: ExecutionContext, settin
             or order.order_type != OrderType.LIMIT or money(order.limit_price) != reservation.limit_price
             or reservation.status in TERMINAL):
         raise ExecutionBlockedError("fujimoto_reservation_identity_mismatch")
-    control = service.control(key)
-    if (not settings.maps_fujimoto_enabled or control.get("execution_mode") not in {"paper", "live"}
-            or control.get("sell_consent") is not True):
-        raise ExecutionBlockedError("fujimoto_not_approved")
-    if (control["execution_mode"] == "paper") != settings.is_paper_account:
-        raise ExecutionBlockedError("fujimoto_environment_mismatch")
+    control = service.authorize_order(key, buy=order.side == OrderSide.BUY, ticker=order.ticker)
     if order.side == OrderSide.BUY:
-        if not control.get("entries_enabled") or service.unresolved_costs(key):
-            raise ExecutionBlockedError("fujimoto_entries_stopped_or_costs_unresolved")
-        gate = service.validation_gate(key, control["replay_id"])
-        if gate["config_ids"] != control.get("config_ids") or gate["fingerprint"] != control.get("fingerprint"):
-            raise ExecutionBlockedError("fujimoto_activation_stale")
+        if control.get("authorization_policy") == "paper_test":
+            source = db.get(FujimotoEvidence, reservation.evidence_id)
+            if (source is None or source.kind != "execution_decision" or source.account_key != key
+                    or source.ticker != cycle.ticker or fingerprint(source.payload) != source.fingerprint
+                    or source.payload.get("decision") != reservation.decision
+                    or source.payload.get("authorization_id") != control.get("authorization_id")
+                    or source.payload.get("approval_id") != control.get("control_id")):
+                raise ExecutionBlockedError("fujimoto_trial_source_mismatch")
+            candidate = db.get(FujimotoEvidence, source.payload.get("candidate_id"))
+            rows = service.repo.evidence_as_of("candidate", cycle.ticker, utcnow())
+            if candidate is None or not rows or candidate.id != rows[-1].id:
+                raise ExecutionBlockedError("fujimoto_trial_source_mismatch")
+            raw = dict(source.payload.get("rule", {}))
+            expected = dict(candidate.payload.get("rule", {}))
+            for field in ("live_price", "orderbook_take_profit"):
+                raw.pop(field, None)
+                expected.pop(field, None)
+            if raw != expected:
+                raise ExecutionBlockedError("fujimoto_trial_source_mismatch")
+            rule_data = dict(source.payload["rule"])
+            rule_data["as_of"] = date.fromisoformat(rule_data["as_of"])
+            expected_decision = evaluate(Mode(cycle.mode), RuleEvidence(**rule_data),
+                replace(service.repo.state(cycle.id), pending_order=False),
+                decision_date=utcnow().replace(tzinfo=timezone.utc).astimezone(KST).date())
+            if json_data(expected_decision) != reservation.decision:
+                raise ExecutionBlockedError("fujimoto_trial_source_mismatch")
     else:
         acquired = db.query(OrderIntent).filter_by(account_key=key, strategy_id=order.strategy_id,
             ticker=order.ticker, side="buy").all()
@@ -616,6 +879,12 @@ def validate_source(db: Session, order: Order, context: ExecutionContext, settin
                 approved.append(intent)
         if not approved:
             raise ExecutionBlockedError("fujimoto_acquisition_consent_missing")
+        for intent in approved:
+            approval = db.get(FujimotoEvidence, intent.request["fujimoto_approval_id"])
+            if approval.payload.get("authorization_policy") == "paper_test":
+                reasons = service._paper_environment(key)
+                if reasons:
+                    raise ExecutionBlockedError(";".join(reasons))
         if order.quantity > service.repo.state(cycle.id).quantity:
             raise ExecutionBlockedError("sell_source_ownership_unverified")
     return control["control_id"]
