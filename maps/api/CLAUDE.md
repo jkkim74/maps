@@ -177,3 +177,26 @@ Each cycle includes cumulative `orders` rows: id/status/side, quantity/filled_qu
 remaining_quantity, gross/fees/tax, reserved_cash/reserved_quantity and authorization_id.
 Amounts/remaining quantities are persisted truth; terminal unfilled remainder is not
 a live reservation. These views perform no writes, broker calls, activation or renewal.
+
+### `/fujimoto` trial usage
+
+1. Review the separate **자동 모의 체험 · 성과 미검증** rules: original has no price
+   stop. The total KRW 10m recommendation fills only an unset budget input; GET/load
+   never saves or activates. Existing saved budgets and unsaved drafts survive refresh.
+2. Save the approved total explicitly with the existing budget/book form (equal KRW
+   5m per mode). Review the Korean readiness reasons. Actual fresh reconciled account,
+   resolved costs/differences and actual screening/source/subscribed quote evidence
+   remain necessary; use existing operator procedures with genuine evidence.
+3. With readiness eligible, check the separate new-acquisition automatic-sell consent
+   and approve the trial. Only `{sell_consent:true}` goes to `/activate-paper-test`.
+   Consent is cleared after successful writes; failed reads/writes disable new approval
+   until status is refreshed. The measured replay-ID activation form remains separate.
+4. Check scheduled/active/stopped/expired, saved authorization ID and exact KST start/end,
+   setting/code/permission changes and recording capacity reasons. Before approval only
+   the next-session/20-session rule is shown, without predicting exchange closures.
+   Eligibility concerns a new approval, not current order execution permission.
+5. Inspect cycle ownership/stage and each order's status, cumulative fill, remainder and
+   live cash/share reservations. Cancellation requested and UNKNOWN are unresolved;
+   terminal unfilled remainder is not a live reservation. Existing entry-stop remains
+   available. Expiry/stop preserves approved exits and pending cancellation confirmation;
+   no forced liquidation, guaranteed trades, holding adoption or automatic renewal.

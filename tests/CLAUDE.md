@@ -55,3 +55,7 @@ is explicitly a fixture, never a production gate or profitability claim.
 readiness, 20-session dates, source forgery, stopped/expired partial reservations and
 approved owned exits. Its source/account/feed data are offline fixtures, not recorded
 market history or measured validation. No trial test contacts KIS or grants promotion.
+`test_fujimoto_ui` runs the actual inline operator JavaScript with Node's built-in VM
+and offline DOM/fetch fixtures (Node required, no added package). It checks read-only
+budget suggestions/draft retention, explicit consent/readiness, separate activation
+contracts, KST trial states, cumulative order reservations and fail-closed refresh.

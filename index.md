@@ -44,7 +44,7 @@
 
 ## 2. 패키지 지도
 
-후지모토 근거 수집·공유 피드·분할매매·운영 API: [maps/fujimoto/CLAUDE.md](maps/fujimoto/CLAUDE.md). `/fujimoto` 화면은 기본 관찰 상태이며 전용 예산과 검증·동의 없이는 주문하지 않는다.
+후지모토 근거 수집·공유 피드·분할매매·운영 API: [maps/fujimoto/CLAUDE.md](maps/fujimoto/CLAUDE.md). `/fujimoto` 화면은 기본 관찰 상태다. 측정 검증 기반 활성화와 성과 미검증 KIS 모의 체험 승인을 구분하며, 체험도 명시적 예산 저장·신규 취득분 청산 동의·실제 계좌와 데이터 준비 없이는 시작하지 않는다. 화면 사용 절차는 [maps/api/CLAUDE.md](maps/api/CLAUDE.md)를 참고한다.
 
 | 패키지 | 한 줄 | 문서 |
 |---|---|---|

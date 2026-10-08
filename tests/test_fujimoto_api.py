@@ -117,3 +117,37 @@ def test_paper_status_and_cumulative_orders_are_persisted_read_only(db, monkeypa
         assert db.query(FujimotoEvidence).count() == before
     finally:
         main.app.dependency_overrides.clear()
+
+
+def test_trial_order_view_distinguishes_terminal_remainder_from_live_reservation(db):
+    """UI status and detail show confirmed cancellation without inventing a fill."""
+    from datetime import date, datetime, timezone
+    from maps.fujimoto.domain import Decision
+    from maps.fujimoto.repository import FillEvent
+    repo = FujimotoRepository(db)
+    config = repo.configure(account_key(), None, Mode.SAFE, 5000000)
+    cycle = repo.create_cycle(config.id, "005930")
+    now = datetime.now(timezone.utc)
+    evidence = repo.record_evidence("execution_decision", cycle.ticker, now, now,
+        {"authorization_id": "trial-ui"})
+    order = repo.reserve_order(cycle.id, Decision("buy", "fixture", buy_stage=1,
+        buy_weight=1, price_cap=1000, timing="next_session"), evidence.id, 3, 1000)
+    repo.apply_fill(FillEvent(order.id, account_key(), None, 1, 1000, 1, 0,
+        "CANCELLED", date.today()))
+    db.commit()
+    main.app.dependency_overrides[get_db] = lambda: db
+    try:
+        client = TestClient(main.app)
+        status_row = client.get("/api/v1/fujimoto/status").json()["modes"][0]["cycles"][0]
+        detail_row = client.get(f"/api/v1/fujimoto/cycles/{cycle.id}").json()
+        assert status_row == detail_row
+        assert detail_row["state"]["quantity"] == 1
+        row = detail_row["orders"][0]
+        assert row["status"] == "CANCELLED"
+        assert row["quantity"] == 3 and row["filled_quantity"] == 1
+        assert row["remaining_quantity"] == 2
+        assert row["reserved_cash"] == row["reserved_quantity"] == 0
+        assert row["gross"] == 1000 and row["fees"] == 1 and row["tax"] == 0
+        assert row["authorization_id"] == "trial-ui"
+    finally:
+        main.app.dependency_overrides.clear()
