@@ -18,8 +18,8 @@ Implement the user's approved conversational plan: actual KIS paper-account orde
 ## Progress
 
 - [x] Verify existing isolated worktree, base and approved choices.
-- [ ] Task 1: common trial authorization, expiry/readiness, API and regression tests.
-- [ ] Task 2: operator UI and documentation with offline visual verification.
+- [x] Task 1: common trial authorization, expiry/readiness, API and regression tests.
+- [x] Task 2: operator UI and documentation with offline visual verification.
 - [ ] Independent final review and complete regression gate.
 - [ ] Commit/push/deploy; inspect and prepare production observation; activate only when prerequisites are genuinely satisfied.
 
@@ -61,4 +61,6 @@ Run independent whole-branch review, final isolated tests and appropriate compil
 
 Baseline is the previous release c66e9da with frozen source regression 1,871 passed. Current pre-implementation server inspection: KIS paper account, ordinary execution enabled, Fujimoto disabled; no Fujimoto config/cycles/orders/evidence/validation; account_difference_unclassified present; no WebSocket handshake error in the latest ten-minute window (not proof of fresh received quotes).
 
-No new implementation or operational success is claimed yet. Record task approvals, final tests and release facts here as work completes.
+Task1 ac0aa08 independently approved (spec and quality, no Critical/Important): 234 affected tests passed in241.92s with one existing Starlette TestClient/httpx warning; targeted compile and whitespace clean. Task2 0a3364e adds operator UI with40 affected checks passed in6.20s, same warning, JS syntax and compile clean; independent UI review approved (no Critical/Important). Offline Chrome verified actual rendering, consent cannot bypass readiness, unsaved10m recommendation, explicit5m-per-mode save, persisted reload and entry stop. A generic console Object message had no trace or reproduced UI/server failure; no app-specific cause established.
+
+Production read-only14:33KST: c66e9da, service/internal health healthy, KISpaper with Fujimoto disabled and zero configs/evidence. Latest reconciliation has only account_difference_unclassified: the actual -880KRW residual lacks broker transaction classification proof. User was asked for its actual category/reference; do not guess fee or clear the block. No campaign activation or production mutation has occurred. Full review/regression and deployment remain pending.
