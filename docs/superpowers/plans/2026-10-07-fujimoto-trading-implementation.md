@@ -136,7 +136,9 @@ Final release gate on frozen implementation commit `42bedf30d631eb2420f3fdb23e61
 with `PYTHONUTF8=1` passed **1,871 tests, 2,591 existing warnings in 423.68 seconds**, exit 0.
 Warnings are existing dependency deprecations and negative/Monte Carlo test fixtures, not test failures.
 Final compileall of maps, main.py, research CLI and migration passed; whitespace checks passed.
-This is the pre-deployment record: commit/push/production deployment are authorized and follow this release gate; live strategy activation remains disabled.
+Release 9c7f526 was pushed atomically to master and feat/fujimoto-trading and deployed to /opt/maps on 2026-10-08. PostgreSQL custom backups were verified before migration to 0041. The first 30-second readiness deadline was too short for existing startup recovery (historical 70 seconds to more than four minutes); the script restored the previous code, then a longer readiness window succeeded with the same tested source. Internal/public health, authentication guards and disabled/zero-config/zero-cycle/zero-order state passed. No live strategy activation occurred.
+
+Post-deployment log inspection found KIS paper WebSocket HTTP-handshake EOF errors. The same signature occurred on the temporarily restored previous commit; no proxy environment was present, and the connection call is unchanged. The underlying connection failure remains unresolved and is recorded in the handoff. Web/API deployment success does not certify real-time feed readiness. The final release-record update changes documentation only and requires no service restart.
 
 Offline visual QA verified empty observation state, a mock dedicated budget split equally, Korean status/blocks, and saving the book toggle off without execution permission. API confirmed persisted settings and no sell consent. Chrome extension UI then blocked an additional reload check; no bypass was attempted. The temporary local server was stopped. Python compileall and inline dashboard JavaScript node --check passed.
 
