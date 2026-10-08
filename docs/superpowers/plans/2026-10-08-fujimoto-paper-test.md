@@ -1,0 +1,64 @@
+# Fujimoto operating-server automatic paper trial
+
+## Purpose and binding specification
+
+Implement the user's approved conversational plan: actual KIS paper-account orders using unchanged Fujimoto selection/trading rules, dedicated KRW 10,000,000 split equally between safe/original, for 20 KRX sessions. Only performance-replay and promotion prerequisites are replaced by an explicit paper-trial authorization. The earlier Fujimoto design remains binding for all other behavior. No forced orders or fabricated evidence. User explicitly authorized implementation and the plan's commit, push, deploy and prepared paper-trial activation.
+
+## Global Constraints
+
+- Work only in D:/workspace/maps/maps/.worktrees/fujimoto-trading on feat/fujimoto-paper-test, base c66e9da. Preserve the original dirty checkout and other plans' scratch.
+- Use existing OrderManager, account locking/reconciliation, ownership, cash/risk limits, shared socket, natural selection/evaluate and fill transitions. No broker bypass, no second execution engine, no new dependency or DB table.
+- Actual KIS paper only: maps_broker_mode=kis, kis_real_trading=false, is_paper_account=true at activation and each order authorization. Keep execution enable/dry-run guards. Never change to real trading or adopt existing holdings.
+- Only performance replay and promotion prerequisites are replaced for this explicit trial. Missing actual financial/selection/quote/cost evidence still blocks the applicable action. Normal activation, live eligibility and research status remain unchanged; never create a synthetic validation or promotion pass.
+- KRW 10,000,000 total, safe/original KRW 5,000,000 each for this campaign. Start on the next KRX session after explicit activation, include that session in a 20-session period, expire new/add buys at 15:20 KST on session 20. Use the existing calendar and configured closures. No forced liquidation on expiry.
+- Missing readiness must be visible and prevent activation. Existing account blocks are not cleared speculatively. Audit and classify only with genuine broker evidence through existing supported operations. Existing approved protective exits and pending reservations remain intact.
+- Tests use scripts/run_isolated_tests.py and D:/workspace/maps/maps/.venv/Scripts/python.exe, PYTHONUTF8=1. No test broker network or credentials. Controller runs the full suite once on final frozen source.
+- Read index.md then relevant nearest CLAUDE before editing. Preserve surrounding style and update relevant documentation. Controller owns this plan and HANDOFF_fujimoto_trading.md.
+
+## Progress
+
+- [x] Verify existing isolated worktree, base and approved choices.
+- [ ] Task 1: common trial authorization, expiry/readiness, API and regression tests.
+- [ ] Task 2: operator UI and documentation with offline visual verification.
+- [ ] Independent final review and complete regression gate.
+- [ ] Commit/push/deploy; inspect and prepare production observation; activate only when prerequisites are genuinely satisfied.
+
+## Task 1: Shared paper-trial authorization and API
+
+**Context:** Existing Fujimoto service currently requires validation_gate at activation, _submit_decision BUY and validate_source BUY. Existing control evidence is append-only JSON, with execution_mode observe/paper/live. Existing source validation binds exact reservation identity and original sell consent. Modify one shared authorization path rather than adding ad hoc bypasses at each caller. Keep normal validation_gate and normal API behavior intact.
+
+**Files/ownership:** maps/fujimoto/service.py (a small dedicated paper_trial.py helper is allowed only if it materially keeps readiness/date logic focused), maps/api/fujimoto.py and schemas.py, related nearest CLAUDE documents, focused Fujimoto API/execution/feed tests. Touch shared runtime only if the trial's subscription/readiness integration requires it; explain any such change. Do not edit templates or controller documents in this task.
+
+- Add POST /api/v1/fujimoto/activate-paper-test with sell_consent=true required; reuse authenticated administrator/account-owner scope. Use previously configured two-mode budget, requiring the approved total/split for this trial. Do not accept caller-supplied pass flags, current time, environment, source evidence or expiry. No replay_id required.
+- Persist explicit authorization_policy=paper_test (normal/absent policy remains validated), account/owner/config IDs, code fingerprint, actual activation timestamp, next-session start and session-20 expiry in existing control evidence. Consent applies only to new Fujimoto acquisitions. Normal activation must explicitly restore validated policy and cannot inherit trial permission accidentally.
+- Check readiness from genuine persisted account and feed/source observations: runtime on, KIS paper environment/execution switches, dedicated valid configuration, fresh complete reconciled account without blocks/kill/UNKNOWN/unsettled costs, usable actual screen/candidate/source data and fresh subscribed recording availability, storage capacity. Read-only GET /status must stay read-only and never contact the broker. Expose a paper_test status object with eligibility/block reasons, policy/start/expiry, and expired/stopped/active/scheduled state. Actual order guards re-check relevant freshness and risk; dashboard alone grants nothing. Do not require a candidate that currently triggers BUY merely to activate; zero natural orders is a valid outcome once real screening/feed readiness exists.
+- Before any trial BUY, verify paper environment, current account/config/code binding, explicit consent/entries_enabled, campaign start/end and recording capacity. Share the check between service and OrderManager source validation. Validate trial permission for SELL as paper-only even after expiry/stop; ordinary source ownership and original acquisition consent remain mandatory.
+- At expiry or recording exhaustion, atomically stop new/add buys and request cancellation of known submitted BUYs using existing tick/cancel logic. UNKNOWN/CANCEL_REQUESTED retains reservations; no resend or fake terminal. Before start date, refuse BUY without destroying a scheduled trial. Reboot and tick/quote/submission entrypoints must not extend dates or allow a stale campaign. Configuration/code/account changes block entries until a new valid approval; no silent rebinding.
+- Existing stop preserves trial identity/dates and approved exits. Reject starting a new trial when Fujimoto owned shares or unresolved Fujimoto orders remain (existing campaign resumes from its stored state without reactivation). A completed/stopped campaign with no ownership or pending state may be explicitly started anew; never automatically renew.
+- Persist trial attribution in the existing control/approval linkage so orders/cycles can be traced to the authorization. No measured replay, ValidationRun PASS or PromotionHistory is synthesized. Keep the normal with_orderbook settings, actual 30-second continuity, costs, financial/technical guards and 1:2:6 progression unchanged.
+- Add red/green regressions: activation without replay in ready paper environment; normal activation still rejects missing replay; live/mock/wrong owner/accounts rejected; config/code changes and forged sources blocked; holiday/weekend 20-session boundary and before-start; partial/UNKNOWN through stop/expiry/restart with cancellation once; storage exhaustion stops BUY without blocking approved owned SELL; missing quote/screen/financial/account data readiness; no false promotion/validation records; existing related tests remain green.
+- Run focused tests while iterating and one coherent affected-module selection on frozen source. Record command/count/duration/warnings and public interface in task report; self-review and commit only this task's files. Do not run the full repository suite (controller final gate).
+
+## Task 2: Trial operator UI and usage documentation
+
+**Dependencies:** Consume Task 1's reported status/request contract exactly. Same Global Constraints apply.
+
+**Files/ownership:** templates/fujimoto.html, maps/api/CLAUDE.md only if UI interface description needs it, relevant docs/tests including existing UI/docs checks. Do not change backend behavior or controller-owned plan/HANDOFF without escalating a concrete mismatch.
+
+- Add a clearly distinguished automatic-paper-trial section to /fujimoto, using the existing style and native form controls. Show fixed recommended campaign KRW 10m total/5m each, both modes' actual rules (original has no price stop), next-session start/20-session end and current readiness blockers. Populate the budget field with the approved recommendation only when unset; budget is saved explicitly, never through a GET or page load.
+- Use the existing config save flow and consent semantics. Trial start submits only to the new paper-only endpoint with explicit checkbox consent. Keep existing measured activation intact and label the trial as performance-unvalidated. Disable the start affordance when unready, but show concrete Korean reasons rather than generic unknown labels. Backend remains authoritative for direct API calls.
+- Display scheduled/active/stopped/expired trial state, start/end, config/permission changes and recording capacity blocks. Show existing cycle stages/owned quantity and add the minimum order status/cumulative filled/remaining information needed for actual trial checks; if existing API omits it, request a narrow backend addition from the controller rather than inventing fake client data.
+- Existing new-entry stop remains available. Explain cancellation confirmation/reservation and continuing exits after expiry, no forced liquidation, no guaranteed trades within 20 sessions, and that other holdings are not adopted. No forced-order button, extra strategy, mobile UI or promotion shortcut.
+- Add meaningful endpoint/UI-contract regressions for newly exposed fields/actions; no tests mirroring literal implementation. Run affected API/doc tests and JS syntax check. Controller performs offline visual verification after backend/UI integration; no production activation in UI tests. Self-review, commit task files, report exact checks and usage steps.
+
+## Operational verification and release (controller)
+
+Inspect genuine account adjustments, observations and broker data without printing keys or account identifiers. Resolve only demonstrable differences using existing versioned admin operations; unresolved proof is an operational blocker, not a coding excuse or a reason to clear a guard. Inspect actual feed readiness, source/comparability coverage, scheduler and storage. Prepare observation on paper, configure explicit campaign budget under the account owner, and activate through the same service/API only after all preconditions are met. If no genuine data or natural signals exist, report preparation complete and exact blockers; never promise or fabricate fills. User approval to implement this plan includes explicit new-acquisition sell consent for this paper campaign; no existing-holding consent is implied.
+
+Run independent whole-branch review, final isolated tests and appropriate compile/JS/docs checks; publish only a clean tested tree. Atomic fast-forward push feature/master, no force. Production /opt/maps on ubuntu@3.37.117.246 uses service maps and existing venv/PostgreSQL. Recheck runbook and current state; do not deploy 16:00-16:45 KST, hold /tmp/maps_analyze.lock, preserve untracked files, verify private backup before changes. Existing startup requires up to several minutes: health retries need at least 10 minutes with individually bounded requests and progress updates. On failure restore prior code/service without DB downgrade. Verify exact SHA, schema, internal/public health, authentication and actual paper-only campaign state.
+
+## Results and decisions
+
+Baseline is the previous release c66e9da with frozen source regression 1,871 passed. Current pre-implementation server inspection: KIS paper account, ordinary execution enabled, Fujimoto disabled; no Fujimoto config/cycles/orders/evidence/validation; account_difference_unclassified present; no WebSocket handshake error in the latest ten-minute window (not proof of fresh received quotes).
+
+No new implementation or operational success is claimed yet. Record task approvals, final tests and release facts here as work completes.
