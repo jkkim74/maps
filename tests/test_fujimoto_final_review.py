@@ -18,19 +18,23 @@ def rule(day=DAY):
 def quotes(day, bid=1100, ticker="A"):
     return tuple(dict(ticker=ticker, exchange_at=f"{day}T00:00:{s:02}",
         received_at=f"{day}T00:00:{s:02}", connected=True, bid=bid, ask=bid + 1,
-        bid_size=100000, total_bid=300000, total_ask=100000) for s in range(31))
+        bid_size=100000, total_bid=300000, total_ask=100000) for s in range(1, 32))
 
 
 def sample(*, opening=1000, tape=(), tickers=("A",), budget=4000000):
+    entry = tuple({**quotes("2026-01-06", bid=opening - 1, ticker=t)[0],
+                   "ask_size": 100000, "exchange_at": "2026-01-06T00:00:00",
+                   "received_at": "2026-01-06T00:00:00"} for t in tickers)
     return ReplayInput(budget, {DAY: {t: rule() for t in tickers}},
         {DAY: {t: SessionBar(1000, 1000, 1000, 1000, 100000) for t in tickers},
          DAY + timedelta(days=1): {t: SessionBar(opening, max(opening, 1100), 990, 1000, 100000) for t in tickers}},
-        tape=tape, candidate_order={DAY: tickers})
+        tape=entry + tape, candidate_order={DAY: tickers},
+        recording=({"kind": "subscriptions", "at": "2026-01-05T00:00:00", "tickers": tickers},))
 
 
 def test_normal_constraints_are_diagnostics_and_window_intentions_expire():
     data = sample(tickers=tuple("ABCDEF"), opening=1200)
-    data = replace(data, bars={DAY: data.bars[DAY], DAY + timedelta(days=1):
+    data = replace(data, tape=(), bars={DAY: data.bars[DAY], DAY + timedelta(days=1):
         {t: SessionBar(1200, 1200, 1200, 1200, 100000) for t in "ABCDEF"}})
     limited = replay(data)
     assert not limited.reasons
@@ -48,14 +52,12 @@ def test_normal_constraints_are_diagnostics_and_window_intentions_expire():
 
 def test_daily_later_touch_cannot_sell_earlier_intraday():
     result = replay(sample(opening=1100, tape=quotes("2026-01-06")), with_orderbook=True)
-    assert len(result.fills) == 2
-    assert all(f["action"] == "buy" for f in result.fills)
-    assert all(f["execution_phase"] == "after_intraday" for f in result.fills)
+    assert not result.fills  # Daily low alone can no longer create any ownership.
     assert "unknown_intraday_fill_order" in result.reasons
 
 
 def test_later_touch_and_recovery_never_claims_an_unobserved_stop_was_avoided():
-    data = sample(opening=1100, tape=quotes("2026-01-06", bid=800))
+    data = sample(opening=1100, tape=quotes("2026-01-06", bid=1100))
     bars = {**data.bars, DAY + timedelta(days=1): {"A": SessionBar(1100, 1100, 750, 1000, 100000)}}
     result = replay(replace(data, bars=bars))
     assert "unknown_intraday_fill_order" in result.reasons
@@ -75,7 +77,9 @@ def test_empty_unfilled_cycles_release_slots_next_session():
     bars[DAY + timedelta(days=1)] = {t: SessionBar(1200, 1200, 1200, 1200, 100000) for t in "ABCDE"}
     bars[DAY + timedelta(days=2)] = {"F": SessionBar(1000, 1000, 1000, 1000, 100000)}
     evidence = {**data.evidence, DAY + timedelta(days=1): {"F": rule(DAY + timedelta(days=1))}}
-    result = replay(replace(data, bars=bars, evidence=evidence))
+    entry = {**quotes("2026-01-07", bid=999, ticker="F")[0], "ask_size": 100000}
+    recording = data.recording + ({"kind": "subscriptions", "at": "2026-01-07T00:00:00", "tickers": ["F"]},)
+    result = replay(replace(data, bars=bars, evidence=evidence, tape=(entry,), recording=recording))
     assert {f["ticker"] for f in result.fills} == {"F"}
 
 
@@ -146,21 +150,22 @@ def test_full_held_interval_requires_actual_subscription_and_continuity():
         for s in range(0, 22801, 3))
     recording = ({"kind": "subscriptions", "at": start.isoformat(), "tickers": ["A"]},)
     complete = sample(tape=tape)
-    assert "missing_held_session_tape" in replay(complete).reasons
+    assert "missing_submission_tape" in replay(replace(complete, recording=())).reasons
     complete = replace(complete, recording=recording)
     assert not replay(complete).reasons
     for changed in (tape[:-2], tape[:100] + tape[102:],
                     tape[:100] + ({**tape[100], "gap": True},) + tape[101:]):
-        assert "missing_held_session_tape" in replay(replace(complete, tape=changed)).reasons
+        assert "missing_held_session_tape" in replay(replace(complete, tape=complete.tape[:1] + changed)).reasons
     unsubscribed = recording + ({"kind": "subscriptions", "at": "2026-01-06T01:00:00", "tickers": []},)
     assert "missing_held_session_tape" in replay(replace(complete, recording=unsubscribed)).reasons
 
 
 def test_early_stop_still_requires_its_actual_recorded_subscription():
     data = sample(tape=quotes("2026-01-06", bid=800))
-    result = replay(data)
-    assert any(f["reason"] == "price_stop" for f in result.fills)
-    assert "missing_held_session_tape" in result.reasons
+    assert any(f["reason"] == "price_stop" for f in replay(data).fills)
+    result = replay(replace(data, recording=()))
+    assert not result.fills
+    assert "missing_submission_tape" in result.reasons
 
 
 def test_observed_outage_is_measured_but_an_unbounded_disconnect_is_missing():
@@ -262,7 +267,8 @@ def test_neighbor_only_holdings_and_wfa_do_not_escape_coverage():
     data = ReplayInput(4000000,
         {d: {"A": replace(rule(d), daily_rsi=42)} for d in days},
         {d: {"A": SessionBar(1000, 1000, 1000, 1000, 100000)} for d in days},
-        tape=quotes("2026-01-06", ticker="UNRELATED"))
+        tape=tuple({**quotes(str(d), bid=999)[0], "ask_size": 100000} for d in days),
+        recording=({"kind": "subscriptions", "at": "2026-01-05T00:00:00", "tickers": ["A"]},))
     report = run_research(data)
     assert not report["baseline"]["fills"]
     assert "missing_held_session_tape" in report["neighbors"][-1]["reasons"]
@@ -271,3 +277,134 @@ def test_neighbor_only_holdings_and_wfa_do_not_escape_coverage():
     report = run_research(data)
     assert all("missing_held_session_tape" in fold[label]["reasons"]
                for fold in report["wfa"] for label in ("is", "oos"))
+
+
+@pytest.mark.parametrize("availability", ["outage", "missing_subscription", "removed", "no_quote"])
+def test_recording_unavailability_cannot_create_daily_open_ownership(availability):
+    recording = ({"kind": "subscriptions", "at": "2026-01-06T00:00:00", "tickers": ["A"]},)
+    tape = tuple({**q, "ask_size": 100000} for q in quotes("2026-01-06", bid=999))
+    if availability == "outage":
+        recording += ({"kind": "outage", "start": "2026-01-06T00:00:00",
+                       "end": "2026-01-06T06:20:00", "tickers": ["A"]},)
+        tape = quotes("2026-01-05", ticker="OTHER")
+    elif availability == "missing_subscription":
+        recording = ()
+    elif availability == "removed":
+        recording += ({"kind": "subscriptions", "at": "2026-01-06T00:00:00", "tickers": []},)
+    else:
+        tape = ()
+    result = replay(replace(sample(), tape=tape, recording=recording))
+    assert not result.fills
+    assert not any(result.final_quantities.values())
+
+
+def test_subscription_refresh_deduplicates_per_connection_but_keeps_reconnect(db):
+    from maps.fujimoto.feed import FujimotoFeed
+    feed = FujimotoFeed(db, "account")
+    now = datetime.now(timezone.utc)
+    for i in range(20):
+        feed.record_subscriptions(["A", "B"] if i % 2 else ["B", "A"], now=now + timedelta(seconds=i))
+    records = feed.repo.evidence_as_of("feed_recording", "*", datetime.max, account_key="account")
+    assert len(records) == 1
+    feed.reset("reconnect")
+    feed.record_subscriptions(["A", "B"], now=now + timedelta(seconds=21))
+    records = feed.repo.evidence_as_of("feed_recording", "*", datetime.max, account_key="account")
+    assert len(records) == 2
+
+
+def test_recording_lookup_comparisons_are_bounded_not_quotes_times_history(monkeypatch):
+    import maps.fujimoto.replay as replay_module
+    class CountingDateTime(datetime):
+        comparisons = 0
+
+        def __le__(self, other):
+            type(self).comparisons += 1
+            return super().__le__(other)
+
+        def __lt__(self, other):
+            type(self).comparisons += 1
+            return super().__lt__(other)
+
+        def __gt__(self, other):
+            type(self).comparisons += 1
+            return super().__gt__(other)
+
+    monkeypatch.setattr(replay_module, "datetime", CountingDateTime)
+    start = datetime(2026, 1, 6)
+    recording = tuple({"kind": "subscriptions", "at": (start + timedelta(days=i)).isoformat(),
+                       "tickers": ["A"]} for i in range(2001))
+    complete, outage = replay_module.held_tape_coverage("A", start, start + timedelta(seconds=30),
+                                                       list(quotes("2026-01-06")), recording)
+    assert complete and not outage
+    assert CountingDateTime.comparisons < 10000
+
+
+@pytest.mark.parametrize("renewed", [False, True])
+@pytest.mark.parametrize("liquidity_recorded", [False, True])
+def test_reconnect_acquisition_uses_actual_quote_time_and_recorded_ask(renewed, liquidity_recorded):
+    recording = ({"kind": "subscriptions", "at": "2026-01-05T00:00:00", "tickers": ["A"]},
+        {"kind": "outage", "start": "2026-01-06T00:00:00", "end": "2026-01-06T01:00:00", "tickers": ["A"]})
+    if renewed:
+        recording += ({"kind": "subscriptions", "at": "2026-01-06T01:00:01", "tickers": ["A"]},)
+    entry = {**quotes("2026-01-06", bid=999)[0], "exchange_at": "2026-01-06T01:00:05",
+             "received_at": "2026-01-06T01:00:05"}
+    if liquidity_recorded:
+        entry["ask_size"] = 100000
+    stop = {**quotes("2026-01-06", bid=800)[0], "exchange_at": "2026-01-06T01:00:06",
+            "received_at": "2026-01-06T01:00:06"}
+    data = replace(sample(), tape=quotes("2026-01-06") + (entry, stop), recording=recording)
+    result = replay(data, with_orderbook=True)
+    if renewed and liquidity_recorded:
+        buys = [f for f in result.fills if f["action"] == "buy"]
+        assert len(buys) == 2
+        assert all(f["executed_at"] == entry["received_at"] for f in buys)
+        stops = [f for f in result.fills if f["reason"] == "price_stop"]
+        assert len(stops) == 1 and stops[0]["executed_at"] == stop["received_at"]
+        assert not [f for f in result.fills if f["reason"] == "orderbook_take_profit"]
+    else:
+        assert not result.fills
+        assert "missing_submission_tape" in result.reasons
+
+
+def test_pending_next_session_sell_cannot_liquidate_during_observed_outage():
+    data = sample()
+    sell_day = date(2026, 1, 7)
+    evidence = {**data.evidence, date(2026, 1, 6): {"A": RuleEvidence(date(2026, 1, 6), 1000,
+                                                                              financial_status="deteriorated")}}
+    bars = {**data.bars, sell_day: {"A": SessionBar(800, 800, 800, 800, 100000)}}
+    recording = data.recording + (
+        {"kind": "outage", "start": "2026-01-06T00:00:02", "end": "2026-01-06T06:20:00", "tickers": ["A"]},
+        {"kind": "outage", "start": "2026-01-07T00:00:00", "end": "2026-01-07T06:20:00", "tickers": ["A"]})
+    result = replay(replace(data, evidence=evidence, bars=bars, recording=recording))
+    assert len(result.fills) == 2 and all(f["action"] == "buy" for f in result.fills)
+    assert all(result.final_quantities.values())
+    assert result.equity[-1]["combined"] < result.equity[-2]["combined"]
+    assert not result.reasons and "observed_feed_outage" in result.diagnostics
+
+
+def test_real_feed_payload_exports_ask_liquidity_without_backfill(db):
+    from maps.fujimoto.feed import FujimotoFeed
+    from maps.limit_up.feed import FeedQuote
+    from scripts.fujimoto_research import export_inputs
+    at = datetime(2026, 1, 6, tzinfo=timezone.utc)
+    feed = FujimotoFeed(db, "account")
+    feed.record_subscriptions(["A"], now=at)
+    feed.on_quote(FeedQuote("A", 1000, 123, 999, 456, 1., 1000, 3000, at, at), now=at)
+    exported = export_inputs(db, "account", 4000000)
+    assert exported["tape"][0]["ask_size"] == 123
+    result = replay(replace(sample(), tape=tuple(exported["tape"]), recording=tuple(exported["recording"])))
+    assert result.fills
+    assert sum(f["quantity"] for f in result.fills) <= int(123 * .01)
+
+
+def test_resting_limit_before_disconnect_cannot_claim_proven_late_acquisition():
+    before = {**quotes("2026-01-06", bid=1100)[0], "ask_size": 100000}
+    after = {**quotes("2026-01-06", bid=999)[0], "ask_size": 100000,
+             "exchange_at": "2026-01-06T01:00:01", "received_at": "2026-01-06T01:00:01"}
+    recording = sample().recording + (
+        {"kind": "outage", "start": "2026-01-06T00:00:02", "end": "2026-01-06T01:00:00", "tickers": ["A"]},
+        {"kind": "subscriptions", "at": "2026-01-06T01:00:00", "tickers": ["A"]})
+    result = replay(replace(sample(), tape=(before, after), recording=recording))
+    assert len(result.fills) == 2
+    assert all(f["executed_at"] == after["received_at"] for f in result.fills)
+    assert "unknown_order_execution_timing" in result.reasons

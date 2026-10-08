@@ -132,10 +132,19 @@ execution data, costs and participation. It executes only next-session capped li
 models partial liquidity shared across modes, halts and missing bars. After-close
 fundamental deterioration cannot execute at the same day's open; financial sells
 queue for the next session. Safe daily lows alone never fabricate intraday stop fills.
-An opening capped BUY may precede intraday quotes. A BUY justified only by the
-completed daily low is accounted after intraday events and explicitly reports
-`unknown_intraday_fill_order`: its acquisition/stop order cannot be proved, even
-on a drop-and-recovery day. Such exploratory fills cannot pass validation.
+BUY and next-session SELL intentions both wait for an actual fresh, subscribed
+quote. A daily opening price or low can never create ownership or liquidation.
+BUY uses the recorded ask/ask_size within its cap; SELL uses bid/bid_size. Quote
+and daily participation still bound modeled fills. Fill `executed_at` is the actual
+receive timestamp, and new ownership is unavailable to earlier quotes. An actual
+later quote can prove a later acquisition after reconnect, but only after a renewed
+subscription. Missing ask_size is never inferred from bid_size or daily volume.
+A daily touch with no executable quote remains `missing_submission_tape` /
+`unknown_intraday_fill_order`, with zero modeled fills. Known whole-session outages
+prevent both acquisitions and next-session sales; owned shares stay marked.
+If a resting intention could already have been submitted before a recording gap
+or outage, a later modeled fill retains `unknown_order_execution_timing`; a renewed
+quote cannot prove that ownership did not start in the unobserved interval.
 `ReplayResult.reasons` contains unavailable evidence; `diagnostics` separately
 records position/budget waits, observed halts/outages and window-end intention
 expiry. Unsent next-session intentions expire at each research-window boundary;
@@ -150,7 +159,8 @@ ranking falls back to ticker order for exploratory runs and cannot pass validati
 `quote_session_date` slices actual received timestamps into KST sessions for replay/WFA.
 `ReplayInput.recording` contains actual sent subscription snapshots and completed
 disconnect/reconnect intervals, with export evidence IDs. Every replay/neighbor/WFA
-checks the actual held interval from 09:00 until exit or 15:20 KST. Subscription
+checks the held interval from 09:00 for carry-over shares, or the actual acquisition
+quote for new shares, until exit or 15:20 KST. Subscription
 requests alone are insufficient: fresh arrivals must cover it within three seconds.
 Unrelated instruments, a morning fragment, invalid/gapped quotes and silent missing
 sessions cannot prove safe-stop or book coverage. This applies with book disabled too.
@@ -160,6 +170,10 @@ whole-session exchange halts are measured without pretending there was an execut
 The strict coverage policy may reject quiet instruments; silence is never assumed
 to prove that a stop could not have triggered. Old exports lack recording evidence
 and require remeasurement with actual coverage, never synthetic repair.
+The recording index parses subscription timestamps once per replay and uses binary
+search for quote eligibility; outage intervals are indexed by ticker and timestamp.
+Unchanged subscription sets are stored once per connection, regardless of refresh
+order. Reconnect forces a new sent-subscription observation before new acquisitions.
 
 Optional `ReplayInput.screening[date][ticker]` is a frozen snapshot with annual_records,
 financial_records and valuations (exact Task1 dataclass dictionaries), sectors

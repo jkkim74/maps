@@ -26,19 +26,26 @@ class FujimotoFeed:
         self._capacity_notice = False
         self._generation, self._seen_generation = 0, {}
         self._subscriptions, self._outage_start = (), None
+        self._subscriptions_recorded = False
 
     def record_subscriptions(self, tickers, *, now: datetime) -> None:
         """Record actual sent subscriptions; received quotes must still prove coverage."""
-        self._subscriptions = tuple(tickers)
+        selected = tuple(sorted(set(tickers)))
+        if self._subscriptions_recorded and selected == self._subscriptions:
+            return
+        self._subscriptions = selected
         self.repo.record_evidence("feed_recording", "*", now, now,
             {"kind": "subscriptions", "at": now.isoformat(), "tickers": self._subscriptions}, account_key=self.key)
         self.repo.session.commit()
+        self._subscriptions_recorded = True
 
     def reset(self, reason: str) -> None:
         """Reconnect/disconnect and parse gaps invalidate every duration."""
         self._duration.clear()
         self._generation += 1
         now = datetime.now(timezone.utc)
+        if reason in {"disconnect", "reconnect"}:
+            self._subscriptions_recorded = False
         if reason == "disconnect" and self._outage_start is None:
             self._outage_start = (now, self._subscriptions)
         elif reason == "reconnect" and self._outage_start is not None:

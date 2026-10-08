@@ -7,6 +7,13 @@ from maps.common.exceptions import BacktestError
 from maps.fujimoto.domain import Mode, RuleEvidence
 
 
+def execution_quote(day, price, *, buy=False, ticker="005930"):
+    """Explicit offline quote fixture; daily bars alone are never fill evidence."""
+    return dict(ticker=ticker, exchange_at=f"{day}T00:00:00", received_at=f"{day}T00:00:00",
+                connected=True, bid=price - 1 if buy else price, ask=price if buy else price + 1,
+                bid_size=100000, ask_size=100000, total_bid=100000, total_ask=100000)
+
+
 def test_catalog_stateful_contract_rejects_boolean_replay():
     from maps.strategy.catalog import STRATEGY_CLASSES, describe_strategy
     for mode in Mode:
@@ -28,7 +35,9 @@ def inputs():
         date(2026, 1, 6): {"005930": SessionBar(1000, 1010, 990, 1000, 20)},
         date(2026, 1, 7): {"005930": SessionBar(1100, 1110, 1090, 1100, 10000)},
         date(2026, 1, 8): {"005930": SessionBar(1100, 1110, 1090, 1100, 10000)},
-    }, participation=.1, slippage=0, fee_rate=.001, tax_rate=.002)
+    }, participation=.1, slippage=0, fee_rate=.001, tax_rate=.002,
+        tape=(execution_quote("2026-01-06", 1000, buy=True), execution_quote("2026-01-08", 1100)),
+        recording=({"kind": "subscriptions", "at": "2026-01-05T00:00:00", "tickers": ["005930"]},))
 
 
 def test_replay_shared_transition_volume_partial_costs_and_reproducibility():
@@ -52,7 +61,9 @@ def test_next_session_limit_cap_halt_missing_data_and_stress():
                 SessionBar(1000, 1010, 990, 1000, 10000, halted=True), None):
         modified = {day: dict(rows) for day, rows in data.bars.items()}
         modified[date(2026, 1, 6)] = {} if bar is None else {"005930": bar}
-        assert not replay(replace(data, bars=modified)).fills
+        tape = tuple({**q, "ask": bar.open, "bid": bar.open - 1} if q["received_at"].startswith("2026-01-06") and bar else q
+                     for q in data.tape)
+        assert not replay(replace(data, bars=modified, tape=tape)).fills
     assert stress_losses(.675)["simultaneous_68pct"] == pytest.approx(.459)
     assert stress_losses(.675)["total_loss"] == .675
 
@@ -62,7 +73,9 @@ def test_validation_missing_tape_samples_and_stored_runner_is_not_measurement(db
     from maps.fujimoto.validation import run_research, validation
     repo = FujimotoRepository(db)
     report = run_research(inputs())
-    stored = repo.store_replay(inputs(), report)
+    from dataclasses import replace
+    no_tape = replace(inputs(), tape=())
+    stored = repo.store_replay(no_tape, run_research(no_tape))
     result = validation(repo, stored.id)
     assert result.status == "insufficient"
     assert {"safe", "original", "combined"} <= set(result.metrics)
@@ -142,7 +155,8 @@ def test_closed_cycle_can_begin_new_independent_cycle_on_later_session():
         financial_status="maintained", daily_rsi=40, weekly_rsi=50)}
     bars[date(2026, 1, 9)] = {"005930": SessionBar(1000, 1010, 990, 1000, 10000)}
     bars[date(2026, 1, 12)] = {"005930": SessionBar(1000, 1010, 990, 1000, 10000)}
-    result = replay(replace(data, evidence=evidence, bars=bars))
+    result = replay(replace(data, evidence=evidence, bars=bars,
+                            tape=data.tape + (execution_quote("2026-01-12", 1000, buy=True),)))
     buys = [fill for fill in result.fills if fill["action"] == "buy"]
     assert len(buys) == 4
     assert sum(fill["completed_cycle"] for fill in result.fills) == 2
@@ -157,7 +171,8 @@ def test_daily_low_without_recorded_intraday_quote_never_fabricates_stop_fill():
     evidence = dict(data.evidence)
     evidence[date(2026, 1, 7)] = {"005930": RuleEvidence(date(2026, 1, 7), 800)}
     bars[date(2026, 1, 7)] = {"005930": SessionBar(800, 810, 700, 800, 10000)}
-    result = replay(replace(data, evidence=evidence, bars=bars))
+    result = replay(replace(data, evidence=evidence, bars=bars,
+                            tape=(data.tape[0],)))
     assert all(fill["action"] == "buy" for fill in result.fills)
 
 
@@ -177,7 +192,8 @@ def test_after_close_financial_deterioration_never_executes_past_open():
     bars = dict(data.bars)
     bars[date(2026, 1, 7)] = {"005930": SessionBar(2000, 2000, 800, 800, 10000)}
     bars[date(2026, 1, 8)] = {"005930": SessionBar(750, 760, 740, 750, 10000)}
-    result = replay(replace(data, evidence=evidence, bars=bars))
+    result = replay(replace(data, evidence=evidence, bars=bars,
+                            tape=(data.tape[0], execution_quote("2026-01-08", 750))))
     exits = [f for f in result.fills if f["action"] == "sell"]
     assert len(exits) == 2
     assert all(f["date"] == "2026-01-08" and f["price"] == 750 for f in exits)
@@ -197,11 +213,14 @@ def operational_inputs():
             financial_status="deteriorated" if phase == 2 else "maintained",
             daily_rsi=40, weekly_rsi=50)}
         bars[day] = {"005930": SessionBar(price, max(price, 1100), price, price, 100000)}
+        if phase in (1, 3):
+            quotes.append(execution_quote(day, price, buy=phase == 1))
         if phase == 2:
             quotes.extend(dict(ticker="005930", exchange_at=f"{day.isoformat()}T00:00:{second:02}",
                 received_at=f"{day.isoformat()}T00:00:{second:02}", connected=True, bid=1100, ask=1101,
                 bid_size=10000, total_bid=30000, total_ask=10000) for second in range(31))
-    return ReplayInput(10000000, evidence, bars, tape=tuple(quotes), participation=.1, slippage=0)
+    return ReplayInput(10000000, evidence, bars, tape=tuple(quotes), participation=.1, slippage=0,
+        recording=({"kind": "subscriptions", "at": "2026-01-05T00:00:00", "tickers": ["005930"]},))
 
 
 def test_enabled_orderbook_variant_drives_all_measured_gates_and_manifest(db):
@@ -311,7 +330,7 @@ def test_recorded_quotes_share_each_event_liquidity_and_respect_exchange_halts()
     quotes = tuple(dict(ticker="005930", exchange_at=f"2026-01-07T00:00:0{i}",
         received_at=f"2026-01-07T00:00:0{i}", connected=True, bid=800, ask=801,
         bid_size=10, total_bid=30, total_ask=10) for i in (1, 2))
-    changed = replace(data, bars=bars, evidence=evidence, tape=quotes)
+    changed = replace(data, bars=bars, evidence=evidence, tape=(data.tape[0],) + quotes)
     result = replay(changed)
     assert result.final_quantities["safe:005930"] == 0
     assert result.final_quantities["original:005930"] == 2

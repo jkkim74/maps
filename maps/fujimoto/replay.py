@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field, replace
+from bisect import bisect_right
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -13,7 +14,7 @@ from maps.common.exceptions import DataQualityError
 from maps.fujimoto.domain import (CycleState, Decision, Mode, RuleEvidence, evaluate,
                                   build_rule_evidence, ranked_admission, empty_cycle_expired)
 from maps.fujimoto.repository import (AccountLimits, FillEvent, apply_fill_transition,
-                                     fingerprint, json_data, money, size_buy)
+                                     fingerprint, json_data, money, size_buy, utc_naive)
 from maps.market.trading_rules import is_krx_closed_date, round_down_krx_price
 
 
@@ -118,35 +119,75 @@ def expected_net_sale(bid: float, quantity: int, sale_cost_rate: float, slippage
     return money(bid) * quantity * (Decimal(1) - money(slippage)) * (Decimal(1) - money(sale_cost_rate))
 
 
+class RecordingIndex:
+    """Parse recording once; timestamp lookup is logarithmic, never a history scan."""
+
+    def __init__(self, recording: tuple[dict, ...]):
+        self.valid = True
+        subscriptions, outages = [], {}
+        try:
+            for row in recording:
+                if row.get("kind") == "subscriptions":
+                    subscriptions.append((utc_naive(datetime.fromisoformat(row["at"])), frozenset(row["tickers"])))
+                elif row.get("kind") == "outage":
+                    left, right = (utc_naive(datetime.fromisoformat(row[k])) for k in ("start", "end"))
+                    if right < left:
+                        raise ValueError("reversed_recording_interval")
+                    for ticker in row["tickers"]:
+                        outages.setdefault(ticker, []).append((left, right))
+        except (KeyError, TypeError, ValueError):
+            self.valid = False
+        subscriptions.sort(key=lambda row: row[0])
+        self.subscription_times = tuple(row[0] for row in subscriptions)
+        self.subscriptions = tuple(row[1] for row in subscriptions)
+        self.outages, self.outage_times = {}, {}
+        for ticker, rows in outages.items():
+            merged = []
+            for left, right in sorted(rows):
+                if merged and left <= merged[-1][1]:
+                    merged[-1] = merged[-1][0], max(right, merged[-1][1])
+                else:
+                    merged.append((left, right))
+            self.outages[ticker] = tuple(merged)
+            self.outage_times[ticker] = tuple(left for left, _ in merged)
+
+    def subscribed(self, ticker: str, stamp: datetime) -> bool:
+        """Require a sent subscription and, after outage, a renewed subscription."""
+        index = bisect_right(self.subscription_times, stamp) - 1
+        if not self.valid or index < 0 or ticker not in self.subscriptions[index]:
+            return False
+        outage = bisect_right(self.outage_times.get(ticker, ()), stamp) - 1
+        return outage < 0 or self.outages[ticker][outage][1] <= self.subscription_times[index]
+
+    def intervals(self, ticker: str, start: datetime, end: datetime) -> tuple:
+        """Return only outage intervals intersecting the requested owned session."""
+        times = self.outage_times.get(ticker, ())
+        rows = self.outages.get(ticker, ())
+        return tuple((left, right) for left, right in rows[max(0, bisect_right(times, start) - 1):bisect_right(times, end)]
+                     if right >= start)
+
+
 def held_tape_coverage(ticker: str, start: datetime, end: datetime, quotes: list[dict],
-                       recording: tuple[dict, ...]) -> tuple[bool, bool]:
+                       recording: tuple[dict, ...] | RecordingIndex) -> tuple[bool, bool]:
     """Prove the owned interval with subscribed fresh arrivals or bounded known outages.
 
     A subscription request alone proves no data coverage. Silence longer than
     the runtime three-second freshness limit is unknown, never 'no trigger'.
     Outages must have both endpoints observed in one live recorder instance.
     """
-    from maps.fujimoto.repository import utc_naive
-    intervals, subscriptions = [], []
-    outage = False
+    recording = recording if isinstance(recording, RecordingIndex) else RecordingIndex(recording)
+    intervals = list(recording.intervals(ticker, start, end))
+    outage = bool(intervals)
+    if not recording.valid:
+        return False, outage
     try:
-        for row in recording:
-            if row.get("kind") == "subscriptions":
-                subscriptions.append((utc_naive(datetime.fromisoformat(row["at"])), row["tickers"]))
-            elif row.get("kind") == "outage" and ticker in row.get("tickers", ()):
-                left, right = (utc_naive(datetime.fromisoformat(row[k])) for k in ("start", "end"))
-                if right >= left and right >= start and left <= end:
-                    intervals.append((left, right))
-                    outage = True
-        subscriptions.sort(key=lambda row: row[0])
         last = None
         for quote in quotes:
             _, last, bid, _ = quote_signal(None, last, quote, 0, 0, 0)
             if bid is None:
                 continue
             stamp = utc_naive(datetime.fromisoformat(quote["received_at"]))
-            active = next((names for at, names in reversed(subscriptions) if at <= stamp), ())
-            if ticker in active:
+            if recording.subscribed(ticker, stamp):
                 intervals.append((stamp, stamp + timedelta(seconds=3)))
     except (KeyError, TypeError, ValueError):
         return False, outage
@@ -235,12 +276,13 @@ def screening_evidence(snapshot: dict, ticker: str, cutoff: date, *, maximum_ret
 
 def replay(data: ReplayInput, *, with_orderbook: bool = False, cost_multiplier: float = 1,
            first_rsi: float = 40, maximum_return_20: float = .2, minimum_dividend_growth: float = 0) -> ReplayResult:
-    """Execute next-session capped buys and technical sells; no touch-full-fill model.
+    """Execute next-session intentions only at subscribed actual quote events.
 
     Daily-only replay cannot claim an intraday stop execution. Recorded quotes
     carry actual bid liquidity/timestamps and are required for those exits.
     Completed-session financial evidence is available after close, so its first
-    executable open is the next session. Intraday exits require recorded quotes.
+    executable quote is the next session. Daily bars never create submission or
+    ownership. Displayed ask/bid liquidity and daily participation bound fills.
     """
     if (money(cost_multiplier) <= 0 or not 0 <= first_rsi <= 100
             or data.slippage * cost_multiplier >= 1
@@ -253,9 +295,10 @@ def replay(data: ReplayInput, *, with_orderbook: bool = False, cost_multiplier: 
     if with_orderbook and not data.tape:
         reasons.add("missing_recorded_tape")
     volume_used: dict[tuple[date, str], int] = {}
-    quote_used: dict[int, int] = {}
+    quote_used: dict[tuple[int, str], int] = {}
     sequence = 0
     continuity = {}
+    recording = RecordingIndex(data.recording)
     tape_by_day: dict[date, list[tuple[int, dict]]] = {}
     for index, quote in enumerate(data.tape):
         quote_day = quote_session_date(quote)
@@ -284,7 +327,7 @@ def replay(data: ReplayInput, *, with_orderbook: bool = False, cost_multiplier: 
         else:
             available = max(0, int(bar.volume * data.participation) - volume_used.get((day, ticker), 0))
             if quote_index is not None:
-                available = max(0, int(bar.volume * data.participation) - quote_used.get(quote_index, 0))
+                available = max(0, int(bar.volume * data.participation) - quote_used.get((quote_index, decision.action), 0))
                 daily = data.bars.get(day, {}).get(ticker)
                 if daily is not None:
                     available = min(available, max(0, int(daily.volume * data.participation) - volume_used.get((day, ticker), 0)))
@@ -307,9 +350,10 @@ def replay(data: ReplayInput, *, with_orderbook: bool = False, cost_multiplier: 
         if amount:
             volume_used[day, ticker] = volume_used.get((day, ticker), 0) + amount
             if quote_index is not None:
-                quote_used[quote_index] = quote_used.get(quote_index, 0) + amount
+                quote_used[quote_index, decision.action] = quote_used.get((quote_index, decision.action), 0) + amount
             fills.append({"date": day.isoformat(), "mode": mode.value, "ticker": ticker, "quantity": amount,
                           "execution_phase": phase,
+                          "executed_at": data.tape[quote_index]["received_at"] if quote_index is not None else None,
                           "action": decision.action, "reason": decision.reason, "price": float(price),
                           "fees": float(fees), "tax": float(tax), "cash_delta": float(transition.cash_delta),
                           "realized_pnl": float(transition.realized_pnl), "buy_stage": transition.state.buy_stage,
@@ -330,28 +374,21 @@ def replay(data: ReplayInput, *, with_orderbook: bool = False, cost_multiplier: 
             cursor += timedelta(days=1)
     for day in sorted(days):
         bars = data.bars.get(day, {})
-        deferred = []
-        # Opening executions use prior marks; completed current closes cannot size the open.
-        for key, (due, decision, qty, limit, stop) in list(pending.items()):
-            if due <= day:
-                if due == day:
-                    bar = bars.get(key[1])
-                    if decision.action == "buy" and bar is not None and not bar.halted and bar.open > limit:
-                        deferred.append((key, decision, qty, limit, stop))
-                        if states[key].quantity:
-                            reasons.add("unknown_intraday_fill_order")
-                        continue
-                    execute(key, decision, day, bar, qty, limit, stop)
-                else:
-                    states[key] = replace(states[key], pending_order=False)
-                    reasons.add("unavailable_next_session")
-                pending.pop(key)
         session_start = datetime.combine(day, datetime.min.time())  # 09:00 KST = 00:00 UTC
         session_end = session_start + timedelta(hours=6, minutes=20)
+        # These are unsent intentions. Runtime cannot submit at a daily open without
+        # a fresh subscribed quote; both BUY and next-session SELL wait for one.
+        for key, (due, decision, qty, limit, stop) in list(pending.items()):
+            if due < day:
+                states[key] = replace(states[key], pending_order=False)
+                reasons.add("unavailable_next_session")
+                pending.pop(key)
+        held_from = {key: session_start for key, state in states.items() if state.quantity}
         held_until = {key: session_end for key, state in states.items() if state.quantity}
+        quote_clocks = {}
+        submission_at = {}
         # Actual quotes, in recorded receive order, drive intraday stops/imbalance.
         for quote_index, quote in tape_by_day.get(day, ()):
-            from maps.fujimoto.repository import utc_naive
             stamp = utc_naive(datetime.fromisoformat(quote["received_at"]))
             if not session_start <= stamp < session_end:
                 continue
@@ -360,13 +397,53 @@ def replay(data: ReplayInput, *, with_orderbook: bool = False, cost_multiplier: 
             if daily is not None and daily.halted:
                 diagnostics.add("exchange_halt")
                 continue
+            _, last, bid, _ = quote_signal(None, quote_clocks.get(ticker), quote, 0, 0, 0)
+            quote_clocks[ticker] = last
+            if bid is None or not recording.subscribed(ticker, stamp):
+                continue
             liquidity = quote.get("bid_size")
             if isinstance(liquidity, bool) or not isinstance(liquidity, int) or liquidity < 0:
                 reasons.add("invalid_recorded_tape")
                 continue
+            executed = set()
+            for key, (due, decision, qty, limit, stop) in list(pending.items()):
+                if due != day or key[1] != ticker:
+                    continue
+                if daily is None:
+                    reasons.add("missing_execution_bar")
+                    continue
+                submission_at.setdefault(key, stamp)
+                if states[key].quantity:
+                    emergency = evaluate(key[0], RuleEvidence(day, None, live_price=bid),
+                                         replace(states[key], pending_order=False))
+                    if emergency.action == "sell" and emergency.timing == "intraday":
+                        decision, qty, limit = emergency, emergency.sell_quantity, 0
+                quantity = quote.get("ask_size") if decision.action == "buy" else liquidity
+                if isinstance(quantity, bool) or not isinstance(quantity, int) or quantity <= 0:
+                    reasons.add("missing_submission_liquidity")
+                    continue
+                price = float(money(quote["ask"])) if decision.action == "buy" else bid
+                if decision.action == "buy" and price > limit:
+                    continue
+                if submission_at[key] < stamp:
+                    relevant = [q for _, q in tape_by_day.get(day, ()) if q.get("ticker") == ticker]
+                    covered, outage = held_tape_coverage(ticker, submission_at[key], stamp, relevant, recording)
+                    if not covered or outage:
+                        # A resting order may have filled while the recorder could
+                        # not observe it. Never certify later ownership as exact.
+                        reasons.add("unknown_order_execution_timing")
+                before = states[key].quantity
+                execute(key, decision, day, SessionBar(price, price, price, price, quantity),
+                        qty, limit, stop, quote_index, phase="intraday")
+                pending.pop(key)
+                executed.add(key)
+                if states[key].quantity and not before:
+                    held_from[key], held_until[key] = stamp, session_end
+                elif before and not states[key].quantity:
+                    held_until[key] = stamp
             for mode in Mode:
                 key = mode, ticker
-                if key not in states or not states[key].quantity or states[key].pending_order:
+                if key in executed or key not in states or not states[key].quantity or states[key].pending_order:
                     continue
                 since, last = continuity.get(key, (None, None))
                 since, last, bid, trigger = quote_signal(since, last, quote, costs[key], states[key].quantity,
@@ -394,19 +471,28 @@ def replay(data: ReplayInput, *, with_orderbook: bool = False, cost_multiplier: 
                 diagnostics.add("exchange_halt")
                 continue
             relevant = [q for _, q in tape_by_day.get(day, ()) if q.get("ticker") == ticker]
-            covered, outage = held_tape_coverage(ticker, session_start, end, relevant, data.recording)
+            covered, outage = held_tape_coverage(ticker, held_from[key], end, relevant, recording)
             if not covered:
                 reasons.add("missing_held_session_tape")
             if outage:
                 diagnostics.add("observed_feed_outage")
-        for key, decision, qty, limit, stop in deferred:
-            before = states[key].quantity
-            execute(key, decision, day, bars.get(key[1]), qty, limit, stop, phase="after_intraday")
+        for key, (due, decision, qty, limit, stop) in list(pending.items()):
+            if due != day:
+                continue
+            daily = bars.get(key[1])
+            outages = recording.intervals(key[1], session_start, session_end)
+            if recording.valid and any(left <= session_start and right >= session_end for left, right in outages):
+                diagnostics.add("observed_feed_outage")
+            elif daily is None:
+                reasons.add("missing_execution_bar")
+            elif daily.halted:
+                diagnostics.add("exchange_halt")
+            elif decision.action == "sell" or daily.low <= limit:
+                reasons.add("missing_submission_tape")
+                if decision.action == "buy":
+                    reasons.add("unknown_intraday_fill_order")
+            states[key] = replace(states[key], pending_order=False)
             pending.pop(key)
-            if states[key].quantity > before:
-                # A daily low proves a touch, not when ownership began or whether
-                # a later stop would have occurred. Exploratory accounting only.
-                reasons.add("unknown_intraday_fill_order")
         for key, state in list(states.items()):
             if empty_cycle_expired(state, started_on[key], day):
                 del states[key]
