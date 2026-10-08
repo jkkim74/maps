@@ -210,7 +210,7 @@ def test_observe_feed_does_not_call_broker_without_budget(db):
         account_key=account_key())
 
 
-@pytest.mark.parametrize("scenario", ["stop", "financial", "book", "technical_due", "technical_stale", "technical_stale_rounding", "same_day_add"])
+@pytest.mark.parametrize("scenario", ["stop", "financial", "book", "technical_due", "technical_stale", "technical_stale_rounding", "same_day_add", "partial_stop", "partial_financial", "partial_book"])
 def test_on_quote_today_fills_keep_prior_bar_date_and_protect_all_cycles(db, monkeypatch, scenario):
     from unittest.mock import Mock
     from maps.fujimoto.service import FujimotoService
@@ -228,29 +228,39 @@ def test_on_quote_today_fills_keep_prior_bar_date_and_protect_all_cycles(db, mon
     source = repo.record_evidence("candidate", "AAA", now - timedelta(days=1),
         now - timedelta(days=1), {"rule": rule})
     quantity = 2 if scenario == "technical_stale_rounding" else 18
+    configs = {mode: repo.configure(key, 7, mode, 5000000) for mode in Mode}
     for mode in Mode:
-        config = repo.configure(key, 7, mode, 5000000)
+        config = configs[mode]
         cycle = repo.create_cycle(config.id, "AAA")
         order = repo.reserve_order(cycle.id, evaluate(mode, rule, CycleState()), source.id,
             quantity, 1000, signal_date=rule.as_of, stop_price=920 if mode == Mode.SAFE else None)
-        repo.apply_fill(FillEvent(order.id, key, None, quantity, quantity * 1000, 0, 0, "FILLED", now.date()))
+        filled = 2 if scenario.startswith("partial_") else quantity
+        order.broker_order_id = "broker-" + mode.value
+        repo.apply_fill(FillEvent(order.id, key, None, filled, filled * 1000, 0, 0,
+                                 "PARTIAL" if scenario.startswith("partial_") else "FILLED", now.date()))
         if scenario == "book":
             repo.record_evidence("order_cost", str(order.id), now, now, {"complete": True}, account_key=key)
     repo.record_evidence("control", "*", now - timedelta(minutes=1), now - timedelta(minutes=1),
         {"execution_mode": "paper", "entries_enabled": scenario == "same_day_add", "sell_consent": True}, account_key=key)
     db.commit()
     monkeypatch.setattr("maps.fujimoto.sources.current_financial_status",
-                        lambda *a: "deteriorated" if scenario == "financial" else "maintained")
+                        lambda *a: "deteriorated" if scenario in {"financial", "partial_financial"} else "maintained")
     service = FujimotoService(db, Mock(), settings=settings)
     submitted = []
     monkeypatch.setattr(service, "_submit_decision", lambda cycle, evidence, decision, *a:
         submitted.append((cycle.mode, evidence.as_of, decision.reason)))
-    bid = 900 if scenario == "stop" else 1100
+    bid = 900 if scenario in {"stop", "partial_stop"} else 1100
     for second in range(31 if scenario == "book" else 1):
         received = now + timedelta(seconds=second)
         quote = FeedQuote("AAA", bid + 1, 100, bid, 400, float(second), 100, 400, received, received)
         service.on_quote(quote, now=received)
-    if scenario == "financial":
+    if scenario.startswith("partial_"):
+        assert submitted == []
+        assert all(repo.state(c.id).quantity == 2 and repo.state(c.id).buy_stage == 0
+                   and repo.state(c.id).pending_order for c in repo.cycles(key))
+        assert service.manager.cancel.call_count == (2 if scenario == "partial_financial" else 1 if scenario == "partial_stop" else 0)
+        assert all(repo.reserved_cash(c.id) > 0 for c in repo.configurations(key))
+    elif scenario == "financial":
         assert submitted == [(mode.value, rule.as_of, "fundamental_deterioration") for mode in Mode]
     elif scenario == "book":
         assert submitted == [(mode.value, rule.as_of, "orderbook_take_profit") for mode in Mode]

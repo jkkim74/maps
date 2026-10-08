@@ -385,8 +385,8 @@ class FujimotoService:
                     continue
                 decision = evaluate(Mode(cycle.mode), live, state, decision_date=wall.date())
                 if state.pending_order:
-                    emergency = evaluate(Mode(cycle.mode), live, replace(state, pending_order=False),
-                                         decision_date=wall.date())
+                    emergency = evaluate(Mode(cycle.mode), live, state,
+                                         decision_date=wall.date(), pending_emergency_only=True)
                     if emergency.action == "sell" and emergency.timing in {"intraday", "first_available"}:
                         for order in self.repo.orders(key):
                             if order.cycle_id == cycle.id and order.status not in TERMINAL and order.decision["action"] == "buy":

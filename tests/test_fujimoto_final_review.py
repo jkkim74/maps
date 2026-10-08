@@ -389,12 +389,12 @@ def test_real_feed_payload_exports_ask_liquidity_without_backfill(db):
     at = datetime(2026, 1, 6, tzinfo=timezone.utc)
     feed = FujimotoFeed(db, "account")
     feed.record_subscriptions(["A"], now=at)
-    feed.on_quote(FeedQuote("A", 1000, 123, 999, 456, 1., 1000, 3000, at, at), now=at)
+    feed.on_quote(FeedQuote("A", 1000, 523, 999, 456, 1., 1000, 3000, at, at), now=at)
     exported = export_inputs(db, "account", 4000000)
-    assert exported["tape"][0]["ask_size"] == 123
+    assert exported["tape"][0]["ask_size"] == 523
     result = replay(replace(sample(), tape=tuple(exported["tape"]), recording=tuple(exported["recording"])))
     assert result.fills
-    assert sum(f["quantity"] for f in result.fills) <= int(123 * .01)
+    assert sum(f["quantity"] for f in result.fills) <= int(523 * .01)
 
 
 def test_resting_limit_before_disconnect_cannot_claim_proven_late_acquisition():
@@ -408,3 +408,98 @@ def test_resting_limit_before_disconnect_cannot_claim_proven_late_acquisition():
     assert len(result.fills) == 2
     assert all(f["executed_at"] == after["received_at"] for f in result.fills)
     assert "unknown_order_execution_timing" in result.reasons
+
+
+def test_explicit_gap_restarts_book_duration_for_each_owned_mode():
+    tape = tuple({**q, "gap": q["received_at"].endswith(":15")} for q in quotes("2026-01-06"))
+    result = replay(sample(tape=tape), with_orderbook=True)
+    assert not [f for f in result.fills if f["reason"] == "orderbook_take_profit"]
+    later = tuple({**tape[-1], "gap": False, "exchange_at": f"2026-01-06T00:00:{s}",
+                   "received_at": f"2026-01-06T00:00:{s}"} for s in range(32, 47))
+    exits = [f for f in replay(sample(tape=tape + later), with_orderbook=True).fills
+             if f["reason"] == "orderbook_take_profit"]
+    assert len(exits) == 2
+    assert all(f["executed_at"] == "2026-01-06T00:00:46" for f in exits)
+
+
+def test_partial_buy_never_invents_intraday_cancel_to_enable_stop():
+    data = sample()
+    entry = {**data.tape[0], "ask_size": 500}
+    stop = {**quotes("2026-01-06", bid=800)[0], "ask": 1001, "ask_size": 500}
+    result = replay(replace(data, tape=(entry, stop)))
+    assert result.fills[0]["buy_stage"] == 0
+    assert not [f for f in result.fills if f["action"] == "sell"]
+    assert "pending_cancellation_unconfirmed" in result.reasons
+    assert "unresolved_order_outcome" in result.reasons
+    assert all(o["status"] == "UNKNOWN" and o["remaining_quantity"] > 0 and o["reserved_cash"] > 0
+               for o in result.pending_orders)
+    assert any(e["status"] == "CANCEL_REQUESTED" for e in result.order_events)
+    for order in result.pending_orders:
+        assert order["reserved_cash"] == pytest.approx(order["remaining_quantity"] * 1000 * (1 + data.fee_rate))
+        fills = [f for f in result.fills if f["mode"] == order["mode"]]
+        assert result.final_cash[order["mode"]] == pytest.approx(data.budget / 2 + sum(f["cash_delta"] for f in fills))
+
+
+def test_multiple_partial_quotes_use_one_cumulative_order_until_full():
+    data = sample()
+    tape = tuple({**data.tape[0], "ask_size": 1000,
+                  "exchange_at": f"2026-01-06T00:00:{s:02}",
+                  "received_at": f"2026-01-06T00:00:{s:02}"} for s in range(20))
+    result = replay(replace(data, tape=tape))
+    for mode, intended in (("safe", 22), ("original", 29)):
+        fills = [f for f in result.fills if f["mode"] == mode]
+        assert sum(f["quantity"] for f in fills) == intended
+        assert all(f["buy_stage"] == 0 for f in fills[:-1])
+        assert fills[-1]["buy_stage"] == 1
+        assert len({f["order_id"] for f in fills}) == 1
+        assert all(f["pending_order"] for f in fills[:-1])
+        assert fills[-1]["order_status"] == "FILLED" and not fills[-1]["pending_order"]
+        observations = [e for e in result.order_events if e["mode"] == mode]
+        assert [e["quantity"] for e in observations] == sorted(e["quantity"] for e in observations)
+        assert float(observations[-1]["gross"]) == pytest.approx(sum(f["quantity"] * f["price"] for f in fills))
+        assert float(observations[-1]["fees"]) == pytest.approx(sum(f["fees"] for f in fills))
+    assert not result.pending_orders
+
+
+def test_partial_at_window_end_remains_unknown_and_never_advances_next_session():
+    data = sample()
+    entry = {**data.tape[0], "ask_size": 500}
+    bars = {**data.bars, date(2026, 1, 7): {"A": SessionBar(1000, 1000, 1000, 1000, 100000)}}
+    later = {**entry, "ask_size": 100000, "exchange_at": "2026-01-07T00:00:00", "received_at": "2026-01-07T00:00:00"}
+    result = replay(replace(data, tape=(entry, later), bars=bars))
+    assert all(f["date"] == "2026-01-06" and f["buy_stage"] == 0 for f in result.fills)
+    assert all(e["status"] not in {"EXPIRED", "CANCELLED", "FILLED"} for e in result.order_events)
+    assert all(e["pending_order"] for e in result.order_events)
+    assert len(result.pending_orders) == 2
+    assert "unresolved_order_outcome" in result.reasons
+
+
+@pytest.mark.parametrize("loss", ["invalid", "subscription", "between_quotes", "outage"])
+def test_recording_or_rejected_quote_loss_restarts_book_timer(loss):
+    data = sample(tape=quotes("2026-01-06"))
+    tape = data.tape
+    recording = data.recording
+    if loss == "invalid":
+        tape = tuple({**q, "ask": 0} if q["received_at"].endswith(":15") else q for q in tape)
+    elif loss in {"subscription", "between_quotes"}:
+        removed = "2026-01-06T00:00:15" if loss == "subscription" else "2026-01-06T00:00:15.250000"
+        recording += ({"kind": "subscriptions", "at": removed, "tickers": []},
+                      {"kind": "subscriptions", "at": "2026-01-06T00:00:15.750000", "tickers": ["A"]})
+    else:
+        recording += ({"kind": "outage", "start": "2026-01-06T00:00:15.250000",
+                       "end": "2026-01-06T00:00:15.750000", "tickers": ["A"]},
+                      {"kind": "subscriptions", "at": "2026-01-06T00:00:15.750000", "tickers": ["A"]})
+    result = replay(replace(data, tape=tape, recording=recording), with_orderbook=True)
+    assert not [f for f in result.fills if f["reason"] == "orderbook_take_profit"]
+
+
+def test_partial_fills_and_gap_never_bank_pending_book_duration():
+    data = sample()
+    tape = tuple({**data.tape[0], "ask_size": 1000, "bid": 1050, "ask": 1051,
+                  "exchange_at": f"2026-01-06T00:00:{s:02}",
+                  "received_at": f"2026-01-06T00:00:{s:02}", "gap": s == 15} for s in range(1, 32))
+    entry = {**data.tape[0], "ask_size": 500}
+    result = replay(replace(data, tape=(entry,) + tape), with_orderbook=True)
+    assert not [f for f in result.fills if f["action"] == "sell"]
+    assert all(f["buy_stage"] == 0 for f in result.fills)
+    assert len(result.pending_orders) == 2

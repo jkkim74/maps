@@ -147,7 +147,7 @@ class Decision:
 
 
 def evaluate(mode: Mode, evidence: RuleEvidence, cycle: CycleState, *, first_rsi_threshold: float = 40,
-             decision_date: date | None = None) -> Decision:
+             decision_date: date | None = None, pending_emergency_only: bool = False) -> Decision:
     """Emergency exits > ordinary targets > rebound > sequential fill-driven buys."""
     if not isinstance(mode, Mode):
         raise DataQualityError("invalid_mode")
@@ -160,7 +160,7 @@ def evaluate(mode: Mode, evidence: RuleEvidence, cycle: CycleState, *, first_rsi
         raise DataQualityError("future_rule_evidence")
     def hold(reason: str, reasons: tuple[str, ...] = ()) -> Decision:
         return Decision("hold", reason, reasons or (reason,), stop_policy=policy)
-    if cycle.pending_order:
+    if cycle.pending_order and not pending_emergency_only:
         return hold("pending_order")
     if cycle.last_buy_date is not None and cycle.last_buy_date > decision_date:
         raise DataQualityError("future_cycle_fill")
@@ -173,6 +173,8 @@ def evaluate(mode: Mode, evidence: RuleEvidence, cycle: CycleState, *, first_rsi
         if mode == Mode.SAFE and cycle.stop_price is not None and evidence.live_price is not None and evidence.live_price <= cycle.stop_price:
             return Decision("sell", "price_stop", sell_quantity=cycle.quantity,
                             stop_policy=policy, timing="intraday")
+        if cycle.pending_order:
+            return hold("pending_order")
         target = cycle.sell_target_ninths
         reason = "ordinary_sell_pending"
         timing = "next_session"
@@ -193,6 +195,8 @@ def evaluate(mode: Mode, evidence: RuleEvidence, cycle: CycleState, *, first_rsi
         if mode == Mode.ORIGINAL and cycle.averaging_down and not cycle.rebound_reduced and evidence.macd_golden:
             quantity = min(cycle.quantity, max(0, (cycle.rebound_basis_quantity or cycle.quantity) // 3 - cycle.rebound_sold_quantity))
             return Decision("sell" if quantity else "hold", "rebound_reduction", sell_quantity=quantity, stop_policy=policy)
+    if cycle.pending_order:
+        return hold("pending_order")
     reasons = list(evidence.blocking_reasons)
     if not evidence.selection_passed:
         reasons.append("selection_failed")

@@ -80,6 +80,10 @@ fill therefore permits current protective/financial/book exits, while any furthe
 BUY requires a completed signal date after the previous fill date. Technical
 orders still require exactly the next session of the unchanged evidence date.
 Replay defaults decision_date to evidence.as_of; genuinely future fills remain invalid.
+`pending_emergency_only=True` checks financial/price emergencies against the actual
+pending state, including partially filled first legs. It never enables ordinary
+exits/additions or fabricates a terminal cancellation. Runtime uses this decision
+to request cancellation and waits for broker confirmation before an exit.
 
 ## Durable ledger and research
 
@@ -150,10 +154,24 @@ records position/budget waits, observed halts/outages and window-end intention
 expiry. Unsent next-session intentions expire at each research-window boundary;
 owned shares remain marked and no closing fill is invented. Missing real next-session
 bars, held-tape coverage, valuation and independent samples still block validation.
+Submitted orders retain one ID and cumulative quantity/gross/fees/tax across quote
+fills through shared `apply_fill_transition`. PARTIAL does not advance a buy leg,
+release remaining cash, or enable another exit/addition. Only full modeled fills
+confirm a terminal result; replay has no broker cancellation-confirmation input.
+An emergency conflicting with a partial order records CANCEL_REQUESTED and
+`pending_cancellation_unconfirmed`; no replacement liquidation is invented.
+Incomplete submitted orders become UNKNOWN at session/window end, retain ownership
+and remaining reservations, and block validation with `unresolved_order_outcome`.
+They never silently expire or resume on a later session. `ReplayResult.order_events`
+exposes cumulative observations; `pending_orders` exposes unresolved quantity/cash.
+Fill rows include order_id/order_status/cumulative_quantity/pending_order.
 `quote_signal` accepts exact recorded quote
 keys exchange_at/received_at (ISO UTC), connected, gap, bid, ask, bid_size, total_bid,
 total_ask, ticker and resets invalid/stale/out-of-order/gapped continuity. Actual quotes
 are needed for intraday stop/imbalance exits; no synthetic tape is generated.
+Preliminary rejected quotes reset every affected mode's book duration, including
+pending cycles. Indexed subscription removals/outage starts also reset duration
+when a short interruption falls entirely between two valid quote arrivals.
 `candidate_order[date]` must preserve the actual ranked candidate ticker tuple; omitted
 ranking falls back to ticker order for exploratory runs and cannot pass validation.
 `quote_session_date` slices actual received timestamps into KST sessions for replay/WFA.

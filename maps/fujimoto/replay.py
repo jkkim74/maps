@@ -85,6 +85,8 @@ class ReplayResult:
     code_hash: str
     with_orderbook: bool
     diagnostics: tuple[str, ...] = ()
+    order_events: tuple[dict, ...] = ()
+    pending_orders: tuple[dict, ...] = ()
 
 
 def next_session(day: date, closed_dates: tuple[date, ...] = ()) -> date:
@@ -140,6 +142,14 @@ class RecordingIndex:
         subscriptions.sort(key=lambda row: row[0])
         self.subscription_times = tuple(row[0] for row in subscriptions)
         self.subscriptions = tuple(row[1] for row in subscriptions)
+        interruptions, previous = {}, frozenset()
+        for stamp, tickers in subscriptions:
+            for ticker in previous - tickers:
+                interruptions.setdefault(ticker, []).append(stamp)
+            previous = tickers
+        for ticker, rows in outages.items():
+            interruptions.setdefault(ticker, []).extend(left for left, _ in rows)
+        self.interruptions = {ticker: tuple(sorted(stamps)) for ticker, stamps in interruptions.items()}
         self.outages, self.outage_times = {}, {}
         for ticker, rows in outages.items():
             merged = []
@@ -158,6 +168,11 @@ class RecordingIndex:
             return False
         outage = bisect_right(self.outage_times.get(ticker, ()), stamp) - 1
         return outage < 0 or self.outages[ticker][outage][1] <= self.subscription_times[index]
+
+    def interrupted(self, ticker: str, start: datetime, end: datetime) -> bool:
+        """Detect even sub-second recording loss between otherwise valid arrivals."""
+        stamps = self.interruptions.get(ticker, ())
+        return bisect_right(stamps, end) > bisect_right(stamps, start)
 
     def intervals(self, ticker: str, start: datetime, end: datetime) -> tuple:
         """Return only outage intervals intersecting the requested owned session."""
@@ -297,6 +312,7 @@ def replay(data: ReplayInput, *, with_orderbook: bool = False, cost_multiplier: 
     volume_used: dict[tuple[date, str], int] = {}
     quote_used: dict[tuple[int, str], int] = {}
     sequence = 0
+    order_observations, order_events = {}, []
     continuity = {}
     recording = RecordingIndex(data.recording)
     tape_by_day: dict[date, list[tuple[int, dict]]] = {}
@@ -314,12 +330,14 @@ def replay(data: ReplayInput, *, with_orderbook: bool = False, cost_multiplier: 
 
     def execute(key: tuple, decision: Decision, day: date, bar: SessionBar | None, quantity: int,
                 limit: float, stop: float | None, quote_index: int | None = None,
-                phase: str = "open") -> None:
+                phase: str = "intraday") -> bool:
         nonlocal sequence
         mode, ticker = key
         state = states[key]
-        sequence += 1
-        zero = FillEvent(sequence, "replay", None, 0, 0, 0, 0, "RESERVED", day)
+        previous = order_observations.get(key)
+        if previous is None:
+            sequence += 1
+            previous = FillEvent(sequence, "replay", None, 0, 0, 0, 0, "RESERVED", day)
         state = replace(state, pending_order=True)
         if bar is None or bar.halted:
             (reasons if bar is None else diagnostics).add("missing_execution_bar" if bar is None else "exchange_halt")
@@ -339,14 +357,23 @@ def replay(data: ReplayInput, *, with_orderbook: bool = False, cost_multiplier: 
             else:
                 price = money(bar.open) * (Decimal(1) - money(slippage))
                 touched = price >= money(limit)
-            amount = min(quantity, available) if touched else 0
+            amount = min(quantity - previous.quantity, available) if touched else 0
         gross = money(price) * amount
         fees, tax = gross * money(fee_rate), gross * money(tax_rate if decision.action == "sell" else 0)
-        terminal = "FILLED" if amount == quantity else "EXPIRED"
-        current = FillEvent(sequence, "replay", None, amount, gross, fees, tax, terminal, day)
-        transition = apply_fill_transition(state, costs[key], pnl[key], decision, quantity, zero, current, stop)
+        cumulative = previous.quantity + amount
+        status = "FILLED" if cumulative == quantity else "PARTIAL" if cumulative else "SUBMITTED"
+        current = FillEvent(previous.order_id, "replay", None, cumulative,
+                            money(previous.gross) + gross, money(previous.fees) + fees,
+                            money(previous.tax) + tax, status, day)
+        transition = apply_fill_transition(state, costs[key], pnl[key], decision, quantity, previous, current, stop)
         states[key], costs[key], pnl[key] = transition.state, transition.cost_basis, transition.realized_pnl
+        order_observations[key] = current
         cash[mode] += transition.cash_delta
+        if amount or previous.status == "RESERVED":
+            order_events.append({**json_data(current), "mode": mode.value, "ticker": ticker,
+                "ordered_quantity": quantity, "remaining_quantity": quantity - cumulative,
+                "pending_order": transition.state.pending_order, "buy_stage": transition.state.buy_stage,
+                "observed_at": data.tape[quote_index]["received_at"] if quote_index is not None else None})
         if amount:
             volume_used[day, ticker] = volume_used.get((day, ticker), 0) + amount
             if quote_index is not None:
@@ -354,6 +381,8 @@ def replay(data: ReplayInput, *, with_orderbook: bool = False, cost_multiplier: 
             fills.append({"date": day.isoformat(), "mode": mode.value, "ticker": ticker, "quantity": amount,
                           "execution_phase": phase,
                           "executed_at": data.tape[quote_index]["received_at"] if quote_index is not None else None,
+                          "order_id": current.order_id, "order_status": current.status,
+                          "cumulative_quantity": cumulative, "pending_order": transition.state.pending_order,
                           "action": decision.action, "reason": decision.reason, "price": float(price),
                           "fees": float(fees), "tax": float(tax), "cash_delta": float(transition.cash_delta),
                           "realized_pnl": float(transition.realized_pnl), "buy_stage": transition.state.buy_stage,
@@ -364,6 +393,22 @@ def replay(data: ReplayInput, *, with_orderbook: bool = False, cost_multiplier: 
             if decision.action == "buy":
                 leg = key, decision.buy_stage
                 spent[leg] = spent.get(leg, 0) + float(gross + fees + tax)
+        return current.status == "FILLED"
+
+    def unresolved(key: tuple, status: str, at: datetime) -> None:
+        """Retain cumulative ownership/reservations without inventing cancellation."""
+        previous = order_observations[key]
+        if previous.status == status:
+            return
+        _, decision, qty, _, stop = pending[key]
+        current = replace(previous, status=status)
+        transition = apply_fill_transition(states[key], costs[key], pnl[key], decision, qty, previous, current, stop)
+        states[key], costs[key], pnl[key] = transition.state, transition.cost_basis, transition.realized_pnl
+        order_observations[key] = current
+        order_events.append({**json_data(current), "mode": key[0].value, "ticker": key[1],
+            "ordered_quantity": qty, "remaining_quantity": qty - current.quantity,
+            "pending_order": transition.state.pending_order, "buy_stage": transition.state.buy_stage,
+            "observed_at": at.isoformat()})
 
     days = set(data.bars) | set(data.evidence)
     if days:
@@ -380,12 +425,15 @@ def replay(data: ReplayInput, *, with_orderbook: bool = False, cost_multiplier: 
         # a fresh subscribed quote; both BUY and next-session SELL wait for one.
         for key, (due, decision, qty, limit, stop) in list(pending.items()):
             if due < day:
+                if key in order_observations:
+                    reasons.add("unresolved_order_outcome")
+                    continue
                 states[key] = replace(states[key], pending_order=False)
                 reasons.add("unavailable_next_session")
                 pending.pop(key)
         held_from = {key: session_start for key, state in states.items() if state.quantity}
         held_until = {key: session_end for key, state in states.items() if state.quantity}
-        quote_clocks = {}
+        quote_clocks, arrival_clocks = {}, {}
         submission_at = {}
         # Actual quotes, in recorded receive order, drive intraday stops/imbalance.
         for quote_index, quote in tape_by_day.get(day, ()):
@@ -393,21 +441,35 @@ def replay(data: ReplayInput, *, with_orderbook: bool = False, cost_multiplier: 
             if not session_start <= stamp < session_end:
                 continue
             ticker = quote.get("ticker")
+            previous_arrival = arrival_clocks.get(ticker)
+            if previous_arrival is not None and recording.interrupted(ticker, previous_arrival, stamp):
+                for mode in Mode:
+                    continuity.pop((mode, ticker), None)
+            arrival_clocks[ticker] = stamp
             daily = bars.get(ticker)
             if daily is not None and daily.halted:
                 diagnostics.add("exchange_halt")
+                for mode in Mode:
+                    continuity.pop((mode, ticker), None)
                 continue
             _, last, bid, _ = quote_signal(None, quote_clocks.get(ticker), quote, 0, 0, 0)
             quote_clocks[ticker] = last
             if bid is None or not recording.subscribed(ticker, stamp):
+                for mode in Mode:
+                    continuity.pop((mode, ticker), None)
                 continue
             liquidity = quote.get("bid_size")
             if isinstance(liquidity, bool) or not isinstance(liquidity, int) or liquidity < 0:
                 reasons.add("invalid_recorded_tape")
+                for mode in Mode:
+                    continuity.pop((mode, ticker), None)
                 continue
             executed = set()
             for key, (due, decision, qty, limit, stop) in list(pending.items()):
                 if due != day or key[1] != ticker:
+                    continue
+                observation = order_observations.get(key)
+                if observation is not None and observation.status in {"UNKNOWN", "CANCEL_REQUESTED"}:
                     continue
                 if daily is None:
                     reasons.add("missing_execution_bar")
@@ -415,9 +477,17 @@ def replay(data: ReplayInput, *, with_orderbook: bool = False, cost_multiplier: 
                 submission_at.setdefault(key, stamp)
                 if states[key].quantity:
                     emergency = evaluate(key[0], RuleEvidence(day, None, live_price=bid),
-                                         replace(states[key], pending_order=False))
+                                         states[key], pending_emergency_only=True)
                     if emergency.action == "sell" and emergency.timing == "intraday":
-                        decision, qty, limit = emergency, emergency.sell_quantity, 0
+                        if observation is not None:
+                            if decision.action != "sell" or qty - observation.quantity < states[key].quantity:
+                                unresolved(key, "CANCEL_REQUESTED", stamp)
+                                reasons.add("pending_cancellation_unconfirmed")
+                                continuity.pop(key, None)
+                                continue
+                        else:
+                            decision, qty, limit = emergency, emergency.sell_quantity, 0
+                            pending[key] = due, decision, qty, limit, stop
                 quantity = quote.get("ask_size") if decision.action == "buy" else liquidity
                 if isinstance(quantity, bool) or not isinstance(quantity, int) or quantity <= 0:
                     reasons.add("missing_submission_liquidity")
@@ -433,9 +503,12 @@ def replay(data: ReplayInput, *, with_orderbook: bool = False, cost_multiplier: 
                         # not observe it. Never certify later ownership as exact.
                         reasons.add("unknown_order_execution_timing")
                 before = states[key].quantity
-                execute(key, decision, day, SessionBar(price, price, price, price, quantity),
-                        qty, limit, stop, quote_index, phase="intraday")
-                pending.pop(key)
+                complete = execute(key, decision, day, SessionBar(price, price, price, price, quantity),
+                                   qty, limit, stop, quote_index, phase="intraday")
+                if complete:
+                    pending.pop(key)
+                    order_observations.pop(key)
+                continuity.pop(key, None)
                 executed.add(key)
                 if states[key].quantity and not before:
                     held_from[key], held_until[key] = stamp, session_end
@@ -460,9 +533,13 @@ def replay(data: ReplayInput, *, with_orderbook: bool = False, cost_multiplier: 
                     # Quote bid size is actual displayed liquidity; execution still uses
                     # conservative participation, shared by both modes for this quote.
                     bar = SessionBar(bid, bid, bid, bid, liquidity)
-                    execute(key, decision, day, bar, decision.sell_quantity,
-                            money(bid) * (Decimal(1) - money(slippage)), states[key].stop_price,
-                            quote_index, phase="intraday")
+                    limit = money(bid) * (Decimal(1) - money(slippage))
+                    pending[key] = day, decision, decision.sell_quantity, limit, states[key].stop_price
+                    complete = execute(key, decision, day, bar, decision.sell_quantity,
+                                       limit, states[key].stop_price, quote_index, phase="intraday")
+                    if complete:
+                        pending.pop(key)
+                        order_observations.pop(key)
                     if not states[key].quantity:
                         held_until[key] = stamp
         for key, end in held_until.items():
@@ -478,6 +555,10 @@ def replay(data: ReplayInput, *, with_orderbook: bool = False, cost_multiplier: 
                 diagnostics.add("observed_feed_outage")
         for key, (due, decision, qty, limit, stop) in list(pending.items()):
             if due != day:
+                continue
+            if key in order_observations:
+                unresolved(key, "UNKNOWN", session_end)
+                reasons.add("unresolved_order_outcome")
                 continue
             daily = bars.get(key[1])
             outages = recording.intervals(key[1], session_start, session_end)
@@ -540,12 +621,15 @@ def replay(data: ReplayInput, *, with_orderbook: bool = False, cost_multiplier: 
                     continue
                 if decision.action == "buy":
                     account_nav = sum(nav(m) for m in Mode)
-                    reserved = sum(q * lim * (1 + fee_rate) for _, d, q, lim, _ in pending.values() if d.action == "buy")
+                    reserved = sum((q - (order_observations[k].quantity if k in order_observations else 0)) * lim * (1 + fee_rate)
+                                   for k, (_, d, q, lim, _) in pending.items() if d.action == "buy")
                     ticker_exposure = sum(s.quantity * marks.get(t, 0) for (m, t), s in states.items() if t == ticker)
-                    ticker_exposure += sum(q * lim * (1 + fee_rate) for k, (_, d, q, lim, _) in pending.items() if k[1] == ticker and d.action == "buy")
+                    ticker_exposure += sum((q - (order_observations[k].quantity if k in order_observations else 0)) * lim * (1 + fee_rate)
+                                           for k, (_, d, q, lim, _) in pending.items() if k[1] == ticker and d.action == "buy")
                     limits = AccountLimits(account_nav, sum(float(cash[m]) for m in Mode), ticker_exposure,
                                            reserved, data.account_ticker_limit, data.minimum_cash_fraction)
-                    mode_reserved = sum(q * lim * (1 + fee_rate) for k, (_, d, q, lim, _) in pending.items() if k[0] == mode and d.action == "buy")
+                    mode_reserved = sum((q - (order_observations[k].quantity if k in order_observations else 0)) * lim * (1 + fee_rate)
+                                        for k, (_, d, q, lim, _) in pending.items() if k[0] == mode and d.action == "buy")
                     decision = replace(decision, price_cap=round_down_krx_price(decision.price_cap))
                     plan = size_buy(mode, states[key], decision, budgets[key], nav(mode), float(cash[mode]), mode_reserved,
                                     float(costs[key]), spent.get((key, decision.buy_stage), 0), limits,
@@ -562,7 +646,7 @@ def replay(data: ReplayInput, *, with_orderbook: bool = False, cost_multiplier: 
             reasons.add("stale_valuation")
         equity.append({"date": day.isoformat(), "safe": nav(Mode.SAFE), "original": nav(Mode.ORIGINAL),
                        "combined": sum(nav(m) for m in Mode)})
-    if pending:
+    if any(key not in order_observations for key in pending):
         # These are unsent next-session research intentions, not broker UNKNOWN.
         # Expire at the window boundary; owned shares stay marked, never liquidated.
         diagnostics.add("window_end_intentions_expired")
@@ -571,7 +655,12 @@ def replay(data: ReplayInput, *, with_orderbook: bool = False, cost_multiplier: 
                         tuple(equity), tuple(fills), tuple(sorted(reasons)), fingerprint(data),
                         fingerprint({"cost_multiplier": cost_multiplier, "first_rsi": first_rsi, "with_orderbook": with_orderbook,
                                      "maximum_return_20": maximum_return_20, "minimum_dividend_growth": minimum_dividend_growth}),
-                        code_fingerprint(), with_orderbook, tuple(sorted(diagnostics)))
+                        code_fingerprint(), with_orderbook, tuple(sorted(diagnostics)), tuple(order_events),
+                        tuple({**json_data(order_observations[key]), "mode": key[0].value, "ticker": key[1],
+                               "remaining_quantity": qty - order_observations[key].quantity,
+                               "reserved_cash": float((qty - order_observations[key].quantity) * money(limit) * money(1 + fee_rate))
+                               if decision.action == "buy" else 0}
+                              for key, (_, decision, qty, limit, _) in pending.items() if key in order_observations))
 
 
 def input_from_json(payload: dict) -> ReplayInput:

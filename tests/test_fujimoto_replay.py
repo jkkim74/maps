@@ -32,11 +32,14 @@ def inputs():
             financial_status="deteriorated")},
     }, bars={
         date(2026, 1, 5): {"005930": SessionBar(1000, 1010, 990, 1000, 10000)},
-        date(2026, 1, 6): {"005930": SessionBar(1000, 1010, 990, 1000, 20)},
+        date(2026, 1, 6): {"005930": SessionBar(1000, 1010, 990, 1000, 10000)},
         date(2026, 1, 7): {"005930": SessionBar(1100, 1110, 1090, 1100, 10000)},
         date(2026, 1, 8): {"005930": SessionBar(1100, 1110, 1090, 1100, 10000)},
     }, participation=.1, slippage=0, fee_rate=.001, tax_rate=.002,
-        tape=(execution_quote("2026-01-06", 1000, buy=True), execution_quote("2026-01-08", 1100)),
+        tape=tuple({**execution_quote("2026-01-06", 1000, buy=True), "ask_size": 20,
+                    "received_at": f"2026-01-06T00:00:{second:02}",
+                    "exchange_at": f"2026-01-06T00:00:{second:02}"} for second in range(10))
+             + (execution_quote("2026-01-08", 1100),),
         recording=({"kind": "subscriptions", "at": "2026-01-05T00:00:00", "tickers": ["005930"]},))
 
 
@@ -45,11 +48,14 @@ def test_replay_shared_transition_volume_partial_costs_and_reproducibility():
     data = inputs()
     result = replay(data)
     assert result == replay(data)
-    assert len(result.fills) == 4  # two buys plus two next-session financial exits
-    assert all(fill["date"] == "2026-01-08" for fill in result.fills[2:])
-    assert all(fill["quantity"] == 1 for fill in result.fills[:2])  # shared volume 2
+    buys = [f for f in result.fills if f["action"] == "buy"]
+    exits = [f for f in result.fills if f["action"] == "sell"]
+    assert len(exits) == 2 and all(f["date"] == "2026-01-08" for f in exits)
+    assert {mode: sum(f["quantity"] for f in buys if f["mode"] == mode)
+            for mode in ("safe", "original")} == {"safe": 5, "original": 7}
+    assert all(f["buy_stage"] == (1 if f["order_status"] == "FILLED" else 0) for f in buys)
     assert result.final_quantities == {"safe:005930": 0, "original:005930": 0}
-    assert result.final_cash["safe"] == pytest.approx(500095.7)
+    assert result.final_cash["safe"] == pytest.approx(500478.5)
     assert result.data_hash and result.code_hash and result.params_hash
 
 
@@ -110,7 +116,7 @@ def test_replay_does_not_let_unqualified_watch_candidates_consume_five_slots():
         rows[f"00000{i}"] = RuleEvidence(date(2026, 1, 5), 1000)
     changed = dict(data.evidence, **{})
     changed[date(2026, 1, 5)] = rows
-    assert len(replay(replace(data, evidence=changed)).fills) == 4
+    assert replay(replace(data, evidence=changed)).fills == replay(data).fills
 
 
 def test_validation_result_metrics_cannot_be_forged(db):
@@ -158,7 +164,7 @@ def test_closed_cycle_can_begin_new_independent_cycle_on_later_session():
     result = replay(replace(data, evidence=evidence, bars=bars,
                             tape=data.tape + (execution_quote("2026-01-12", 1000, buy=True),)))
     buys = [fill for fill in result.fills if fill["action"] == "buy"]
-    assert len(buys) == 4
+    assert len({(f["mode"], f["cycle_number"]) for f in buys}) == 4
     assert sum(fill["completed_cycle"] for fill in result.fills) == 2
     assert buys[0]["cycle_number"] != buys[-1]["cycle_number"]
 
@@ -172,7 +178,7 @@ def test_daily_low_without_recorded_intraday_quote_never_fabricates_stop_fill():
     evidence[date(2026, 1, 7)] = {"005930": RuleEvidence(date(2026, 1, 7), 800)}
     bars[date(2026, 1, 7)] = {"005930": SessionBar(800, 810, 700, 800, 10000)}
     result = replay(replace(data, evidence=evidence, bars=bars,
-                            tape=(data.tape[0],)))
+                            tape=data.tape[:-1]))
     assert all(fill["action"] == "buy" for fill in result.fills)
 
 
@@ -193,7 +199,7 @@ def test_after_close_financial_deterioration_never_executes_past_open():
     bars[date(2026, 1, 7)] = {"005930": SessionBar(2000, 2000, 800, 800, 10000)}
     bars[date(2026, 1, 8)] = {"005930": SessionBar(750, 760, 740, 750, 10000)}
     result = replay(replace(data, evidence=evidence, bars=bars,
-                            tape=(data.tape[0], execution_quote("2026-01-08", 750))))
+                            tape=data.tape[:-1] + (execution_quote("2026-01-08", 750),)))
     exits = [f for f in result.fills if f["action"] == "sell"]
     assert len(exits) == 2
     assert all(f["date"] == "2026-01-08" and f["price"] == 750 for f in exits)
@@ -330,10 +336,16 @@ def test_recorded_quotes_share_each_event_liquidity_and_respect_exchange_halts()
     quotes = tuple(dict(ticker="005930", exchange_at=f"2026-01-07T00:00:0{i}",
         received_at=f"2026-01-07T00:00:0{i}", connected=True, bid=800, ask=801,
         bid_size=10, total_bid=30, total_ask=10) for i in (1, 2))
-    changed = replace(data, bars=bars, evidence=evidence, tape=(data.tape[0],) + quotes)
+    changed = replace(data, budget=400000, bars=bars, evidence=evidence, tape=data.tape[:-1] + quotes)
     result = replay(changed)
     assert result.final_quantities["safe:005930"] == 0
     assert result.final_quantities["original:005930"] == 2
+    sells = [f for f in result.fills if f["action"] == "sell"]
+    assert len(sells) == 2 and {f["quantity"] for f in sells} == {1}
+    assert len({f["order_id"] for f in sells}) == 1
+    assert [f["order_status"] for f in sells] == ["PARTIAL", "FILLED"]
+    assert [f["pending_order"] for f in sells] == [True, False]
+    assert not result.pending_orders
     bars[date(2026, 1, 7)] = {"005930": SessionBar(800, 810, 790, 800, 10000, halted=True)}
     assert all(f["action"] == "buy" for f in replay(replace(changed, bars=bars)).fills)
 
