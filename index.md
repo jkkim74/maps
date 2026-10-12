@@ -109,4 +109,4 @@
 
 ## Paper cost settlement verification
 
-Development verification complete: 2009 isolated tests passed; see [session handoff](docs/handoffs/2026-10-12-paper-cost-settlement.md) and [synthetic UI evidence](docs/evidence/paper-cost-20261012/README.md). Default observe remains unchanged. Independent final review and real KIS paper expense/date-boundary verification remain before operational auto rollout; no deployment or activation was performed.
+Development verification complete: 2009 isolated tests passed; see [session handoff](docs/handoffs/2026-10-12-paper-cost-settlement.md) and [synthetic UI evidence](docs/evidence/paper-cost-20261012/README.md). Feature revision `a142e9f` and schema 0042 were deployed on 2026-10-12 with default observe retained; health and authenticated cost API checks passed. First paper expense fields are valid, but historical coverage still blocks entry. Independent final review and statement/date-boundary verification remain before auto rollout; no auto or strategy activation was performed.

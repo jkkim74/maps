@@ -1,7 +1,7 @@
 # KIS paper cost settlement ExecPlan
 
 ## Purpose and binding design
-Implement actual-cost automatic reconciliation with statement-backed manual exceptions. Never infer costs from a rate or cash residual. KIS paper only; live and mock contracts remain unchanged. Default is observe. No production DB, broker orders, activation or deployment in this work.
+Implement actual-cost automatic reconciliation with statement-backed manual exceptions. Never infer costs from a rate or cash residual. KIS paper only; live and mock contracts remain unchanged. Default is observe. Initial development scope excluded production changes; the later explicitly authorized observe deployment is recorded below. No broker orders or activation are included.
 
 Collect current/previous-day expense fields with the execution balance response. Missing/invalid amounts are unknown. Persist immutable evidence and idempotent settlement receipts. Only current-session dated totals can support automation; previous-day values are diagnostic. Automatic interval costs require complete coverage, exact order gross, consistent quantities, no unknown orders and two stable observations. Missing days, corrections, overlapping legacy adjustments require manual evidence. Store latest reconciliation breakdown separately from historical adjustment rows.
 
@@ -59,12 +59,23 @@ broker controls; do not submit orders, settle actual costs or activate auto.
 
 - [x] Confirm production starts at `0f02fa8`, schema 0041, tracked files clean,
   KIS paper, no unresolved intents, and analyze idle outside the blocked window.
-- [ ] Commit/push the tested tree and fast-forward master without altering the
+- [x] Commit/push the tested tree and fast-forward master without altering the
   original local checkout's unrelated work.
-- [ ] Verify PostgreSQL backup and preserve the server environment.
-- [ ] Apply 0042, restart maps, check internal/external health, authenticated
+- [x] Verify PostgreSQL backup and preserve the server environment.
+- [x] Apply 0042, restart maps, check internal/external health, authenticated
   read-only cost API and scheduled broker observation without changing controls.
-- [ ] Record deployed revision and verification in the handoff.
+- [x] Record deployed revision and verification in the handoff.
+
+Deployed feature revision `a142e9f` at 22:55 KST; verified by 22:57 KST.
+Schema 0042, service active/running with no automatic restarts, internal/external
+health and authenticated cost API/risk HTML all 200. Scheduler broker_sync succeeds;
+post-startup logs show no ERROR/CRITICAL/Traceback. Environment hash unchanged;
+paper cost observe and Fujimoto observe/entries disabled retained. No settlement
+receipts were created. First observed real-paper cost fields are present and valid,
+but historical coverage is missing, so account blocks remain. No date-boundary or
+statement-matching validation is claimed. Full DB/config backup is protected on the
+server at `/opt/maps/backups/paper-cost-20261012-225322/`; dump directory listing and
+SHA-256 verified. See the handoff for the resolved backup role-permission issue.
 
 Rollback: if startup fails, inspect filtered logs and return application code to
 the recorded previous revision, retaining additive schema/audit history. Do not

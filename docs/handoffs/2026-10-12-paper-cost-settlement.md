@@ -1,6 +1,38 @@
 # 모의계좌 비용 정산 구현 인수인계 — 2026-10-12
 
-## 재개 세션 현재 상태 — 2026-10-12
+## 현재 상태 — 2026-10-12 22:57 KST 운영 배포 완료
+
+개발 검증 완료 뒤 사용자가 운영 배포를 명시적으로 요청했다. 기능 커밋
+**`a142e9f4d2f963037ed27c736421803cd5e27715`**를 기능 브랜치와 master에 push하고,
+운영 `/opt/maps`를 `0f02fa8`에서 fast-forward했다. 22:55:38 KST 서비스 재기동 후
+22:57 KST까지 다음을 확인했다. 아래 개발 기록의 미커밋·미배포 표기는 당시 상태다.
+
+- PostgreSQL migration **0041 → 0042_paper_cost_settlement** 성공.
+- `maps`: active/running, 자동 재시작 횟수 0, startup complete 및 broker_sync 성공.
+  재기동 이후 확인 구간의 ERROR/CRITICAL/Traceback 0.
+- 내부/외부 `/health`, 인증된 GET `/api/v1/risk/execution-safety`와 `/risk`: **200**.
+  정산 UI 마크업/JS 경로 및 API `supported=true`, `mode=observe` 확인.
+- 원본 환경 파일의 SHA-256이 백업과 동일하다. 기존 KIS paper 및 전략 설정 유지.
+  후지모토 `execution_mode=observe`, `entries_enabled=false`, `sell_consent=false` 유지.
+- 새 broker_sync 관측에서 당일/전일 비용 필드 존재 및 `valid=true`를 처음 확인했다.
+  비용 원본 값이나 계좌 식별자는 문서에 저장하지 않는다. 한 시점의 유효 응답이며
+  명세서 일치·장 마감·늦은 정정·날짜 경계 검증을 대신하지 않는다.
+- 정산 receipt **0**. `account_difference_unclassified`와
+  `paper_costs_coverage_missing`으로 차단 유지. 과거 구간의 증빙 정산은 아직 하지 않았다.
+  주문 제출·청산·auto 활성화·전략 활성화는 수행하지 않았다.
+
+전체 DB와 환경 파일 백업은 서버의 `/opt/maps/backups/paper-cost-20261012-225322/`에
+보관한다(디렉터리 700, 파일 600). 최초 앱 DB 계정 백업은 과거 백업 테이블의 읽기
+권한 부족으로 실패해 서버의 PostgreSQL 관리 계정으로 다시 생성했다. 최종 dump는
+375,889,581 bytes이며 `pg_restore --list` 성공 및 SHA-256을 서버 metadata에 기록했다.
+복구 리허설을 수행한 것은 아니다. 운영 DB나 인증정보는 로컬/저장소로 복사하지 않았다.
+
+남은 운영 작업: 기존 구간의 실제 명세서 확보·검토·정산, 독립 최종 리뷰,
+자동 정산의 날짜 경계/확정 비용 가정 검증. 현재 배포는 observe이며 auto 승인이 아니다.
+복원 필요 시 이전 코드 `0f02fa8`로 되돌리되 additive schema와 감사 이력을 보존한다.
+새 거래가 생긴 뒤 백업 DB를 덮어쓰거나 populated 감사 테이블을 downgrade하지 않는다.
+
+## 개발 재개 세션 기록 — 2026-10-12 (배포 이전)
 
 아래 `최초 중간 저장 기록`보다 이 절이 우선한다. 체크포인트 `b9d99c0` 이후
 잔여 회귀 테스트와 실제 브라우저 확인, 모듈 문서 보완, 최종 자체 검토를 완료했다.
