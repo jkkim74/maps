@@ -98,6 +98,17 @@ def test_activation_without_replay_is_scheduled_and_never_promotes(ready, db):
     assert service.control(key)["entries_enabled"] is True
 
 
+@pytest.mark.parametrize("complete,unknown,blocked", [(False, False, True), (True, False, False), (True, True, True)])
+def test_paper_capability_flags_require_actual_reconciled_coverage(ready, db, complete, unknown, blocked):
+    service, key, _, _ = ready
+    observation = db.query(AccountObservation).filter_by(account_key=key).one()
+    observation.evidence = {**observation.evidence,
+        "unsupported": ["paper_cost_history", "cash_transfers", "security_transfers"] + (["orders"] if unknown else []),
+        "paper_costs": {"complete": complete}}
+    db.commit()
+    assert ("account_not_fresh_reconciled" in service._paper_readiness(key, NOW)) is blocked
+
+
 @pytest.mark.parametrize("change,reason", [
     ({"maps_broker_mode": "mock"}, "paper_environment"),
     ({"kis_real_trading": True}, "paper_environment"),

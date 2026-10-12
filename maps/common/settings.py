@@ -266,6 +266,9 @@ class MapsSettings(BaseSettings):
 
     # 12단계: 드라이런/백테스트 비교 모드
     maps_dry_run: bool = False
+    maps_paper_cost_reconciliation_mode: Literal["observe", "auto"] = Field(
+        default="observe", description="KIS paper actual-cost evidence mode; auto requires verified complete coverage."
+    )
     maps_execution_snapshot_max_age_seconds: int = Field(default=30, ge=1)
     maps_execution_quote_max_age_seconds: int = Field(default=15, ge=1)
     maps_execution_reconciliation_max_age_seconds: int = Field(default=120, ge=1)

@@ -9,6 +9,7 @@ from __future__ import annotations
 import datetime
 
 from sqlalchemy import (
+    event,
     BigInteger,
     Boolean,
     Date,
@@ -1428,3 +1429,44 @@ class ExecutionSafetyEvent(Base):
     acknowledged_at: Mapped[datetime.datetime | None] = mapped_column(DateTime)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     next_attempt_at: Mapped[datetime.datetime | None] = mapped_column(DateTime)
+
+
+class PaperCostEvidence(Base):
+    """Append-only actual paper costs, including unknown balance observations."""
+    __tablename__ = "paper_cost_evidence"
+    __table_args__ = (UniqueConstraint("account_key", "fingerprint", name="uq_paper_cost_evidence"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_key: Mapped[str] = mapped_column(String(128), index=True)
+    environment: Mapped[str] = mapped_column(String(16))
+    kind: Mapped[str] = mapped_column(String(32))
+    ref_date: Mapped[datetime.date] = mapped_column(Date)
+    observed_at: Mapped[datetime.datetime] = mapped_column(DateTime)
+    amount: Mapped[Decimal | None] = mapped_column(Numeric(24, 4), nullable=True)
+    fingerprint: Mapped[str] = mapped_column(String(64))
+    payload: Mapped[dict] = mapped_column(JSON)
+    supersedes_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class PaperCostSettlement(Base):
+    """Immutable receipt of an atomic, idempotent actual-cost settlement."""
+    __tablename__ = "paper_cost_settlement"
+    __table_args__ = (UniqueConstraint("account_key", "idempotency_key", name="uq_paper_cost_settlement"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_key: Mapped[str] = mapped_column(String(128), index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(128))
+    request_hash: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=lambda: datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None))
+    actor: Mapped[str] = mapped_column(String(128))
+    payload: Mapped[dict] = mapped_column(JSON)
+    result: Mapped[dict] = mapped_column(JSON)
+
+
+def _immutable_paper_cost_history(mapper: object, connection: object, target: object) -> None:
+    """Reject ORM mutations of evidence and settlement receipts."""
+    from maps.common.exceptions import DataQualityError
+    raise DataQualityError("immutable_paper_cost_history")
+
+
+for _paper_cost_model in (PaperCostEvidence, PaperCostSettlement):
+    event.listen(_paper_cost_model, "before_update", _immutable_paper_cost_history)
+    event.listen(_paper_cost_model, "before_delete", _immutable_paper_cost_history)

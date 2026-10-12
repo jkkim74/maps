@@ -59,7 +59,7 @@ def test_fresh_database_reaches_current_schema(tmp_path, monkeypatch) -> None:
         revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
     engine.dispose()
 
-    assert revision == "0041_fujimoto_trading"
+    assert revision == "0042_paper_cost_settlement"
     assert {"classification_run", "classification_member"} <= set(inspector.get_table_names())
     assert "classification_quality" in {c["name"] for c in inspector.get_columns("collection_log")}
     assert {"order_intent", "execution_account_state", "account_observation", "account_adjustment",
@@ -176,7 +176,7 @@ def test_both_existing_branches_upgrade_to_merged_schema(tmp_path, monkeypatch, 
         assert "shadow_probes" in {c["name"] for c in inspector.get_columns("limit_up_session")}
         assert {"classification_run", "classification_member", "order_intent"} <= set(inspector.get_table_names())
         with engine.connect() as connection:
-            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0041_fujimoto_trading"
+            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0042_paper_cost_settlement"
     finally:
         engine.dispose()
 
@@ -251,4 +251,39 @@ def test_limit_up_execution_ledger_adds_default_and_downgrades(
     assert "execution_mode" not in {
         column["name"] for column in inspect(engine).get_columns("limit_up_session")
     }
+    engine.dispose()
+
+
+def test_paper_cost_additive_schema_and_history_safe_downgrade(tmp_path, monkeypatch):
+    """0042 creates nullable actual costs and refuses removal of audit evidence."""
+    path = tmp_path / "paper-cost.db"
+    monkeypatch.setenv("MAPS_DB_URL", f"sqlite:///{path.as_posix()}")
+    config = Config("alembic.ini")
+    command.upgrade(config, "0041_fujimoto_trading")
+    command.upgrade(config, "head")
+    engine = create_engine(f"sqlite:///{path.as_posix()}")
+    inspector = inspect(engine)
+    assert {"paper_cost_evidence", "paper_cost_settlement"} <= set(inspector.get_table_names())
+    amount = next(c for c in inspector.get_columns("paper_cost_evidence") if c["name"] == "amount")
+    assert amount["nullable"] is True
+    assert amount["type"].precision == 24 and amount["type"].scale == 4
+    with engine.begin() as connection:
+        connection.execute(text("INSERT INTO paper_cost_evidence "
+            "(account_key, environment, kind, ref_date, observed_at, fingerprint, payload) "
+            "VALUES ('fixture', 'paper', 'balance', '2026-10-12', CURRENT_TIMESTAMP, 'hash', '{}')"))
+    with pytest.raises(RuntimeError, match="paper_cost_history_not_empty"):
+        command.downgrade(config, "0041_fujimoto_trading")
+    assert "paper_cost_evidence" in inspect(engine).get_table_names()
+    engine.dispose()
+
+
+def test_paper_cost_empty_history_can_downgrade(tmp_path, monkeypatch):
+    """An empty isolated install may remove the additive migration."""
+    path = tmp_path / "paper-cost-empty.db"
+    monkeypatch.setenv("MAPS_DB_URL", f"sqlite:///{path.as_posix()}")
+    config = Config("alembic.ini")
+    command.upgrade(config, "head")
+    command.downgrade(config, "0041_fujimoto_trading")
+    engine = create_engine(f"sqlite:///{path.as_posix()}")
+    assert not {"paper_cost_evidence", "paper_cost_settlement"} & set(inspect(engine).get_table_names())
     engine.dispose()

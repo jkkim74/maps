@@ -152,6 +152,15 @@ def reconcile(db, broker, settings=None):
             seen.add(oid)
             orders[oid] = {"ticker": result.ticker, "side": result.side.value,
                 "qty": result.filled_quantity, "notional": str(money(result.filled_quantity) * money(result.avg_price))}
+            if settings.maps_broker_mode == "kis" and not settings.kis_real_trading:
+                if result.cumulative_gross is not None:
+                    gross = money(result.cumulative_gross)
+                    if gross < 0 or (result.filled_quantity > 0 and gross <= 0):
+                        raise ExecutionBlockedError("invalid_fill_evidence")
+                    orders[oid]["notional"] = str(gross)
+                    orders[oid]["gross_source"] = "reported_total"
+                else:
+                    orders[oid]["gross_source"] = "reported_average_provisional"
         except (ExecutionBlockedError, DataQualityError, ValueError) as exc:
             reasons.append(getattr(exc, "reason_code", "invalid_order_evidence"))
     db.flush()
@@ -182,10 +191,27 @@ def reconcile(db, broker, settings=None):
                     reasons.append("fujimoto_ownership_disagreement")
             evidence = {"positions": holdings, "orders": orders, "costs": str(activity.costs),
                 "unsupported": list(activity.unsupported), "adjustment_timing": "end_of_interval"}
+            paper_result = None
+            if settings.maps_broker_mode == "kis" and not settings.kis_real_trading:
+                evidence["cost_observation"] = getattr(snapshot, "cost_observation", None) or {}
             observation = AccountObservation(account_key=key, observed_at=now, ref_date=today,
                 nav=nav, cash=cash, evidence=evidence, complete=False)
             db.add(observation)
             db.flush()
+            if settings.maps_broker_mode == "kis" and not settings.kis_real_trading:
+                from maps.execution.paper_costs import reconcile_costs
+                # Reject regressed fills before a cost receipt can mutate accounting.
+                if baseline and any(row["qty"] < baseline.evidence["orders"].get(oid, {}).get("qty", 0)
+                                    for oid, row in orders.items()):
+                    raise ExecutionBlockedError("fill_quantity_regressed")
+                paper_result = reconcile_costs(db, settings, baseline, observation, reasons, open_orders)
+                observation.evidence = {**observation.evidence, "paper_costs": paper_result["coverage"],
+                                        "reconciliation": paper_result["breakdown"]}
+                # Observe disables automatic deductions, not evidence requirements.
+                # Never advance the baseline across an unexplained cost interval.
+                if baseline and not paper_result["coverage"]["complete"]:
+                    reasons.append(paper_result["coverage"]["reason"])
+                db.flush()
             unresolved = db.query(AccountAdjustment).filter_by(account_key=key, status="unclassified").first()
             adjustments = db.query(AccountAdjustment).filter(
                 AccountAdjustment.account_key == key, AccountAdjustment.status == "confirmed",
@@ -212,6 +238,9 @@ def reconcile(db, broker, settings=None):
                     for t in set(holdings) | set(expected_qty)
                     if holdings.get(t, {}).get("qty", 0) != expected_qty.get(t, 0)}
                 difference = cash - expected_cash - cash_adjustment
+                if paper_result is not None:
+                    difference = money(paper_result["breakdown"]["residual"])
+                    quantity_diff = paper_result["breakdown"]["quantity_changes"]
                 if abs(difference) > Decimal("1") or quantity_diff:
                     reasons.append("account_difference_unclassified")
                     if unresolved is None:
@@ -235,7 +264,7 @@ def reconcile(db, broker, settings=None):
                 state.high_water = max(money(state.high_water), money(state.value_index))
                 state.daily_return = money(state.value_index) / money(state.day_open_index) - 1
                 state.drawdown = 1 - money(state.value_index) / money(state.high_water)
-                observation.evidence = {**evidence, "value_index": str(state.value_index)}
+                observation.evidence = {**observation.evidence, "value_index": str(state.value_index)}
                 if state.daily_return <= -money(settings.daily_loss_limit) or state.drawdown >= money(settings.maps_account_mdd_limit):
                     if not state.killed:
                         db.add(KillSwitchLog(strategy_id=f"account:{key[:16]}", account_key=key,

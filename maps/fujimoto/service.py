@@ -250,6 +250,10 @@ class FujimotoService:
             """Use the existing account and actual-feed freshness boundaries."""
             return stamp is not None and 0 <= (utc_naive(now) - utc_naive(stamp)).total_seconds() <= seconds
         age = self.settings.maps_execution_snapshot_max_age_seconds
+        unsupported = set(observation.evidence.get("unsupported", [])) if observation and isinstance(observation.evidence, dict) else set()
+        covered_capabilities = bool(observation and isinstance(observation.evidence, dict)
+            and observation.evidence.get("paper_costs", {}).get("complete") is True
+            and unsupported <= {"paper_cost_history", "cash_transfers", "security_transfers"})
         if (state is None or state.environment != "kis_paper" or state.status != "READY"
                 or state.killed or state.block_reasons or not fresh(state.checked_at, age)
                 or not fresh(state.last_complete_at, age) or observation is None
@@ -257,7 +261,7 @@ class FujimotoService:
                 or observation.nav <= 0 or observation.cash < 0
                 or not isinstance(observation.evidence, dict)
                 or not {"positions", "orders", "costs", "unsupported"} <= observation.evidence.keys()
-                or observation.evidence.get("costs") is None or observation.evidence.get("unsupported")):
+                or observation.evidence.get("costs") is None or (unsupported and not covered_capabilities)):
             reasons.extend(state.block_reasons if state and state.block_reasons else ["account_not_fresh_reconciled"])
         if self.db.query(OrderIntent.id).filter_by(account_key=key, status="UNKNOWN").first():
             reasons.append("account_unknown_order")
@@ -732,7 +736,7 @@ class FujimotoService:
         self.db.commit()
 
     def settle_costs(self, key: str, owner: int | None, order_id: int, *, gross: float,
-                     fees: float, tax: float, evidence: dict) -> None:
+                     fees: float, tax: float, evidence: dict, commit: bool = True) -> None:
         """Audit exact per-order settlement; late ambiguous reconstruction stays blocked."""
         with account_execution_lock(key):
             self.owner(key, owner)
@@ -774,10 +778,13 @@ class FujimotoService:
                              "quantity_after_buy": quantity_after_buy}, resulting_state=cycle.state))
             now = utcnow()
             self.repo.record_evidence("order_cost", str(order.id), now, now,
-                {"complete": True, "gross": gross, "fees": fees, "tax": tax,
+                {"complete": True, "gross": str(gross), "fees": str(fees), "tax": str(tax),
                  "source": "operator_exact_order_evidence", "evidence": evidence, "owner_user_id": owner},
                 account_key=key)
-            self.db.commit()
+            if commit:
+                self.db.commit()
+            else:
+                self.db.flush()
 
 
 def apply_broker_result(db: Session, intent: OrderIntent, log: OrderLog, result) -> None:

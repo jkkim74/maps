@@ -11,8 +11,10 @@ from sqlalchemy.orm import Session
 from maps.api.deps import get_db
 from maps.api.schemas import IntentResolutionRequest, AdjustmentClassificationRequest, SafetyResolutionRequest
 from maps.api.schemas import ActiveKillItem, HoldingItem, RiskGaugeItem, RiskResponse
+from maps.api.schemas import PaperCostPreviewRequest, PaperCostCommitRequest
 from maps.common.constants import ALLOWED_MDD, STRATEGY_GROUP_MAP
 from maps.common.exceptions import BrokerAdapterError
+from maps.common.exceptions import ExecutionBlockedError
 from maps.backtest.engine import _compute_atr14
 from maps.common.models import (
     AnalysisPick,
@@ -32,6 +34,7 @@ logger = logging.getLogger(__name__)
 
 @router.get("/execution-safety")
 def execution_safety(db: Session = Depends(get_db)):
+    from maps.execution.paper_costs import settlement_overview
     from maps.common.models import ExecutionAccountState, OrderIntent, AccountAdjustment, ExecutionSafetyEvent
     from maps.execution.safety import account_key, utcnow, execution_environment
     settings = get_settings()
@@ -59,7 +62,8 @@ def execution_safety(db: Session = Depends(get_db)):
             "status": i.status, "version": i.version, "created_at": i.created_at} for i in intents],
         "adjustments": [{"id": a.id, "amount": a.amount, "evidence": a.evidence, "version": a.version} for a in adjustments],
         "legacy_orders": [{"id": r.id, "order_id": r.order_id, "ticker": r.ticker, "status": r.status} for r in legacy],
-        "undelivered_alerts": db.query(ExecutionSafetyEvent).filter_by(account_key=key, delivered_at=None).count()}
+        "undelivered_alerts": db.query(ExecutionSafetyEvent).filter_by(account_key=key, delivered_at=None).count(),
+        "paper_costs": settlement_overview(db, settings)}
 
 
 def _safety_actor(request):
@@ -67,6 +71,33 @@ def _safety_actor(request):
     if identity is None or not identity.is_admin:
         raise HTTPException(403, "Administrator required")
     return identity.username
+
+
+@router.post("/execution-safety/settlements/preview")
+def preview_paper_cost_settlement(body: PaperCostPreviewRequest, request: Request,
+                                  db: Session = Depends(get_db)):
+    """Preview configured-account costs without broker access or database writes."""
+    from maps.execution.paper_costs import preview_settlement
+    _safety_actor(request)
+    try:
+        return preview_settlement(db, get_settings(), body.model_dump(mode="json"))
+    except ExecutionBlockedError as exc:
+        db.rollback()
+        raise HTTPException(409, "Paper cost settlement rejected") from exc
+
+
+@router.post("/execution-safety/settlements/commit")
+def commit_paper_cost_settlement(body: PaperCostCommitRequest, request: Request,
+                                 db: Session = Depends(get_db)):
+    """Atomically accept a reviewed draft while retaining execution blocks."""
+    from maps.execution.paper_costs import commit_settlement
+    actor = _safety_actor(request)
+    try:
+        return commit_settlement(db, get_settings(), body.model_dump(mode="json"), actor,
+                                 owner_user_id=request.state.user.id)
+    except ExecutionBlockedError as exc:
+        db.rollback()
+        raise HTTPException(409, "Paper cost settlement rejected") from exc
 
 
 @router.post("/execution-safety/legacy/{log_id}/resolve")

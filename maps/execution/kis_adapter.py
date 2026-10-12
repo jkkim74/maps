@@ -20,7 +20,7 @@ from contextvars import ContextVar
 import threading
 import time
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -721,7 +721,24 @@ class KISAdapter(BrokerAdapter):
         if not cash.is_finite() or not nav.is_finite() or cash < 0 or nav <= 0:
             raise BrokerAdapterError("account_valuation_invalid")
         balance.cash, balance.total_assets = float(cash), float(nav)
-        return PositionSnapshot(positions, balance, observed_at)
+        cost_observation = None
+        if not self._settings.kis_real_trading:
+            raw = {name: summary[name] for name in (cash_field, "thdt_tlex_amt", "bfdy_tlex_amt") if name in summary}
+            amounts: list[str | None] = []
+            for name in ("thdt_tlex_amt", "bfdy_tlex_amt"):
+                try:
+                    amount = Decimal(str(summary.get(name)))
+                except (InvalidOperation, ValueError):
+                    amounts.append(None)
+                    continue
+                amounts.append(format(amount, "f") if amount.is_finite() and amount >= 0 else None)
+            cost_observation = {
+                "source": "kis_balance", "ref_date": observed_at.astimezone(_KST).date().isoformat(),
+                "observed_at": observed_at.isoformat(), "cash_field": cash_field,
+                "today_total": amounts[0], "previous_total": amounts[1],
+                "raw": raw, "valid": amounts[0] is not None,
+            }
+        return PositionSnapshot(positions, balance, observed_at, cost_observation)
 
     def get_buying_power(self, order: Order) -> BuyingPower:
         result = self._request("GET", "/uapi/domestic-stock/v1/trading/inquire-psbl-order",

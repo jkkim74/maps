@@ -1084,3 +1084,48 @@ def test_http_200_business_rejection_is_a_failed_attempt(
         KISAdapter(no_backoff, http=http).get_account_balance()
     assert stats.totals(stats._day.day).counts["api_error"] == 1
     assert stats.totals(stats._day.day).counts["ok"] == 0
+
+
+@pytest.mark.parametrize("today,previous,expected,valid", [
+    ("17620", "13172", "17620", True),
+    ("0", "0", "0", True),
+    (None, "0", None, False),
+    ("", "0", None, False),
+    ("-1", "0", None, False),
+    ("NaN", "0", None, False),
+    ("Infinity", "0", None, False),
+    ("garbage", "0", None, False),
+])
+def test_execution_snapshot_actual_cost_observation(settings, today, previous, expected, valid):
+    http = FakeSession()
+    summary = http.balance_payload["output2"][0]
+    summary.update(thdt_tlex_amt=today, bfdy_tlex_amt=previous, secret="excluded")
+    broker = KISAdapter(settings, http=http)
+    snapshot = broker.get_execution_snapshot()
+    observation = snapshot.cost_observation
+    assert observation["ref_date"] == snapshot.as_of.astimezone(kis_adapter._KST).date().isoformat()
+    assert observation["cash_field"] == "prvs_rcdl_excc_amt"
+    assert observation["today_total"] == expected
+    assert observation["previous_total"] == previous
+    assert observation["valid"] is valid
+    assert observation["source"] == "kis_balance"
+    assert observation["observed_at"] == snapshot.as_of.isoformat()
+    assert set(observation["raw"]) == {observation["cash_field"], "thdt_tlex_amt", "bfdy_tlex_amt"}
+    assert sum(call["url"].endswith("/inquire-balance") for call in http.calls) == 1
+
+
+@pytest.mark.parametrize("previous", [None, "", "-1", "NaN", "bad"])
+def test_execution_cost_previous_day_is_diagnostic(settings, previous):
+    http = FakeSession()
+    http.balance_payload["output2"][0].update(thdt_tlex_amt="0", bfdy_tlex_amt=previous)
+    observation = KISAdapter(settings, http=http).get_execution_snapshot().cost_observation
+    assert observation["today_total"] == "0"
+    assert observation["previous_total"] is None
+    assert observation["valid"] is True
+
+
+def test_execution_cost_live_contract_unchanged(settings):
+    http = FakeSession()
+    http.balance_payload["output2"][0].update(thdt_tlex_amt="12", bfdy_tlex_amt="10")
+    broker = KISAdapter(settings.model_copy(update={"kis_real_trading": True}), http=http)
+    assert broker.get_execution_snapshot().cost_observation is None

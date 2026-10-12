@@ -68,6 +68,9 @@ def resolve_intent(db, broker, settings, intent_id, request, actor):
 
 
 def classify_adjustment(db, settings, adjustment_id, request, actor):
+    from maps.execution.paper_costs import is_paper
+    if is_paper(settings) and request.kind == "fee":
+        raise ExecutionBlockedError("paper_cost_statement_required")
     key = account_key(settings)
     with account_execution_lock(key):
         db.expire_all()

@@ -105,3 +105,7 @@
 - 사용자 데이터를 다루는 조회는 `owner_user_id` 로 걸러야 한다 (`NULL` = 운영자 소유)
 - 마이그레이션이 있으면 배포에 `alembic upgrade head` 를 포함한다
 - **16:00~16:45 KST 배포 금지** — `/analyze` 파이프라인 실행 창
+
+## Paper cost settlement checkpoint
+
+Implementation in progress: [session handoff](docs/handoffs/2026-10-12-paper-cost-settlement.md). This checkpoint is not deployment-ready; full verification remains.

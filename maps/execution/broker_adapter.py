@@ -202,6 +202,7 @@ class PositionSnapshot:
     positions: dict[str, Position]
     balance: AccountBalance
     as_of: datetime.datetime
+    cost_observation: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)

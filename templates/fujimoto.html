@@ -38,6 +38,7 @@
 <label for="fj-replay">측정 리플레이 근거 ID</label><input id="fj-replay" type="number" min="1" required>
 <label><input id="fj-consent" type="checkbox" required> 이 전략이 새로 취득한 수량에 한해 명시된 자동 청산 규칙을 승인합니다.</label>
 <button type="submit">현재 근거 검증 · 활성화</button></form><p class="fj-label">기존 계좌 보유분은 편입되지 않습니다. 실거래 계좌를 모의 모드로 사용하는 것은 차단됩니다.</p></section></div>
+<p class="fj-label">계좌 차이·실제 비용 확인: <a href="/risk#pc-title">모의 계좌 비용 정산</a>. 명세서 정산 후 계좌 재검증을 확인하세요. 전략 시작 승인은 별도입니다.</p>
 <section class="fj-panel"><h2>사이클 · 차수 · 소유 수량</h2><div id="fj-cycles" class="fj-scroll"></div><h3>주문 · 누적 체결 · 잔여 예약</h3><div id="fj-orders" class="fj-scroll"></div><p class="fj-label">잔여 수량은 주문량에서 누적 체결을 뺀 수량입니다. 취소 등 종결 주문의 잔여 수량은 현재 예약과 다를 수 있습니다. 비용 미확정은 잠정 정산이며, 결과 불명이나 취소 요청만으로 예약을 해제하지 않습니다.</p></section>
 <div class="fj-grid"><section class="fj-panel"><h2>시장 전체 선별 · 데이터 범위</h2><div id="fj-screen"></div><h3>최근 후보 근거</h3><div id="fj-candidates"></div></section>
 <section class="fj-panel"><h2>검증 · 피드 품질</h2><div id="fj-quality"></div><div id="fj-validation"></div><p class="fj-label">호가 공백·재연결·지연은 30초 연속성을 초기화합니다. 비용 미확정은 신규 매수와 호가 익절을 차단하며 원가·손익을 잠정 표시합니다.</p></section></div>

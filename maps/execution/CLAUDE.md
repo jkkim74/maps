@@ -9,6 +9,7 @@ execution/
 ├── safety.py          # 실행 모드·계좌별 단일 프로세스 잠금
 ├── safety_admin.py    # 근거와 버전을 확인하는 관리자 해결 작업
 ├── reconciliation.py # 브로커 체결·계좌 검증, 입출금 보정 손실 한도
+├── paper_costs.py     # KIS 모의 실제 비용 근거·계좌 정산·명세서 미리보기/확정
 ├── __init__.py        # 빈 패키지 마커
 ├── broker_adapter.py  # BrokerAdapter (ABC) + 공통 데이터 클래스 + get_broker() 팩토리
 ├── mock_broker.py     # MockBroker — 인메모리 주문 시뮬레이터 (Phase 1~4)

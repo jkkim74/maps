@@ -1,8 +1,54 @@
 {% extends "base.html" %}
+{% block extra_head %}
+<style>
+#paper-costs .card-body { padding:24px; }
+#paper-costs h3 { margin-bottom:16px; }
+#paper-costs p { line-height:1.8; margin:12px 0; overflow-wrap:anywhere; }
+#pc-summary { background:var(--bg-surface); border-left:3px solid var(--color-info); padding:14px 18px; }
+#pc-details { color:var(--text-secondary); margin-bottom:20px; }
+#pc-details p { margin:6px 0; }
+#paper-costs .pc-fields, #pc-orders fieldset { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px 24px; }
+#paper-costs label { display:block; color:var(--text-primary); font-size:13px; line-height:1.6; }
+#paper-costs input:not([type=checkbox]) { display:block; width:100%; margin-top:7px; padding:10px 12px; border:1px solid var(--border); border-radius:6px; background:var(--bg-surface); color:var(--text-primary); font:inherit; }
+#paper-costs input:focus-visible { outline:2px solid var(--color-info); outline-offset:2px; }
+#paper-costs input:disabled { opacity:.45; }
+#paper-costs input[type=checkbox] { accent-color:var(--color-accent); margin-right:8px; vertical-align:middle; }
+#paper-costs .pc-check { background:var(--bg-surface); border:1px solid var(--border); padding:12px 16px; border-radius:6px; margin:18px 0; }
+#pc-orders fieldset { margin:20px 0; padding:18px; border:1px solid var(--border); border-radius:8px; }
+#pc-orders legend { color:var(--color-info); padding:0 8px; font-size:13px; }
+#paper-costs .pc-actions { display:flex; gap:12px; margin-top:20px; }
+#paper-costs .btn { border:1px solid var(--border); border-radius:6px; background:var(--bg-hover); color:var(--text-primary); padding:10px 16px; font:inherit; cursor:pointer; }
+#paper-costs .btn-primary { border-color:var(--color-accent); color:var(--color-accent); }
+#paper-costs .btn:disabled { opacity:.4; cursor:not-allowed; }
+#pc-result { color:var(--color-warn); }
+</style>
+{% endblock %}
 {% block content %}
 <div id="risk-kpi"><div class="loading"><div class="spinner"></div>로딩 중...</div></div>
 
 <div id="risk-kills"></div>
+
+<section id="paper-costs" class="card" aria-labelledby="pc-title"><div class="card-body">
+  <h3 id="pc-title">KIS 모의 계좌 비용 정산</h3>
+  <button id="pc-refresh" class="btn" type="button">현재 계좌 다시 조회</button>
+  <p id="pc-summary" role="status">현재 비교 구간 조회 중</p>
+  <div id="pc-details"></div>
+  <p>실제 증권사 명세서를 확인하세요. 비용 총액은 전체 비교 구간의 기확정 수수료와 기정산 비용을 포함합니다. 과거 미확인 차이를 비용으로 복사하지 마세요. 주문별 근거는 선택 사항이며 계좌 총액과 합계가 같을 필요는 없습니다.</p>
+  <label class="pc-check"><input id="pc-order-only" type="checkbox">계좌 비용은 이미 반영됨: 기존 계좌 근거에 연결한 주문별 명세서만 보완 (계좌 추가 차감 없음)</label>
+  <div class="pc-fields">
+  <label>비교 구간 전체 비용 총액 (원) <input id="pc-amount" type="number" min="0" step="any"></label>
+  <label>실제 증권사 계좌 명세서 HTTPS URL <input id="pc-source" type="url"></label>
+  <label>명세서 SHA-256 (64자리) <input id="pc-hash" type="text" maxlength="64"></label>
+  <label>정산 사유 <input id="pc-reason" type="text"></label>
+  </div>
+  <div id="pc-orders"></div>
+  <label class="pc-check"><input id="pc-reviewed" type="checkbox">현재 구간과 기확정 비용·영수증 포함 여부 또는 선택 주문과 기존 계좌 비용 근거 연결을 검토했습니다.</label>
+  <div class="pc-actions">
+  <button id="pc-preview" class="btn" type="button" disabled>정산 미리보기</button>
+  <button id="pc-commit" class="btn btn-primary" type="button" disabled>검토한 정산 확정</button>
+  </div>
+  <p id="pc-result" role="status"></p>
+</div></section>
 
 <section class="card" aria-labelledby="execution-safety-title">
   <div class="card-body">
@@ -27,6 +73,7 @@
 {% endblock %}
 
 {% block extra_scripts %}
+<script src="/static/js/paper_costs.js"></script>
 <script>
 (async () => {
   const status = document.getElementById('execution-safety-status');

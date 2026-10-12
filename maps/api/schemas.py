@@ -8,8 +8,70 @@ from decimal import Decimal
 
 import datetime
 from typing import Any, Literal
+from typing import Annotated
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, field_validator
+
+
+PaperCostAmount = Annotated[Decimal, Field(ge=0, allow_inf_nan=False, decimal_places=4)]
+PaperCostPositiveId = Annotated[int, Field(gt=0, strict=True)]
+
+
+class PaperCostStatementItem(BaseModel):
+    """Actual statement costs with provenance and explicit overlap mapping."""
+
+    model_config = {"extra": "forbid"}
+    scope: Literal["account", "order"]
+    period_start: datetime.date
+    period_end: datetime.date
+    amount: PaperCostAmount
+    source_url: str = Field(min_length=1, max_length=2048)
+    document_hash: str = Field(pattern=r"^[a-fA-F0-9]{64}$")
+    included_adjustment_ids: list[PaperCostPositiveId] = Field(default_factory=list)
+    included_settlement_ids: list[PaperCostPositiveId] = Field(default_factory=list)
+    broker_order_id: str | None = Field(default=None, min_length=1, max_length=128)
+    gross: PaperCostAmount | None = None
+    fees: PaperCostAmount | None = None
+    tax: PaperCostAmount | None = None
+    account_evidence_id: PaperCostPositiveId | None = None
+
+    @field_validator("source_url")
+    @classmethod
+    def statement_https(cls, value: str) -> str:
+        """Require an HTTPS source without embedded credentials."""
+        try:
+            parsed = urlsplit(value)
+            if parsed.scheme != "https" or not parsed.hostname or parsed.username is not None or parsed.password is not None:
+                raise ValueError("HTTPS statement URL without credentials required")
+            _ = parsed.port
+        except ValueError as exc:
+            raise ValueError("HTTPS statement URL without credentials required") from exc
+        return value
+
+    @field_validator("included_adjustment_ids", "included_settlement_ids")
+    @classmethod
+    def unique_identifiers(cls, value: list[int]) -> list[int]:
+        """Reject ambiguous duplicate overlap identifiers."""
+        if len(value) != len(set(value)):
+            raise ValueError("Identifiers must be unique")
+        return value
+
+
+class PaperCostPreviewRequest(BaseModel):
+    """Read-only statement settlement draft for the configured account."""
+
+    model_config = {"extra": "forbid"}
+    reason: str = Field(min_length=8, max_length=1000)
+    items: list[PaperCostStatementItem] = Field(min_length=1, max_length=100)
+
+
+class PaperCostCommitRequest(PaperCostPreviewRequest):
+    """Commit exactly the reviewed semantic draft with a replay key."""
+
+    fingerprint: str = Field(pattern=r"^[a-fA-F0-9]{64}$")
+    version: int = Field(ge=1, strict=True)
+    idempotency_key: str = Field(min_length=1, max_length=128)
 
 
 class FujimotoConfigRequest(BaseModel):
