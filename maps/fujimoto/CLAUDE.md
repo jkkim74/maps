@@ -360,6 +360,17 @@ remaining/realized cost by original post-buy quantity, with an audit fill. Chang
 gross/quantity, later BUY or other ambiguity still requires audited reconstruction;
 no ownership/cost guess is made. The dashboard labels unsettled cost/P&L provisional.
 
+KIS paper account statements are handled in `/risk#paper-costs` (migration 0042).
+`settle_costs(commit=False)` lets exact order evidence share the account settlement
+transaction; a failure rolls back both ledgers and the receipt. Aggregate account
+costs alone never mark a Fujimoto order's costs complete. Historical order-only
+supplements refer to their original paid interval and do not deduct cash again.
+For paper-trial readiness, `paper_cost_history`, `cash_transfers` and
+`security_transfers` capability flags are diagnostic only when the latest complete
+account observation has actual reconciled paper cost coverage. Unknown capability
+flags, stale/blocked accounts, provisional order costs and all other readiness
+guards still block. This does not authorize trial activation.
+
 ## Recording ceiling and research
 
 Actual quote rows are capped at 100,000 per account (configurable up to 100,000,000).

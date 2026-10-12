@@ -200,3 +200,26 @@ a live reservation. These views perform no writes, broker calls, activation or r
    terminal unfilled remainder is not a live reservation. Existing entry-stop remains
    available. Expiry/stop preserves approved exits and pending cancellation confirmation;
    no forced liquidation, guaranteed trades, holding adoption or automatic renewal.
+
+## Paper cost operator API and screen
+
+Administrator-only `/api/v1/risk/execution-safety` GET includes `paper_costs`:
+current breakdown, coverage, old pending adjustments and historical order-cost
+candidates. It reads persisted evidence without querying the broker. POST
+`/execution-safety/settlements/preview` accepts actual statement items and a reason;
+`/commit` additionally requires the returned fingerprint/version and an idempotency
+key. The configured account is implicit; extra fields, invalid decimal amounts,
+credentials in URLs and duplicate mapping IDs are rejected (422). Accounting
+conflicts return 409; no partial writes survive. Exact Fujimoto corrections also
+retain the configured owner check within the shared transaction.
+
+On `/risk#paper-costs`, review the baseline/latest UTC observation times as well as
+the KST dates. Enter the actual costs for that exact interval, including displayed
+confirmed fees and receipts, then the statement URL/hash and reason. Do not copy
+the historical adjustment amount as the current total. Order-level gross/fees/tax
+require separate actual order statements and may total less than the account costs.
+Use the order-only checkbox to supplement already paid historical intervals without
+another cash deduction. Review the mapping, preview, and explicitly commit; editing
+inputs invalidates the preview. After success wait for the next broker reconciliation.
+The screen's refresh button only rereads saved state. Settlement never starts a
+trial, clears unrelated account blocks or grants strategy activation.

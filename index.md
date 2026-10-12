@@ -27,6 +27,7 @@
 | AI 스코어링 모드·한도 | `maps/ai/scoring_service.py` |
 | 후보 주문 자격 SQL | `maps/ops/candidate_selection.py` |
 | 주문 제출·브로커 | `maps/execution/order_manager.py`, `kis_adapter.py` |
+| KIS 모의 실제 비용 정산·명세서 | `maps/execution/paper_costs.py` → [정산 계약](maps/execution/CLAUDE.md) → [운영 화면 절차](maps/api/CLAUDE.md) |
 | 중복 주문 방지 | `maps/ops/order_state.py` → `claimed_candidate_tickers()` |
 | 전략매매 안전 최대금액 | `maps/ops/strategy_trade_plan.py` |
 | 스케줄 잡·실행 시각 | `maps/ops/scheduler.py` + `maps/common/settings.py` |
@@ -73,7 +74,7 @@
 |---|---|---|
 | `tests/` | pytest 스위트 — **`maps/tests/` 8개는 별도** | [tests/CLAUDE.md](tests/CLAUDE.md) |
 | `scripts/` | 백필·진단·연구·cron 도구 | [scripts/CLAUDE.md](scripts/CLAUDE.md) |
-| `alembic/` | 마이그레이션 (head `0041_fujimoto_trading`) | [alembic/CLAUDE.md](alembic/CLAUDE.md) |
+| `alembic/` | 마이그레이션 (head `0042_paper_cost_settlement`) | [alembic/CLAUDE.md](alembic/CLAUDE.md) |
 | `apps/mobile/` | Vite+Capacitor 모바일 앱 | [apps/mobile/CLAUDE.md](apps/mobile/CLAUDE.md) |
 | `main.py` | FastAPI 앱 조립·라우터 등록·세션 게이트 (저장소 루트) | — |
 | `templates/`, `static/` | Jinja2 대시보드 화면과 JS·CSS | — |
@@ -106,6 +107,6 @@
 - 마이그레이션이 있으면 배포에 `alembic upgrade head` 를 포함한다
 - **16:00~16:45 KST 배포 금지** — `/analyze` 파이프라인 실행 창
 
-## Paper cost settlement checkpoint
+## Paper cost settlement verification
 
-Implementation in progress: [session handoff](docs/handoffs/2026-10-12-paper-cost-settlement.md). This checkpoint is not deployment-ready; full verification remains.
+Development verification complete: 2009 isolated tests passed; see [session handoff](docs/handoffs/2026-10-12-paper-cost-settlement.md) and [synthetic UI evidence](docs/evidence/paper-cost-20261012/README.md). Default observe remains unchanged. Independent final review and real KIS paper expense/date-boundary verification remain before operational auto rollout; no deployment or activation was performed.

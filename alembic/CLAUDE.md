@@ -22,7 +22,12 @@ alembic downgrade -1                             # 한 단계 되돌리기
 파일명이 아니라 각 파일의 `down_revision` 을 따라간다. 예: `efca8676041a` 의
 `down_revision` 은 `0005_stock_report_runs` 다.
 
-현재 head: **`0041_fujimoto_trading`**.
+현재 head: **`0042_paper_cost_settlement`**.
+
+`0042_paper_cost_settlement` adds empty `paper_cost_evidence` and
+`paper_cost_settlement` tables after 0041, with account-scoped unique fingerprints
+and idempotency keys. It performs no backfill. Downgrade is allowed only when both
+audit tables are empty; changing the runtime mode to observe preserves history.
 
 `0040_merge_classification_shadow`는 `0038_limit_up_shadow_probes`와
 `0039_classification_snapshots` 이력을 연결하는 병합 리비전이다. 자체 DDL은 없고,

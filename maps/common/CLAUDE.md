@@ -186,6 +186,20 @@ fill projections. Numeric cumulative gross/fees/tax preserve accounting. Configs
 account/owner/mode/version scoped; cycles freeze their inception allocation. No backfill
 or adoption of existing holdings. See ../fujimoto/CLAUDE.md for transaction contracts.
 
+## Paper cost persistence and settings
+
+Migration `0042_paper_cost_settlement` adds `PaperCostEvidence` and
+`PaperCostSettlement`. Actual amounts are nullable `Numeric(24,4)`; unknown is
+not zero. Evidence is unique by account/fingerprint; receipts by account/request
+idempotency key. ORM updates/deletes are rejected and a populated audit table
+cannot be downgraded. No existing account data is backfilled.
+
+`MAPS_PAPER_COST_RECONCILIATION_MODE=observe|auto` defaults to `observe` and applies
+only to actual KIS paper accounts. Observe retains incomplete-cost blocks and the
+last complete baseline. Auto requires actual cost coverage and stable account
+evidence, never a fee-rate estimate. Switching back to observe stops new automatic
+deductions without deleting receipts. See [execution contract](../execution/CLAUDE.md).
+
 ## Fujimoto runtime settings
 
 Default `maps_fujimoto_enabled=False`, screen time 22:00, annual collection batch

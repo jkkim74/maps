@@ -100,6 +100,7 @@ def test_observation_expiry_does_not_expire_unknown_orders(db):
     repo, cycle, reservation = seeded(db)
     reservation.status = "UNKNOWN"
     other = repo.create_cycle(cycle.config_id, "BBB")
+    other.created_at = datetime(2026, 10, 7)  # Keep the fixture before the fixed expiry date.
     db.commit()
     FujimotoService(db).expire_empty_cycles(cycle.account_key, date(2026, 10, 9))
     assert repo.state(cycle.id).pending_order

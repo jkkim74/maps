@@ -1,6 +1,73 @@
 # 모의계좌 비용 정산 구현 인수인계 — 2026-10-12
 
-## 현재 상태
+## 재개 세션 현재 상태 — 2026-10-12
+
+아래 `최초 중간 저장 기록`보다 이 절이 우선한다. 체크포인트 `b9d99c0` 이후
+잔여 회귀 테스트와 실제 브라우저 확인, 모듈 문서 보완, 최종 자체 검토를 완료했다.
+최종 전체 검증은 **2009 passed, 2596 warnings (614.48초)**다.
+독립 최종 리뷰와 실제 KIS 비용 자료 검증은 아래 운영 전 TODO로 남긴다.
+
+- 현재 worktree: `D:/workspace/maps/maps/.worktrees/paper-cost-settlement`
+- 브랜치: `codex/paper-cost-settlement`, 원격 체크포인트 위의 미커밋 변경
+- Python: `D:/workspace/maps/maps/.venv/Scripts/python.exe`
+- 원본 `master`의 ETF/백테스트 변경과 사용자 파일은 보존했다. fetch는 완료했지만
+  원본 pull은 `maps/strategy/live_rules.py`의 로컬 변경과 겹쳐 적용하지 못했다.
+- 운영 DB·설정·주문·전략 상태는 변경하지 않았다. 병합·배포·활성화하지 않았다.
+
+### 재현 후 수정한 결함
+
+1. 교체 계좌 명세서가 주문 비용 배분 한도를 초기화하던 문제:
+   문서 ID 대신 해당 관측 구간에 완전히 포함된 주문들의 최신 비용을 합산한다.
+   기존 200 + 신규 200 > 계좌 실제 비용 360은 거절하고, 신규 160은 허용한다.
+2. 과거 수량 차이 보정 때문에 자동 정산이 거절되어도 receipt가 남던 문제:
+   receipt·보정 변경·성공 이벤트를 savepoint로 묶어 모두 취소한다.
+   보정 변경 직후 강제 예외를 주입하는 테스트도 추가했다.
+3. 후지모토 원장에서 비용 감소 정정을 거절하면 HTTP 500이 되던 문제:
+   HTTP 409로 반환하고 계좌 근거·receipt·주문 비용을 함께 rollback한다.
+4. API 금액에 저장소 `Numeric(24,4)` 한도를 적용해 초과 입력은 422로 거절한다.
+5. 기존 후지모토 만료 테스트는 실행일이 고정 만료일을 지난 뒤 실패했다.
+   테스트 생성 시각을 만료일 이전으로 고정했으며 운영 코드는 변경하지 않았다.
+
+`tests/test_paper_cost_reconciliation.py`에서 실제 reconcile 경로의 체결 감소,
+수량 불일치, unknown/open 주문, 미확정 체결금액, 과거 수량 보정 차단을 확인한다.
+관찰→자동 전환과 새 DB 세션에서도 중복 차감하지 않는지 검증한다.
+기존 정산 테스트의 주문 전용 receipt/current coverage 차단 계약도 유지한다.
+
+### 검증과 재실행
+
+- 최종 전체 `tests maps/tests`: **2009 passed, 2596 warnings (614.48초)**, 종료 코드 0.
+  최종 제품 코드/테스트 편집을 마친 뒤 실행했다. 경고는 NumPy/pandas, Starlette,
+  Alembic 등의 사용 중단 경고와 기존 테스트의 SQLAlchemy/리스크 경고를 포함한다.
+- 정산·후지모토·KIS·마이그레이션·UI·문서 집중 실행: **252 passed, 19 warnings (327.37초)**.
+  이 실행 후 추가된 마지막 원자성 회귀는 아래 22개 실행 및 최종 전체 실행에 포함한다.
+- 자동 정산·누적 한도·API 원자성 및 기존 risk API: **22 passed**, 기존 Starlette 경고 1개.
+- 변경된 전체 Python 파일 compileall, `node --check static/js/paper_costs.js`,
+  `git diff --check` 통과.
+- 최종 결과 문서 갱신 후 `test_docs_index.py`: **24 passed (0.35초)**.
+- [브라우저 캡처와 확인 범위](../evidence/paper-cost-20261012/README.md):
+  실제 템플릿/JS를 합성 계좌 자료로 렌더링했다. 계좌 정산과 과거 주문 보완 화면을
+  확인했으며 임시 서버와 탭은 종료했다. 실제 계좌 비용 수집을 검증한 것은 아니다.
+- 체크포인트 전체 실행은 테스트 실패 1개를 재현했지만 마지막 pytest 정리 과정에서
+  기존 Windows `pytest-current` 접근 권한 오류가 났다. 최종 검증에는 전용 basetemp를 사용한다.
+- 이번 재개 세션은 단일 에이전트의 최종 자체 검토다. 이전 독립 리뷰의 쟁점에
+  회귀 테스트를 보강했지만 새 독립 리뷰 종료 확인을 받았다고 주장하지 않는다.
+
+```powershell
+Set-Location D:/workspace/maps/maps/.worktrees/paper-cost-settlement
+& D:/workspace/maps/maps/.venv/Scripts/python.exe scripts/run_isolated_tests.py tests maps/tests -q --tb=short --basetemp=$env:TEMP/maps-paper-cost-full-final-20261012 --junitxml=$env:TEMP/maps-paper-cost-full-final.xml
+node --check static/js/paper_costs.js
+git diff --check
+```
+
+격리 runner는 dotenv를 배제하고 mock 설정, 임시 DB/lock, 외부 네트워크 차단을 사용한다.
+로그와 JUnit 결과는 시스템 TEMP의 `maps-paper-cost-full-final.log/.xml`에 있다.
+운영 전 TODO는 실제 KIS paper 비용 필드 및 **18:00 KST 이후 2회 안정 관측** 가정의
+검증, 독립 최종 리뷰다. 기본 observe를 유지하며 운영 적용 시 migration 0042가 필요하다.
+내역이 쌓인 비용 감사 테이블을 downgrade하거나 삭제하지 않는다.
+
+## 최초 중간 저장 기록 — 아래 내용은 재개 전 이력
+
+### 당시 상태
 
 사용자가 구현 도중 **모든 브랜치 push 및 다른 세션을 위한 인수인계**를 요청했다.
 이 브랜치는 구현 중간 저장본이다. **전체 검증 완료·병합·배포 승인을 뜻하지 않는다.**

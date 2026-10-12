@@ -1,5 +1,18 @@
 # HANDOFF
 
+> ## 2026-10-12 모의계좌 비용 정산 — 잔여 수정·개발 검증 완료
+>
+> 체크포인트 `b9d99c0`에서 이어서 명세서 교체 시 누적 주문 비용 한도,
+> 자동 정산 실패 시 receipt/보정/event 원자성, 후지모토 비용 정정의 HTTP 409와
+> 금액 저장 한도를 수정했다. 실제 reconcile 회귀와 브라우저 증빙을 추가했다.
+> 최종 전체 검증 **2009 passed, 2596 warnings (614.48초)**. 상세 결과는
+> [비용 정산 인수인계](docs/handoffs/2026-10-12-paper-cost-settlement.md)에 기록한다.
+> 현재 경로는 `D:/workspace/maps/maps/.worktrees/paper-cost-settlement`,
+> 브랜치는 `codex/paper-cost-settlement`이며 재개 변경은 미커밋이다.
+> 원본 master의 사용자 변경은 보존했다. 실제 KIS 비용 필드·날짜 경계 검증과
+> 독립 최종 리뷰는 남아 있다. 기본 observe 유지; 운영 migration 0042 적용,
+> 병합·배포·주문·전략 활성화는 하지 않았다. 아래 절은 이전 작업 이력이다.
+
 > ## 2026-10-07 후지모토식 매매 시스템 — 설계 저장, 구현 전
 >
 > 다음 작업은 [전용 인계 문서](docs/HANDOFF_fujimoto_trading.md)에서 이어간다.

@@ -178,3 +178,47 @@ remain unknown. MockBroker supplies confirmed cost fields. Terminal quantity tru
 allows consented protective exits with provisional cost, while new BUY and
 net-profit book exits wait for settlement. Exact audited settlement is documented
 in `maps/fujimoto/CLAUDE.md`; ambiguous late cost reconstruction remains blocked.
+
+## KIS paper actual-cost settlement
+
+`PositionSnapshot.cost_observation` carries the existing balance response's
+`thdt_tlex_amt` and `bfdy_tlex_amt`, KST receipt date, UTC receipt timestamp and
+allowlisted raw fields. No extra HTTP request is made. Missing, negative or
+nonfinite costs are unknown. Previous-day amounts are diagnostic only.
+
+`paper_costs.py` separates the latest reconstructed cash residual from old
+unclassified adjustment amounts. Automatic settlement needs exact reported order
+gross, unchanged quantities, no unknown/open orders, complete dated cost coverage
+and two matching observations within the reconciliation freshness limit. Fill
+regression is rejected before cost receipts or adjustment resolution can be saved.
+Automatic receipts, marker resolution and the settlement audit event share a
+savepoint: a domain rejection rolls them all back while retaining reconciliation
+diagnostics and the original unresolved markers.
+Missing/corrected/overlapping costs retain the last complete baseline even in
+observe mode. Settled receipts survive repeated syncs and process/session restart.
+
+Manual `preview_settlement` checks a broker statement's HTTPS source, SHA-256,
+exact baseline-to-current interval, actual total and explicit existing fee/receipt
+mapping. The URL/hash records operator-reviewed provenance; the server does not
+download or authenticate the document. Costs are never inferred from cash residuals
+or allocated from an account total to individual orders. `commit_settlement`
+revalidates semantic state under the account lock and atomically saves evidence,
+Fujimoto order costs and a receipt. Timestamp/valuation-only refreshes may preserve
+a preview; changed fills/cash/adjustments invalidate it. Any failure rolls back
+the whole settlement. Commit returns `awaiting_reconciliation`, not READY.
+
+Order-only historical evidence links to a paid account interval, deducts no more
+cash and cannot establish current account coverage. Exact fully covered order
+identity/gross/quantity is required; partially filled orders at the interval start
+need reconstruction. The interval's cumulative order costs must fit the account
+total, including costs recorded against earlier/replacement account documents.
+Existing confirmed fee adjustments are preserved; new KIS paper fee classification
+uses the statement flow instead of owner-only assertions.
+
+Before enabling auto, verify real KIS paper expense population and date boundaries
+against statements. Cross-day coverage currently treats stable observations after
+18:00 KST as closing evidence, with no missing trading day. This is an unmeasured
+broker assumption, not a confirmed closing flag. Default observe remains in force.
+Apply additive migration 0042 before application rollout; reverting to observe
+does not erase settled costs or audit history. No settlement submits broker orders,
+enables strategies or changes the live/mock accounting contracts.

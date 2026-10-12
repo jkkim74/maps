@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, Field, field_validator
 
 
-PaperCostAmount = Annotated[Decimal, Field(ge=0, allow_inf_nan=False, decimal_places=4)]
+PaperCostAmount = Annotated[Decimal, Field(ge=0, allow_inf_nan=False, max_digits=24, decimal_places=4)]
 PaperCostPositiveId = Annotated[int, Field(gt=0, strict=True)]
 
 

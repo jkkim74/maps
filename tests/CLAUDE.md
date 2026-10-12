@@ -35,6 +35,15 @@ pytest --tb=short                         # 배포 전 표준
 
 ## 규칙
 
+Paper-cost regression files are `test_paper_costs.py`, `test_paper_cost_reconciliation.py`,
+`test_paper_cost_api.py`, `test_paper_cost_persistence.py` and `test_paper_cost_ui.py`.
+The reconciler tests exercise fill regression, quantity/unknown-order blocks,
+observe-to-auto transitions, new DB sessions and shared/replacement statement
+allocation limits. All account values/documents are synthetic. The UI runs shipped
+JavaScript in Node with offline DOM/fetch fixtures; migration tests use temporary DBs.
+Run these with `python scripts/run_isolated_tests.py <paths> -q --tb=short`, then
+the full `tests maps/tests` suite without concurrent product edits.
+
 - 파일 `test_<기능>.py`, 함수 `test_<기대_동작>`
 - 버그 수정에는 회귀 테스트를 함께 넣는다
 - **실 브로커 자격증명·네트워크를 요구하지 않는다.** KIS·Bedrock·pykrx 는 mock 또는 override

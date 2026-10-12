@@ -69,7 +69,7 @@ def test_preview_commit_and_replay_do_not_execute_orders(api):
         assert db.get(ExecutionAccountState, account_key(api.settings)).status == 'BLOCKED'
 
 
-@pytest.mark.parametrize('change', [{'amount': '-1'}, {'amount': 'NaN'}, {'amount': '0.00001'}, {'source_url': 'http://broker.example'}, {'source_url': 'https://user:pass@broker.example'}, {'document_hash': 'bad'}, {'included_adjustment_ids': [1, 1]}, {'included_settlement_ids': [0]}, {'account_key': 'other'}])
+@pytest.mark.parametrize('change', [{'amount': '-1'}, {'amount': 'NaN'}, {'amount': '0.00001'}, {'amount': '100000000000000000000'}, {'source_url': 'http://broker.example'}, {'source_url': 'https://user:pass@broker.example'}, {'document_hash': 'bad'}, {'included_adjustment_ids': [1, 1]}, {'included_settlement_ids': [0]}, {'account_key': 'other'}])
 def test_statement_schema_rejects_invalid_inputs(api, change):
     api.body['items'][0].update(change)
     assert api.client.post('/api/v1/risk/execution-safety/settlements/preview', json=api.body).status_code == 422
@@ -112,3 +112,35 @@ def test_request_bounds_and_current_account_scope(api, change):
 def test_commit_metadata_bounds(api, change):
     payload = {**api.body, 'fingerprint': 'a'*64, 'version': 3, 'idempotency_key': 'x', **change}
     assert api.client.post('/api/v1/risk/execution-safety/settlements/commit', json=payload).status_code == 422
+
+
+def test_rejected_fujimoto_cost_correction_returns_conflict_and_rolls_back(api) -> None:
+    """An exact-order ledger rejection is a conflict, never a partial account settlement."""
+    from tests.test_fujimoto_execution import seeded, linked_intent
+    from maps.fujimoto.repository import FillEvent
+    from maps.common.models import FujimotoOrder
+
+    with api.factory() as db:
+        repo, cycle, order = seeded(db, api.settings)
+        intent, log = linked_intent(db, cycle, order)
+        repo.bind_intent(order.id, intent.id, 'broker')
+        current = db.query(AccountObservation).filter_by(complete=False).one()
+        repo.apply_fill(FillEvent(order.id, cycle.account_key, intent.id, 2, 2000, 20, 0,
+                                 'FILLED', current.ref_date))
+        intent.status = 'FILLED'; log.status = 'filled'; log.fill_qty = 2
+        current.cash -= 2000
+        current.evidence = {**current.evidence, 'positions': {'AAA': {'qty': 2}},
+            'orders': {'broker': {'ticker': 'AAA', 'side': 'buy', 'qty': 2, 'notional': '2000'}}}
+        order_id = order.id
+        db.commit()
+    api.body['items'].append({**api.body['items'][0], 'scope': 'order', 'broker_order_id': 'broker',
+        'amount': '10', 'gross': '2000', 'fees': '10', 'tax': '0'})
+    preview = api.client.post('/api/v1/risk/execution-safety/settlements/preview', json=api.body)
+    assert preview.status_code == 200
+    payload = {**api.body, 'fingerprint': preview.json()['fingerprint'],
+               'version': preview.json()['version'], 'idempotency_key': 'decreasing-order-cost'}
+    response = api.client.post('/api/v1/risk/execution-safety/settlements/commit', json=payload)
+    assert response.status_code == 409
+    with api.factory() as db:
+        assert db.query(PaperCostSettlement).count() == db.query(PaperCostEvidence).count() == 0
+        assert db.get(FujimotoOrder, order_id).fees == 20

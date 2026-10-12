@@ -14,7 +14,7 @@ from maps.api.schemas import ActiveKillItem, HoldingItem, RiskGaugeItem, RiskRes
 from maps.api.schemas import PaperCostPreviewRequest, PaperCostCommitRequest
 from maps.common.constants import ALLOWED_MDD, STRATEGY_GROUP_MAP
 from maps.common.exceptions import BrokerAdapterError
-from maps.common.exceptions import ExecutionBlockedError
+from maps.common.exceptions import DataQualityError, ExecutionBlockedError
 from maps.backtest.engine import _compute_atr14
 from maps.common.models import (
     AnalysisPick,
@@ -95,7 +95,7 @@ def commit_paper_cost_settlement(body: PaperCostCommitRequest, request: Request,
     try:
         return commit_settlement(db, get_settings(), body.model_dump(mode="json"), actor,
                                  owner_user_id=request.state.user.id)
-    except ExecutionBlockedError as exc:
+    except (ExecutionBlockedError, DataQualityError) as exc:
         db.rollback()
         raise HTTPException(409, "Paper cost settlement rejected") from exc
 

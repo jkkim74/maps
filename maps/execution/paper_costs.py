@@ -263,7 +263,7 @@ def preview_settlement(db: Session, settings: Any, request: dict) -> dict:
         if deduction < 0:
             raise ExecutionBlockedError("cost_correction_requires_review")
     order_ids = set()
-    allocations: dict[int | None, dict[str, Decimal]] = {}
+    intervals = [(baseline, current, amount(accounts[0]["amount"]))] if accounts else []
     for item in (i for i in items if i.get("scope") == "order"):
         oid = item.get("broker_order_id")
         if oid in order_ids:
@@ -276,10 +276,9 @@ def preview_settlement(db: Session, settings: Any, request: dict) -> dict:
         fees, tax, gross = amount(item["fees"]), amount(item["tax"]), amount(item["gross"])
         if accounts:
             proof_baseline, proof_current, covered_total = baseline, current, amount(accounts[0]["amount"])
-            coverage_id = None
         else:
-            covered, proof_baseline, proof_current, covered_total = _account_proof(db,key,item.get("account_evidence_id"))
-            coverage_id = covered.id
+            _, proof_baseline, proof_current, covered_total = _account_proof(db,key,item.get("account_evidence_id"))
+            intervals.append((proof_baseline, proof_current, covered_total))
         if (str(item["period_start"]) < str(proof_baseline.ref_date)
                 or str(item["period_end"]) > str(proof_current.ref_date)):
             raise ExecutionBlockedError("account_cost_coverage_required")
@@ -289,14 +288,17 @@ def preview_settlement(db: Session, settings: Any, request: dict) -> dict:
         if (min(fees, tax) < 0 or gross <= 0 or fees+tax != amount(item["amount"])
                 or recorded is None or recorded["qty"] != row.fill_qty or amount(recorded["notional"]) != gross):
             raise ExecutionBlockedError("order_cost_identity_mismatch")
-        if coverage_id not in allocations:
-            allocations[coverage_id] = {}
-            if coverage_id is not None:
-                for proof in db.query(PaperCostEvidence).filter_by(account_key=key, kind="order_statement").order_by(PaperCostEvidence.id):
-                    if proof.payload.get("account_evidence_id") == coverage_id:
-                        allocations[coverage_id][proof.payload["broker_order_id"]] = amount(proof.amount)
-        allocations[coverage_id][oid] = amount(item["amount"])
-        if sum(allocations[coverage_id].values(), ZERO) > covered_total:
+    # A replacement document is not a new cost budget. Count the latest actual
+    # costs for every fully covered order, across evidence IDs and this whole draft.
+    allocations = {proof.payload["broker_order_id"]: amount(proof.amount)
+        for proof in db.query(PaperCostEvidence).filter_by(account_key=key, kind="order_statement")
+        .order_by(PaperCostEvidence.id)}
+    allocations.update({item["broker_order_id"]: amount(item["amount"])
+                        for item in items if item["scope"] == "order"})
+    for proof_baseline, proof_current, covered_total in intervals:
+        covered_orders = {oid for oid, order in proof_current.evidence["orders"].items()
+                          if order["qty"] > 0 and not proof_baseline.evidence["orders"].get(oid, {}).get("qty", 0)}
+        if sum((allocations.get(oid, ZERO) for oid in covered_orders), ZERO) > covered_total:
             raise ExecutionBlockedError("order_cost_exceeds_account_total")
     remaining = amount(details["residual"])+deduction
     if accounts and abs(remaining) > 1:
@@ -496,13 +498,16 @@ def reconcile_costs(db: Session, settings: Any, baseline: AccountObservation | N
         if not db.query(PaperCostSettlement).filter_by(account_key=key,idempotency_key=identity).first():
             payload = {"baseline_id":baseline.id,"through_observation_id":current.id,
                 "deduction":str(outstanding),"evidence_ids":[evidence.id],"source":"kis_balance"}
-            db.add(PaperCostSettlement(account_key=key,idempotency_key=identity,request_hash=digest(payload),
-                created_at=current.observed_at,actor="system:paper_costs",payload=payload,
-                result={"status":"reconciled","deduction":str(outstanding)}))
-            _resolve_adjustments(db,key,[evidence.id],current.observed_at)
-            db.add(ExecutionSafetyEvent(account_key=key,reason_code="paper_costs_auto_settled",details=payload,
-                                       created_at=current.observed_at))
-            db.flush()
+            # Reconciliation persists diagnostics after a domain rejection. Keep
+            # the cost mutation atomic so a rejected marker cannot leave a receipt.
+            with db.begin_nested():
+                db.add(PaperCostSettlement(account_key=key,idempotency_key=identity,request_hash=digest(payload),
+                    created_at=current.observed_at,actor="system:paper_costs",payload=payload,
+                    result={"status":"reconciled","deduction":str(outstanding)}))
+                _resolve_adjustments(db,key,[evidence.id],current.observed_at)
+                db.add(ExecutionSafetyEvent(account_key=key,reason_code="paper_costs_auto_settled",details=payload,
+                                           created_at=current.observed_at))
+                db.flush()
     result["breakdown"] = breakdown(db,key,baseline,current)
     coverage.update(complete=True,reason="actual_costs_reconciled")
     return result
