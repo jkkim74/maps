@@ -38,9 +38,16 @@ api/
 ├── trend_strength.py      # SCR-09 TrendStrength 모니터
 ├── users.py               # 회원 계정 · 개인 설정 · 관리자 회원 관리
 └── wfa.py                 # SCR-11 Walk-Forward 리포트
+??? us_trading.py  # US paper trading
 ```
 
 ## deps.py — 공통 의존성
+
+미국 전용 모의매매는 `us_trading.py`의 `/api/v1/us-trading`과 루트
+`templates/us_trading.html`, `static/js/us-trading.js`로 구성한다. 관리자 수동 요청만
+허용하며 계좌·환경·출처·실행 인스턴스는 서버가 결정한다. 화면 조회는 저장된 계좌
+관측을 사용하고 주문 제출은 최신 근거를 다시 검사한다. 실행 서비스는
+`maps/execution/us_service.py`, 운영 안내는 `docs/US_TRADING_RUNBOOK.md`를 따른다.
 
 ```python
 get_db() → Generator[Session, None, None]  # DB 세션 제너레이터

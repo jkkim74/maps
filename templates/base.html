@@ -32,6 +32,11 @@
 
     <div class="nav-section">
       <div class="nav-section-label">메인 워크플로</div>
+      {% if 'us-trading' in nav_keys %}
+      <a href="/us-trading" class="nav-item {% if screen == 'us-trading' %}active{% endif %}">
+        <span class="nav-scr">US</span>미국주식 모의매매
+      </a>
+      {% endif %}
       {% if 'dashboard' in nav_keys %}
       <a href="/dashboard"       class="nav-item {% if screen == 'dashboard' %}active{% endif %}">
         <span class="nav-scr">01</span>대시보드 홈

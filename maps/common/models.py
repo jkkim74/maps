@@ -1470,3 +1470,82 @@ def _immutable_paper_cost_history(mapper: object, connection: object, target: ob
 for _paper_cost_model in (PaperCostEvidence, PaperCostSettlement):
     event.listen(_paper_cost_model, "before_update", _immutable_paper_cost_history)
     event.listen(_paper_cost_model, "before_delete", _immutable_paper_cost_history)
+
+class USAccountState(Base):
+    """Dedicated USD reconciliation state; never shares domestic cash accounting."""
+    __tablename__ = "us_account_state"
+    account_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    entry_stopped: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_sync_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)
+    blocked_reason: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    session_date: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    session_equity: Mapped[Decimal | None] = mapped_column(Numeric(24, 6), nullable=True)
+    observed_cash: Mapped[Decimal | None] = mapped_column(Numeric(24, 6), nullable=True)
+    observed_positions: Mapped[dict] = mapped_column(JSON, default=dict)
+    observed_flow: Mapped[Decimal] = mapped_column(Numeric(24, 6), default=Decimal(0))
+    observed_fills: Mapped[dict] = mapped_column(JSON, default=dict)
+    loss_stopped: Mapped[bool] = mapped_column(Boolean, default=False)
+    snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class USOrderLedger(Base):
+    """Durable reservation, source and cumulative fill projection for one US order."""
+    __tablename__ = "us_order_ledger"
+    __table_args__ = (UniqueConstraint("account_key", "request_id", name="uq_us_order_request"),)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    account_key: Mapped[str] = mapped_column(String(64), index=True)
+    request_id: Mapped[str] = mapped_column(String(128))
+    fingerprint: Mapped[str] = mapped_column(String(64))
+    broker_order_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    instance_id: Mapped[str] = mapped_column(String(128))
+    source: Mapped[str] = mapped_column(String(32))
+    strategy_id: Mapped[str] = mapped_column(String(128))
+    evidence: Mapped[dict] = mapped_column(JSON, default=dict)
+    ticker: Mapped[str] = mapped_column(String(16))
+    exchange: Mapped[str] = mapped_column(String(16))
+    side: Mapped[str] = mapped_column(String(8))
+    quantity: Mapped[int] = mapped_column(Integer)
+    limit_price: Mapped[Decimal] = mapped_column(Numeric(24, 6))
+    status: Mapped[str] = mapped_column(String(32))
+    filled_quantity: Mapped[int] = mapped_column(Integer, default=0)
+    gross: Mapped[Decimal] = mapped_column(Numeric(24, 6), default=Decimal(0))
+    commission: Mapped[Decimal | None] = mapped_column(Numeric(24, 6), nullable=True)
+    tax: Mapped[Decimal | None] = mapped_column(Numeric(24, 6), nullable=True)
+    costs_confirmed: Mapped[bool] = mapped_column(Boolean, default=False)
+    reserved_usd: Mapped[Decimal] = mapped_column(Numeric(24, 6), default=Decimal(0))
+    reserved_quantity: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime)
+    updated_at: Mapped[datetime.datetime] = mapped_column(DateTime)
+
+
+class USOwnedPosition(Base):
+    """Shares created by confirmed fills, scoped to a single execution instance."""
+    __tablename__ = "us_owned_position"
+    __table_args__ = (UniqueConstraint("account_key", "instance_id", "ticker", "exchange", name="uq_us_owned_position"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_key: Mapped[str] = mapped_column(String(64), index=True)
+    instance_id: Mapped[str] = mapped_column(String(128))
+    ticker: Mapped[str] = mapped_column(String(16))
+    exchange: Mapped[str] = mapped_column(String(16))
+    quantity: Mapped[int] = mapped_column(Integer, default=0)
+    cost_basis: Mapped[Decimal] = mapped_column(Numeric(24, 6), default=Decimal(0))
+
+
+class USExecutionEvent(Base):
+    """Append-only order and administrator audit observations."""
+    __tablename__ = "us_execution_event"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_key: Mapped[str] = mapped_column(String(64), index=True)
+    order_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime)
+    event_type: Mapped[str] = mapped_column(String(64))
+    actor: Mapped[str] = mapped_column(String(128))
+    message: Mapped[str] = mapped_column(Text)
+
+
+class USMockTruth(Base):
+    """Independent durable mock broker truth; service projections never populate it."""
+    __tablename__ = "us_mock_truth"
+    account_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    cash: Mapped[Decimal] = mapped_column(Numeric(24, 6))
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)

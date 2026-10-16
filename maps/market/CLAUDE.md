@@ -13,6 +13,7 @@ market/
 ├── regime_history.py   # 히스테리시스 — buffer band·전일 유지·floor 2일 확인
 ├── sector_selector.py  # 업종 강도·국면별 업종 선정
 └── trading_rules.py    # KRX 거래일 판단 + 호가 단위 계산
+??? us_trading_rules.py  # US paper trading
 ```
 
 ## regime.py — 장세 분석
@@ -192,3 +193,14 @@ yfinance → 해외 지수 주봉 데이터
 holidays → 한국 공휴일 목록 (optional, 미설치 시 경고)
 maps.common.settings → get_settings()
 ```
+
+## US regular-session rules
+
+`us_trading_rules.py` uses the maintained `exchange-calendars` XNYS calendar for
+holidays, extraordinary closures, DST and early closes. `us_session(date)` returns
+UTC open/exclusive-close timestamps or `None`; `is_us_market_open(now)` rejects
+naive timestamps. Calendar years outside library support fail closed rather than
+falling back to weekdays. Initial `validate_us_limit_price()` support is limited
+to finite USD prices >= 1 with whole cents. Fractional shares, sub-dollar prices,
+extended sessions and alternate tick sizes are unsupported. Calendar package
+updates and dedicated KIS paper validation remain operational requirements.

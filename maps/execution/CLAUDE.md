@@ -17,6 +17,10 @@ execution/
 ├── kis_request_stats.py # KIS 요청 시도 단위 집계 — 1분 요약 로그·일간 누적(장마감 리포트)
 ├── kiwoom_adapter.py  # KiwoomAdapter — 키움증권 OpenAPI (Phase 5)
 └── order_manager.py   # OrderManager — 주문 제출 + 리스크 연동 + 감사 로그
+??? kis_us_adapter.py  # US paper trading
+??? us_contracts.py  # US paper trading
+??? us_mock_broker.py  # US paper trading
+??? us_service.py  # US paper trading
 ```
 
 ## broker_adapter.py — 공통 인터페이스
@@ -222,3 +226,82 @@ broker assumption, not a confirmed closing flag. Default observe remains in forc
 Apply additive migration 0042 before application rollout; reverting to observe
 does not erase settled costs or audit history. No settlement submits broker orders,
 enables strategies or changes the live/mock accounting contracts.
+
+## US paper broker
+
+`kis_us_adapter.py` implements `KISUSAdapter` using the existing KIS HTTP pacing,
+timeout, and non-idempotent order retry policy. It accepts only `kis_paper` and
+`https://openapivts.koreainvestment.com:29443`; US credentials are dedicated,
+tokens stay in a separate in-memory namespace, and response diagnostics redact
+broker bodies. `get_execution_snapshot()` returns Decimal USD cash/positions.
+History consumes every 200-character cursor page or raises; exact raw IDs and
+New York trading dates are preserved. Cancellation acceptance is not completion.
+
+Execution quotes use paper WebSocket `/tryitout`, HDFSCNT0 `XYMD`/`XHMS` and `LAST`.
+The official feed specifies US zero-minute delay. A bounded five-second read
+fails closed when no valid matching trade arrives. REST `get_rest_quote()` is
+view-only with `as_of=None`, `delayed=None`; receipt time is not trade time.
+
+KIS order history has no fee/tax or final fill timestamp evidence: costs remain
+`None`, `costs_complete=False`, and `filled_at=None`. Official period-profit uses
+real-only TTTS3039R, so this adapter never calls it or invents paper costs. New
+buys after fills remain blocked until a supported cost-evidence path exists.
+Live paper order/cancel/fill behavior requires a dedicated-account smoke test;
+unit tests use mocked HTTP/WebSocket responses and do not prove broker support.
+
+Official contracts (verified 2026-10-16):
+- https://github.com/koreainvestment/open-trading-api/tree/main/examples_llm/overseas_stock
+- https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/overseas_stock/delayed_ccnl/delayed_ccnl.py
+- https://github.com/koreainvestment/open-trading-api/blob/main/kis_devlp.yaml
+
+US broker IDs are scoped as `YYYYMMDD:EXCHANGE:RAW` because native order numbers
+can repeat daily. History uses broker local `ord_dt`; successful submission uses
+the request's New York date after an adapter regular-session recheck. A timeout
+never fabricates an ID. Cancellation decodes only the raw suffix for KIS and
+requires the exact scoped same-day history row. Prior-day cancel is blocked:
+KIS's cancel request has no original-date field, so a reused raw ID cannot be
+safely disambiguated. Prior-day unresolved orders remain tracked for review.
+
+## US paper execution
+
+`us_service.py` provides the shared `USExecutionService` used by administrator
+requests and explicitly registered producer policies. `Order` adds market,
+currency and exchange metadata with domestic-compatible defaults; server-created
+`ExecutionContext` carries actor, instance, strategy evidence and explicit sell
+consent. Manual orders require the authenticated administrator context and the
+server-owned `manual` instance. Production strategy policies remain unregistered.
+
+US persistence uses dedicated `Numeric(24, 6)` tables because domestic execution
+has float/KST reconciliation assumptions. All event times are UTC and session
+boundaries use America/New_York. The existing `account_execution_lock` protects
+reservations and broker operations with one process per account on a single host.
+Multiple hosts require fencing and are unsupported.
+
+A submission commits its UNKNOWN reservation before the only broker call. Duplicate
+request IDs return the existing record; changed content is rejected. Timeouts are
+never resubmitted. Cancellation requests retain reservations until history confirms
+a terminal state and repeated cancel requests never call the broker again. Broker
+identity includes date/exchange/id, quantity, side, price, and cumulative fill
+consistency; missing history or cost evidence cannot become an empty success.
+
+Reconciliation compares observed cash and share changes to cumulative confirmed
+fills and costs, preserves unexplained movements as blocks, and never adopts
+external shares. Ownership is account/instance/ticker/exchange scoped. Sales need
+explicit consent plus owned and broker-sellable shares after all pending sale
+reservations. Confirmed quantities can support authorized exits while costs remain
+unknown; unknown costs block new buys. Ambiguous late cost allocation after sales
+is blocked. Daily USD loss baselines and loss latches survive restart. Manual entry
+resume cannot clear the loss latch or other safety blocks.
+
+`account()` and `positions()` read the persisted reconciliation snapshot; they do
+not poll the broker. Preflight uses fresh account and quote evidence and verifies
+fresh cash/shares against that baseline before reserving. Quote timestamps and
+realtime status must be evidenced. USD order/exposure/daily-loss limits and the
+symbol:exchange allowlist must be explicitly configured. A configurable fee buffer
+is a reservation only, never a claimed actual expense.
+
+`us_mock_broker.py` keeps independent durable broker truth in `us_mock_truth` with
+its own SQLAlchemy session. It requires explicit starting cash and explicit quote
+and fill observations; reconstructing the broker never resets cash or orders.
+Quotes retain their original observed timestamp. Its `set_quote()` and `fill()`
+methods are simulator-only inputs, not browser mutation endpoints.

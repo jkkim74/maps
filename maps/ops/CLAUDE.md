@@ -23,9 +23,14 @@ ops/
 ├── scheduler.py            # OperationalPipeline + MapsOperationalScheduler
 ├── score_readiness.py      # 실측 점수 100% 게이트 (fail-closed)
 └── strategy_trade_plan.py  # 전략매매 안전한도·주문계획 검증 (순수 함수)
+??? us_trading.py  # US paper trading
 ```
 
 ## scheduler.py — 핵심 오케스트레이터
+
+미국 모의매매의 `us_trading.py`는 별도 opt-in 주기 동기화를 제공한다. 작업마다
+독립 DB 세션을 만들고 계좌 실행 잠금을 공유한다. `MAPS_US_ENABLED=false`여도
+미확정 미국 주문이 있으면 조회·대사를 계속한다. 비활성화가 취소·청산을 뜻하지 않는다.
 
 ### 상수
 

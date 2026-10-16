@@ -74,7 +74,7 @@
 |---|---|---|
 | `tests/` | pytest 스위트 — **`maps/tests/` 8개는 별도** | [tests/CLAUDE.md](tests/CLAUDE.md) |
 | `scripts/` | 백필·진단·연구·cron 도구 | [scripts/CLAUDE.md](scripts/CLAUDE.md) |
-| `alembic/` | 마이그레이션 (head `0042_paper_cost_settlement`) | [alembic/CLAUDE.md](alembic/CLAUDE.md) |
+| `alembic/` | 마이그레이션 (head `0043_us_paper_trading`) | [alembic/CLAUDE.md](alembic/CLAUDE.md) |
 | `apps/mobile/` | Vite+Capacitor 모바일 앱 | [apps/mobile/CLAUDE.md](apps/mobile/CLAUDE.md) |
 | `main.py` | FastAPI 앱 조립·라우터 등록·세션 게이트 (저장소 루트) | — |
 | `templates/`, `static/` | Jinja2 대시보드 화면과 JS·CSS | — |
@@ -82,6 +82,12 @@
 | `config/` | 배포·서비스 설정 파일 | — |
 
 ## 4. 상황별 문서
+
+미국 전용 모의매매: [운영 안내](docs/US_TRADING_RUNBOOK.md) →
+[프로그램 구현 목록](docs/us-trading-program-list.md) →
+[화면설계서](docs/ui-design/us-trading-screen-design.md).
+화면 `/us-trading`, 실행 `maps/execution/us_service.py`, 브로커
+`maps/execution/kis_us_adapter.py`, 주기 동기화 `maps/ops/us_trading.py`.
 
 | 알고 싶은 것 | 어디 |
 |---|---|

@@ -97,6 +97,9 @@ class Order:
     # 자동매수 판단에 사용한 후보·시장·사이징 입력. 브로커에는 의미가 없는
     # MAPS 내부 감사 필드이며 OrderManager가 order_log에 그대로 고정한다.
     decision_context: dict | None = None
+    market: str = "KR"
+    currency: str = "KRW"
+    exchange: str = ""
 
 
 @dataclass
@@ -119,6 +122,7 @@ class OrderResult:
     cumulative_gross: float | None = None
     tax: float | None = None
     costs_complete: bool = False
+    exchange: str = ""
 
 
 @dataclass(frozen=True)

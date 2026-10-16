@@ -53,6 +53,7 @@ from maps.api.daily_digest import router as daily_digest_router
 from maps.api.blog import router as blog_router
 from maps.api.batch_monitor import router as batch_monitor_router
 from maps.api.users import router as users_router
+from maps.api.us_trading import router as us_trading_router
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +95,8 @@ async def _lifespan(app: FastAPI):
     # 계정이 하나도 없을 때만 .env 자격증명으로 관리자를 시드한다(최초 1회).
     ensure_bootstrap_admin(settings)
     start_operational_scheduler_if_enabled()
+    from maps.ops.us_trading import start_us_trading, shutdown_us_trading
+    start_us_trading()
     limit_up_retry: asyncio.Task | None = None
     if await start_limit_up_if_enabled(settings) is StartOutcome.FAILED:
         # 일시적 실패(재시작 중인 DB 등)면 서버 수명 동안 백오프로 다시 띄운다.
@@ -107,6 +110,7 @@ async def _lifespan(app: FastAPI):
             limit_up_retry.cancel()
         await shutdown_limit_up()
         shutdown_operational_scheduler()
+        shutdown_us_trading()
 
 
 app = FastAPI(
@@ -172,6 +176,7 @@ app.include_router(daily_digest_router)
 app.include_router(blog_router)
 app.include_router(batch_monitor_router)
 app.include_router(users_router)
+app.include_router(us_trading_router)
 app.include_router(auth_router)
 
 
@@ -212,6 +217,7 @@ _SCREEN_MAP = {
     "maps-intro":       "MAPS 소개",
     "settings":         "내 설정",
     "admin-users":      "회원 관리",
+    "us-trading":       "미국주식 모의매매",
 }
 
 # 화면 키 → 실제 경로. 대부분 `/키` 지만 관리자 전용 화면은 다르다.
@@ -249,6 +255,12 @@ def _ctx(request: Request, screen: str, **extra) -> dict:
         "static_ver": _STATIC_VER,
         **extra,
     }
+
+
+@app.get("/us-trading", response_class=HTMLResponse)
+async def us_trading_screen(request: Request):
+    """Dedicated administrator-only paper trading screen."""
+    return templates.TemplateResponse(request, "us_trading.html", _ctx(request, "us-trading"))
 
 
 @app.get("/", response_class=HTMLResponse)

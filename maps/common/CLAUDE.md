@@ -212,3 +212,20 @@ Pilot defaults remain unchanged. Configurable maxima are 2,000,000 candidate row
 and 100,000,000 quote rows/account, supporting a bounded 60+ session campaign;
 size from actual universe, re-screen and quote rates before collection. Bounds do
 not guarantee bytes/free disk or erase existing gaps/immutable references.
+
+## US Decimal ledger and configuration
+
+The US paper subsystem uses `USAccountState`, `USOrderLedger`, `USOwnedPosition`,
+`USExecutionEvent`, and `USMockTruth` (`0043_us_paper_trading`). These additive
+Numeric(24,6) tables leave domestic float/KST persistence untouched. UTC event
+observations, immutable request fingerprints, instance-scoped ownership,
+reservations and daily-loss baselines survive restart. No external holdings are
+backfilled. Migration downgrade refuses every nonempty US ledger.
+
+All US configuration has a `maps_us_` prefix. Execution defaults disabled and mode
+accepts only `mock` or `kis_paper`; credentials/account are never inherited from
+KIS domestic settings. The dedicated symbol:exchange allowlist and USD order,
+exposure and daily-loss limits default unset, blocking entries. Local mock cash
+also defaults unset. `maps_us_fee_buffer_rate` reserves a conservative fee buffer
+(default 1%) without asserting a broker expense. Screen snapshots retain observed
+cash, positions and timestamps; unexplained account changes block new orders.

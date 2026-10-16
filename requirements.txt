@@ -41,3 +41,5 @@ python-pptx>=1.0.2
 # Utilities
 python-dateutil>=2.9.0
 holidays>=0.60.0
+exchange-calendars>=4.11,<5  # US exchange holidays, DST and early closes
+websockets>=15,<17  # Timestamped KIS US paper quotes; sync connect(proxy=...) support

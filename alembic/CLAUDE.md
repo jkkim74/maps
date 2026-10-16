@@ -22,7 +22,7 @@ alembic downgrade -1                             # 한 단계 되돌리기
 파일명이 아니라 각 파일의 `down_revision` 을 따라간다. 예: `efca8676041a` 의
 `down_revision` 은 `0005_stock_report_runs` 다.
 
-현재 head: **`0042_paper_cost_settlement`**.
+현재 head: **`0043_us_paper_trading`**.
 
 `0042_paper_cost_settlement` adds empty `paper_cost_evidence` and
 `paper_cost_settlement` tables after 0041, with account-scoped unique fingerprints
@@ -67,3 +67,5 @@ and performs no historical backfill. Downgrade removes only these additive objec
 
 0041_fujimoto_trading follows the 0040 merge and adds five empty Fujimoto ledger/evidence
 tables. Downgrade removes only these additive objects. No account data is backfilled.
+
+`0043_us_paper_trading` adds isolated USD paper ledger tables after the deployed paper cost settlement revision. No backfill or domestic cost changes. Downgrade refuses nonempty US records.

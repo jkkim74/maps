@@ -8,6 +8,7 @@ modules when the value belongs to application configuration.
 from __future__ import annotations
 
 import datetime as dt
+from decimal import Decimal
 import warnings
 from dataclasses import dataclass
 from functools import lru_cache
@@ -69,6 +70,23 @@ class MapsSettings(BaseSettings):
     # 이 값이 true가 아니면 기동을 거부한다(모의투자 paper 운영을 실거래로 오인 방지).
     maps_confirm_real_trading: bool = False
     maps_data_provider: DataProvider = "pykrx"
+    # Dedicated US paper settings: never inherit domestic credentials or limits.
+    maps_us_enabled: bool = False
+    maps_us_broker_mode: Literal["mock", "kis_paper"] = "mock"
+    maps_us_account_no: str = ""
+    maps_us_account_product_code: str = "01"
+    maps_us_app_key: str = ""
+    maps_us_app_secret: str = ""
+    maps_us_base_url: str = "https://openapivts.koreainvestment.com:29443"
+    maps_us_allowed_symbols: str = ""
+    maps_us_max_order_usd: Decimal | None = Field(default=None, gt=0)
+    maps_us_max_exposure_usd: Decimal | None = Field(default=None, gt=0)
+    maps_us_max_daily_loss_usd: Decimal | None = Field(default=None, gt=0)
+    maps_us_fee_buffer_rate: Decimal = Field(default=Decimal("0.01"), ge=0, le=1)
+    maps_us_mock_cash_usd: Decimal | None = Field(default=None, gt=0)
+    maps_us_sync_seconds: int = Field(default=60, ge=10)
+    maps_us_quote_max_age_seconds: int = Field(default=30, ge=1)
+    maps_us_snapshot_max_age_seconds: int = Field(default=90, ge=1)
     maps_scheduler_enabled: bool = False
     maps_fujimoto_enabled: bool = False
     maps_fujimoto_screen_time: str = "22:00"

@@ -1,0 +1,39 @@
+﻿{% extends "base.html" %}
+{% block extra_head %}
+<style>
+.us-panel{background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:22px;margin-bottom:18px}.us-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}.us-cards{display:grid;grid-template-columns:repeat(4,1fr);gap:16px}.us-value{font-size:24px;margin:12px 0}.us-muted{color:var(--text-muted,#aab3c4)}.us-toolbar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:16px 0}.us-panel label{display:block;margin:12px 0 5px}.us-panel input,.us-panel select,.us-panel button,.us-toolbar button,dialog button{padding:9px 12px;border:1px solid var(--border,#657);border-radius:5px}.us-panel button,.us-toolbar button,dialog button{cursor:pointer;background:#214d41;color:#fff}button:disabled{opacity:.45;cursor:not-allowed}.us-scroll{overflow:auto}.us-scroll table{width:100%;border-collapse:collapse;white-space:nowrap}.us-scroll th,.us-scroll td{padding:12px 10px;text-align:left;border-bottom:1px solid var(--border,#657)}.us-notice{padding:16px;border-left:4px solid #d4a43d;white-space:pre-wrap}.us-panel pre,dialog pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:360px;overflow:auto}.us-danger{background:#842f2b!important}dialog{background:var(--bg-card,#152327);color:var(--text-primary,#eee);border:1px solid #81958d;border-radius:10px;max-width:620px;width:90%;padding:26px}dialog::backdrop{background:#0009}#us-message{white-space:pre-wrap;margin:14px 0}#us-order-form input,#us-order-form select{width:100%;box-sizing:border-box}.us-tabs button[aria-selected=true]{outline:2px solid #81b49b}@media(max-width:900px){.us-grid,.us-cards{grid-template-columns:1fr 1fr}}
+</style>
+{% endblock %}
+{% block content %}
+<p class="us-muted">MAPS · USD · 정규장 · 정수 수량 · 지정가</p>
+<h1>미국주식 모의매매 <small id="us-environment">환경 확인 중</small></h1>
+<p id="us-account-label">미국 전용 모의계좌 확인 중</p>
+<div class="us-toolbar"><button id="us-refresh">새로고침</button><button id="us-sync" disabled>동기화</button><button id="us-stop" class="us-danger" disabled>신규 매수 중단</button><button id="us-resume" disabled>수동 중단 해제</button></div>
+<p id="us-market" class="us-muted">시장 · 거래일 · 마지막 동기화 확인 중</p>
+<div id="us-message" role="status" aria-live="polite"></div>
+<div id="us-state" class="us-panel us-notice">저장된 상태를 불러오는 중입니다.</div>
+<div class="us-cards">
+<section class="us-panel"><span>USD 예수금</span><p id="us-cash" class="us-value">—</p></section>
+<section class="us-panel"><span>주문 가능액 USD</span><p id="us-power" class="us-value">—</p></section>
+<section class="us-panel"><span>보유 평가액 USD</span><p id="us-value" class="us-value">—</p></section>
+<section class="us-panel"><span>미확인 주문</span><p id="us-unknown" class="us-value">—</p></section>
+</div>
+<div class="us-grid">
+<section class="us-panel"><h2>주문 입력</h2><p class="us-muted">관리자 수동 · 모의 주문 · USD 지정가</p>
+<form id="us-order-form"><label for="us-symbol">허용 종목 · 거래소</label><select id="us-symbol" required disabled><option value="">종목을 선택하세요</option></select>
+<label for="us-side">방향</label><select id="us-side"><option value="buy">매수</option><option value="sell">매도</option></select>
+<label for="us-quantity">수량 (양의 정수)</label><input id="us-quantity" type="number" min="1" step="1" required>
+<label for="us-price">지정가 (USD)</label><input id="us-price" type="number" min="0.01" step="0.01" required>
+<label id="us-input-sell-label" hidden><input id="us-input-sell-consent" type="checkbox"> 위 종목과 수량의 모의 매도를 승인하고 검토합니다.</label>
+<p id="us-notional">주문 금액: — USD · 수수료 별도</p><button id="us-preview" type="submit" disabled>주문 검토</button></form></section>
+<section class="us-panel"><h2>선택 종목 시세</h2><div id="us-quote">종목 선택 후 저장된 시세를 조회합니다.</div><p class="us-muted">시세와 계좌가 바뀌면 서버가 제출 시 다시 검증합니다. 미리보기는 주문이나 자금 예약을 만들지 않습니다.</p></section>
+</div>
+<section class="us-panel"><div class="us-toolbar us-tabs" role="tablist" aria-label="거래 내역"><button id="us-orders-tab" role="tab" aria-selected="true" aria-controls="us-orders-panel">주문 · 체결</button><button id="us-positions-tab" role="tab" aria-selected="false" aria-controls="us-positions-panel">보유 현황</button><button id="us-events-tab" role="tab" aria-selected="false" aria-controls="us-events-panel">대조 · 운영 이력</button></div>
+<div id="us-orders-panel" role="tabpanel" aria-labelledby="us-orders-tab"><div class="us-toolbar"><label>종목 <input id="us-filter-symbol" placeholder="전체"></label><label>방향 <select id="us-filter-side"><option value="">전체</option><option value="buy">매수</option><option value="sell">매도</option></select></label><label>상태 <input id="us-filter-status" placeholder="전체"></label><label>출처 <input id="us-filter-source" placeholder="전체"></label><label>미국 거래일 <input id="us-filter-date" type="date"></label><button id="us-filter">조회</button></div><div id="us-orders" class="us-scroll">불러오는 중입니다.</div></div>
+<div id="us-positions-panel" role="tabpanel" aria-labelledby="us-positions-tab" hidden><p class="us-muted">미귀속 보유는 자동 편입하거나 매도할 수 없습니다. 평가손익은 비용 확정 전 잠정값일 수 있습니다.</p><div id="us-positions" class="us-scroll">불러오는 중입니다.</div></div>
+<div id="us-events-panel" role="tabpanel" aria-labelledby="us-events-tab" hidden><p id="us-reconciliation"></p><div id="us-events" class="us-scroll">불러오는 중입니다.</div></div></section>
+<section id="us-detail-panel" class="us-panel" hidden><h2>주문 상세</h2><div id="us-detail"></div></section>
+<dialog id="us-confirm" aria-labelledby="us-confirm-title"><h2 id="us-confirm-title">모의 주문 확인</h2><pre id="us-confirm-summary"></pre><label id="us-sell-label" hidden><input id="us-sell-consent" type="checkbox"> 위 종목의 해당 수량 매도를 명시적으로 승인합니다.</label><p id="us-confirm-message" role="status" aria-live="polite"></p><div class="us-toolbar"><button id="us-confirm-close" autofocus>닫기</button><button id="us-submit" disabled>모의 주문 제출</button></div></dialog>
+<dialog id="us-cancel-dialog" aria-labelledby="us-cancel-title"><h2 id="us-cancel-title">잔량 취소 확인</h2><p id="us-cancel-summary"></p><p>취소 요청 전에 추가 체결이 발생할 수 있습니다. 접수 후에는 취소 확인을 기다립니다.</p><button id="us-cancel-close" autofocus>돌아가기</button> <button id="us-cancel-submit">취소 요청</button></dialog>
+<script src="/static/js/us-trading.js" defer></script>
+{% endblock %}

@@ -57,6 +57,14 @@ class ExecutionContext:
     source: str = "catalog"
     source_id: int | None = None
     valid_until: dt.datetime | None = None
+    actor: str = ""
+    is_admin: bool = False
+    instance_id: str = ""
+    sell_consent: bool = False
+    strategy_version: str | None = None
+    parameters: dict | None = None
+    decision_at: dt.datetime | None = None
+    data_as_of: dt.datetime | None = None
 
 
 def _own_process(key: str) -> None:

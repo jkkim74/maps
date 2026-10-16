@@ -11,7 +11,41 @@ from typing import Any, Literal
 from typing import Annotated
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+
+class USOrderRequest(BaseModel):
+    """Manual paper order; source, account and execution authority are server-owned."""
+
+    model_config = {"extra": "forbid"}
+    ticker: str = Field(min_length=1, max_length=16, pattern=r"^[A-Z0-9][A-Z0-9.\-]*$")
+    exchange: Literal["NASD", "NYSE", "AMEX"]
+    side: Literal["buy", "sell"]
+    quantity: int = Field(gt=0, strict=True)
+    limit_price: Decimal = Field(gt=0, max_digits=24, decimal_places=8, allow_inf_nan=False)
+    request_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_:.-]+$")
+    sell_consent: bool = Field(default=False, strict=True)
+
+    @model_validator(mode="after")
+    def require_sell_consent(self):
+        """A sell request is itself the explicit approval for this quantity."""
+        if self.side == "sell" and not self.sell_consent:
+            raise ValueError("sell_consent_required")
+        return self
+
+
+class USItemsResponse(BaseModel):
+    """Bounded lists of persisted US observations."""
+
+    items: list[dict[str, Any]]
+
+
+class USStatusResponse(BaseModel):
+    """Public status deliberately excludes credentials and full account numbers."""
+
+    model_config = {"extra": "allow"}
+    environment: str
+    block_reasons: list[str] = Field(default_factory=list)
 
 
 PaperCostAmount = Annotated[Decimal, Field(ge=0, allow_inf_nan=False, max_digits=24, decimal_places=4)]

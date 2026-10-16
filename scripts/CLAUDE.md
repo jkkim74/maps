@@ -16,6 +16,10 @@
 
 ## 진단·검증
 
+`us_paper_simulator.py`는 미국 로컬 `mock`에만 명시적 시세·체결을 입력한다.
+`python -m scripts.us_paper_simulator --help`로 사용한다. KIS 모드는 거부하며
+모의 현금은 설정으로 지정해야 한다. 실측 시세나 성과 검증 도구가 아니다.
+
 | 스크립트 | 용도 |
 |---|---|
 | `diag_kis_balance.py` | KIS 잔고·미체결 직접 조회 (동기화 불일치 추적) |

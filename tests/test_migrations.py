@@ -10,6 +10,27 @@ from alembic.config import Config
 from sqlalchemy import create_engine, inspect, text
 
 
+def test_us_migration_preserves_nonempty_ledger(tmp_path, monkeypatch):
+    """USD schema uses fixed precision and refuses to drop persisted broker truth."""
+    path = tmp_path / "us-migration.db"
+    monkeypatch.setenv("MAPS_DB_URL", f"sqlite:///{path.as_posix()}")
+    config = Config("alembic.ini")
+    command.upgrade(config, "head")
+    engine = create_engine(f"sqlite:///{path.as_posix()}")
+    inspector = inspect(engine)
+    assert {"us_account_state", "us_order_ledger", "us_owned_position",
+            "us_execution_event", "us_mock_truth"} <= set(inspector.get_table_names())
+    columns = {column["name"]: column for column in inspector.get_columns("us_order_ledger")}
+    assert columns["reserved_usd"]["type"].scale == 6
+    with engine.begin() as connection:
+        connection.execute(text("INSERT INTO us_mock_truth (account_key, cash, payload) VALUES ('test', 100, '{}')"))
+    with pytest.raises(RuntimeError, match="nonempty US trading ledger"):
+        command.downgrade(config, "0041_fujimoto_trading")
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT cash FROM us_mock_truth WHERE account_key='test'")).scalar_one() == 100
+    engine.dispose()
+
+
 def test_fujimoto_additive_upgrade_and_reversible_downgrade(tmp_path, monkeypatch):
     """0041 adds empty research/ownership tables without adopting existing holdings."""
     path = tmp_path / "fujimoto.db"
@@ -59,7 +80,7 @@ def test_fresh_database_reaches_current_schema(tmp_path, monkeypatch) -> None:
         revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
     engine.dispose()
 
-    assert revision == "0042_paper_cost_settlement"
+    assert revision == "0043_us_paper_trading"
     assert {"classification_run", "classification_member"} <= set(inspector.get_table_names())
     assert "classification_quality" in {c["name"] for c in inspector.get_columns("collection_log")}
     assert {"order_intent", "execution_account_state", "account_observation", "account_adjustment",
@@ -176,7 +197,7 @@ def test_both_existing_branches_upgrade_to_merged_schema(tmp_path, monkeypatch, 
         assert "shadow_probes" in {c["name"] for c in inspector.get_columns("limit_up_session")}
         assert {"classification_run", "classification_member", "order_intent"} <= set(inspector.get_table_names())
         with engine.connect() as connection:
-            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0042_paper_cost_settlement"
+            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0043_us_paper_trading"
     finally:
         engine.dispose()
 
