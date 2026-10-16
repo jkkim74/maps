@@ -57,10 +57,21 @@ User explicitly requested production deployment. Follow the documented Lightsail
 - [x] Production is on `be7901a`, newer than the original feature base. Integrated its domestic paper-cost settlement changes without replacing them. Its existing date-fixture correction resolves the baseline expiry test; the redundant local fixture change was discarded.
 - [x] Renumber US migration to `0043_us_paper_trading` after deployed `0042_paper_cost_settlement`; retain both domestic and US models/contracts.
 - [x] Full integrated regression: 1,997 passed / 24 existing warnings in 671 seconds; separate package tests: 81 passed. Python 3.11 syntax, JavaScript syntax, single Alembic head 0043 and diff whitespace checks passed. Release commit prepared from this verified tree.
-- [ ] Push reviewed release to master using fast-forward only; preserve unrelated untracked diary/server files.
-- [ ] Outside 16:00-16:45 KST and under the analyze lock: database/config backup, dependency installation, migration and service restart.
-- [ ] Verify deployed commit, schema, service, public health, authenticated US status and disabled execution; record rollback location.
+- [x] Release `8e1601ae816e0f0140f0d4878d1b896742167396` pushed to origin/master by fast-forward; unrelated untracked local/server files preserved.
+- [x] After 16:45 KST under the analyze lock: database/config backup, dependency installation, transactional PostgreSQL migration 0042 to 0043, service restart and health verification completed.
+- [x] Verified deployed code revision, schema 0043, systemd active/running with NRestarts=0, external health HTTP 200/ok, administrator screen/status/account/positions/orders/events HTTP 200, anonymous API HTTP 401. US status: environment mock, buy_allowed=false, sync_running=false, us_disabled. Config file hash matches backup.
 
 Observed preflight: 16:33 KST server running, analyze lock available, tracked source clean, PostgreSQL schema 0042, active queried order intents 0. Domestic KIS remains paper (`kis_real=false`), global execution true and paper-cost settlement observe. These settings are preserved. Exchange calendars is a new server dependency; websockets 16.0 is already installed. No server mutation occurred during the prohibited deployment window.
 
 Rollback: preserve predeployment commit and database/config backups. If startup or migration fails, restore previous application revision and restart; additive empty US tables may remain. Do not automatically downgrade nonempty trading ledgers or restore the database over newer trading evidence.
+
+
+### Deployment evidence
+
+- Code release: `8e1601a`, 2026-10-16 after 16:45 KST.
+- Successful backup: `/opt/maps/backups/pre_us_20261016_164700/`; `database.dump` is 394,192,959 bytes, PostgreSQL archive listing verified. Environment backup mode 600; directory mode 700. Restore was not rehearsed in this deployment.
+- First backup attempt at `pre_us_20261016_164628` failed because maps_app cannot read historical `order_log_backup_20260724`; it is NOT a valid database backup. Service/source were unchanged at failure. Retried using local PostgreSQL administrator read access, with no table permission changes.
+- Added dependency exchange-calendars 4.13.2; existing websockets 16.0 retained; pip check passes.
+- Authenticated smoke script initially expected the runtime error code `us_trading_disabled`; status contract uses `us_disabled`. Corrected the smoke assertion against source and reran all six requests successfully; application code did not change.
+- Production `.env` unchanged byte-for-byte. Domestic KIS remains paper and actual-cost reconciliation remains observe. No order, cancellation, liquidation, strategy activation or US account setup was performed.
+- KIS US paper-account execution and visual screenshot acceptance remain outstanding. The deployed UI is available to administrators at https://maps.magable.kr/us-trading.
