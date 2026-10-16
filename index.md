@@ -9,6 +9,7 @@
 
 | 찾는 것 | 위치 |
 |---|---|
+| 미국 모의매매 배포 및 기존 계좌 공유 검토 인계 | [2026-10-16 인계 문서](docs/handoffs/2026-10-16-us-paper-trading.md) |
 | **손절가 계산** | `maps/strategy/live_rules.py` → `effective_stop_price()` (유일한 정본) |
 | 포지션 수량 | `maps/common/sizing.py` → `risk_based_qty()` |
 | 목표가·매수가 산출 | `maps/strategy/price_calculator.py`, AI 계획은 `maps/ai/trade_planner.py` |

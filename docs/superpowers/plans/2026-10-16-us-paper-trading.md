@@ -75,3 +75,7 @@ Rollback: preserve predeployment commit and database/config backups. If startup 
 - Authenticated smoke script initially expected the runtime error code `us_trading_disabled`; status contract uses `us_disabled`. Corrected the smoke assertion against source and reran all six requests successfully; application code did not change.
 - Production `.env` unchanged byte-for-byte. Domestic KIS remains paper and actual-cost reconciliation remains observe. No order, cancellation, liquidation, strategy activation or US account setup was performed.
 - KIS US paper-account execution and visual screenshot acceptance remain outstanding. The deployed UI is available to administrators at https://maps.magable.kr/us-trading.
+
+### Existing account read-only follow-up on 2026-10-16
+
+The user asked whether existing domestic paper credentials could be reused. Production GET requests using the existing cached token succeeded for overseas balance, present balance and buying power. Positions were empty; the USD cash row was absent; buying-power amount and quantity were not positive. This establishes query access only, not order or WebSocket readiness. No new token, WebSocket connection, order, settings change or activation was performed. Shared-account support remains unimplemented; the dedicated-account guard and shared resource coordination require further work. See the [handoff](../../handoffs/2026-10-16-us-paper-trading.md) for evidence, limitations and next steps.
