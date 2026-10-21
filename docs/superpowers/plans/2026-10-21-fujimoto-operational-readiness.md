@@ -42,6 +42,10 @@ Run focused regressions, full tests and maps/tests once changes settle, compilat
 
 Malformed bars cannot overwrite good rows; one malformed instrument cannot erase all-market screening; bad evidence never authorizes a trade. Actual account/feed/config match the current paper account. Trial approval remains separate and unavailable until real readiness passes. No guarantee of a candidate or natural BUY. Revert code to prior verified revision and restore environment if service/health regress, preserving all evidence and new valid rows; restore price rows only from audited backup if the repair itself is invalid. Never downgrade DB or overwrite unrelated server files.
 
+## Task 6: Remove the observed calendar reconstruction bottleneck
+
+Ownership: maps/market/trading_rules.py, its focused tests, maps/market/CLAUDE.md. Added after real production diagnostic measured 100 closure checks at 0.443 seconds and the all-market loop failed to reach its first 250-row progress point in several minutes. Each daily/weekly reconstruction repeats year-calendar creation over hundreds of dates; repeated source rebuilding is also used in readiness/runtime. Use a small bounded standard-library cache of immutable yearly holiday dates, keeping public function behavior, configured closures, weekends/year-end exclusions and missing-dependency fallback intact. No calendar rules, dependencies, historic dates or strategy criteria may change. Test unchanged representative holiday/trading dates across years, dynamic extra closures, bounded/reused construction and missing dependency behavior. Re-run full tests after this meaningful added change; do not rely on the interrupted run. Re-run the same actual production calendar benchmark and bounded market diagnostic after deployment.
+
 ## Progress
 
 - [x] Production audit and approved goal/scope.
@@ -51,6 +55,7 @@ Malformed bars cannot overwrite good rows; one malformed instrument cannot erase
 - [x] Task 3, actual-source investigation and audited repair where supported.
 - [ ] Task 4, current-account observation preparation.
 - [ ] Task 5, full verification/review/deployment and final evidence.
+- [x] Task 6, observed calendar performance regression fix and review (959232b).
 
 ## Decisions and verification log
 
@@ -67,3 +72,9 @@ Malformed bars cannot overwrite good rows; one malformed instrument cannot erase
 2026-10-21 Source follow-up: Reviewed six exact official DART original annual XMLs for Hanwha (2023–2025) and Eugene (2023–2025), preserving ZIP/XML hashes and reviewed sections in the private production audit directory. Common issued-share counts/face values and explicit common DPS tables support consistent share units. Hanwha's preferred-share cancellations/common treasury acquisition do not rescale one common share; Eugene's splits/consolidation predate the period. Submitted two substantive comparability records through the authenticated running owner-scoped API (IDs 100581/100582), available from 2026-10-22 KST. This certifies share units only, not growth quality or selection. Retried the exact already-journaled Jongkundang Holdings H1 correction through the existing repository parser; actual snapshot 4269 becomes available 2026-10-22. No historical availability, promotion or trial approval was created. Sector PER blockers remain.
 
 2026-10-21 Task 2: Malformed candidates now retain blocked RuleEvidence and their original finite inputs while screening continues. Nonfinite raw numbers serialize as explicit numeric strings and remain rejected by shared reconstruction. Candidate counts and reason totals are visible; database and programming errors still propagate. Isolated source suite: 17 passed. Independent task review approved. Combined tests + maps/tests are running on 8c9b668; production code deployment is pending.
+
+2026-10-21 Additional observed bottleneck: read-only all-market diagnostic consumed one core and did not reach 250 instruments within several minutes. Inspection identified repeated `holidays.KR(years=[year])` construction inside every closure check; an independent production benchmark measured 100 checks in 0.443 seconds. Stopped only the owned diagnostic process and interrupted the still-running full suite (no failures observed, roughly one-third complete) to implement Task 6. Earlier task reviews remain approved; final review and full tests must include this additional change. No production application was stopped or reconfigured.
+
+2026-10-21 Task 6: Bounded immutable 32-year cache implemented; configured closures and the public dependency-availability fallback remain outside the cache. Red proof: two expected failures; green: 28 focused tests and 95 caller checks. Fair local 100-check benchmark improved from 0.238629s uncached to 0.002300s including first-year construction (warm 0.000054s). Independent task and whole-branch review approved through 959232b. Changed Python files and private operator scripts compile; diff and secret-file/private-key checks pass. Full tests + maps/tests restarted on the final product code; operational deployment remains pending its result.
+
+2026-10-21 Combined verification: `python scripts/run_isolated_tests.py tests maps/tests -q --tb=short` completed with **2146 passed, 24 warnings in 421.14s** on final product revision 959232b. Warnings are existing SQLAlchemy null-identity, intentional cluster-risk, Alembic configuration and legacy settings/pykrx warnings; no test failed. The runner disables dotenv/external network and uses isolated SQLite/mock settings. No further product changes followed this run. Original user document hashes are captured for preservation across fast-forward integration. Production deployment and measured observation remain the final operational checks.
