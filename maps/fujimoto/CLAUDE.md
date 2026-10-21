@@ -15,6 +15,7 @@ fujimoto/
 ├── repository.py  # Immutable evidence/configs, reservations, cumulative fills, sizing
 ├── replay.py      # Two-mode stateful replay and actual quote continuity
 ├── sources.py     # Bounded DART annual collection, provenance review, market screening
+├── valuation.py   # Official security membership, signed common EPS sources/reviews and reports
 ├── feed.py        # Actual arrival tape, continuity, recording/subscription bounds
 ├── service.py     # Account-locked controls, source ownership, reconciliation and costs
 └── validation.py  # Measured WFA/plateau/MC, standard components, combined gate
@@ -444,7 +445,7 @@ isolated database and mock settings for development.
 
 ### Versioned PER evidence and targeted annual completion
 
-New candidate raw snapshots set `screening_version=2`. Each valuation has `numeric`,
+Frozen version 2 candidate snapshots set `screening_version=2`. Each valuation has `numeric`,
 `unknown`, or `verified_not_applicable` status. Unknown/missing/nonpositive values
 block full sector coverage unless exact source-reviewed non-applicability is recorded.
 Own PER must remain positive; the sector median retains the existing positive-value
@@ -476,3 +477,65 @@ Collect explicitly with `scripts/fujimoto_research.py --collect-annual --databas
 --tickers 005930,000660 --batch 20 --output collection.json`; omit `--tickers` for
 background rotation. The command uses configured DART credentials and current KST date,
 records actual observations and reports rejected targets; no execution permission is granted.
+
+### PER completion v3
+
+New normal screens emit `screening_version=3`. Numeric PER is accepted only from
+original `pykrx`/`krx` inputs; newer Naver/KIS diagnostics cannot replace them.
+Existing exact-provider contract-reviewed `verified_not_applicable` remains distinct
+from DART-backed `strategy_exclusion` for negative annual common basic EPS.
+Unversioned and v2 snapshots retain their original replay rules.
+
+Official KRX basic metadata is frozen for the exact observed current date. Only
+`KIND_STKCERT_TP_NM=보통주` and known `SECT_TP_NM` values identify ordinary peers.
+Official `SPAC` sector prefixes and `구형우선주`/`신형우선주`/`종류주권` leave the
+comparison population and cannot enter. Market/security group fields must also
+establish KOSPI/KOSDAQ shares. Explicit blank sector labels are accepted; absent
+fields, unknown labels and missing peer rows block coverage. Names never establish
+this classification. All ordinary sector peers remain, including ineligible,
+loss-making and illiquid securities. Positive sector median still includes self.
+
+`record_eps_source` preserves signed raw statement responses, exact official
+company/corpCode identity, annual list.json receipt/publication context and hashes
+in immutable JSON. Current ingestion time cannot be supplied by callers. Applicable
+December annual EPS uses the May update window (2025-12-31 for October 2026).
+Direct standard basic EPS can establish a negative value; component sums require
+both continuing/discontinued numeric rows with identical statement/period/share
+context. Explicitly separate preferred EPS is ignored; mixed shares, custom tags,
+incomplete components, contradictory totals, nonnegative EPS and owner/operating
+loss without common EPS remain unresolved. CFS is preferred. OFS is currently
+diagnostic only: CFS `013` does not prove consolidated statements are inapplicable;
+an original-document basis workflow is a future requirement for accepting OFS.
+
+`review_eps_source` is a separate validated decision bound to exact source hash
+and receipt. Actual observation/review and next-session financial availability
+remain causal. Known later receipts (including pending corrections), changed
+identity or changed source mask old reviews. Identical re-fetches reuse the first
+source/review; `eps_collection` records each check independently. Frozen proofs
+include known receipt context and rebuild through `screening_evidence` for both
+replay and runtime readiness. An excluded negative-EPS security cannot enter.
+
+The daily `run_fujimoto_screen` job refreshes metadata once, checks a bounded
+missing-EPS ordinary-peer queue, then annual growth evidence using one shared
+DART request/time budget. EPS collection does not use growth parsing or the
+eligible-only annual target filter. Collection does not auto-review sources.
+Screen summaries expose valuation states, blocking reasons and same-data v2/v3
+selected counts. Each candidate freezes its entire relevant sector peer set and
+proofs, avoiding repetition of unrelated sectors.
+
+Operational CLI (explicit database; review and ingestion default to dry-run):
+
+```
+python scripts/fujimoto_valuation.py collect --database URL --batch 20 --apply --output collected.json
+python scripts/fujimoto_valuation.py report --database URL --ref-date 2026-10-21 --output report.json
+python scripts/fujimoto_valuation.py review --database URL --source-id 42 --explanation "Exact annual common EPS and corporation reviewed." --output review.json
+```
+
+Add `--apply` to persist a reviewed decision. `ingest-eps --input file.json` takes
+a bounded JSON list of exact `record_eps_source` keyword inputs; `identity` accepts
+the original company.json response or corpCode mapping. `filing` is the original
+matching list.json row. `ingest-metadata --input file.json` takes official KRX raw
+rows. Both require `--apply` to write. Ingestion never backdates readiness. `report`
+is read-only and compares the same frozen candidate inputs; it does not enrich
+historical snapshots with later evidence. No migration, shared-fundamental edit,
+strategy promotion, activation or order path is added.

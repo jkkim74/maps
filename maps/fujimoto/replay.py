@@ -286,7 +286,8 @@ def screening_evidence(snapshot: dict, ticker: str, cutoff: date, *, maximum_ret
     frame.index = pd.to_datetime(frame.pop("date"))
     selection = screen(ticker, annual, valuations, sector, frame, cutoff, eligible=snapshot.get("eligible") is True,
                        maximum_return_20=maximum_return_20, minimum_dividend_growth=minimum_dividend_growth,
-                       screening_version=snapshot.get("screening_version", 1))
+                       screening_version=snapshot.get("screening_version", 1),
+                       security_classifications=snapshot.get("security_classifications"))
     return build_rule_evidence(frame, cutoff, selection, financial_status(financial, cutoff), closed_dates=closed_dates)
 
 

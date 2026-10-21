@@ -100,3 +100,13 @@ DART collector and configured DART API key. Targets must exist in the latest obs
 eligible universe; the JSON reports rejected targets, attempted names and transient /
 missing-source counts. Omit `--tickers` for background least-checked rotation. Collection
 is current-time evidence only; it neither backdates annual availability nor activates trading.
+
+`fujimoto_valuation.py` handles independent PER v3 evidence operations: `collect`
+refreshes official current KRX metadata and bounded all-peer missing EPS;
+`ingest-eps`/`ingest-metadata` import archived official raw JSON at actual ingestion
+time; `review` validates and separately records negative common EPS decisions;
+`report` reads coverage, unresolved reasons and frozen same-data v2/v3 comparisons.
+All require explicit `--database`/`--output`; writes require `--apply`. Sources
+never become reviewed decisions automatically. OFS without original-document
+non-applicability proof remains unknown. See `maps/fujimoto/CLAUDE.md` for schemas
+and causal availability. No broker, activation, promotion or shared fundamentals writes.

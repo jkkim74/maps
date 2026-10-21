@@ -109,6 +109,8 @@ class ValuationRecord:
     per: float | None
     status: str | None = None
     provenance: dict | None = None
+    strategy_exclusion: dict | None = None
+    provider: str | None = None
 
     def __post_init__(self) -> None:
         if not self.ticker:
@@ -258,13 +260,14 @@ class SelectionResult:
 def screen(ticker: str, annual_records: Iterable[AnnualRecord], valuations: Iterable[ValuationRecord],
            sectors: SectorSnapshot | None, prices: pd.DataFrame, cutoff: date, *,
            eligible: bool = False, maximum_return_20: float = .2,
-           minimum_dividend_growth: float = 0, screening_version: int = 1) -> SelectionResult:
+           minimum_dividend_growth: float = 0, screening_version: int = 1,
+           security_classifications: dict | None = None) -> SelectionResult:
     """Screen only explicit eligible KOSPI/KOSDAQ ordinary-share historical evidence.
 
     eligible is the existing DataQualityFilter's historical eligibility result.
     Sector/PER inputs must be exact cutoff snapshots, not latest current values.
     """
-    if type(screening_version) is not int or screening_version not in {1, 2}:
+    if type(screening_version) is not int or screening_version not in {1, 2, 3}:
         raise DataQualityError("unsupported_screening_version")
     rows = list(annual_records)
     if any(r.ticker != ticker for r in rows):
@@ -289,17 +292,41 @@ def screen(ticker: str, annual_records: Iterable[AnnualRecord], valuations: Iter
             old = dated.get(row.ticker)
             if old is None or _utc(row.available_at) > _utc(old.available_at):
                 dated[row.ticker] = row
-    peer_pers = [r.per for t, r in dated.items() if ticker in membership and
+    peers = {t for t, sector in membership.items() if sector == membership.get(ticker)}
+    excluded = set()
+    if screening_version == 3:
+        from maps.fujimoto.valuation import security_kind, validate_exclusion
+        classifications = security_classifications or {}
+        kinds = {t: security_kind(classifications.get(t), t, cutoff) for t in peers | {ticker}}
+        if any(kinds[t] == "unknown" for t in peers | {ticker}):
+            reasons.append("missing_security_classification")
+        if kinds[ticker] == "excluded":
+            reasons.append("excluded_security")
+        peers = {t for t in peers if kinds[t] != "excluded"}
+        for t, row in dated.items():
+            if row.strategy_exclusion is not None:
+                validate_exclusion(row.strategy_exclusion, t, cutoff, row.available_at)
+                if row.per is not None and row.per > 0:
+                    raise DataQualityError("conflicting_strategy_exclusion")
+                excluded.add(t)
+        if ticker in excluded:
+            reasons.append("negative_common_eps")
+    def authoritative(row: ValuationRecord) -> bool:
+        """Version 3 numeric inputs retain their original KRX provider identity."""
+        if screening_version < 3:
+            return True
+        return row.provider in {"pykrx", "krx"}
+    peer_pers = [r.per for t, r in dated.items() if ticker in membership and t in peers and authoritative(r) and
                  membership.get(t) == membership[ticker] and r.per is not None and r.per > 0
                  and (screening_version == 1 or r.status != "verified_not_applicable")]
-    peers = {t for t, sector in membership.items() if sector == membership.get(ticker)}
     if any(t not in dated or (dated[t].per is None if screening_version == 1 else
            dated[t].status != "verified_not_applicable" and
-           (dated[t].per is None or dated[t].per <= 0 or dated[t].status == "unknown")) for t in peers):
+           (dated[t].per is None or dated[t].per <= 0 or dated[t].status == "unknown"
+            or not authoritative(dated[t]))) for t in peers - excluded):
         reasons.append("incomplete_sector_valuation")
     sector_median = median(peer_pers) if peer_pers else None
     own = dated.get(ticker)
-    if own is None or own.per is None or own.per <= 0 or sector_median is None:
+    if own is None or own.per is None or own.per <= 0 or not authoritative(own) or sector_median is None:
         reasons.append("missing_valuation")
     elif own.per > sector_median:
         reasons.append("expensive_per")

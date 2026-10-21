@@ -163,6 +163,12 @@ def _screen_universe(db, tickers):
     for _ in range(100):
         dates.append(previous_trading_day(dates[-1]))
     for ticker in tickers:
+        from maps.fujimoto.repository import fingerprint
+        basic = {"ISU_SRT_CD":ticker,"KIND_STKCERT_TP_NM":"보통주","SECT_TP_NM":"",
+                 "SECUGRP_NM":"주권","MKT_TP_NM":"KOSPI"}
+        repo.record_evidence("security_source",ticker,now,now,{"ticker":ticker,"ref_date":day.isoformat(),
+            "observed_at":now.isoformat(),"raw":basic,"raw_hash":fingerprint(basic),
+            "source_url":"https://data.krx.co.kr/contents/MDC/MDI/mdiLoader"})
         db.add(ClassificationMember(run_id=sector.id, ticker=ticker, code="s", name="sector"))
         db.add(SecurityFundamental(ticker=ticker, date=day, per=10, updated_at=now))
         for year, value in ((2023, 100), (2024, 110), (2025, 120), (2026, 130)):

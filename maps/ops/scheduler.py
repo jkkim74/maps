@@ -1095,13 +1095,20 @@ class OperationalPipeline:
     def run_fujimoto_screen(self, ref_date: dt.date | None = None) -> JobRun:
         """Collect bounded annual coverage, then persist actual all-market screening."""
         from maps.fujimoto.sources import AnnualCollector, screen_market
+        from maps.fujimoto.valuation import EPSCollector, collect_metadata
+        from maps.data.dart_financials import DartClient
         ref_date = ref_date or dt.datetime.now(ZoneInfo("Asia/Seoul")).date()
         def _run(db):
             if not self._settings.maps_fujimoto_enabled:
                 return {"status": "disabled"}
-            collection = AnnualCollector(db, self._settings.dart_api_key).collect(ref_date,
+            client = DartClient(self._settings.dart_api_key)
+            metadata = collect_metadata(db, ref_date)
+            eps = EPSCollector(db, self._settings.dart_api_key, client=client).collect(ref_date,
                 batch=self._settings.maps_fujimoto_collect_batch)
-            return {"collection": collection, "screen": screen_market(db, ref_date)}
+            collection = AnnualCollector(db, self._settings.dart_api_key, client=client).collect(ref_date,
+                batch=self._settings.maps_fujimoto_collect_batch)
+            return {"collection": collection, "valuation_collection": {"metadata":metadata,"eps":eps},
+                    "screen": screen_market(db, ref_date)}
         return self._job("fujimoto_screen", _run)
 
     def _job(self, name: str, fn: Callable[[Session], dict | JobResult]) -> JobRun:

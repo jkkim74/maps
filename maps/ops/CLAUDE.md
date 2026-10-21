@@ -28,6 +28,13 @@ ops/
 
 ## scheduler.py — 핵심 오케스트레이터
 
+`run_fujimoto_screen` refreshes current official security metadata once, then
+bounded missing-EPS ordinary peers independently of eligibility/growth, followed
+by annual growth collection and version 3 screening. EPS and annual requests share
+one DART client/request-time budget. Source collection never applies EPS reviews;
+next-session causal availability and existing execution gates still apply. Job
+details expose `valuation_collection` diagnostics and v2/v3 screen comparison.
+
 미국 모의매매의 `us_trading.py`는 별도 opt-in 주기 동기화를 제공한다. 작업마다
 독립 DB 세션을 만들고 계좌 실행 잠금을 공유한다. `MAPS_US_ENABLED=false`여도
 미확정 미국 주문이 있으면 조회·대사를 계속한다. 비활성화가 취소·청산을 뜻하지 않는다.

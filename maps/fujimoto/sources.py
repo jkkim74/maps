@@ -114,9 +114,18 @@ def valuation_inputs(db, ref_date: date, now: datetime, fundamentals: list[dict]
     """Latest observation wins; a review applies only to its exact source, never a newer value."""
     repo = FujimotoRepository(db)
     values = {r["ticker"]: {**r, "status": "numeric" if r["per"] is not None else "unknown"}
-              for r in fundamentals}
+              for r in fundamentals if r.get("provider", "pykrx") in {"pykrx", "krx"}}
     sources = db.query(FujimotoEvidence).filter_by(kind="valuation_source").order_by(FujimotoEvidence.id)
     for source in sources:
+        host = urlparse(source.payload.get("source_url", "")).hostname or ""
+        krx = host == "krx.co.kr" or host.endswith(".krx.co.kr")
+        fss = host == "fss.or.kr" or host.endswith(".fss.or.kr")
+        if not krx and not fss:
+            continue  # Diagnostic providers never replace authoritative KRX inputs.
+        authoritative = values.get(source.ticker)
+        if not krx and (source.payload.get("per") is not None and source.payload["per"] > 0
+                        or authoritative and authoritative.get("per") is not None and authoritative["per"] > 0):
+            continue
         if (source.payload.get("ref_date") != ref_date.isoformat()
                 or source.observed_at > utc_naive(now) or source.available_at > utc_naive(now)):
             continue
@@ -133,6 +142,7 @@ def valuation_inputs(db, ref_date: date, now: datetime, fundamentals: list[dict]
             available_at=max(source.observed_at, review.observed_at if review else source.observed_at),
             per=source.payload["per"], status="verified_not_applicable" if review else
                 ("numeric" if source.payload["per"] is not None else "unknown"),
+            provider="krx" if krx else "fss",
             provenance={"source_id": source.id, "source": source.payload,
                         **({"review": review.payload} if review else {})})
     return json_data(list(values.values()))
@@ -348,12 +358,33 @@ def screen_market(db, ref_date: date, *, now: datetime | None = None) -> dict:
     sectors = ({"ref_date": ref_date, "available_at": sector.published_at,
                 "memberships": [(t, next(iter(s))) for t, s in sorted(members.items()) if len(s) == 1]}
                if members and all(len(s) == 1 for s in members.values()) else None)
-    vals = [{"ticker": v.ticker, "ref_date": v.date, "available_at": v.updated_at, "per": v.per}
+    vals = [{"ticker": v.ticker, "ref_date": v.date, "available_at": v.updated_at, "per": v.per,"provider":v.source}
         for v in db.query(SecurityFundamental).filter(SecurityFundamental.date == ref_date,
                                                      SecurityFundamental.updated_at <= utc_naive(now))]
     vals = valuation_inputs(db, ref_date, now, vals)
+    from maps.fujimoto.valuation import security_inputs, exclusion_inputs, security_kind
+    classifications = security_inputs(db, ref_date, now)
+    exclusions = exclusion_inputs(db, ref_date, now)
+    values = {v["ticker"]: v for v in vals}
+    for ticker, proof in exclusions.items():
+        value = values.get(ticker)
+        if value is None or value["per"] is None or value["per"] <= 0:
+            values[ticker] = {**(value or dict(ticker=ticker,ref_date=ref_date,per=None,status="unknown")),
+                "available_at": now, "strategy_exclusion": proof}
+    vals = json_data(list(values.values()))
+    states = {}
+    for member in universe.payload["members"]:
+        ticker = member["ticker"]
+        kind = security_kind(classifications.get(ticker),ticker,ref_date)
+        value = values.get(ticker,{})
+        state = ("excluded_security" if kind == "excluded" else "unknown_classification" if kind == "unknown"
+                 else "numeric" if value.get("per") is not None and value["per"] > 0
+                 else "negative_common_eps" if value.get("strategy_exclusion") else
+                 "verified_not_applicable" if value.get("status") == "verified_not_applicable" else "unknown")
+        states[state] = states.get(state,0) + 1
     history = HistoricalOHLCVRepository(db)
     ranked, count, blocked, blocking_reasons = [], 0, 0, {}
+    v2_selected = 0
     remaining = max(0, get_settings().maps_fujimoto_candidate_rows -
                     db.query(FujimotoEvidence).filter_by(kind="candidate").count())
     if remaining < len(universe.payload["members"]):
@@ -368,11 +399,19 @@ def screen_market(db, ref_date: date, *, now: datetime | None = None) -> dict:
         # Same close*volume definition as HistoricalOHLCVRepository.avg_turnover_20d.
         prices = [{"date": index.date(), **{k: row[k] for k in ("open", "high", "low", "close", "volume")},
                    "turnover": row["close"] * row["volume"]} for index, row in frame.iterrows()]
-        raw = _raw_numbers(json_data({"screening_version": 2, "annual_records": annual, "financial_records": financial,
-            "sectors": sectors, "valuations": vals, "prices": prices, "eligible": member["eligible"]}))
+        sector_membership = dict(sectors["memberships"]) if sectors else {}
+        peer_tickers = {t for t,s in sector_membership.items() if s == sector_membership.get(ticker)} | {ticker}
+        frozen_sectors = ({**sectors,"memberships":[(t,s) for t,s in sectors["memberships"] if t in peer_tickers]}
+                          if sectors and ticker in sector_membership else sectors)
+        raw = _raw_numbers(json_data({"screening_version": 3, "annual_records": annual, "financial_records": financial,
+            "sectors": frozen_sectors, "valuations": [v for v in vals if v["ticker"] in peer_tickers],
+            "prices": prices, "eligible": member["eligible"],
+            "security_classifications": {t:p for t,p in classifications.items() if t in peer_tickers}}))
         if prices:
             try:
                 rule = screening_evidence(raw, ticker, ref_date, closed_dates=tuple(get_settings().krx_closed_dates))
+                v2_selected += screening_evidence({**raw,"screening_version":2}, ticker, ref_date,
+                    closed_dates=tuple(get_settings().krx_closed_dates)).selection_passed
             except DataQualityError as exc:
                 rule = RuleEvidence(ref_date, None, blocking_reasons=(str(exc),))
         else:
@@ -391,6 +430,8 @@ def screen_market(db, ref_date: date, *, now: datetime | None = None) -> dict:
     ranked.sort(key=lambda x: (-x[1], x[0]))
     payload = {"ref_date": ref_date, "screened": count, "selected": len(ranked),
                "blocked": blocked, "blocking_reasons": blocking_reasons,
+               "screening_version": 3, "valuation_states": states,
+               "comparison": {"v2_selected": v2_selected, "v3_selected":len(ranked)},
                "ranked": [t for t, _ in ranked], "universe_id": universe.id}
     repo.record_evidence("screen", "*", now, now, payload)
     db.commit()
