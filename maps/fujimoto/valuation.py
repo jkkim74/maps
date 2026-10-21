@@ -400,6 +400,7 @@ def valuation_report(db, ref_date: date, *, now: datetime | None = None, tickers
     import base64
     import json
     import zlib
+    from sqlalchemy import func
     from maps.common.models import SecurityFundamental
     from maps.fujimoto.sources import valuation_inputs
     from maps.fujimoto.replay import screening_evidence
@@ -449,13 +450,23 @@ def valuation_report(db, ref_date: date, *, now: datetime | None = None, tickers
             reasons[reason] += 1
         rows.append(dict(ticker=ticker,state=state,reason=reason,per=per,
                          source_id=sources[ticker].id if ticker in sources else None))
-    candidates = {}
-    for r in db.query(FujimotoEvidence).filter_by(kind="candidate").filter(
-            FujimotoEvidence.available_at <= utc_naive(now)).order_by(FujimotoEvidence.id):
-        if r.payload.get("ref_date") == ref_date.isoformat() and r.ticker in selected:
-            candidates[r.ticker] = r
+    candidates = ()
+    if selected:
+        # Select IDs before fetching JSON: historical/raw_zlib payloads can be large.
+        # Preserve the latest appended eligible revision, not the latest observation.
+        latest = db.query(func.max(FujimotoEvidence.id)).filter(
+            FujimotoEvidence.kind == "candidate",
+            FujimotoEvidence.ticker.in_(selected),
+            FujimotoEvidence.payload["ref_date"].as_string() == ref_date.isoformat(),
+            FujimotoEvidence.observed_at <= utc_naive(now),
+            FujimotoEvidence.available_at <= utc_naive(now)).group_by(FujimotoEvidence.ticker)
+        candidates = db.query(FujimotoEvidence).filter(FujimotoEvidence.id.in_(latest)).order_by(
+            FujimotoEvidence.ticker).yield_per(1)
     comparison = {"v2_selected":0,"v3_selected":0,"reasons_v2":Counter(),"reasons_v3":Counter()}
-    for ticker,candidate in candidates.items():
+    comparison_candidates = 0
+    for candidate in candidates:
+        ticker = candidate.ticker
+        comparison_candidates += 1
         raw = json.loads(zlib.decompress(base64.b64decode(candidate.payload["raw_zlib"])))
         # Compare exactly the same frozen inputs. No prospective backdating or DB enrichment.
         for version in (2,3):
@@ -466,7 +477,7 @@ def valuation_report(db, ref_date: date, *, now: datetime | None = None, tickers
             except DataQualityError as exc:
                 comparison[f"reasons_v{version}"][str(exc)] += 1
     return json_data(dict(ref_date=ref_date,observed_at=now,states=dict(states),reasons=dict(reasons),
-        rows=rows,comparison=comparison,comparison_candidates=len(candidates),
+        rows=rows,comparison=comparison,comparison_candidates=comparison_candidates,
         metadata_coverage=dict(expected=len(members),observed=len(members & classifications.keys()),
             missing=sorted(members-classifications.keys())),execution_permission=False))
 

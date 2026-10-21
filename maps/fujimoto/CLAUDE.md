@@ -564,5 +564,14 @@ the original company.json response or corpCode mapping. `filing` is the original
 matching list.json row. `ingest-metadata --input file.json` takes official KRX raw
 rows. Both require `--apply` to write. Ingestion never backdates readiness. `report`
 is read-only and compares the same frozen candidate inputs; it does not enrich
-historical snapshots with later evidence. No migration, shared-fundamental edit,
+historical snapshots with later evidence. Candidate comparison filters ticker,
+exact reference date and observation/availability cutoff in SQL, selects the
+latest eligible appended ID per ticker, then streams one payload at a time.
+An explicit empty ticker list performs no candidate comparison query. This avoids
+loading all candidate history or retaining every latest compressed snapshot in
+application memory, including for whole-market reports. Metadata/EPS coverage
+queries and the small report result rows retain their existing behavior.
+The 2026-10-21 operational investigation confirmed the earlier report bulk-fetch
+defect; whether it caused the server response delay or an OOM remains unconfirmed.
+No migration, shared-fundamental edit,
 strategy promotion, activation or order path is added.
