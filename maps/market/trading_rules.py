@@ -6,6 +6,7 @@ import datetime as dt
 import logging
 import math
 from collections.abc import Iterable
+from functools import lru_cache
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,14 @@ def parse_closed_dates(value: str) -> frozenset[dt.date]:
     return frozenset(dates)
 
 
+@lru_cache(maxsize=32)
+def _korean_holiday_dates(year: int) -> frozenset[dt.date]:
+    """Reuse immutable holiday dates for at most 32 calendar years."""
+    import holidays
+
+    return frozenset(holidays.KR(years=[year]))
+
+
 def is_krx_closed_date(target: dt.date, *, extra_closed_dates: Iterable[dt.date] = ()) -> bool:
     """Return whether a date is known to be closed before live OHLCV exists."""
     if target.weekday() >= 5:
@@ -34,12 +43,13 @@ def is_krx_closed_date(target: dt.date, *, extra_closed_dates: Iterable[dt.date]
     if target in extra_closed_dates:
         return True
 
+    # Check availability even when this year's holiday dates are already cached.
     try:
         import holidays
     except ImportError:
         logger.warning("holidays package unavailable; checking configured KRX closure dates only")
         return False
-    return target in holidays.KR(years=[target.year])
+    return target in _korean_holiday_dates(target.year)
 
 
 def previous_trading_day(ref_date: dt.date, *, extra_closed_dates: Iterable[dt.date] = ()) -> dt.date:
@@ -50,8 +60,7 @@ def previous_trading_day(ref_date: dt.date, *, extra_closed_dates: Iterable[dt.d
     return candidate
 
 
-# 신선도 판정용 lookback 상한. is_krx_closed_date 가 호출마다 holidays.KR(...) 을
-# 만들기 때문에 n 을 열어 두면 실수 한 번이 그대로 비용이 된다.
+# 신선도 판정용 lookback 상한. 연도별 공휴일은 캐시하지만 날짜 순회는 제한한다.
 _MAX_TRADING_DAYS_LOOKBACK = 60
 
 

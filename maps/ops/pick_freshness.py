@@ -88,7 +88,7 @@ def pick_age_trading_days(
     if pick.ref_date >= base:
         return 0
     # 뒤로 한 번만 걸어간다. age 마다 trading_days_ago(base, age) 를 부르면 O(n²) 이 되고,
-    # is_krx_closed_date 는 호출마다 holidays.KR(...) 을 만들기 때문에 그 비용이 그대로 곱해진다.
+    # 연도별 공휴일 캐시와 별개로 같은 날짜를 반복 순회하는 비용을 피한다.
     closed = settings.krx_closed_dates
     cursor = base
     for age in range(1, _MAX_AGE_TRADING_DAYS + 1):
