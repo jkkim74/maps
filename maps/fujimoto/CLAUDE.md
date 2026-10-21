@@ -243,6 +243,31 @@ not loss guarantees. The guarded operational path is described below.
 
 ## Operational flow and defaults
 
+Actual quote recording has a separate Session and one dedicated worker in the
+shared runtime. Its 256-item FIFO preserves quote/reset/sent-subscription order
+and backpressures on saturation; it never silently discards raw evidence. The
+existing tape-row ceiling still writes a capacity-exhausted marker. Recording
+does not wait for account execution/reconciliation. Observation-only quote/timer
+work returns before the execution lock, while active decisions, reservations and
+broker operations retain the account lock and existing order priority pump.
+Process writer ownership is still claimed before the recorder starts.
+
+Original receipt/exchange timestamps stay unchanged. Decision time advances by
+monotonic elapsed time across account-lock waits and broker reads; order expiry
+is original receipt + **3 seconds**, never processing time + 3 seconds. Account
+freshness remains **30 seconds**. Reset epochs invalidate queued pre-gap decisions;
+the first post-reset quote carries the gap to every cycle. Recorder write failure
+blocks subsequent quote decisions until restart and is logged explicitly. Shutdown
+drains both lanes before closing either Session; a drain timeout leaves Sessions
+open under still-running threads, as before for order work.
+
+Once-per-minute slow-work diagnostics expose execution/recording queue maxima,
+processing maxima, account-lock wait/hold maxima, and Fujimoto broker-sync duration.
+They contain no account identifiers or per-tick logs. Nested lock durations overlap;
+do not sum them or treat them as broker source freshness. A delayed scheduler sync
+can still block execution; independent recording does not claim that the account
+snapshot has become fresh or that the next live market session has been measured.
+
 `sources.AnnualCollector.collect` uses the existing paced DART client and receipt /
 revision repository, visiting the least recently checked ordinary KOSPI/KOSDAQ
 stocks (20 per scheduled run, at most 500 requests/900 seconds). The existing

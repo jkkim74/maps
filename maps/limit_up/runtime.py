@@ -8,6 +8,8 @@ import itertools
 import json
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from collections import Counter
 from collections.abc import Callable
 from typing import Any
@@ -307,6 +309,14 @@ class KISIntradayRuntime:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._service_queue: asyncio.PriorityQueue = asyncio.PriorityQueue()
         self._service_sequence = itertools.count()
+        # Raw evidence has one bounded FIFO and its own session. Broker/account
+        # waits in the order lane must not turn actual arrivals into tape gaps.
+        self._recording_queue: asyncio.Queue = asyncio.Queue(maxsize=256)
+        self._recording_db: Session | None = None
+        self._recording_feed = None
+        self._recording_failed = False
+        self._recording_epoch = 0
+        self._recording_executor: ThreadPoolExecutor | None = None
 
     async def _call_service(
         self,
@@ -339,7 +349,7 @@ class KISIntradayRuntime:
         """
         future: asyncio.Future = asyncio.get_running_loop().create_future()
         await self._service_queue.put(
-            (priority, next(self._service_sequence), fn, args, kwargs, future)
+            (priority, next(self._service_sequence), fn, args, kwargs, future, time.monotonic())
         )
         return await future
 
@@ -351,23 +361,68 @@ class KISIntradayRuntime:
         drain would sit out its timeout. ``stop()`` cancels this task once the
         queue is empty.
         """
+        await self._pump_queue(self._service_queue, "execution")
+
+    async def _call_recording(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+        """Backpressure the socket on recorder capacity, never discard raw events."""
+        future = asyncio.get_running_loop().create_future()
+        await self._recording_queue.put((0, 0, fn, args, kwargs, future, time.monotonic()))
+        return await future
+
+    async def _pump_queue(self, queue: asyncio.Queue, lane: str) -> None:
+        """Serialize one session per lane; aggregate delay diagnostics once a minute."""
+        samples, max_wait, max_work, last_log = 0, 0., 0., time.monotonic()
         while True:
-            priority, _, fn, args, kwargs, future = await self._service_queue.get()
+            priority, _, fn, args, kwargs, future, queued_at = await queue.get()
             del priority
+            started = time.monotonic()
             try:
-                result = await asyncio.to_thread(fn, *args, **kwargs)
+                if lane == "recording":
+                    result = await asyncio.get_running_loop().run_in_executor(
+                        self._recording_executor, partial(fn, *args, **kwargs))
+                else:
+                    result = await asyncio.to_thread(fn, *args, **kwargs)
             except asyncio.CancelledError:
                 if not future.done():
                     future.cancel()
                 raise
             except Exception as exc:  # noqa: BLE001 - surfaced to the caller
+                if lane == "recording":
+                    self._recording_failed = True
+                    self._recording_db.rollback()
+                    logger.exception("Fujimoto recorder failed; quote decisions blocked until restart")
                 if not future.done():
                     future.set_exception(exc)
             else:
                 if not future.done():
                     future.set_result(result)
             finally:
-                self._service_queue.task_done()
+                finished = time.monotonic()
+                samples += 1
+                max_wait = max(max_wait, started - queued_at)
+                max_work = max(max_work, finished - started)
+                if finished - last_log >= 60:
+                    if max(max_wait, max_work) >= 1:
+                        logger.warning("Intraday latency lane=%s samples=%d queue_max_seconds=%.3f processing_max_seconds=%.3f pending=%d",
+                                       lane, samples, max_wait, max_work, queue.qsize())
+                    samples, max_wait, max_work, last_log = 0, 0., 0., finished
+                queue.task_done()
+
+    def _record_quote(self, quote: FeedQuote) -> tuple[FeedQuote, bool]:
+        """Only the recording worker touches the recorder/session."""
+        if self._recording_failed:
+            raise RuntimeError("fujimoto_recording_failed_restart_required")
+        return self._recording_feed.record_quote(quote, now=self.wall_now())
+
+    async def _reset_fujimoto_feed(self, reason: str) -> None:
+        """Keep reset evidence in arrival order, even while order work is blocked."""
+        if self._recording_feed is not None:
+            # Queued quotes from the previous connection/gap remain raw evidence,
+            # but may no longer authorize an order after this reset.
+            self._recording_epoch += 1
+            await self._call_recording(self._recording_feed.reset, reason, now=self.wall_now())
+        else:
+            await self._call_service(self.fujimoto.feed.reset, reason, priority=_PRIORITY_HIGH)
 
     async def start(self) -> None:
         """Recover broker truth before starting all background loops."""
@@ -383,17 +438,28 @@ class KISIntradayRuntime:
                         ref_date=now.date(), now_monotonic=now_monotonic, now_kst=now,
                     )
                 if self.fujimoto:
-                    self.fujimoto.tick(now=now)
+                    self.fujimoto.tick(now=self.wall_now())
 
         # 펌프가 아직 없으므로 큐에 넣으면 영원히 대기한다. 이 시점에는 경합할 상대도
         # 없으니 직접 스레드로 돌린다.
         await asyncio.to_thread(_recover)
+        if self.fujimoto:
+            from maps.fujimoto.feed import FujimotoFeed
+            from maps.execution.safety import account_key, claim_account_writer
+            claim_account_writer(account_key(self.settings))
+            self._recording_db = Session(bind=self.db.get_bind())
+            self._recording_feed = FujimotoFeed(self._recording_db, account_key(self.settings),
+                                               capacity=self.settings.maps_fujimoto_tape_rows)
+            self._recording_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="fujimoto-recording")
         self._loop = asyncio.get_running_loop()
         self._tasks = [
             asyncio.create_task(self._service_pump(), name="limit-up-service"),
             asyncio.create_task(self._control_loop(), name="limit-up-control"),
             asyncio.create_task(self._websocket_loop(), name="limit-up-websocket"),
         ]
+        if self.fujimoto:
+            self._tasks.append(asyncio.create_task(
+                self._pump_queue(self._recording_queue, "recording"), name="fujimoto-recording"))
 
     async def stop(self) -> None:
         """Stop runtime loops while leaving persisted broker state recoverable.
@@ -404,17 +470,20 @@ class KISIntradayRuntime:
         broker call mid-flight and leave the database write half-done.
         """
         self._stop.set()
-        producers = [t for t in self._tasks if t.get_name() != "limit-up-service"]
+        producers = [t for t in self._tasks if t.get_name() not in {"limit-up-service", "fujimoto-recording"}]
         for task in producers:
             task.cancel()
         if producers:
             await asyncio.gather(*producers, return_exceptions=True)
         # 아직 큐에 들어가지 못한 시세 작업이 있으면 드레인이 그것들을 못 본다.
-        if self._feed_tasks:
-            await asyncio.gather(*list(self._feed_tasks), return_exceptions=True)
+        async def drain() -> None:
+            if self._feed_tasks:
+                await asyncio.gather(*list(self._feed_tasks), return_exceptions=True)
+            await self._service_queue.join()
+            await self._recording_queue.join()
         try:
             await asyncio.wait_for(
-                self._service_queue.join(), timeout=_SHUTDOWN_DRAIN_SECONDS
+                drain(), timeout=_SHUTDOWN_DRAIN_SECONDS
             )
             drained = True
         except (asyncio.TimeoutError, TimeoutError):
@@ -432,6 +501,10 @@ class KISIntradayRuntime:
         # 이 세션으로 쓰고 있다 — 프로세스 종료가 정리하도록 두는 편이 낫다.
         if drained:
             self.db.close()
+            if self._recording_db is not None:
+                self._recording_db.close()
+        if self._recording_executor is not None:
+            self._recording_executor.shutdown(wait=False)
 
     def _security_ineligibility_reason(self, ticker: str, *, as_of: dt.date) -> str | None:
         """Read metadata and return only its verdict from the serialized worker."""
@@ -573,7 +646,7 @@ class KISIntradayRuntime:
             # 다시 실패의 무한 루프가 된다.
             logger.exception("상한가 실시간 프레임 파싱 실패 — 이 프레임만 버린다")
             if self.fujimoto:
-                await self._call_service(self.fujimoto.feed.reset, "parse_gap", priority=_PRIORITY_HIGH)
+                await self._reset_fujimoto_feed("parse_gap")
             return 0
         if raw.startswith("{") and _INDEX_TR_ID in raw:
             # 구독 응답(성공/오류). 모의 서버의 지수 TR 지원 여부를 로그로 판정한다.
@@ -584,8 +657,16 @@ class KISIntradayRuntime:
                 if self.upper_enabled:
                     self._on_ws_index(event, now)
                 continue
+            recorded, tape_exhausted = False, False
+            recording_epoch = None
+            if self.fujimoto and isinstance(event, FeedQuote) and self._recording_feed is not None:
+                recording_epoch = self._recording_epoch
+                event, tape_exhausted = await self._call_recording(self._record_quote, event)
+                recorded = True
             task = asyncio.ensure_future(
-                self._call_service(self._apply_feed_event, event, now)
+                self._call_service(self._apply_feed_event, event, now,
+                                   **({"recorded": True, "tape_exhausted": tape_exhausted,
+                                       "recording_epoch": recording_epoch} if recorded else {}))
             )
             # 추적하지 않으면 종료 시 아직 큐에 들어가지도 않은 작업이 남은 채
             # queue.join() 이 먼저 끝나고 DB 세션이 닫힌다.
@@ -598,7 +679,9 @@ class KISIntradayRuntime:
             )
         return len(events)
 
-    def _apply_feed_event(self, event: Any, now: dt.datetime) -> None:
+    def _apply_feed_event(self, event: Any, now: dt.datetime, *,
+                          recorded: bool = False, tape_exhausted: bool = False,
+                          recording_epoch: int | None = None) -> None:
         """Apply one normalized feed event to the state machine."""
         if isinstance(event, FeedTrade):
             if self.upper_enabled:
@@ -608,7 +691,10 @@ class KISIntradayRuntime:
             if self.upper_enabled:
                 self.service.on_quote(event, now_kst=now)
             if self.fujimoto:
-                self.fujimoto.on_quote(event, now=self.wall_now())
+                if recorded and (self._recording_failed or recording_epoch != self._recording_epoch):
+                    return
+                self.fujimoto.on_quote(event, now=self.wall_now(), recorded=recorded,
+                                       tape_exhausted=tape_exhausted)
 
     async def fallback_once(self) -> None:
         """Poll held prices only after feed loss and apply protection-only events."""
@@ -656,7 +742,7 @@ class KISIntradayRuntime:
                 continue
             try:
                 if self.fujimoto:
-                    await self._call_service(self.fujimoto.tick, now=wall, priority=_PRIORITY_HIGH)
+                    await self._call_service(lambda: self.fujimoto.tick(now=self.wall_now()), priority=_PRIORITY_HIGH)
                     if now_mono - self._last_scan_at >= 5.0:
                         await self._subscription_queue.put("*")
                         if not self.upper_enabled:
@@ -745,7 +831,7 @@ class KISIntradayRuntime:
                             self.service.on_feed_reconnect, priority=_PRIORITY_HIGH
                         )
                     if self.fujimoto:
-                        await self._call_service(self.fujimoto.feed.reset, "reconnect", priority=_PRIORITY_HIGH)
+                        await self._reset_fujimoto_feed("reconnect")
                     await self._refresh_subscriptions(socket, approval)
                     if self.upper_enabled and self.settings.maps_limit_up_index_ws_enabled:
                         await self._subscribe_index(socket, approval)
@@ -754,7 +840,7 @@ class KISIntradayRuntime:
                 raise
             except Exception as exc:  # noqa: BLE001 - disconnect is a strategy event
                 if self.fujimoto:
-                    await self._call_service(self.fujimoto.feed.reset, "disconnect", priority=_PRIORITY_HIGH)
+                    await self._reset_fujimoto_feed("disconnect")
                 if self._feed_connected and self.upper_enabled:
                     await self._call_service(
                         self.service.on_feed_disconnect,
@@ -776,35 +862,44 @@ class KISIntradayRuntime:
         ``_feed_connected`` true, which suppresses the REST fallback, so price
         protection stops while everything still looks healthy.
         """
-        self._last_frame_at = self.monotonic()
-        while not self._stop.is_set():
-            receive = asyncio.create_task(socket.recv())
-            subscribe = asyncio.create_task(self._subscription_queue.get())
-            done, pending = await asyncio.wait(
-                {receive, subscribe},
-                timeout=_FEED_SILENCE_TIMEOUT_SECONDS,
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            for task in pending:
-                task.cancel()
-            if feed_is_silent(
-                last_frame_at=self._last_frame_at, now=self.monotonic()
-            ):
-                raise ConnectionError("upper-limit feed silent past timeout")
-            if not done:
-                continue
-            if receive in done:
-                self._last_frame_at = self.monotonic()
-                raw = str(receive.result())
-                if "PINGPONG" in raw and raw.startswith("{"):
-                    await socket.send(raw)
-                else:
-                    await self.dispatch_message_async(raw)
-            if subscribe in done:
+        async def subscriptions() -> None:
+            # Allocation can wait for order work. Only this task updates sent
+            # sets; socket receiving and recording stay independent of that wait.
+            while not self._stop.is_set():
+                ticker = await self._subscription_queue.get()
                 if self.fujimoto:
                     await self._refresh_subscriptions(socket, approval)
                 else:
-                    await self._subscribe(socket, approval, str(subscribe.result()))
+                    await self._subscribe(socket, approval, str(ticker))
+
+        self._last_frame_at = self.monotonic()
+        subscribe = asyncio.create_task(subscriptions())
+        receive = None
+        try:
+            while not self._stop.is_set():
+                receive = asyncio.create_task(socket.recv())
+                done, _ = await asyncio.wait(
+                    {receive, subscribe}, timeout=_FEED_SILENCE_TIMEOUT_SECONDS,
+                    return_when=asyncio.FIRST_COMPLETED)
+                if not done:
+                    raise ConnectionError("upper-limit feed silent past timeout")
+                if receive in done:
+                    self._last_frame_at = self.monotonic()
+                    raw = str(receive.result())
+                    if "PINGPONG" in raw and raw.startswith("{"):
+                        await socket.send(raw)
+                    else:
+                        await self.dispatch_message_async(raw)
+                if subscribe in done:
+                    # Preserve a frame already received in the same wake-up
+                    # before propagating a subscription failure to reconnect.
+                    subscribe.result()
+                    return
+        finally:
+            tasks = [subscribe, *([receive] if receive is not None else [])]
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     def _allocated_tickers(self) -> tuple:
         """Shared allocator runs on the serialized database worker."""
@@ -834,8 +929,12 @@ class KISIntradayRuntime:
         for ticker in selected:
             await self._subscribe(socket, approval, ticker)
         if self.fujimoto:
-            await self._call_service(self.fujimoto.feed.record_subscriptions,
-                tuple(selected), now=self.wall_now(), priority=_PRIORITY_HIGH)
+            if self._recording_feed is not None:
+                await self._call_recording(self._recording_feed.record_subscriptions,
+                                          tuple(selected), now=self.wall_now())
+            else:
+                await self._call_service(self.fujimoto.feed.record_subscriptions,
+                    tuple(selected), now=self.wall_now(), priority=_PRIORITY_HIGH)
         if blocked and self.fujimoto:
             await self._call_service(self.fujimoto._blocked,
                 self.fujimoto.feed.key, "*", "subscription_capacity:" + ",".join(blocked), self.wall_now())

@@ -305,3 +305,13 @@ its own SQLAlchemy session. It requires explicit starting cash and explicit quot
 and fill observations; reconstructing the broker never resets cash or orders.
 Quotes retain their original observed timestamp. Its `set_quote()` and `fill()`
 methods are simulator-only inputs, not browser mutation endpoints.
+
+## Account lock diagnostics and recorder ownership
+
+`safety.claim_account_writer(account_key)` claims the existing single-host process
+file lock without waiting for the in-process account execution lock. The shared
+Fujimoto recorder uses it at startup; all order/reservation/control mutations still
+use `account_execution_lock`. Slow lock wait/hold maxima and sample counts are
+aggregated at most once per minute without account identifiers. Nested reentrant
+contexts overlap, so these durations must not be summed or used to refresh broker
+observation timestamps. Account snapshot freshness remains 30 seconds.

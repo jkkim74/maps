@@ -46,6 +46,16 @@ Those sets establish subscription provenance only; research also requires actual
 fresh held-instrument arrivals or bounded disconnect/reconnect evidence. Upper-limit
 allocation, order paths and runtime limits remain unchanged.
 
+Shared raw recording uses its own Session, a dedicated single worker and a bounded
+256-item FIFO, independent of the account/order pump. Quote/reset/subscription
+evidence retains arrival order. One subscription-update task per socket may wait
+for allocation on the order pump while the receive loop keeps reading/recording.
+Reset epochs discard only obsolete queued decision work, never the raw evidence.
+Shutdown cancels producers/subscription tasks and drains both queues before closing
+Sessions; a timeout retains Sessions used by running threads. Slow queue/processing
+maxima are aggregated at most once per minute. Fujimoto's 3-second quote freshness
+and existing execution locks/upper-limit order priority remain unchanged.
+
 ## Directory structure
 
 ```

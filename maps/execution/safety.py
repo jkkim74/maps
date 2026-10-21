@@ -4,8 +4,10 @@ from __future__ import annotations
 import atexit
 import datetime as dt
 import hashlib
+import logging
 import os
 import threading
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,6 +19,8 @@ _locks: dict[str, threading.RLock] = {}
 _files: dict[str, object] = {}
 _guard = threading.RLock()
 _owner_pid = os.getpid()
+_lock_timings: dict[str, dict] = {}
+logger = logging.getLogger(__name__)
 
 
 def utcnow() -> dt.datetime:
@@ -100,14 +104,38 @@ def _own_process(key: str) -> None:
     _files[key] = handle
 
 
+def claim_account_writer(key: str) -> None:
+    """Claim process ownership without waiting for in-process broker execution."""
+    with _guard:
+        _own_process(key)
+
+
 @contextmanager
 def account_execution_lock(key: str):
+    """Retain writer exclusion and report bounded, account-anonymous contention."""
+    started = time.monotonic()
     # ponytail: one host, one writer/account; use DB fencing before multi-host deployment.
     with _guard:
         _own_process(key)
         lock = _locks.setdefault(key, threading.RLock())
     with lock:
-        yield
+        acquired = time.monotonic()
+        try:
+            yield
+        finally:
+            finished = time.monotonic()
+            # Nested manager locks remain reentrant; context durations overlap
+            # and must not be summed or mistaken for source snapshot freshness.
+            with _guard:
+                stats = _lock_timings.setdefault(key, dict(at=started, count=0, wait=0., hold=0.))
+                stats["count"] += 1
+                stats["wait"] = max(stats["wait"], acquired - started)
+                stats["hold"] = max(stats["hold"], finished - acquired)
+                if finished - stats["at"] >= 60:
+                    if max(stats["wait"], stats["hold"]) >= 1:
+                        logger.warning("Account execution latency samples=%d lock_wait_max_seconds=%.3f lock_hold_max_seconds=%.3f",
+                                       stats["count"], stats["wait"], stats["hold"])
+                    stats.update(at=finished, count=0, wait=0., hold=0.)
 
 
 @atexit.register

@@ -11,6 +11,7 @@ import logging
 import zlib
 from dataclasses import replace
 from datetime import date, datetime, time, timedelta, timezone
+from time import monotonic
 from decimal import Decimal
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -106,6 +107,7 @@ class FujimotoService:
         from maps.fujimoto.feed import FujimotoFeed
         self.feed = FujimotoFeed(db, account_key(self.settings))
         self._last_sync = None
+        self._sync_diagnostics = dict(at=monotonic(), count=0, maximum=0.)
 
     def owner(self, key: str, user_id: int | None) -> list:
         """Authorize the configured account owner, including read paths."""
@@ -513,7 +515,15 @@ class FujimotoService:
     def tick(self, *, now: datetime) -> None:
         """Reconcile approved activity and cancel expired entries without blind expiry."""
         key = account_key(self.settings)
+        # Read-only observation has no account mutation or broker work to guard.
+        received_now, started = now, monotonic()
+        self.db.expire_all()
+        if self.manager is None or self.control(key)["execution_mode"] == "observe":
+            self.db.rollback()
+            return
         with account_execution_lock(key):
+            now = now + timedelta(seconds=monotonic() - started)
+            self.db.expire_all()
             control = self._enforce_trial_window(key, now)
             if self.manager is None or control["execution_mode"] == "observe":
                 return
@@ -522,7 +532,20 @@ class FujimotoService:
             if self._last_sync is not None and (utc_naive(now) - self._last_sync).total_seconds() < 15:
                 return
             self._last_sync = utc_naive(now)
-            self.manager.sync_broker_state()
+            sync_started = monotonic()
+            try:
+                self.manager.sync_broker_state()
+            finally:
+                finished = monotonic()
+                stats = self._sync_diagnostics
+                stats["count"] += 1
+                stats["maximum"] = max(stats["maximum"], finished - sync_started)
+                if finished - stats["at"] >= 60:
+                    if stats["maximum"] >= 1:
+                        logger.warning("Fujimoto broker sync latency samples=%d processing_max_seconds=%.3f",
+                                       stats["count"], stats["maximum"])
+                    stats.update(at=finished, count=0, maximum=0.)
+            now = received_now + timedelta(seconds=monotonic() - started)
             self.db.expire_all()
             self.recover_links(key)
             for order in self.repo.orders(key):
@@ -548,23 +571,38 @@ class FujimotoService:
                 self.manager.cancel(order.broker_order_id)
                 self.db.expire_all()
 
-    def on_quote(self, quote, *, now: datetime | None = None) -> None:
+    def on_quote(self, quote, *, now: datetime | None = None,
+                 recorded: bool = False, tape_exhausted: bool = False) -> None:
         """Persist shared quote then evaluate confirmed owned cycles and actual candidates."""
         now = now or datetime.now(timezone.utc)
+        started = monotonic()
+        def decision_now() -> datetime:
+            """Advance the supplied clock across every blocking call, including locks."""
+            return now + timedelta(seconds=monotonic() - started)
         key = account_key(self.settings)
+        self.db.expire_all()
+        if not recorded:
+            quote, tape_exhausted = self.feed.record_quote(quote, now=decision_now())
+        if tape_exhausted:
+            self.feed._recorded = self.feed.capacity
+        if self.manager is None or self.control(key)["execution_mode"] == "observe":
+            self.db.rollback()
+            return
         with account_execution_lock(key):
             self.db.expire_all()
-            fresh_bid, _ = self.feed.on_quote(quote, now=now)
-            self.db.commit()
-            control = self._enforce_trial_window(key, now)
+            control = self._enforce_trial_window(key, decision_now())
             if control.get("authorization_policy") == "paper_test":
                 self._cancel_stopped_buys(key, control)
             if control["execution_mode"] == "observe" or self.manager is None:
                 return
-            wall = now.astimezone(KST)
+            current_time = decision_now()
+            # Admission has its own continuity slot: direct recording already
+            # consumed slot 0, and replay rejects duplicate exchange timestamps.
+            fresh_bid, _ = self.feed.on_quote(quote, now=current_time, cycle_id=-1, persist=False)
+            wall = current_time.astimezone(KST)
             entries_open = control.get("entries_enabled") and not (
                 control.get("authorization_policy") == "paper_test"
-                and utc_naive(now) < utc_naive(datetime.fromisoformat(control["starts_at"])))
+                and utc_naive(current_time) < utc_naive(datetime.fromisoformat(control["starts_at"])))
             if not time(9) <= wall.time().replace(tzinfo=None) < time(15, 20):
                 return
             self.expire_empty_cycles(key, wall.date())
@@ -624,12 +662,15 @@ class FujimotoService:
             for cycle in cycles:
                 state = self.repo.state(cycle.id)
                 complete = not any(o.id in cost_gaps for o in self.repo.orders(key) if o.cycle_id == cycle.id)
-                bid, profit = self.feed.on_quote(quote, now=now, cycle_id=cycle.id,
+                current_time = decision_now()
+                wall = current_time.astimezone(KST)
+                bid, profit = self.feed.on_quote(quote, now=current_time, cycle_id=cycle.id,
                     cost_basis=cycle.cost_basis, quantity=state.quantity,
                     costs_complete=complete, persist=False)
                 live = replace(evidence, live_price=bid, orderbook_take_profit=bool(profit and
                     current.get(cycle.mode) and current[cycle.mode].settings.get("with_orderbook", True)))
-                if bid is None:
+                if (bid is None or quote.received_utc is None
+                        or not time(9) <= wall.time().replace(tzinfo=None) < time(15, 20)):
                     continue
                 decision = evaluate(Mode(cycle.mode), live, state, decision_date=wall.date())
                 if state.pending_order:
@@ -653,10 +694,11 @@ class FujimotoService:
                 if decision.action == "buy" and (not entries_open or cost_gaps):
                     continue
                 try:
-                    self._submit_decision(cycle, live, decision, bid, source, now)
+                    self._submit_decision(cycle, live, decision, bid, source, current_time,
+                                          quote.received_utc + timedelta(seconds=3))
                 except (ExecutionBlockedError, DataQualityError) as exc:
                     self.db.rollback()
-                    self._blocked(key, cycle.ticker, str(exc), now)
+                    self._blocked(key, cycle.ticker, str(exc), decision_now())
             self.db.commit()
 
     def _blocked(self, key: str, ticker: str, reason: str, now: datetime) -> None:
@@ -666,8 +708,11 @@ class FujimotoService:
             self.repo.record_evidence("block", ticker, now, now, {"reason": reason}, account_key=key)
             self.db.commit()
 
-    def _submit_decision(self, cycle, evidence, decision, bid, source, now) -> None:
+    def _submit_decision(self, cycle, evidence, decision, bid, source, now,
+                         valid_until: datetime | None = None) -> None:
         """Commit reservation under account lock before OrderManager's separate session."""
+        decision_started_at, started = now, monotonic()
+        valid_until = utc_naive(valid_until or (now + timedelta(seconds=3)))
         key = cycle.account_key
         stop = None
         if decision.action == "buy":
@@ -693,6 +738,13 @@ class FujimotoService:
             self.authorize_order(key, buy=False, now=now, ticker=cycle.ticker)
             from maps.market.trading_rules import round_down_krx_price
             quantity, price = decision.sell_quantity, round_down_krx_price(bid)
+        now = decision_started_at + timedelta(seconds=monotonic() - started)
+        if utc_naive(now) > valid_until:
+            raise ExecutionBlockedError("quote_stale_after_wait")
+        self.authorize_order(key, buy=decision.action == "buy", now=now, ticker=cycle.ticker)
+        now = decision_started_at + timedelta(seconds=monotonic() - started)
+        if utc_naive(now) > valid_until:
+            raise ExecutionBlockedError("quote_stale_after_wait")
         actual = self.repo.record_evidence("execution_decision", cycle.ticker, now, now,
             {"rule": evidence, "decision": decision, "candidate_id": source.id if source else None,
              "authorization_id": self.control(key).get("authorization_id"),
@@ -704,7 +756,7 @@ class FujimotoService:
             OrderSide.BUY if decision.action == "buy" else OrderSide.SELL,
             OrderType.LIMIT, quantity, limit_price=float(price), current_price=bid, atr14=evidence.atr14)
         context = ExecutionContext(f"fujimoto:{reservation.id}", source="fujimoto", source_id=cycle.id,
-            valid_until=utc_naive(now) + timedelta(seconds=3))
+            valid_until=valid_until)
         try:
             if decision.action == "buy":
                 self.manager.submit(order, context=context)

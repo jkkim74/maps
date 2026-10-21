@@ -39,11 +39,19 @@ class FujimotoFeed:
         self.repo.session.commit()
         self._subscriptions_recorded = True
 
-    def reset(self, reason: str) -> None:
+    def record_quote(self, quote: FeedQuote, *, now: datetime) -> tuple[FeedQuote, bool]:
+        """Commit raw evidence and carry the recorder's continuity to the order lane."""
+        quote = replace(quote, gap=quote.gap or
+                        self._seen_generation.get(quote.ticker, 0) != self._generation)
+        self.on_quote(quote, now=now)
+        self.repo.session.commit()
+        return quote, self._recorded >= self.capacity
+
+    def reset(self, reason: str, *, now: datetime | None = None) -> None:
         """Reconnect/disconnect and parse gaps invalidate every duration."""
         self._duration.clear()
         self._generation += 1
-        now = datetime.now(timezone.utc)
+        now = now or datetime.now(timezone.utc)
         if reason in {"disconnect", "reconnect"}:
             self._subscriptions_recorded = False
         if reason == "disconnect" and self._outage_start is None:
@@ -82,7 +90,7 @@ class FujimotoFeed:
                     {**payload, "processed_at": now.isoformat()}, account_key=self.key)
                 self._recorded += 1
             elif not self._capacity_notice:
-                self.reset("tape_capacity_exhausted")
+                self.reset("tape_capacity_exhausted", now=now)
                 self._capacity_notice = True
         identity = cycle_id, quote.ticker
         since, last = self._duration.get(identity, (None, None))
