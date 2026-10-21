@@ -440,3 +440,39 @@ observations.json --output report.json` runs the shared research; optional `--pe
 `--without-orderbook` and `--account-mdd-limit` as the intended configuration.
 No CLI path promotes, activates, adopts holdings or sends orders. Use an explicitly
 isolated database and mock settings for development.
+
+
+### Versioned PER evidence and targeted annual completion
+
+New candidate raw snapshots set `screening_version=2`. Each valuation has `numeric`,
+`unknown`, or `verified_not_applicable` status. Unknown/missing/nonpositive values
+block full sector coverage unless exact source-reviewed non-applicability is recorded.
+Own PER must remain positive; the sector median retains the existing positive-value
+population (including own ticker). Unversioned snapshots replay version 1 unchanged,
+including its legacy nonpositive-peer handling.
+
+`record_valuation_source(db,ticker,ref_date,per=...,raw=...,source_url=...,
+document_hash=...)` appends actual-current-time immutable raw observations without
+editing shared fundamentals. `record_valuation_review(...,source_id=...,contract_url=...,
+contract_hash=...,explanation=...,owner=...)` binds a substantive official provider
+review to the exact source ID/hash. Both SHA256 values refer to actual retrieved
+source documents; raw JSON has an additional canonical hash. Contract/source HTTPS
+hosts must belong to the same KRX or FSS provider; userinfo and nonstandard ports
+are rejected. No caller observation timestamp or bare approval flag is accepted.
+New observations supersede older reviews; newer shared fundamentals supersede older
+sidecars. Frozen sources retain all review/raw provenance, validated by the shared
+replay/readiness builder. Unproven blank/zero values remain blocked.
+
+`AnnualCollector.collect(ref_date,batch=20,tickers=None)` keeps background least-checked
+metadata rotation by default. Explicit targets are checked against the latest observed
+eligible universe and returned as `rejected_targets` when unverified/ineligible.
+Target selection prioritizes latest candidates without demonstrated annual growth,
+dividend, or eligibility failures, then least-recently-checked/ticker order. Attempts
+include `error_categories` (`transient` versus `missing_source`), while summaries expose
+category counts and attempted tickers. Request/time pacing ceilings, receipt journaling,
+strict account parsing, exact annual DPS and comparability gates remain unchanged.
+
+Collect explicitly with `scripts/fujimoto_research.py --collect-annual --database URL
+--tickers 005930,000660 --batch 20 --output collection.json`; omit `--tickers` for
+background rotation. The command uses configured DART credentials and current KST date,
+records actual observations and reports rejected targets; no execution permission is granted.

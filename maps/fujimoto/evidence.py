@@ -107,11 +107,63 @@ class ValuationRecord:
     ref_date: date
     available_at: datetime
     per: float | None
+    status: str | None = None
+    provenance: dict | None = None
 
     def __post_init__(self) -> None:
         if not self.ticker:
             raise DataQualityError("missing_ticker")
         _number(self.per, "per")
+        if self.status not in {None, "numeric", "unknown", "verified_not_applicable"}:
+            raise DataQualityError("invalid_valuation_status")
+        if self.status == "numeric" and self.per is None:
+            raise DataQualityError("invalid_valuation_status")
+        if self.status == "verified_not_applicable" and (self.per is not None and self.per > 0):
+            raise DataQualityError("invalid_valuation_status")
+        if self.provenance is not None or self.status == "verified_not_applicable":
+            validate_valuation_provenance(self)
+
+
+
+def validate_valuation_provenance(row: ValuationRecord) -> None:
+    """Reject malformed, mismatched or future source/review evidence on every rebuild."""
+    import re
+    from urllib.parse import urlparse
+    from maps.fujimoto.repository import fingerprint
+    try:
+        proof = row.provenance
+        source = proof["source"]
+        observed = datetime.fromisoformat(source["observed_at"])
+        if (source["ticker"] != row.ticker or source["ref_date"] != row.ref_date.isoformat()
+                or source["per"] != row.per or _utc(observed) > _utc(row.available_at)
+                or _utc(observed) > datetime.now(timezone.utc)
+                or source["raw_hash"] != fingerprint(source["raw"])):
+            raise ValueError("source_binding")
+        def document(url, digest):
+            parsed = urlparse(url)
+            return (parsed.scheme == "https" and bool(parsed.hostname) and parsed.username is None
+                    and parsed.password is None and parsed.port in (None, 443)
+                    and re.fullmatch(r"[0-9a-f]{64}", digest))
+        def provider(url):
+            host = urlparse(url).hostname or ""
+            return next((domain for domain in ("krx.co.kr", "fss.or.kr")
+                         if host == domain or host.endswith("." + domain)), None)
+        if not document(source["source_url"], source["document_hash"]):
+            raise ValueError("source_document")
+        if row.status == "verified_not_applicable":
+            review = proof["review"]
+            reviewed = datetime.fromisoformat(review["observed_at"])
+            if (review["source_id"] != proof["source_id"] or review["source_hash"] != fingerprint(source)
+                    or review["ticker"] != row.ticker or review["ref_date"] != row.ref_date.isoformat()
+                    or not _utc(observed) <= _utc(reviewed) <= _utc(row.available_at)
+                    or _utc(reviewed) > datetime.now(timezone.utc)
+                    or not document(review["contract_url"], review["contract_hash"])
+                    or provider(review["contract_url"]) is None
+                    or provider(review["contract_url"]) != provider(source["source_url"])
+                    or len(review["explanation"].strip()) < 20):
+                raise ValueError("review_binding")
+    except (TypeError, KeyError, ValueError, AttributeError) as exc:
+        raise DataQualityError("invalid_valuation_provenance") from exc
 
 
 @dataclass(frozen=True)
@@ -206,12 +258,14 @@ class SelectionResult:
 def screen(ticker: str, annual_records: Iterable[AnnualRecord], valuations: Iterable[ValuationRecord],
            sectors: SectorSnapshot | None, prices: pd.DataFrame, cutoff: date, *,
            eligible: bool = False, maximum_return_20: float = .2,
-           minimum_dividend_growth: float = 0) -> SelectionResult:
+           minimum_dividend_growth: float = 0, screening_version: int = 1) -> SelectionResult:
     """Screen only explicit eligible KOSPI/KOSDAQ ordinary-share historical evidence.
 
     eligible is the existing DataQualityFilter's historical eligibility result.
     Sector/PER inputs must be exact cutoff snapshots, not latest current values.
     """
+    if type(screening_version) is not int or screening_version not in {1, 2}:
+        raise DataQualityError("unsupported_screening_version")
     rows = list(annual_records)
     if any(r.ticker != ticker for r in rows):
         raise DataQualityError("mixed_ticker_evidence")
@@ -236,9 +290,12 @@ def screen(ticker: str, annual_records: Iterable[AnnualRecord], valuations: Iter
             if old is None or _utc(row.available_at) > _utc(old.available_at):
                 dated[row.ticker] = row
     peer_pers = [r.per for t, r in dated.items() if ticker in membership and
-                 membership.get(t) == membership[ticker] and r.per is not None and r.per > 0]
+                 membership.get(t) == membership[ticker] and r.per is not None and r.per > 0
+                 and (screening_version == 1 or r.status != "verified_not_applicable")]
     peers = {t for t, sector in membership.items() if sector == membership.get(ticker)}
-    if any(t not in dated or dated[t].per is None for t in peers):
+    if any(t not in dated or (dated[t].per is None if screening_version == 1 else
+           dated[t].status != "verified_not_applicable" and
+           (dated[t].per is None or dated[t].per <= 0 or dated[t].status == "unknown")) for t in peers):
         reasons.append("incomplete_sector_valuation")
     sector_median = median(peer_pers) if peer_pers else None
     own = dated.get(ticker)

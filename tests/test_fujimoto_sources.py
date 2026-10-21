@@ -307,3 +307,166 @@ def test_screen_programming_errors_in_rule_builder_propagate(db, monkeypatch):
     with pytest.raises(RuntimeError, match="programming defect"):
         screen_market(db, day, now=now)
     assert db.query(FujimotoEvidence).filter_by(kind="screen").count() == 0
+
+
+def test_targeted_annual_collection_validates_observed_universe_and_resumes(db):
+    from maps.fujimoto.repository import FujimotoRepository
+    from maps.fujimoto.sources import AnnualCollector
+    from maps.data.dart_financials import DartStop
+    now = datetime(2026, 10, 8, 13, tzinfo=timezone.utc)
+    repo = FujimotoRepository(db)
+    repo.record_evidence("universe", "*", now, now, {"ref_date": "2026-10-08", "members": [
+        {"ticker": "A", "eligible": True}, {"ticker": "B", "eligible": True},
+        {"ticker": "C", "eligible": False}]})
+    db.commit()
+    class Client:
+        requests = 0
+        def corp_codes(self):
+            return {"A": "A", "B": "B"}
+        def request(self, endpoint, **params):
+            self.requests += 1
+            raise DartStop("budget_exhausted")
+    collector = AnnualCollector(db, "test", client=Client(), now=lambda: now)
+    first = collector.collect(now.date(), batch=1, tickers=["A", "B", "C", "unknown"])
+    second = collector.collect(now.date(), batch=1, tickers=["A", "B"])
+    assert first["rejected_targets"] == ["C", "unknown"]
+    assert first["attempted"] == ["A"] and second["attempted"] == ["B"]
+    assert first["transient"] == 1 and first["missing_source"] == 0
+
+
+def test_valuation_source_review_is_bound_to_actual_observation_and_newer_source(db):
+    from maps.fujimoto.sources import record_valuation_source, record_valuation_review, valuation_inputs
+    now = datetime.now(timezone.utc)
+    raw = {"ticker": "A", "PER": "-"}
+    source = record_valuation_source(db, "A", now.astimezone(__import__('maps.data.dart_financials', fromlist=['KST']).KST).date(),
+        per=None, raw=raw, source_url="https://data.krx.co.kr/actual", document_hash="a" * 64)
+    kwargs = dict(source_id=source.id, contract_url="https://data.krx.co.kr/contract",
+        contract_hash="b" * 64, explanation="Official semantics and exact ticker response establish non-applicability.", owner=1)
+    review = record_valuation_review(db, "A", source.payload["ref_date"], **kwargs)
+    assert review.observed_at >= source.observed_at
+    vals = valuation_inputs(db, now.date(), datetime.now(timezone.utc), [])
+    assert vals[0]["status"] == "verified_not_applicable"
+    record_valuation_source(db, "A", now.date(), per=12, raw={"PER": 12},
+        source_url="https://data.krx.co.kr/actual", document_hash="c" * 64)
+    assert valuation_inputs(db, now.date(), datetime.now(timezone.utc), [])[0]["per"] == 12
+    with pytest.raises(DataQualityError):
+        record_valuation_review(db, "B", source.payload["ref_date"], **kwargs)
+    with pytest.raises(DataQualityError):
+        record_valuation_review(db, "A", source.payload["ref_date"], **{**kwargs, "contract_hash": "bad"})
+
+
+def test_collect_annual_cli_reports_bounded_targets_without_execution(monkeypatch, tmp_path):
+    import json
+    from scripts.fujimoto_research import main
+    from maps.fujimoto.sources import AnnualCollector
+    calls = []
+    def collect(self, day, **kwargs):
+        calls.append((day, kwargs))
+        return {"attempted": [], "rejected_targets": ["BAD"]}
+    monkeypatch.setattr(AnnualCollector, "collect", collect)
+    output = tmp_path / "annual.json"
+    monkeypatch.setattr("sys.argv", ["fujimoto_research.py", "--collect-annual", "--database", "sqlite://",
+        "--tickers", "A,BAD", "--batch", "2", "--output", str(output)])
+    main()
+    assert calls[0][1] == {"batch": 2, "tickers": ["A", "BAD"]}
+    assert json.loads(output.read_text())["execution_permission"] is False
+
+
+def test_valuation_review_provenance_rejects_future_and_modified_raw(db):
+    from copy import deepcopy
+    from datetime import timedelta
+    from maps.fujimoto.sources import record_valuation_source, record_valuation_review, valuation_inputs
+    from maps.fujimoto.evidence import ValuationRecord
+    now = datetime.now(timezone.utc)
+    source = record_valuation_source(db, "A", now.date(), per=None, raw={"PER": "-"},
+        source_url="https://data.krx.co.kr/value", document_hash="a" * 64)
+    record_valuation_review(db, "A", now.date(), source_id=source.id,
+        contract_url="https://data.krx.co.kr/contract", contract_hash="b" * 64,
+        explanation="Verified exact ticker and provider non-applicability contract.", owner=7)
+    row = valuation_inputs(db, now.date(), datetime.now(timezone.utc), [])[0]
+    def decode(value):
+        return ValuationRecord(**{**value, "ref_date": date.fromisoformat(value["ref_date"]),
+                                  "available_at": datetime.fromisoformat(value["available_at"])})
+    assert decode(row).status == "verified_not_applicable"
+    for part in ("source", "review"):
+        bad = deepcopy(row)
+        bad["provenance"][part]["observed_at"] = (now + timedelta(days=1)).isoformat()
+        with pytest.raises(DataQualityError, match="invalid_valuation_provenance"):
+            decode(bad)
+    bad = deepcopy(row)
+    bad["provenance"]["source"]["raw"] = {"PER": 10}
+    with pytest.raises(DataQualityError, match="invalid_valuation_provenance"):
+        decode(bad)
+    with pytest.raises(DataQualityError):
+        record_valuation_source(db, "A", now.date() + timedelta(days=1), per=None, raw={"PER": "-"},
+            source_url="https://data.krx.co.kr/value", document_hash="a" * 64)
+
+
+@pytest.mark.parametrize("contract", ["https://krx.co.kr.evil.test/doc", "https://user@data.krx.co.kr/doc",
+    "https://data.krx.co.kr:444/doc", "https://dart.fss.or.kr/doc", "http://data.krx.co.kr/doc"])
+def test_per_review_rejects_nonofficial_or_different_provider_contract(db, contract):
+    from maps.fujimoto.sources import record_valuation_source, record_valuation_review
+    now = datetime.now(timezone.utc)
+    source = record_valuation_source(db, "A", now.date(), per=None, raw={"PER": "-"},
+        source_url="https://data.krx.co.kr/value", document_hash="a" * 64)
+    with pytest.raises(DataQualityError, match="invalid_valuation_provenance"):
+        record_valuation_review(db, "A", now.date(), source_id=source.id,
+            contract_url=contract, contract_hash="b" * 64,
+            explanation="Exact ticker non-applicability verified against source contract.", owner=1)
+
+
+def test_target_selection_prioritizes_latest_candidate_without_growth_failure(db):
+    from maps.fujimoto.sources import AnnualCollector
+    from maps.fujimoto.repository import FujimotoRepository
+    now = datetime(2026, 10, 8, 13, tzinfo=timezone.utc)
+    repo = FujimotoRepository(db)
+    repo.record_evidence("universe", "*", now, now, {"ref_date": now.date(), "members": [
+        {"ticker": t, "eligible": True} for t in ("A", "B")]})
+    for ticker, reasons in (("A", ["annual_growth_failed"]), ("B", ["dividend_failed"]), ("B", ["missing_dividend"])):
+        repo.record_evidence("candidate", ticker, now, now, {"rule": {"blocking_reasons": reasons}})
+    db.commit()
+    class Client:
+        requests = 0
+        def corp_codes(self):
+            return {}
+    collector = AnnualCollector(db, "test", client=Client(), now=lambda: now)
+    assert collector.collect(now.date(), batch=1, tickers=["A", "B"])["attempted"] == ["B"]
+
+
+def test_late_review_of_old_source_never_overrides_newer_observation(db):
+    from maps.fujimoto.sources import record_valuation_source, record_valuation_review, valuation_inputs
+    now = datetime.now(timezone.utc)
+    old = record_valuation_source(db, "A", now.date(), per=None, raw={"PER": "-"},
+        source_url="https://data.krx.co.kr/value", document_hash="a" * 64)
+    latest = record_valuation_source(db, "A", now.date(), per=12, raw={"PER": "12"},
+        source_url="https://data.krx.co.kr/value", document_hash="b" * 64)
+    record_valuation_review(db, "A", now.date(), source_id=old.id,
+        contract_url="https://data.krx.co.kr/contract", contract_hash="c" * 64,
+        explanation="Official non-applicability contract applies only to older observation.", owner=1)
+    value = valuation_inputs(db, now.date(), datetime.now(timezone.utc), [])[0]
+    assert value["per"] == 12 and value["provenance"]["source_id"] == latest.id
+
+
+def test_frozen_v2_excludes_only_verified_na_while_legacy_retains_null_block(db):
+    import pandas as pd
+    from maps.fujimoto.sources import record_valuation_source, record_valuation_review, valuation_inputs
+    from maps.fujimoto.replay import screening_evidence
+    from maps.data.dart_financials import KST
+    now = datetime.now(timezone.utc)
+    day = now.astimezone(KST).date()
+    source = record_valuation_source(db, "B", day, per=None, raw={"PER": "-"},
+        source_url="https://data.krx.co.kr/value", document_hash="a" * 64)
+    record_valuation_review(db, "B", day, source_id=source.id,
+        contract_url="https://data.krx.co.kr/contract", contract_hash="b" * 64,
+        explanation="Exact ticker and date verified against official provider contract.", owner=1)
+    values = valuation_inputs(db, day, datetime.now(timezone.utc), [dict(ticker="A", ref_date=day,
+        available_at=now, per=10)])
+    raw = {"annual_records": [], "valuations": values,
+        "sectors": {"ref_date": day.isoformat(), "available_at": now.isoformat(),
+                    "memberships": [["A", "s"], ["B", "s"]]},
+        "prices": [{"date": day.isoformat(), "open": 10, "high": 11, "low": 9, "close": 10, "volume": 1}],
+        "eligible": True}
+    assert "incomplete_sector_valuation" in screening_evidence(raw, "A", day).blocking_reasons
+    assert "incomplete_sector_valuation" not in screening_evidence({**raw, "screening_version": 2}, "A", day).blocking_reasons
+    raw["valuations"] = [{**r, "status": "unknown", "provenance": None} if r["ticker"] == "B" else r for r in values]
+    assert "incomplete_sector_valuation" in screening_evidence({**raw, "screening_version": 2}, "A", day).blocking_reasons

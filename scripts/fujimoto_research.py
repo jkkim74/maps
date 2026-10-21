@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import argparse
 import base64
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 import json
 from pathlib import Path
 import sys
@@ -49,7 +49,7 @@ def export_inputs(db, key: str, budget: float) -> dict:
             screen_ids[row.payload["ref_date"]] = row.id
             if row.payload.get("reason"):
                 gaps.append({"id": row.id, "reason": row.payload["reason"]})
-        elif row.kind in {"annual_source", "comparability"}:
+        elif row.kind in {"annual_source", "comparability", "valuation_source", "valuation_review"}:
             annual_ids.append(row.id)
         elif row.kind == "quote":
             tape.append(row.payload)
@@ -92,9 +92,30 @@ def main() -> None:
     parser.add_argument("--export", action="store_true")
     parser.add_argument("--persist", action="store_true")
     parser.add_argument("--demo", action="store_true")
+    parser.add_argument("--collect-annual", action="store_true")
+    parser.add_argument("--tickers", help="Comma-separated targets; omit for background rotation")
+    parser.add_argument("--batch", type=int, default=20)
     parser.add_argument("--without-orderbook", action="store_true")
     parser.add_argument("--account-mdd-limit", type=float, default=.15)
     args = parser.parse_args()
+    if args.collect_annual:
+        if not args.database or args.batch < 1 or args.batch > 500:
+            parser.error("--collect-annual requires --database and --batch in 1..500")
+        if args.export or args.persist or args.demo or args.input:
+            parser.error("--collect-annual is a separate collection operation")
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import Session
+        from maps.common.settings import get_settings
+        from maps.data.dart_financials import KST
+        from maps.fujimoto.sources import AnnualCollector
+        targets = [t.strip() for t in args.tickers.split(",") if t.strip()] if args.tickers is not None else None
+        with Session(create_engine(args.database)) as db:
+            result = AnnualCollector(db, get_settings().dart_api_key).collect(
+                datetime.now(timezone.utc).astimezone(KST).date(), batch=args.batch, tickers=targets)
+        args.output.write_text(json.dumps({"collection": result, "execution_permission": False}), encoding="utf-8")
+        return
+    if args.tickers is not None:
+        parser.error("--tickers requires --collect-annual")
     if args.export or args.persist:
         if not args.database or not args.account_key:
             parser.error("explicit --database and --account-key required")

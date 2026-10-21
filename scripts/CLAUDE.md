@@ -92,3 +92,11 @@ Export includes `recording`: sent subscription snapshots and bounded, same-proce
 disconnect/reconnect intervals with evidence IDs. Actual held-session tape coverage
 is checked independently in every shared replay run, including book-off and WFA;
 an unrelated quote or partial session is insufficient. No history is synthesized.
+
+
+Fujimoto annual completion: `fujimoto_research.py --collect-annual --database URL
+--tickers 005930,000660 --batch 20 --output collection.json` uses the existing bounded
+DART collector and configured DART API key. Targets must exist in the latest observed
+eligible universe; the JSON reports rejected targets, attempted names and transient /
+missing-source counts. Omit `--tickers` for background least-checked rotation. Collection
+is current-time evidence only; it neither backdates annual availability nor activates trading.

@@ -189,3 +189,23 @@ def test_indicator_atr_uses_wilder_seed_and_completed_flag():
     frame.loc[frame.index[-1], "complete"] = False
     with pytest.raises(DataQualityError):
         indicators(frame, frame.index[-1].date())
+
+
+def test_v2_never_treats_zero_as_na_and_requires_positive_own_per():
+    stamp = datetime(2026, 4, 7, tzinfo=timezone.utc)
+    snap = SectorSnapshot(CUTOFF, stamp, (("A", "s"), ("B", "s")))
+    frame = bars(21)
+    frame.index = pd.bdate_range(end=CUTOFF, periods=21)
+    vals = [ValuationRecord("A", CUTOFF, stamp, 10), ValuationRecord("B", CUTOFF, stamp, 0)]
+    def result(values, version=2):
+        return screen("A", [], values, snap, frame, CUTOFF, screening_version=version)
+    assert "incomplete_sector_valuation" in result(vals).reasons
+    assert "incomplete_sector_valuation" not in result(vals, 1).reasons
+    assert "missing_valuation" not in result(vals, 1).reasons
+    vals[1] = replace(vals[1], per=12)
+    assert result(vals).sector_median_per == 11
+    vals[0] = replace(vals[0], per=0)
+    assert "missing_valuation" in result(vals).reasons
+    vals[1] = replace(vals[1], per=0)
+    assert result(vals).sector_median_per is None
+    assert "missing_valuation" in result(vals).reasons

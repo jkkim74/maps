@@ -72,6 +72,72 @@ def record_comparability(db, ticker: str, receipts: list[str], *, source_url: st
     return row
 
 
+def record_valuation_source(db, ticker: str, ref_date: date, *, per: float | None,
+                            raw: dict, source_url: str, document_hash: str):
+    """Append an exact-date raw observation at actual receipt time; never alter fundamentals."""
+    from maps.fujimoto.evidence import ValuationRecord
+    now = datetime.now(timezone.utc)
+    ref_date = date.fromisoformat(ref_date) if isinstance(ref_date, str) else ref_date
+    payload = json_data(dict(ticker=ticker, ref_date=ref_date, per=per, raw=raw,
+        raw_hash=fingerprint(raw), source_url=source_url, document_hash=document_hash, observed_at=now))
+    if not isinstance(raw, dict) or not raw or ref_date > now.astimezone(KST).date():
+        raise DataQualityError("invalid_valuation_provenance")
+    ValuationRecord(ticker, ref_date, now, per, "numeric" if per is not None else "unknown",
+                    {"source": payload})
+    row = FujimotoRepository(db).record_evidence("valuation_source", ticker, now, now, payload)
+    db.commit()
+    return row
+
+
+def record_valuation_review(db, ticker: str, ref_date: date, *, source_id: int,
+                            contract_url: str, contract_hash: str, explanation: str,
+                            owner: int | None):
+    """Bind official non-applicability semantics to one immutable actual source revision."""
+    from maps.fujimoto.evidence import ValuationRecord
+    now = datetime.now(timezone.utc)
+    ref_date = date.fromisoformat(ref_date) if isinstance(ref_date, str) else ref_date
+    repo = FujimotoRepository(db)
+    source = next((r for r in repo.evidence_as_of("valuation_source", ticker, now) if r.id == source_id), None)
+    if source is None:
+        raise DataQualityError("recorded_valuation_source_required")
+    payload = json_data(dict(ticker=ticker, ref_date=ref_date, source_id=source_id,
+        source_hash=fingerprint(source.payload), contract_url=contract_url, contract_hash=contract_hash,
+        explanation=explanation, reviewed_by=owner, observed_at=now))
+    ValuationRecord(ticker, ref_date, now, source.payload["per"], "verified_not_applicable",
+        {"source_id": source.id, "source": source.payload, "review": payload})
+    row = repo.record_evidence("valuation_review", ticker, now, now, payload)
+    db.commit()
+    return row
+
+
+def valuation_inputs(db, ref_date: date, now: datetime, fundamentals: list[dict]) -> list[dict]:
+    """Latest observation wins; a review applies only to its exact source, never a newer value."""
+    repo = FujimotoRepository(db)
+    values = {r["ticker"]: {**r, "status": "numeric" if r["per"] is not None else "unknown"}
+              for r in fundamentals}
+    sources = db.query(FujimotoEvidence).filter_by(kind="valuation_source").order_by(FujimotoEvidence.id)
+    for source in sources:
+        if (source.payload.get("ref_date") != ref_date.isoformat()
+                or source.observed_at > utc_naive(now) or source.available_at > utc_naive(now)):
+            continue
+        old = values.get(source.ticker)
+        if old:
+            previous = old.get("provenance", {}).get("source", {}).get("observed_at", old["available_at"])
+            previous = datetime.fromisoformat(previous) if isinstance(previous, str) else previous
+            if utc_naive(previous) > source.observed_at:
+                continue
+        reviews = [r for r in repo.evidence_as_of("valuation_review", source.ticker, now)
+                   if r.payload.get("source_id") == source.id]
+        review = reviews[-1] if reviews else None
+        values[source.ticker] = dict(ticker=source.ticker, ref_date=ref_date,
+            available_at=max(source.observed_at, review.observed_at if review else source.observed_at),
+            per=source.payload["per"], status="verified_not_applicable" if review else
+                ("numeric" if source.payload["per"] is not None else "unknown"),
+            provenance={"source_id": source.id, "source": source.payload,
+                        **({"review": review.payload} if review else {})})
+    return json_data(list(values.values()))
+
+
 class AnnualCollector:
     """Resumable all-market queue; shared DART pacing/request/time budgets apply."""
     def __init__(self, db, api_key: str, *, client=None, now=None):
@@ -79,21 +145,35 @@ class AnnualCollector:
         self.now = now or (lambda: datetime.now(timezone.utc))
         self.repo, self.financials = FujimotoRepository(db), DartFinancialRepository(db)
 
-    def collect(self, ref_date: date, *, batch: int = 20) -> dict:
+    def collect(self, ref_date: date, *, batch: int = 20, tickers: list[str] | None = None) -> dict:
         """Journal revisions first, then fetch exact latest financial/dividend receipts."""
-        summary = {"collected": 0, "partial": 0, "requests": 0, "status": "success"}
-        if not self.api_key:
-            return {**summary, "status": "insufficient", "reason": "missing_dart_api_key"}
+        summary = {"collected": 0, "partial": 0, "requests": 0, "status": "success",
+                   "attempted": [], "rejected_targets": [], "transient": 0, "missing_source": 0}
         client = self.client or DartClient(self.api_key)
         # Current ingestion universe is never reused as historical membership.
+        targets = tickers
         tickers = [r.ticker for r in self.db.query(SecurityMetadata).filter(
             SecurityMetadata.market.in_(("KOSPI", "KOSDAQ")), SecurityMetadata.security_type == "STOCK")]
+        priorities = {}
+        if targets is not None:
+            universes = self.repo.evidence_as_of("universe", "*", self.now())
+            latest = max(universes, key=lambda r: (r.payload.get("ref_date", ""), r.observed_at, r.id)) if universes else None
+            allowed = {m["ticker"] for m in latest.payload["members"] if m.get("eligible") is True} if latest else set()
+            summary["rejected_targets"] = sorted(set(targets) - allowed)
+            tickers = sorted(set(targets) & allowed)
+            for row in self.db.query(FujimotoEvidence).filter_by(kind="candidate").order_by(FujimotoEvidence.id):
+                if row.observed_at <= utc_naive(self.now()) and row.available_at <= utc_naive(self.now()):
+                    reasons = row.payload.get("rule", {}).get("blocking_reasons", [])
+                    priorities[row.ticker] = bool(set(reasons) & {"annual_growth_failed", "dividend_failed", "ineligible_security"})
         checked = {r.ticker: r.observed_at for r in self.db.query(FujimotoEvidence).filter_by(
             kind="annual_collection").order_by(FujimotoEvidence.id)}
-        tickers.sort(key=lambda t: (checked.get(t, datetime.min), t))
+        tickers.sort(key=lambda t: (priorities.get(t, False), checked.get(t, datetime.min), t))
+        if not self.api_key:
+            return {**summary, "status": "insufficient", "reason": "missing_dart_api_key"}
         try:
-            mapping = client.corp_codes()
-            for ticker in tickers[:batch]:
+            mapping = client.corp_codes() if tickers else {}
+            for ticker in tickers[:max(0, min(batch, 500))]:
+                summary["attempted"].append(ticker)
                 errors = []
                 try:
                     if ticker not in mapping:
@@ -164,15 +244,23 @@ class AnnualCollector:
                     if isinstance(exc, DartStop):
                         summary["status"] = "partial"
                 now = self.now()
+                categories = ["transient" if e == "transient_exhausted" or e == "budget_exhausted"
+                              or e.startswith(("http_429", "http_5", "dart_020", "dart_021", "dart_800", "dart_900"))
+                              else "missing_source" for e in errors]
+                for category in set(categories):
+                    summary[category] += 1
                 self.repo.record_evidence("annual_collection", ticker, now, now,
-                    {"errors": errors, "status": "partial" if errors else "collected",
+                    {"errors": errors, "error_categories": categories, "status": "partial" if errors else "collected",
                      "comparability": "requires_source_review"})
                 self.db.commit()
                 summary["partial" if errors else "collected"] += 1
                 if summary["status"] == "partial":
                     break
         except (DartStop, ValueError) as exc:
-            summary.update(status="partial", reason=str(exc))
+            category = "transient" if str(exc) in {"budget_exhausted", "transient_exhausted"} or str(exc).startswith(
+                ("http_429", "http_5", "dart_020", "dart_021", "dart_800", "dart_900")) else "missing_source"
+            summary.update(status="partial", reason=str(exc), error_category=category)
+            summary[category] += 1
         summary["requests"] = client.requests
         if summary["partial"]:
             summary["status"] = "partial"
@@ -263,6 +351,7 @@ def screen_market(db, ref_date: date, *, now: datetime | None = None) -> dict:
     vals = [{"ticker": v.ticker, "ref_date": v.date, "available_at": v.updated_at, "per": v.per}
         for v in db.query(SecurityFundamental).filter(SecurityFundamental.date == ref_date,
                                                      SecurityFundamental.updated_at <= utc_naive(now))]
+    vals = valuation_inputs(db, ref_date, now, vals)
     history = HistoricalOHLCVRepository(db)
     ranked, count, blocked, blocking_reasons = [], 0, 0, {}
     remaining = max(0, get_settings().maps_fujimoto_candidate_rows -
@@ -279,7 +368,7 @@ def screen_market(db, ref_date: date, *, now: datetime | None = None) -> dict:
         # Same close*volume definition as HistoricalOHLCVRepository.avg_turnover_20d.
         prices = [{"date": index.date(), **{k: row[k] for k in ("open", "high", "low", "close", "volume")},
                    "turnover": row["close"] * row["volume"]} for index, row in frame.iterrows()]
-        raw = _raw_numbers(json_data({"annual_records": annual, "financial_records": financial,
+        raw = _raw_numbers(json_data({"screening_version": 2, "annual_records": annual, "financial_records": financial,
             "sectors": sectors, "valuations": vals, "prices": prices, "eligible": member["eligible"]}))
         if prices:
             try:
