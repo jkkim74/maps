@@ -518,6 +518,9 @@ Official identity observations (`eps_identity`) are committed before later
 list/statement fetches, so a newly known corporation change blocks old EPS even
 when subsequent collection fails. Current proofs bind the latest identity;
 already frozen snapshots retain their own historical identity context.
+Archived EPS ingestion seeds identity only when no independent observation exists.
+Re-importing unchanged or changed financial archives cannot replace a newer
+independent identity or revive its superseded reviewed exclusion.
 Blank, null and unrecognized market/security-group fields remain unknown, not
 affirmative exclusions, and their missing-PER peers continue blocking coverage.
 

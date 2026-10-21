@@ -387,7 +387,7 @@ def test_unknown_official_group_or_market_keeps_missing_per_peer_blocking(db,fie
 
 @pytest.mark.parametrize("failure",["list_transient","statement_transient","no_annual"])
 def test_collector_identity_change_survives_later_failure_and_old_snapshot_replays(db,monkeypatch,failure):
-    from maps.fujimoto.valuation import EPSCollector, exclusion_inputs, record_security_source, security_inputs
+    from maps.fujimoto.valuation import EPSCollector, exclusion_inputs, record_security_source, security_inputs, record_eps_source
     from maps.fujimoto.repository import FujimotoRepository, json_data
     from maps.fujimoto.replay import screening_evidence
     from maps.data.dart_financials import KST
@@ -425,6 +425,14 @@ def test_collector_identity_change_survives_later_failure_and_old_snapshot_repla
     assert exclusion_inputs(db,day,datetime.now(timezone.utc)) == {}
     identities = db.query(FujimotoEvidence).filter_by(kind="eps_identity",ticker="B").order_by(FujimotoEvidence.id).all()
     assert identities[-1].payload["corp_code"] == "changed"
+    # Re-importing the exact archive can reuse the EPS source, never override a
+    # newer independently observed identity or revive its old reviewed exclusion.
+    imported = record_eps_source(db,"B",corp_code="001",receipt="20260320000001",year=2025,basis="CFS",
+        publication_date=date(2026,3,20),response=proof["source"]["response"],**identity_and_filing())
+    assert imported.id == proof["source_id"]
+    assert exclusion_inputs(db,day,datetime.now(timezone.utc)) == {}
+    assert db.query(FujimotoEvidence).filter_by(kind="eps_identity",ticker="B").order_by(
+        FujimotoEvidence.id.desc()).first().id == identities[-1].id
     assert frozen == raw and screening_evidence(frozen,"A",day) == before
 
 
@@ -450,3 +458,31 @@ def test_frozen_identity_context_is_validated_on_shared_rebuild(db,monkeypatch,f
     proof["identity_observation"]["source"][field] = value
     with pytest.raises(DataQualityError,match="invalid_strategy_exclusion"):
         validate_exclusion(proof,"B",date(2026,10,21),datetime.now(timezone.utc))
+
+
+def test_changed_archived_financials_cannot_replace_newer_independent_identity(db,monkeypatch):
+    import maps.fujimoto.valuation as module
+    from maps.common.models import FujimotoEvidence
+    proof = historical_negative_proof(db,monkeypatch)
+    frozen = deepcopy(proof)
+    class Clock(datetime):
+        instant = datetime(2026,10,1,3,tzinfo=timezone.utc)
+        @classmethod
+        def now(cls,tz=None):
+            return cls.instant
+    with monkeypatch.context() as scoped:
+        scoped.setattr(module,"datetime",Clock)
+        fresh = module._record_identity_observation(db,"B",{"B":"changed"})
+        assert module.exclusion_inputs(db,date(2026,10,1),Clock.instant) == {}
+        Clock.instant = datetime(2026,10,2,3,tzinfo=timezone.utc)
+        source = module.record_eps_source(db,"B",corp_code="001",receipt="20260320000001",year=2025,basis="CFS",
+            publication_date=date(2026,3,20),response={"status":"000","list":[{**eps_row(),"thstrm_amount":"-11"}]},
+            **identity_and_filing())
+        assert source.id != proof["source_id"]
+        # Even a new review of changed archived data, past its next-session
+        # boundary, cannot contradict the independently known corporation.
+        module.review_eps_source(db,source.id,owner=1,explanation="Reviewed changed archived annual common EPS statement.")
+    assert module.exclusion_inputs(db,date(2026,10,21),datetime.now(timezone.utc)) == {}
+    assert db.query(FujimotoEvidence).filter_by(kind="eps_identity",ticker="B").order_by(
+        FujimotoEvidence.id.desc()).first().id == fresh.id
+    module.validate_exclusion(frozen,"B",date(2026,10,21),datetime.now(timezone.utc))

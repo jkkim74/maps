@@ -155,7 +155,10 @@ def record_eps_source(db, ticker: str, *, corp_code: str, receipt: str, year: in
         cfs_nonapplicability=cfs_nonapplicability,
         cfs_hash=fingerprint(cfs_nonapplicability) if cfs_nonapplicability is not None else None))
     repo = FujimotoRepository(db)
-    _record_identity_observation(db,ticker,identity)
+    # Archived identity may seed initial context, but cannot supersede an
+    # independently observed corporation merely because the archive is imported.
+    if db.query(FujimotoEvidence.id).filter_by(kind="eps_identity",ticker=ticker).first() is None:
+        _record_identity_observation(db,ticker,identity)
     latest = db.query(FujimotoEvidence).filter_by(kind="eps_source",ticker=ticker).order_by(
         FujimotoEvidence.id.desc()).first()
     if latest is not None:

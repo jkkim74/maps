@@ -59,3 +59,10 @@ Rollback: revert feature commits, restart established service; evidence is appen
   and v1/v2 replay rules remain unchanged. Verification ledger is in the task report.
   Final post-fix checks: 145 valuation/source/evidence/replay/paper-trial tests plus
   69 final-review/docs-index tests passed; compileall and diff checks exit 0.
+- Task 1 review round 2: archival source ingestion now seeds identity only when
+  no independent observation exists. Re-imported unchanged or changed old-corp
+  financial archives cannot supersede a later independent identity. Extended
+  collector failure/replay regressions and a causally available changed-archive
+  review reproduce and verify the invalidated-review resurrection fix.
+  Final verification: 146 valuation/source/evidence/replay/paper-trial tests and
+  69 final-review/docs-index tests passed; compileall and diff checks exit 0.
