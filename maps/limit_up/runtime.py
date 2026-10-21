@@ -433,13 +433,16 @@ class KISIntradayRuntime:
         if drained:
             self.db.close()
 
-    def _load_security(self, ticker: str) -> SecurityMetadata | None:
-        """Read one security row on the serialized worker, never the event loop."""
-        return (
+    def _security_ineligibility_reason(self, ticker: str, *, as_of: dt.date) -> str | None:
+        """Read metadata and return only its verdict from the serialized worker."""
+        security = (
             self.db.query(SecurityMetadata)
             .filter(SecurityMetadata.ticker == ticker)
             .one_or_none()
         )
+        # A queued feed commit can expire this row as soon as the worker returns.
+        # Evaluate every ORM attribute here so the event loop cannot refresh it.
+        return v1_ineligibility_reason(security, as_of=as_of)
 
     async def scan_once(self) -> int:
         """Discover broker candidates and subscribe newly accepted common shares."""
@@ -457,8 +460,9 @@ class KISIntradayRuntime:
             ticker = str(row["ticker"])
             # 같은 ORM 세션을 펌프 스레드가 쓰고 있다. 이벤트 루프에서 직접 조회하면
             # 스캔과 주문 처리가 겹치는 순간 동시 사용이 된다.
-            security = await self._call_service(self._load_security, ticker)
-            ineligible_reason = v1_ineligibility_reason(security, as_of=now.date())
+            ineligible_reason = await self._call_service(
+                self._security_ineligibility_reason, ticker, as_of=now.date()
+            )
             # ``too_new`` 는 매매를 막되 **감시까지 막지는 않는다.** 이 엔진의 입력은
             # 전부 실시간(상한가·상장주식수·누적거래대금·체결강도)이고 하드스톱은 ATR
             # 없이 고정 5% 라 100일치 이력이 필요한 계산이 하나도 없다. 그런데 2026년

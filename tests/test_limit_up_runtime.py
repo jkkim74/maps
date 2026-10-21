@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import itertools
 import json
 import threading
+from collections.abc import Callable
+from typing import Any
 
 import pytest
 
@@ -576,6 +579,104 @@ def _scan_runtime(db, rows: list[dict], ranked_count: int, listed: set[str]):
 
     runtime._call_service = _call_service
     return runtime
+
+
+@pytest.mark.parametrize(
+    ("metadata", "execution_mode", "rejection"),
+    [
+        ({}, "recommend_only", None),
+        ({"listing_date": dt.date(2026, 8, 20)}, "observe_only", None),
+        ({"listing_date": None}, None, "ineligible_security:listing_unknown"),
+        ({"name": "테스트우"}, None, "ineligible_security:preferred"),
+    ],
+    ids=["common", "new_listing", "unknown_listing", "preferred"],
+)
+async def test_scan_keeps_metadata_reads_in_worker_during_feed_commit(
+    metadata: dict[str, object], execution_mode: str | None, rejection: str | None,
+) -> None:
+    """An expired metadata row must not refresh on the loop during a feed commit."""
+    from sqlalchemy import create_engine, event
+    from sqlalchemy.orm import Session
+    from sqlalchemy.pool import StaticPool
+
+    from maps.common.db import Base
+    from maps.common.models import LimitUpDailyGuard, LimitUpSession
+    from maps.limit_up.runtime import KISIntradayRuntime
+
+    engine = create_engine(
+        "sqlite:///:memory:", poolclass=StaticPool,
+        connect_args={"check_same_thread": False},
+    )
+    Base.metadata.create_all(engine)
+    loop = asyncio.get_running_loop()
+    commit_entered = asyncio.Event()
+    release_commit = threading.Event()
+
+    try:
+        with Session(engine) as db:
+            runtime = _scan_runtime(db, [_scan_row("111111")], 1, listed=set())
+            security = SecurityMetadata(**{
+                "ticker": "111111", "name": "테스트", "market": "KOSDAQ",
+                "security_type": "STOCK", "listing_date": dt.date(2020, 1, 1),
+                **metadata,
+            })
+            db.add(security)
+            db.commit()
+            runtime._service_queue = asyncio.PriorityQueue()
+            runtime._service_sequence = itertools.count()
+            queued_call = KISIntradayRuntime._call_service.__get__(runtime)
+            first_call = True
+            feed_commit = None
+
+            @event.listens_for(engine, "commit", once=True)
+            def _pause_commit(_connection: object) -> None:
+                """Hold the real transaction in PREPARED until scanning resumes."""
+                loop.call_soon_threadsafe(commit_entered.set)
+                assert release_commit.wait(timeout=5), "scan did not release commit"
+
+            def _commit_feed() -> None:
+                """Expire metadata after lookup, before the event-loop consumer."""
+                db.expire(security)
+                db.commit()
+
+            async def _race_after_lookup(
+                fn: Callable[..., Any], *args: Any, **kwargs: Any,
+            ) -> Any:
+                """Interleave a feed commit before consuming the first worker result."""
+                nonlocal first_call, feed_commit
+                if not first_call:
+                    release_commit.set()
+                    return await queued_call(fn, *args, **kwargs)
+                first_call = False
+                result = await queued_call(fn, *args, **kwargs)
+                feed_commit = asyncio.create_task(queued_call(_commit_feed))
+                await asyncio.wait_for(commit_entered.wait(), timeout=5)
+                return result
+
+            runtime._call_service = _race_after_lookup
+            pump = asyncio.create_task(runtime._service_pump())
+            try:
+                accepted = await asyncio.wait_for(runtime.scan_once(), timeout=5)
+            finally:
+                release_commit.set()
+                if feed_commit is not None:
+                    await asyncio.wait_for(feed_commit, timeout=5)
+                pump.cancel()
+                await asyncio.gather(pump, return_exceptions=True)
+
+            session = db.query(LimitUpSession).filter_by(ticker="111111").one_or_none()
+            if execution_mode is not None:
+                assert accepted == 1
+                assert session is not None and session.execution_mode == execution_mode
+                assert runtime._subscription_queue.get_nowait() == "111111"
+            else:
+                assert accepted == 0
+                assert session is None
+                assert runtime._subscription_queue.empty()
+                guard = db.get(LimitUpDailyGuard, dt.date(2026, 8, 28))
+                assert guard is not None and guard.scan_rejections == {"111111": rejection}
+    finally:
+        engine.dispose()
 
 
 async def test_scan_reports_the_rank_size_and_every_reject_reason(db, caplog) -> None:
