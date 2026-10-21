@@ -113,7 +113,7 @@ def code_fingerprint() -> str:
     root = Path(__file__).parent
     return fingerprint({name: (root / name).read_text(encoding="utf-8")
                         for name in ("domain.py", "evidence.py", "indicators.py", "repository.py", "replay.py", "validation.py",
-                                     "service.py", "feed.py", "sources.py")})
+                                     "service.py", "feed.py", "sources.py", "valuation.py")})
 
 
 def expected_net_sale(bid: float, quantity: int, sale_cost_rate: float, slippage: float = 0) -> Decimal:

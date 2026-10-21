@@ -69,6 +69,13 @@ and offline DOM/fetch fixtures (Node required, no added package). It checks read
 budget suggestions/draft retention, explicit consent/readiness, separate activation
 contracts, KST trial states, cumulative order reservations and fail-closed refresh.
 
+## Fujimoto current valuation
+
+`test_fujimoto_current_valuation.py` verifies current v3 EPS dependency invalidation
+at readiness, both BUY policies, reservation/final guards and quote admission;
+frozen replay, owned exits and dependency-scoped query bounds remain covered.
+Valuation-only code changes must invalidate replay and approval code bindings.
+
 ## 미국 전용 모의매매
 
 `test_us_execution_core.py`는 영속 원장·중복 방지·귀속·예약·동시 실행과 대사를 검증한다. `test_kis_us_adapter.py`와 `test_us_trading_rules.py`는 모의 HTTP/시세 계약, 거래일 식별자, 달력·가격 규칙을 검증한다. `test_us_trading_api.py`, `test_us_runtime.py`, `test_us_simulator.py`, `test_us_trading_ui.py`는 관리자 권한, 비활성화 후 미확정 주문 동기화, 로컬 주입 도구와 화면 이벤트 흐름을 검증한다. 실제 KIS 모의계좌 연동이나 실거래를 수행하는 테스트가 아니다.

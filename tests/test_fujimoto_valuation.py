@@ -486,3 +486,22 @@ def test_changed_archived_financials_cannot_replace_newer_independent_identity(d
     assert db.query(FujimotoEvidence).filter_by(kind="eps_identity",ticker="B").order_by(
         FujimotoEvidence.id.desc()).first().id == fresh.id
     module.validate_exclusion(frozen,"B",date(2026,10,21),datetime.now(timezone.utc))
+
+
+def test_official_kosdaq_global_segment_is_collected_and_classified_as_ordinary(db,monkeypatch):
+    import pandas as pd
+    from maps.fujimoto.valuation import collect_metadata,security_inputs,security_kind
+    from maps.fujimoto.repository import FujimotoRepository
+    from maps.data.dart_financials import KST
+    now = datetime.now(timezone.utc)
+    day = now.astimezone(KST).date()
+    FujimotoRepository(db).record_evidence("universe","*",now,now,{"ref_date":day,
+        "members":[{"ticker":"GLOBAL","eligible":True}]})
+    db.commit()
+    row = dict(ISU_SRT_CD="GLOBAL",KIND_STKCERT_TP_NM="보통주",SECT_TP_NM="우량기업부",
+               MKT_TP_NM="KOSDAQ GLOBAL",SECUGRP_NM="주권")
+    monkeypatch.setattr("maps.data.krx_adapter.fetch_basic_information",lambda:pd.DataFrame([row]))
+    result = collect_metadata(db,day)
+    assert result["collected"] == 1 and result["missing_tickers"] == [] and result["status"] == "success"
+    proof = security_inputs(db,day,datetime.now(timezone.utc))["GLOBAL"]
+    assert security_kind(proof,"GLOBAL",day) == "ordinary"

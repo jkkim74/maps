@@ -342,6 +342,10 @@ Immutable control stores policy, UUID authorization_id, owner/account/config IDs
 code hash and actual UTC activation time. `starts_at` is 09:00 KST on the next KRX
 session; `expires_at` is 15:20 KST on its twentieth session, using configured closures.
 `authorize_order` is shared by service sizing and OrderManager source validation.
+For v3 BUYs it also checks the actual candidate's frozen negative-EPS dependencies
+against current source/receipt/independent identity truth, for both authorization
+policies. Internal `candidate_id` binds reservations and final source guards to
+their actual candidate even if a newer candidate is later recorded.
 Trial BUY rechecks bindings, consent/entry switch, dates, sources/account/feed freshness
 and storage; its exact candidate rule and shared decision must match its reservation.
 Before-start quotes retain scheduled permission and cannot create BUY watch cycles.
@@ -490,7 +494,8 @@ Official KRX basic metadata is frozen for the exact observed current date. Only
 `KIND_STKCERT_TP_NM=보통주` and known `SECT_TP_NM` values identify ordinary peers.
 Official `SPAC` sector prefixes and `구형우선주`/`신형우선주`/`종류주권` leave the
 comparison population and cannot enter. Market/security group fields must also
-establish KOSPI/KOSDAQ shares. Explicit blank sector labels are accepted; absent
+establish KOSPI/KOSDAQ shares, explicitly including the official `KOSDAQ GLOBAL`
+segment. Other unknown market labels remain blocking. Explicit blank sector labels are accepted; absent
 fields, unknown labels and missing peer rows block coverage. Names never establish
 this classification. All ordinary sector peers remain, including ineligible,
 loss-making and illiquid securities. Positive sector median still includes self.
@@ -523,6 +528,19 @@ Re-importing unchanged or changed financial archives cannot replace a newer
 independent identity or revive its superseded reviewed exclusion.
 Blank, null and unrecognized market/security-group fields remain unknown, not
 affirmative exclusions, and their missing-PER peers continue blocking coverage.
+
+Current entry additionally calls `validate_current_exclusions`: two queries
+restricted to the frozen candidate's exclusion peers compare the latest known
+same-cohort EPS source, pending receipt and independent identity with the frozen
+dependencies. Readiness, paper-test/validated BUY authorization, sizing and final
+source guards all reject superseded premises. Quote admission skips superseded
+candidates before reserving empty cycles or counting the five eligible slots.
+Checks within one admission pass may be cached; each authorization rechecks.
+Historical replay keeps its original context, and current checks never replace
+frozen prices, numeric PER, classifications or median inputs. SELL consent and
+owned-position exits remain independent. No dependencies means no extra queries.
+`code_fingerprint` includes `valuation.py`, so changes confined to these rules
+invalidate both measured replay/code approvals and paper-test code bindings.
 
 The daily `run_fujimoto_screen` job refreshes metadata once, checks a bounded
 missing-EPS ordinary-peer queue, then annual growth evidence using one shared

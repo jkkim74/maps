@@ -66,3 +66,19 @@ Rollback: revert feature commits, restart established service; evidence is appen
   review reproduce and verify the invalidated-review resurrection fix.
   Final verification: 146 valuation/source/evidence/replay/paper-trial tests and
   69 final-review/docs-index tests passed; compileall and diff checks exit 0.
+- Final whole-branch review fix wave: current v3 negative-EPS dependencies are
+  rechecked at readiness, both BUY authorization policies, sizing and final guards.
+  Actual candidate identity travels through reservation authorization; superseded
+  candidates cannot reserve empty cycles or occupy eligible admission slots.
+  Checks are restricted to the frozen cohort/dependencies; prices/PER/metadata and
+  historical replay remain frozen, SELL/exits stay independent. `valuation.py` is
+  now included in replay/approval code fingerprints.
+- Operational metadata correction: explicitly recognize official `KOSDAQ GLOBAL`
+  as the KOSDAQ segment in both collection and classification. A failing regression
+  first reproduced its omission; unknown other market labels remain blocking.
+- Final fix-wave verification: initial 20 integration cases failed before the
+  guard/fingerprint changes and passed after implementation. Wider focused suite
+  passed 299 tests; after the GLOBAL addition, fresh current-use/valuation suite
+  passed 72 tests (36.91s), and collection/forged-source checks passed 5 tests.
+  Compileall/diff checks exit 0. Parent's final full suite and scoped re-review
+  remain pending before Task 2 rollout.

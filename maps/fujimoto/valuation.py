@@ -268,6 +268,55 @@ def exclusion_inputs(db, cutoff: date, now: datetime) -> dict[str, dict]:
     return result
 
 
+def validate_current_exclusions(db, snapshot: dict, cutoff: date, now: datetime) -> None:
+    """Recheck only frozen EPS-exclusion dependencies before current BUY use.
+
+    Two dependency-scoped queries retain the candidate's fiscal cohort. Numeric
+    PER, metadata and prices remain frozen; historical replay never calls this.
+    """
+    if snapshot.get("screening_version",1) != 3:
+        return
+    try:
+        dependencies = {}
+        for row in snapshot["valuations"]:
+            proof = row.get("strategy_exclusion")
+            if proof is not None:
+                if row["ref_date"] != cutoff.isoformat():
+                    raise ValueError("valuation_date")
+                validate_exclusion(proof,row["ticker"],cutoff,datetime.fromisoformat(row["available_at"]))
+                dependencies[row["ticker"]] = proof
+        if not dependencies:
+            return
+        sources,identities = {},{}
+        for row in db.query(FujimotoEvidence).filter(
+                FujimotoEvidence.kind.in_(("eps_source","eps_identity")),
+                FujimotoEvidence.ticker.in_(dependencies),FujimotoEvidence.observed_at <= utc_naive(now)).order_by(FujimotoEvidence.id):
+            if row.kind == "eps_identity":
+                identities[row.ticker] = row
+            elif row.payload.get("year") == applicable_year(cutoff):
+                sources[row.ticker] = row
+        receipts = {}
+        for row in db.query(DartFilingReceipt).filter(DartFilingReceipt.ticker.in_(dependencies),
+                DartFilingReceipt.period_end == date(applicable_year(cutoff),12,31),
+                DartFilingReceipt.first_collected_at <= utc_naive(now)):
+            old = receipts.get(row.ticker)
+            if old is None or (row.publication_date,row.receipt) > (old.publication_date,old.receipt):
+                receipts[row.ticker] = row
+        for ticker,proof in dependencies.items():
+            source,identity,receipt = sources.get(ticker),identities.get(ticker),receipts.get(ticker)
+            if (source is None or identity is None or receipt is None
+                    or source.id != proof["source_id"] or source.fingerprint != fingerprint(source.payload)
+                    or source.fingerprint != fingerprint(proof["source"])
+                    or identity.id != proof["identity_observation"]["source_id"]
+                    or identity.fingerprint != fingerprint(identity.payload)
+                    or identity.fingerprint != fingerprint(proof["identity_observation"]["source"])
+                    or receipt.receipt != proof["source"]["receipt"]
+                    or receipt.publication_date.isoformat() != proof["source"]["publication_date"]):
+                raise ValueError("superseded")
+    except (KeyError,TypeError,ValueError,AttributeError,DataQualityError) as exc:
+        raise DataQualityError("superseded_strategy_exclusion") from exc
+
+
 def record_security_source(db, ref_date: date, raw: dict):
     """Current official KRX basic metadata cannot be relabelled as historical."""
     now = datetime.now(timezone.utc)
@@ -298,7 +347,7 @@ def security_kind(proof: dict | None, ticker: str, cutoff: date) -> str:
         share, sector = raw["KIND_STKCERT_TP_NM"], raw["SECT_TP_NM"]
         if "MKT_TP_NM" not in raw or "SECUGRP_NM" not in raw:
             return "unknown"
-        if raw["MKT_TP_NM"] not in {"KOSPI","KOSDAQ","KONEX"} or raw["SECUGRP_NM"] != "주권":
+        if raw["MKT_TP_NM"] not in {"KOSPI","KOSDAQ","KOSDAQ GLOBAL","KONEX"} or raw["SECUGRP_NM"] != "주권":
             return "unknown"
         if raw["MKT_TP_NM"] == "KONEX":
             return "excluded"
@@ -331,7 +380,7 @@ def collect_metadata(db, ref_date: date) -> dict:
     for raw in frame.to_dict("records"):
         # KRX sends empty strings; don't turn missing/nonfinite fields into metadata.
         raw = {k:v for k,v in raw.items() if isinstance(v,(str,int,float,bool)) and not (isinstance(v,float) and not isfinite(v))}
-        if raw.get("MKT_TP_NM") not in {"KOSPI","KOSDAQ"}:
+        if raw.get("MKT_TP_NM") not in {"KOSPI","KOSDAQ","KOSDAQ GLOBAL"}:
             continue
         row = record_security_source(db,ref_date,raw)
         counts[security_kind(row.payload,row.ticker,ref_date)] += 1

@@ -319,6 +319,7 @@ class FujimotoService:
                     continue
                 raw = json.loads(zlib.decompress(base64.b64decode(candidate.payload["raw_zlib"])))
                 rule = screening_evidence(raw, name, completed, closed_dates=tuple(self.settings.krx_closed_dates))
+                self._validate_current_candidate_exclusions(candidate,now,raw=raw)
                 if (json_data(rule) != candidate.payload.get("rule") or not rule.selection_passed
                         or rule.financial_status != "maintained" or rule.close is None or rule.blocking_reasons):
                     continue
@@ -339,6 +340,22 @@ class FujimotoService:
         if not subscribed:
             reasons.append("fresh_subscribed_recording_missing")
         return sorted(set(reasons))
+
+    def _validate_current_candidate_exclusions(self, candidate, now: datetime, *, raw: dict | None = None) -> None:
+        """Guard current EPS premises while retaining all other frozen screening inputs."""
+        from maps.fujimoto.valuation import validate_current_exclusions
+        if "raw_zlib" not in candidate.payload:
+            return  # Legacy persisted rules do not contain v3 exclusion dependencies.
+        try:
+            raw = raw if raw is not None else json.loads(zlib.decompress(base64.b64decode(candidate.payload["raw_zlib"])))
+            if raw.get("screening_version",1) != 3:
+                return
+            if (candidate.kind != "candidate" or fingerprint(candidate.payload) != candidate.fingerprint
+                    or candidate.observed_at > utc_naive(now) or candidate.available_at > utc_naive(now)):
+                raise DataQualityError("superseded_strategy_exclusion")
+            validate_current_exclusions(self.db,raw,date.fromisoformat(candidate.payload["ref_date"]),now)
+        except (KeyError,TypeError,ValueError,zlib.error) as exc:
+            raise DataQualityError("superseded_strategy_exclusion") from exc
 
     def paper_test_status(self, key: str, *, now: datetime | None = None) -> dict:
         """Read-only readiness/campaign view; never stop, reconcile or renew here."""
@@ -411,7 +428,7 @@ class FujimotoService:
             return control
 
     def authorize_order(self, key: str, *, buy: bool, now: datetime | None = None,
-                        ticker: str | None = None) -> dict:
+                        ticker: str | None = None, candidate_id: int | None = None) -> dict:
         """One shared permission path for service sizing and OrderManager source guards."""
         now = now or utcnow()
         control = self._enforce_trial_window(key, now)
@@ -420,6 +437,16 @@ class FujimotoService:
             raise ExecutionBlockedError("fujimoto_not_approved")
         if (control["execution_mode"] == "paper") != self.settings.is_paper_account:
             raise ExecutionBlockedError("fujimoto_environment_mismatch")
+        if buy and ticker is not None:
+            rows = self.repo.evidence_as_of("candidate",ticker,now) if candidate_id is None else ()
+            candidate = self.db.get(FujimotoEvidence,candidate_id) if candidate_id is not None else (rows[-1] if rows else None)
+            if candidate_id is not None and (candidate is None or candidate.kind != "candidate" or candidate.ticker != ticker):
+                raise ExecutionBlockedError("fujimoto_candidate_source_mismatch")
+            if candidate is not None:
+                try:
+                    self._validate_current_candidate_exclusions(candidate,now)
+                except DataQualityError as exc:
+                    raise ExecutionBlockedError(str(exc)) from exc
         if control.get("authorization_policy", "validated") == "paper_test":
             reasons = self._paper_environment(key)
             if reasons:
@@ -625,6 +652,19 @@ class FujimotoService:
                 evidence = RuleEvidence(wall.date(), None, blocking_reasons=("candidate_missing",))
             from maps.fujimoto.sources import current_financial_status
             evidence = replace(evidence, financial_status=current_financial_status(self.db, quote.ticker, wall.date()))
+            current_dependencies = {}
+            def dependencies_current(candidate) -> bool:
+                """Cache only within this admission pass; authorization always rechecks."""
+                if candidate.id not in current_dependencies:
+                    try:
+                        self._validate_current_candidate_exclusions(candidate,decision_now())
+                        current_dependencies[candidate.id] = True
+                    except DataQualityError:
+                        current_dependencies[candidate.id] = False
+                return current_dependencies[candidate.id]
+            if source and not dependencies_current(source):
+                evidence = replace(evidence,selection_passed=False,
+                    blocking_reasons=tuple(evidence.blocking_reasons)+("superseded_strategy_exclusion",))
             current = self.current_configs(key)
             cycles = [c for c in self.repo.cycles(key) if c.ticker == quote.ticker
                       and (self.repo.state(c.id).quantity or self.repo.state(c.id).pending_order
@@ -640,6 +680,8 @@ class FujimotoService:
                 for ticker in ranked:
                     rows = self.repo.evidence_as_of("candidate", ticker, now)
                     if rows:
+                        if not dependencies_current(rows[-1]):
+                            continue
                         raw = dict(rows[-1].payload["rule"])
                         raw["as_of"] = date.fromisoformat(raw["as_of"])
                         candidate = RuleEvidence(**raw)
@@ -735,7 +777,7 @@ class FujimotoService:
         key = cycle.account_key
         stop = None
         if decision.action == "buy":
-            self.authorize_order(key, buy=True, now=now, ticker=cycle.ticker)
+            self.authorize_order(key, buy=True, now=now, ticker=cycle.ticker,candidate_id=source.id if source else None)
             snapshot = self.manager._broker.get_execution_snapshot()
             age = (datetime.now(timezone.utc) - snapshot.as_of.astimezone(timezone.utc)).total_seconds()
             if not 0 <= age <= self.settings.maps_execution_snapshot_max_age_seconds:
@@ -761,7 +803,8 @@ class FujimotoService:
         if utc_naive(now) > valid_until:
             raise ExecutionBlockedError("quote_stale_after_wait")
         require_quote_current(quote_is_current)
-        self.authorize_order(key, buy=decision.action == "buy", now=now, ticker=cycle.ticker)
+        self.authorize_order(key, buy=decision.action == "buy", now=now, ticker=cycle.ticker,
+            candidate_id=source.id if source and decision.action == "buy" else None)
         now = decision_started_at + timedelta(seconds=monotonic() - started)
         if utc_naive(now) > valid_until:
             raise ExecutionBlockedError("quote_stale_after_wait")
@@ -921,7 +964,10 @@ def validate_source(db: Session, order: Order, context: ExecutionContext, settin
             or order.order_type != OrderType.LIMIT or money(order.limit_price) != reservation.limit_price
             or reservation.status in TERMINAL):
         raise ExecutionBlockedError("fujimoto_reservation_identity_mismatch")
-    control = service.authorize_order(key, buy=order.side == OrderSide.BUY, ticker=order.ticker)
+    source = db.get(FujimotoEvidence,reservation.evidence_id) if order.side == OrderSide.BUY else None
+    candidate_id = (source.payload.get("candidate_id") if source and source.kind == "execution_decision"
+                    else source.id if source and source.kind == "candidate" else None)
+    control = service.authorize_order(key, buy=order.side == OrderSide.BUY, ticker=order.ticker,candidate_id=candidate_id)
     if order.side == OrderSide.BUY:
         if control.get("authorization_policy") == "paper_test":
             source = db.get(FujimotoEvidence, reservation.evidence_id)
