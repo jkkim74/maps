@@ -512,8 +512,14 @@ and receipt. Actual observation/review and next-session financial availability
 remain causal. Known later receipts (including pending corrections), changed
 identity or changed source mask old reviews. Identical re-fetches reuse the first
 source/review; `eps_collection` records each check independently. Frozen proofs
-include known receipt context and rebuild through `screening_evidence` for both
+include known receipt and independent identity context and rebuild through `screening_evidence` for both
 replay and runtime readiness. An excluded negative-EPS security cannot enter.
+Official identity observations (`eps_identity`) are committed before later
+list/statement fetches, so a newly known corporation change blocks old EPS even
+when subsequent collection fails. Current proofs bind the latest identity;
+already frozen snapshots retain their own historical identity context.
+Blank, null and unrecognized market/security-group fields remain unknown, not
+affirmative exclusions, and their missing-PER peers continue blocking coverage.
 
 The daily `run_fujimoto_screen` job refreshes metadata once, checks a bounded
 missing-EPS ordinary-peer queue, then annual growth evidence using one shared

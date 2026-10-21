@@ -52,3 +52,10 @@ Rollback: revert feature commits, restart established service; evidence is appen
   (61.65s). Compileall and git diff --check exit 0. Independent parent review and
   full isolated regression are pending before integration/rollout.
 - Task 2: pending.
+- Task 1 review round 1: addressed fail-closed unknown market/group handling and
+  independent first-observed identity journaling before subsequent provider
+  failures. Current v3 proofs require latest-known identity context; frozen
+  snapshots preserve their original context. Public source ingestion signatures
+  and v1/v2 replay rules remain unchanged. Verification ledger is in the task report.
+  Final post-fix checks: 145 valuation/source/evidence/replay/paper-trial tests plus
+  69 final-review/docs-index tests passed; compileall and diff checks exit 0.

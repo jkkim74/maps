@@ -92,6 +92,27 @@ def _identity_matches(source: dict) -> bool:
     return identity.get(source["ticker"]) == source["corp_code"]
 
 
+def _record_identity_observation(db, ticker: str, identity: dict):
+    """Journal official identity immediately, independently of later financial failures."""
+    now = datetime.now(timezone.utc)
+    if "status" in identity:
+        corp = identity.get("corp_code") if identity.get("status") == "000" and identity.get("stock_code") == ticker else None
+        url = "https://opendart.fss.or.kr/api/company.json"
+    else:
+        corp = identity.get(ticker)
+        url = "https://opendart.fss.or.kr/api/corpCode.xml"
+    corp = corp if isinstance(corp,str) and corp.strip() else None
+    payload = json_data(dict(ticker=ticker,corp_code=corp,identity=identity,
+        identity_hash=fingerprint(identity),identity_url=url,observed_at=now))
+    latest = db.query(FujimotoEvidence).filter_by(kind="eps_identity",ticker=ticker).order_by(
+        FujimotoEvidence.id.desc()).first()
+    if latest is not None and latest.payload.get("corp_code") == corp:
+        return latest
+    row = FujimotoRepository(db).record_evidence("eps_identity",ticker,now,now,payload)
+    db.commit()  # A subsequent list/statement error must not roll back known identity.
+    return row
+
+
 def _source_eps(source: dict) -> Decimal:
     """Validate exact receipt, basis and original response again on every rebuild."""
     raw = source["response"]
@@ -134,6 +155,7 @@ def record_eps_source(db, ticker: str, *, corp_code: str, receipt: str, year: in
         cfs_nonapplicability=cfs_nonapplicability,
         cfs_hash=fingerprint(cfs_nonapplicability) if cfs_nonapplicability is not None else None))
     repo = FujimotoRepository(db)
+    _record_identity_observation(db,ticker,identity)
     latest = db.query(FujimotoEvidence).filter_by(kind="eps_source",ticker=ticker).order_by(
         FujimotoEvidence.id.desc()).first()
     if latest is not None:
@@ -177,6 +199,16 @@ def validate_exclusion(proof: dict, ticker: str, cutoff: date, available_at: dat
         publication = date.fromisoformat(source["publication_date"])
         ready = availability(publication, reviewed)
         known = proof["known_receipts"]
+        identity = proof["identity_observation"]["source"]
+        identity_observed = datetime.fromisoformat(identity["observed_at"])
+        identity_url = ("https://opendart.fss.or.kr/api/company.json" if "status" in identity["identity"]
+                        else "https://opendart.fss.or.kr/api/corpCode.xml")
+        if (identity["ticker"] != ticker or identity["corp_code"] != source["corp_code"]
+                or identity["identity_hash"] != fingerprint(identity["identity"])
+                or identity["identity_url"] != identity_url or not _identity_matches(identity)
+                or utc_naive(identity_observed) > utc_naive(available_at)
+                or utc_naive(identity_observed) > utc_naive(datetime.now(timezone.utc))):
+            raise ValueError("identity_context")
         if not known or any(r["ticker"] != ticker or r["period_end"] != source["period_end"]
                 or utc_naive(datetime.fromisoformat(r["observed_at"])) > utc_naive(available_at) for r in known):
             raise ValueError("receipt_context")
@@ -209,16 +241,20 @@ def exclusion_inputs(db, cutoff: date, now: datetime) -> dict[str, dict]:
     for row in sources:
         if row.payload.get("year") == applicable_year(cutoff):
             latest[row.ticker] = row
+    identities = {r.ticker:r for r in db.query(FujimotoEvidence).filter_by(kind="eps_identity").filter(
+        FujimotoEvidence.observed_at <= utc_naive(now)).order_by(FujimotoEvidence.id)}
     result = {}
     for ticker, source in latest.items():
         filings = db.query(DartFilingReceipt).filter_by(ticker=ticker, period_end=date(applicable_year(cutoff),12,31)).filter(
             DartFilingReceipt.first_collected_at <= utc_naive(now)).all()
         filing = max(filings, key=lambda r:(r.publication_date,r.receipt)) if filings else None
         reviews = [r for r in repo.evidence_as_of("eps_review",ticker,now) if r.payload.get("source_id") == source.id]
-        if filing is None or not reviews:
+        identity = identities.get(ticker)
+        if filing is None or not reviews or identity is None:
             continue
         proof = dict(source_id=source.id, source=source.payload, review=reviews[-1].payload,
                      latest_receipt=filing.receipt, corp_code=source.payload["corp_code"],
+                     identity_observation={"source_id":identity.id,"source":identity.payload},
                      known_receipts=json_data([dict(ticker=r.ticker,receipt=r.receipt,period_end=r.period_end,
                          publication_date=r.publication_date,observed_at=r.first_collected_at) for r in filings]))
         try:
@@ -259,7 +295,9 @@ def security_kind(proof: dict | None, ticker: str, cutoff: date) -> str:
         share, sector = raw["KIND_STKCERT_TP_NM"], raw["SECT_TP_NM"]
         if "MKT_TP_NM" not in raw or "SECUGRP_NM" not in raw:
             return "unknown"
-        if raw["MKT_TP_NM"] not in {"KOSPI","KOSDAQ"} or raw["SECUGRP_NM"] != "주권":
+        if raw["MKT_TP_NM"] not in {"KOSPI","KOSDAQ","KONEX"} or raw["SECUGRP_NM"] != "주권":
+            return "unknown"
+        if raw["MKT_TP_NM"] == "KONEX":
             return "excluded"
         if share in NONORDINARY or isinstance(sector,str) and sector.startswith("SPAC"):
             return "excluded"
@@ -412,6 +450,10 @@ class EPSCollector:
         client = self.client or DartClient(self.api_key)
         try:
             mapping = client.corp_codes() if targets else {}
+            if targets:
+                known_tickers = {r.ticker for r in self.db.query(FujimotoEvidence).filter_by(kind="eps_source")}
+                for ticker in sorted(known_tickers | set(targets)):
+                    _record_identity_observation(self.db,ticker,{ticker:mapping.get(ticker)})
             for ticker in targets:
                 summary["attempted"].append(ticker)
                 error = None

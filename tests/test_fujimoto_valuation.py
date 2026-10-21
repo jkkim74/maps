@@ -359,3 +359,94 @@ def test_metadata_refresh_reports_missing_exact_date_peers(db,monkeypatch):
         ISU_SRT_CD="A",KIND_STKCERT_TP_NM="보통주",SECT_TP_NM="",SECUGRP_NM="주권",MKT_TP_NM="KOSPI")]))
     report = collect_metadata(db,day)
     assert report["status"] == "partial" and report["missing_tickers"] == ["MISSING"]
+
+
+@pytest.mark.parametrize("field",["SECUGRP_NM","MKT_TP_NM"])
+@pytest.mark.parametrize("value",["",None,"unrecognized"])
+def test_unknown_official_group_or_market_keeps_missing_per_peer_blocking(db,field,value):
+    from maps.fujimoto.evidence import screen, SectorSnapshot, ValuationRecord
+    from maps.fujimoto.valuation import record_security_source, security_inputs, security_kind
+    from maps.data.dart_financials import KST
+    from tests.test_fujimoto_evidence import bars
+    now = datetime.now(timezone.utc)
+    day = now.astimezone(KST).date()
+    for ticker in ("A","B"):
+        raw = dict(ISU_SRT_CD=ticker,KIND_STKCERT_TP_NM="보통주",SECT_TP_NM="",
+                   SECUGRP_NM="주권",MKT_TP_NM="KOSPI")
+        if ticker == "B":
+            raw[field] = value
+        record_security_source(db,day,raw)
+    metadata = security_inputs(db,day,datetime.now(timezone.utc))
+    assert security_kind(metadata["B"],"B",day) == "unknown"
+    values = [ValuationRecord("A",day,now,10,provider="krx"),ValuationRecord("B",day,now,None)]
+    result = screen("A",[],values,SectorSnapshot(day,now,(("A","s"),("B","s"))),bars(),day,
+        eligible=True,screening_version=3,security_classifications=metadata)
+    assert "missing_security_classification" in result.reasons
+    assert "incomplete_sector_valuation" in result.reasons
+
+
+@pytest.mark.parametrize("failure",["list_transient","statement_transient","no_annual"])
+def test_collector_identity_change_survives_later_failure_and_old_snapshot_replays(db,monkeypatch,failure):
+    from maps.fujimoto.valuation import EPSCollector, exclusion_inputs, record_security_source, security_inputs
+    from maps.fujimoto.repository import FujimotoRepository, json_data
+    from maps.fujimoto.replay import screening_evidence
+    from maps.data.dart_financials import KST
+    from maps.common.models import FujimotoEvidence
+    proof = historical_negative_proof(db,monkeypatch)
+    now = datetime.now(timezone.utc)
+    day = now.astimezone(KST).date()
+    repo = FujimotoRepository(db)
+    repo.record_evidence("universe","*",now,now,{"ref_date":day,"members":[{"ticker":"B","eligible":False}]})
+    for ticker in ("A","B"):
+        record_security_source(db,day,dict(ISU_SRT_CD=ticker,KIND_STKCERT_TP_NM="보통주",SECT_TP_NM="",
+            SECUGRP_NM="주권",MKT_TP_NM="KOSPI"))
+    raw = json_data(dict(screening_version=3,annual_records=[],financial_records=[],eligible=True,
+        security_classifications=security_inputs(db,day,datetime.now(timezone.utc)),
+        sectors=dict(ref_date=day,available_at=now,memberships=[["A","s"],["B","s"]]),
+        valuations=[dict(ticker="A",ref_date=day,available_at=now,per=10,provider="krx"),
+                    dict(ticker="B",ref_date=day,available_at=now,per=None,strategy_exclusion=proof)],
+        prices=[dict(date=day,open=10,high=11,low=9,close=10,volume=1)]))
+    frozen = deepcopy(raw)
+    before = screening_evidence(frozen,"A",day)
+    assert "incomplete_sector_valuation" not in before.blocking_reasons
+    class Client:
+        requests = 0
+        def corp_codes(self):
+            return {"B":"changed"}
+        def request(self,endpoint,**params):
+            self.requests += 1
+            if endpoint == "list.json" and failure == "no_annual":
+                return {"status":"013"}
+            if endpoint == "list.json" and failure == "statement_transient":
+                return {"status":"000","list":[{**identity_and_filing()["filing"],"corp_code":"changed"}]}
+            raise ValueError("transient_exhausted")
+    result = EPSCollector(db,"key",client=Client()).collect(day,batch=1,tickers=["B"])
+    assert result["errors"]["B"] == ("applicable_annual_filing_missing" if failure == "no_annual" else "transient_exhausted")
+    assert exclusion_inputs(db,day,datetime.now(timezone.utc)) == {}
+    identities = db.query(FujimotoEvidence).filter_by(kind="eps_identity",ticker="B").order_by(FujimotoEvidence.id).all()
+    assert identities[-1].payload["corp_code"] == "changed"
+    assert frozen == raw and screening_evidence(frozen,"A",day) == before
+
+
+def test_noop_collection_does_not_invent_missing_identity(db,monkeypatch):
+    from maps.fujimoto.valuation import EPSCollector, exclusion_inputs
+    from maps.data.dart_financials import KST
+    proof = historical_negative_proof(db,monkeypatch)
+    day = datetime.now(timezone.utc).astimezone(KST).date()
+    class Client:
+        requests = 0
+        def corp_codes(self):
+            raise AssertionError("No targets must not request or invent an identity observation")
+    result = EPSCollector(db,"key",client=Client()).collect(day,tickers=[])
+    assert result["attempted"] == []
+    assert exclusion_inputs(db,day,datetime.now(timezone.utc))["B"]["identity_observation"] == proof["identity_observation"]
+
+
+@pytest.mark.parametrize("field,value",[("corp_code","other"),("ticker","other"),
+    ("identity_hash","a"*64),("observed_at","2099-01-01T00:00:00+00:00")])
+def test_frozen_identity_context_is_validated_on_shared_rebuild(db,monkeypatch,field,value):
+    from maps.fujimoto.valuation import validate_exclusion
+    proof = historical_negative_proof(db,monkeypatch)
+    proof["identity_observation"]["source"][field] = value
+    with pytest.raises(DataQualityError,match="invalid_strategy_exclusion"):
+        validate_exclusion(proof,"B",date(2026,10,21),datetime.now(timezone.utc))
