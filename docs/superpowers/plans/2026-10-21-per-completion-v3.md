@@ -116,3 +116,30 @@ Rollback: revert feature commits, restart established service; evidence is appen
   using `python scripts/run_isolated_tests.py`. The fix is not yet deployed. Recovery requires SSH
   to respond or an authenticated Lightsail console; the browser is at AWS sign-in
   and the user has been asked to complete login. No instance action was taken.
+- Task 2 recovery: user completed AWS console login. At 13:58:53 UTC SSH and
+  external health 200 were restored, with host uptime still 118 days. Kernel logs
+  confirm OOM killed Python 1514802 at 13:57:49 UTC in session-25188 (started at
+  13:33:14 alongside ingestion). Read-only inventory confirmed all 2,738 metadata,
+  39 EPS sources/identities and 25 reviews committed before the report. Review IDs,
+  hashes and latest receipts were rechecked without duplicate writes; all 25 become
+  available at 2026-10-22 00:00 KST, while 14 unresolved tickers retain no review.
+- Task 2 report remediation deployed: master `f847da1`, restart 14:00:15 UTC,
+  health 200/service active/env unchanged. The read-only 39-ticker report completed
+  in 31.78 seconds, peak RSS 219,380KiB, exit 0, with a 512MiB/swap-0 transient unit.
+  Control and trading switches remain unchanged; orders/fills zero and trial
+  unstarted. Full v3 screening started at actual 14:01:55 UTC on October 21,
+  under a separate 768MiB/swap-0/55-minute transient unit. Actual result pending.
+- **User-requested stop, 2026-10-21 14:19 UTC:** user asked to stop work and write
+  a handoff for the next morning. Stopped only maps-per-v3-screen-20261021.service.
+  The worker ended with TERM after 17m48.913s, memory peak 133.5MiB and no swap.
+  No new v3 screen committed: candidates remain 8,286 and screens 3; latest complete
+  screen remains v2 ID 126531 (2,762 screened, zero selected). No result file exists.
+  Final 14:19:59 UTC checks passed health/control/env/order/trial invariants.
+  Report remediation is deployed and verified; full-screen operational acceptance
+  is intentionally incomplete. Do not silently restart this task or enable trading.
+- Morning continuation is documented at the top of the PER v3 handoff. On October
+  22, inspect actual available EPS proofs and fresh official classifications first.
+  Full screening requires the current completed session after 15:30 and collected
+  current-day inputs; do not fake October 21 timestamps to finish the canceled run.
+  Remaining post-deploy error-log audit and final v3 comparison are still pending.
+  After the stop, only local handoff documentation is saved; no further push/deploy.

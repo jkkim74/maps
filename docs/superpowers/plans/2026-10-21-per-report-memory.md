@@ -48,9 +48,16 @@ The old report also retained all latest candidate ORM objects in a dictionary.
 - [x] Parent independent scoped review: approved with no findings. Serial full
   regression (`python scripts/run_isolated_tests.py`): **2,255 passed**, 24
   existing warnings, 549.27 seconds, exit 0. No product changes followed testing.
-- [ ] Operational deployment and verification after server access is recovered.
-  SSH banner and HTTP requests remain unresponsive; an authenticated AWS console
-  is not yet available. Source/review persistence and incident cause are unconfirmed.
+- [x] Operational report verification: after recovery, read-only inventory confirmed
+  2,738 security sources, 39 EPS sources/identities and 25 reviews had committed.
+  Kernel/session logs show OOM killed the ingestion-session Python at 13:57:49 UTC.
+  Master `f847da1` deployed at 14:00:15 UTC; active service/health 200 and unchanged
+  environment/control were verified. The original 39-target read-only report then
+  completed in 31.78 seconds, peak process RSS 219,380KiB, exit 0, under an isolated
+  512MiB/swap-0 transient unit. No duplicate sources/reviews were created.
+  The full v3 screen was later stopped by explicit user request; its uncommitted
+  candidates rolled back. Parent rollout acceptance remains incomplete and must
+  resume from the next-morning handoff, not by automatically rerunning the worker.
 
 Command (repository root, isolated mock DB/network-disabled runner):
 
@@ -67,7 +74,8 @@ Grouping/filtering JSON can still cost database work; this change bounds payload
 transfer and application retention, without introducing an index/migration.
 Report result rows and the selected ticker/ID sets remain proportional to the
 requested universe, but full candidate snapshots are processed individually.
-No production memory benchmark or server-cause claim is made.
+The live report measurement and recovered kernel evidence are recorded above;
+the old bulk loader was not rerun to intentionally reproduce host exhaustion.
 
 Rollback is a revert of this remediation commit after operator review. Because
 `valuation.py` participates in the code fingerprint, code-bound approvals must
