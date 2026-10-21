@@ -41,7 +41,7 @@ Targeted collector selection was considered but not implemented: actual DART ins
 
 ## Task 3: Review, deployment and live readiness
 
-- [ ] Run independent task and full-change reviews, isolated tests, compilation and diff/secrets checks.
+- [x] Run independent task and full-change reviews, isolated tests, compilation and diff/secrets checks.
 - [ ] Deploy exact reviewed commit after verifying service state and analysis lock; preserve DB/env backups and disabled execution.
 - [ ] Check actual collection/screen results at their real scheduled times or a valid current-session manual screen. Use actual selected candidate subscriptions and live quotes for acceptance; after-hours silence cannot prove the next market session.
 - [ ] Recompute status and account/cost/order/config/storage checks. Record remaining gates; if none remain except deliberate execution OFF, present the concrete scoped trial activation state for final handling. Never manufacture a candidate or a BUY.
@@ -59,6 +59,7 @@ Targeted collector selection was considered but not implemented: actual DART ins
 - Separate KRX unadjusted per-ticker histories have internally valid OHLCV but differ from stored data on 26/620 IBK dates and 99/155 Kbank dates. Raw full rows are preserved, not combined with another endpoint or silently written over historical evidence. Source/session semantics remain to be resolved before asserting source-complete readiness.
 - Task 1 commits `cfe5f6f` and `cc9b8b4`: independent task review found an in-flight reset/failure gap, fixed and re-reviewed as addressed. Four initial regressions plus two in-flight regressions reproduced red; affected final suite 216 passed (one existing warning). Initial full suite on `cfe5f6f`: 2162 passed, 24 existing warnings, 431.76 seconds. Final full suite on the corrected code is running before deployment. No schema/dependency change.
 - Task 2 is an evidence/preparation completion, not a source-readiness pass. After-close account reconciliation recovered and was READY with complete stable costs, no positions/orders and about 3.5 seconds age at 17:10 KST. No evidence justifies weakening cadence/freshness or changing PER missing-value semantics. Actual next-session continuity and candidate readiness remain open.
+- Final corrected-code full suite: **2167 passed, 24 existing warnings, 427.80 seconds**. Whole-branch independent review approved `869b814..efcbcca`, no Critical/Important findings. Compilation, diff checks and added-line secret-pattern scan passed. The deliberate missing-source-id test's existing SQLAlchemy warning remains a separate optional cleanup, without suppressing its negative coverage.
 
 ## Acceptance and rollback
 
