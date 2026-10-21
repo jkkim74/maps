@@ -357,6 +357,7 @@ class OperationalPipeline:
             details = {
                 "ref_date": ref_date.isoformat(),
                 "ohlcv_count": len(result.ohlcv),
+                "ohlcv_quality": result.ohlcv_quality,
                 "meta_count": len(result.meta),
                 "halt_count": len(result.halts),
                 "managed_count": len(result.managed),
@@ -369,6 +370,7 @@ class OperationalPipeline:
             quality_status = (result.metadata_quality or {}).get("status", "unavailable")
             status = "failed" if quality_status == "unavailable" else (
                 "partial" if quality_status != "complete" or result.investor_flow_count == 0
+                or (result.ohlcv_quality or {}).get("status", "complete") != "complete"
                 or (result.classification_quality or {}).get("status") != "complete" else "success"
             )
             return JobResult(details, status, "ok" if status == "success" else "collection_incomplete")

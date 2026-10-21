@@ -129,8 +129,18 @@ DataCollector(krx: KRXAdapterBase, db: Session, broker=None)
 |---|---|
 | `_upsert_meta(meta_list, adjusted_by_ticker)` | `security_metadata` upsert. **`listing_date` 는 소스가 알 때만 갱신** — None 으로 덮어쓰면 KRX 조회가 실패한 날 전날 값이 사라진다. 끝에 `_report_listing_date_gaps()` |
 | `_report_listing_date_gaps()` | 상장(비상폐) STOCK 행의 상장일 결측 비율. 절반 초과면 WARNING(상한가 자격 판정 전원 fail-closed 상태), 그 외 INFO. 상폐 추정 몇 건은 늘 NULL 이라 "1건 이상" 기준은 매일 울린다 |
-| `_upsert_ohlcv(rows)` | `historical_ohlcv` upsert — 유효성 검사(양수 OHLCV) 포함 |
+| `_upsert_ohlcv(rows, rejected_rows=None)` | `historical_ohlcv` upsert — 유한한 양수 가격, 0 이상 거래량, OHLC 범위 검사. 반환값은 저장 건수(int), 선택 목록에 거부 ticker/date/reason 기록 |
 | `_write_log(ref_date, status, items, note, source)` | `collection_log` 감사 기록 |
+
+OHLCV는 `low <= open/close <= high`를 만족해야 하며, `adj_close`는 없거나 유한한
+양수여야 한다. flat bar와 거래량 0은 허용한다. 잘못된 행은 보정하지 않고 거부하여
+기존 정상 행을 보존한다. 각 거부의 ticker/date/reason을 WARNING으로 남기고,
+일별·히스토리 수집 로그는 `partial`과 note의 `ohlcv_rejected_rows` 및 거부 목록을
+기록한다. `CollectionResult.ohlcv`에는 검증을 통과한 행만 포함한다. 히스토리 결과는
+완전 성공일(`success_days`), 일부 거부일(`partial_days`), 수집 실패일(`failed_days`)을
+구분하고 총 거부 건수(`rejected_rows`)를 제공한다. 메타 품질 JSON은 메타 정보만 기술한다.
+`CollectionResult.ohlcv_quality`는 가격 수집 상태, 수신/저장/거부 건수 및 거부 목록을
+제공하며, `data_collection` 잡의 details와 partial 상태 판정에도 사용한다.
 
 ## ohlcv_repo.py — HistoricalOHLCVRepository
 

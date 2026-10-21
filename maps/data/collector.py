@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import datetime
+import json
 import logging
+import math
 from typing import TYPE_CHECKING
 
 import pandas as pd
@@ -132,12 +134,21 @@ class DataCollector:
                 logger.warning("투자자 수급 수집 실패 (신규매수 fail-closed): %s", exc)
                 investor_flows = []
 
+            result.ohlcv = [row for row in ohlcv if self._is_valid_ohlcv(row)]
             self._upsert_meta(
                 meta,
-                {row.ticker: row.has_adjusted for row in ohlcv},
+                {row.ticker: row.has_adjusted for row in result.ohlcv},
                 sectors,
             )
-            saved_rows = self._upsert_ohlcv(ohlcv)
+            rejected_rows: list[dict[str, str]] = []
+            saved_rows = self._upsert_ohlcv(ohlcv, rejected_rows)
+            result.ohlcv_quality = {
+                "status": "partial" if rejected_rows else "complete",
+                "received_count": len(ohlcv),
+                "saved_count": saved_rows,
+                "rejected_count": len(rejected_rows),
+                "rejected_rows": rejected_rows,
+            }
             self._upsert_fundamentals(fundamentals)
             self._upsert_investor_flows(investor_flows)
             result.investor_flow_count = len(investor_flows)
@@ -146,6 +157,8 @@ class DataCollector:
 
             collect_market_news_sentiment(self._db, ref_date)
             notes = []
+            if rejected_rows:
+                notes.append(f"ohlcv_rejected_rows={len(rejected_rows)}: {json.dumps(rejected_rows)}")
             if classification_quality["status"] != "complete":
                 notes.append(f"sector_classification_status={classification_quality['status']}")
             if metadata.status != "complete":
@@ -185,16 +198,27 @@ class DataCollector:
 
         requested_days = _business_days(start, end)
         success_days = 0
+        partial_days = 0
         failed_days = 0
         total_rows = 0
+        rejected_count = 0
         failures: list[dict[str, str]] = []
 
         for day in requested_days:
             try:
                 rows = self._krx.get_ohlcv(day)
-                saved_rows = self._upsert_ohlcv(rows)
-                self._write_log(day, "success", saved_rows, source="krx.history")
-                success_days += 1
+                rejected_rows: list[dict[str, str]] = []
+                saved_rows = self._upsert_ohlcv(rows, rejected_rows)
+                note = None
+                if rejected_rows:
+                    note = f"ohlcv_rejected_rows={len(rejected_rows)}: {json.dumps(rejected_rows)}"
+                self._write_log(day, "partial" if rejected_rows else "success", saved_rows,
+                                note=note, source="krx.history")
+                if rejected_rows:
+                    partial_days += 1
+                    rejected_count += len(rejected_rows)
+                else:
+                    success_days += 1
                 total_rows += saved_rows
             except Exception as exc:
                 failed_days += 1
@@ -207,8 +231,10 @@ class DataCollector:
             "end": end.isoformat(),
             "business_days": len(requested_days),
             "success_days": success_days,
+            "partial_days": partial_days,
             "failed_days": failed_days,
             "rows": total_rows,
+            "rejected_rows": rejected_count,
             "failures": failures[:10],
         }
 
@@ -350,11 +376,16 @@ class DataCollector:
         else:
             logger.info("종목 메타 상장일 결측 %d/%d", missing, total)
 
-    def _upsert_ohlcv(self, rows) -> int:
-        """일봉 OHLCV를 historical_ohlcv 테이블에 upsert한다."""
+    def _upsert_ohlcv(self, rows, rejected_rows: list[dict[str, str]] | None = None) -> int:
+        """Upsert valid bars; audit rejected identities/reasons without changing prices."""
         saved_rows = 0
         for row in rows:
-            if not self._is_valid_ohlcv(row):
+            reason = self._ohlcv_rejection_reason(row)
+            if reason is not None:
+                rejection = {"ticker": row.ticker, "date": row.date.isoformat(), "reason": reason}
+                if rejected_rows is not None:
+                    rejected_rows.append(rejection)
+                logger.warning("OHLCV rejected ticker=%s date=%s reason=%s", row.ticker, row.date, reason)
                 continue
             saved_rows += 1
             existing = (
@@ -476,13 +507,26 @@ class DataCollector:
 
     @staticmethod
     def _is_valid_ohlcv(row) -> bool:
-        return (
-            row.open is not None and row.open > 0
-            and row.high is not None and row.high > 0
-            and row.low is not None and row.low > 0
-            and row.close is not None and row.close > 0
-            and row.volume is not None and row.volume >= 0
-        )
+        """Whether all supplied amounts and the unadjusted OHLC range are usable."""
+        return DataCollector._ohlcv_rejection_reason(row) is None
+
+    @staticmethod
+    def _ohlcv_rejection_reason(row) -> str | None:
+        """Explain malformed amounts/ranges; missing adjusted close remains allowed."""
+        for field in ("open", "high", "low", "close", "volume", "adj_close"):
+            value = getattr(row, field)
+            if field == "adj_close" and value is None:
+                continue
+            try:
+                if not math.isfinite(value):
+                    return f"{field} must be finite"
+                if value < 0 or (field != "volume" and value == 0):
+                    return f"{field} must be {'nonnegative' if field == 'volume' else 'positive'}"
+            except (TypeError, ValueError, OverflowError):
+                return f"{field} must be numeric and finite"
+        if not (row.low <= row.open <= row.high and row.low <= row.close <= row.high):
+            return "invalid_ohlcv_range: low <= open/close <= high required"
+        return None
 
     def _write_log(
         self,

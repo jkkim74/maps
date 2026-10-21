@@ -219,6 +219,7 @@ class CollectionResult:
     investor_flow_error: str | None = None
     metadata_quality: dict | None = None
     classification_quality: dict | None = None
+    ohlcv_quality: dict | None = None
 
 
 class KRXAdapterBase(ABC):

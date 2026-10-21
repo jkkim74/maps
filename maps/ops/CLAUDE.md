@@ -63,6 +63,10 @@ KST 실행 시간은 운영 실제값(서버 `.env` 오버라이드) 기준이�
 | `run_eod_cleanup(ref_date?)` | 15:35 | 미체결 주문 취소, 브로커 EOD 처리 |
 | `backfill_ohlcv(start, end)` | 수동 | 기간 OHLCV 백필 |
 
+`collect_data` 결과 details의 `ohlcv_quality`는 수신·저장·거부 건수와 거부 행의
+ticker/date/reason을 제공한다. 가격 행이 하나라도 거부되면 다른 품질이 정상이더라도
+잡은 `partial`이며, `ohlcv_count`는 검증을 통과한 가격만 센다.
+
 #### `run_order_cycle` 안전 체크 (순서 중요)
 
 1. `MAPS_LIVE_TRADING_ENABLED=false` → 주문 제출 없음
