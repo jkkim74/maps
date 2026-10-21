@@ -651,9 +651,12 @@ class OperationalPipeline:
         return self._job("candidate_generation", _run)
 
     def backfill_ohlcv(self, start: dt.date, end: dt.date) -> JobRun:
-        def _run(db: Session) -> dict:
+        def _run(db: Session) -> JobResult:
             collector = DataCollector(self._make_krx_adapter(), db)
-            return collector.collect_ohlcv_history(start, end)
+            details = collector.collect_ohlcv_history(start, end)
+            incomplete = details["partial_days"] > 0 or details["failed_days"] > 0
+            status = ("failed" if details["rows"] == 0 else "partial") if incomplete else "success"
+            return JobResult(details, status, "collection_incomplete" if incomplete else "ok")
 
         return self._job("ohlcv_backfill", _run)
 

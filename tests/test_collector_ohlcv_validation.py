@@ -7,6 +7,7 @@ from dataclasses import replace
 
 import pytest
 
+from maps.common.exceptions import DataCollectionError
 from maps.common.models import CollectionLog, HistoricalOHLCV
 from maps.common.settings import MapsSettings
 from maps.data.collector import DataCollector
@@ -122,3 +123,40 @@ def test_collection_job_exposes_price_rejections_without_masking_good_days(
         assert quality["rejected_rows"][0]["ticker"] == "095570"
         assert quality["rejected_rows"][0]["date"] == "2026-09-21"
         assert "range" in quality["rejected_rows"][0]["reason"]
+
+
+@pytest.mark.parametrize("days, expected_status, expected_rows, partial_days, failed_days", [
+    (["invalid"], "failed", 0, 1, 0),
+    (["mixed"], "partial", 1, 1, 0),
+    (["invalid", "valid"], "partial", 1, 1, 0),
+    (["unavailable"], "failed", 0, 0, 1),
+    (["unavailable", "valid"], "partial", 1, 0, 1),
+    (["valid"], "success", 1, 0, 0),
+])
+def test_history_job_status_matches_saved_and_incomplete_days(
+    db, bar, monkeypatch, days, expected_status, expected_rows, partial_days, failed_days,
+) -> None:
+    """A zero-save rejected/failed backfill must never report operational success."""
+    adapter = MockKRXAdapter()
+
+    def get_ohlcv(day: dt.date) -> list[OHLCVData]:
+        state = days[(day - bar.date).days]
+        if state == "unavailable":
+            raise DataCollectionError("source unavailable")
+        good = replace(bar, date=day)
+        bad = replace(good, high=4180, ticker="005930")
+        return [good] if state == "valid" else [good, bad] if state == "mixed" else [bad]
+
+    monkeypatch.setattr(adapter, "get_ohlcv", get_ohlcv)
+    pipeline = OperationalPipeline(
+        settings=MapsSettings(maps_data_provider="mock"), session_factory=lambda: db,
+    )
+    monkeypatch.setattr(pipeline, "_make_krx_adapter", lambda: adapter)
+
+    run = pipeline.backfill_ohlcv(bar.date, bar.date + dt.timedelta(days=len(days) - 1))
+
+    assert run.status == expected_status
+    assert run.details["rows"] == expected_rows
+    assert run.details["partial_days"] == partial_days
+    assert run.details["failed_days"] == failed_days
+    assert db.query(HistoricalOHLCV).count() == expected_rows
