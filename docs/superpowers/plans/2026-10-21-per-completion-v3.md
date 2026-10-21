@@ -51,7 +51,13 @@ Rollback: revert feature commits, restart established service; evidence is appen
   12.38s). Broader replay/paper-trial/final-review/docs-index run: 200 passed
   (61.65s). Compileall and git diff --check exit 0. Independent parent review and
   full isolated regression are pending before integration/rollout.
-- Task 2: pending.
+- Task 2 preparation complete: full production DB backup and original KRX/DART
+  responses preserved privately. KRX metadata includes 50 exact `KOSDAQ GLOBAL`
+  ordinary-share rows (an official KOSDAQ segment), making 2,738 non-KONEX rows.
+  Of 39 missing-PER ordinary peers, 25 have reviewable negative common EPS;
+  14 remain blocked, including two newer-receipt mismatches. Production
+  ingestion/deployment and the actual v3 screen are still pending. The 22:00
+  existing scheduled screen must finish before restarting the service.
 - Task 1 review round 1: addressed fail-closed unknown market/group handling and
   independent first-observed identity journaling before subsequent provider
   failures. Current v3 proofs require latest-known identity context; frozen
@@ -66,6 +72,26 @@ Rollback: revert feature commits, restart established service; evidence is appen
   review reproduce and verify the invalidated-review resurrection fix.
   Final verification: 146 valuation/source/evidence/replay/paper-trial tests and
   69 final-review/docs-index tests passed; compileall and diff checks exit 0.
+- Final integration review approved `ff74b90` after the single final fix wave.
+  Final isolated full regression: 2,171 tests plus 81 package tests passed
+  (2,252 total; 24 existing warnings). An earlier 0.5-second observe-mode test
+  timeout was investigated without code/timeout changes; two isolated reruns,
+  a 14.828ms no-lock timing probe and the subsequent nonoverlapping full suite
+  passed. The original timeout cause is unconfirmed; details are retained in
+  the handoff. Master fast-forward and remote push completed; user files retained.
+- Task 2: old scheduled screen completed successfully at 22:32:42 KST (screen
+  126531, 2,762 screened, zero selected). Product `ff74b90` deployed at 22:32:55;
+  health 200, active service, unchanged environment/control and zero orders/fills
+  verified at 22:33:13. Ingestion then started. Before final ingestion output,
+  SSH banner/HTTP requests stopped responding. Completion/counts are unconfirmed;
+  no v3 screen has started. Do not retry ingestion before inspecting durable rows.
+- Task 2 new operational defect: `valuation_report` retrieves all candidate JSON
+  payloads before filtering selected tickers/date in Python. SQLAlchemy bulk
+  materialization is confirmed; its causal role in the server issue is not yet
+  confirmed by kernel/service logs. Add SQL ticker/date/as-of/latest-row selection
+  and bounded streaming, with an ORM-load regression. This report-only fix must
+  preserve frozen comparison rules. Recover server access, inspect logs/counts,
+  independently review/test the bounded report, then finish rollout and screen.
 - Final whole-branch review fix wave: current v3 negative-EPS dependencies are
   rechecked at readiness, both BUY authorization policies, sizing and final guards.
   Actual candidate identity travels through reservation authorization; superseded
@@ -80,5 +106,13 @@ Rollback: revert feature commits, restart established service; evidence is appen
   guard/fingerprint changes and passed after implementation. Wider focused suite
   passed 299 tests; after the GLOBAL addition, fresh current-use/valuation suite
   passed 72 tests (36.91s), and collection/forged-source checks passed 5 tests.
-  Compileall/diff checks exit 0. Parent's final full suite and scoped re-review
-  remain pending before Task 2 rollout.
+  Compileall/diff checks exit 0. The final full suite and scoped re-review were
+  subsequently completed as recorded above; Task 2 rollout reached the incident
+  described above and remains operationally incomplete.
+- Operational report remediation `5fa3fb1`: the three failing ORM-load regressions
+  pass after SQL selection and streaming; final focused suite 202 passed. Separate
+  independent scoped review approved the fix without findings. Parent serial full
+  regression passed: 2,255 tests, 24 existing warnings, 549.27 seconds, exit 0,
+  using `python scripts/run_isolated_tests.py`. The fix is not yet deployed. Recovery requires SSH
+  to respond or an authenticated Lightsail console; the browser is at AWS sign-in
+  and the user has been asked to complete login. No instance action was taken.

@@ -45,7 +45,12 @@ The old report also retained all latest candidate ORM objects in a dictionary.
   diff checks passed. The first focused run exposed test-observer import leakage;
   initializing the lazy dependency before observing the builder fixed the test
   setup, with no further production changes.
-- [ ] Parent independent review and full regression before any additional deploy.
+- [x] Parent independent scoped review: approved with no findings. Serial full
+  regression (`python scripts/run_isolated_tests.py`): **2,255 passed**, 24
+  existing warnings, 549.27 seconds, exit 0. No product changes followed testing.
+- [ ] Operational deployment and verification after server access is recovered.
+  SSH banner and HTTP requests remain unresponsive; an authenticated AWS console
+  is not yet available. Source/review persistence and incident cause are unconfirmed.
 
 Command (repository root, isolated mock DB/network-disabled runner):
 
