@@ -16,7 +16,7 @@ Use production raw responses and timestamps to establish data truth; do not infe
 
 ## Task 1: Reject malformed collected prices
 
-Ownership: maps/data/collector.py, tests/test_historical_ohlcv.py (or a focused collector test), maps/data/CLAUDE.md.
+Ownership: maps/data/collector.py, maps/data/krx_adapter.py, maps/ops/scheduler.py, tests/test_collector_ohlcv_validation.py, maps/data/CLAUDE.md, maps/ops/CLAUDE.md. The result/status propagation is necessary because daily collection and historical backfill otherwise independently report success.
 
 Use TDD. Reproduce production high<close and low>open; test nonfinite and invalid amounts, valid flat bars, and preservation of an existing good row when a bad update arrives. Add finite, positive-price, nonnegative-volume and OHLC-range validation to the existing collector boundary. Surface rejected ticker/date/reason through logging and existing collection result/log metadata without silently reporting complete success. Preserve call contracts where possible; no broad refactor. Run focused collector tests. Do not commit other tasks' changes.
 
@@ -46,12 +46,24 @@ Malformed bars cannot overwrite good rows; one malformed instrument cannot erase
 
 - [x] Production audit and approved goal/scope.
 - [x] Isolated managed worktree created.
-- [ ] Task 1, with regression proof and review.
-- [ ] Task 2, with regression proof and review.
-- [ ] Task 3, actual-source investigation and audited repair where supported.
+- [x] Task 1, with regression proof and review (8525ac2, 3d95e22).
+- [x] Task 2, with regression proof and review (8c9b668).
+- [x] Task 3, actual-source investigation and audited repair where supported.
 - [ ] Task 4, current-account observation preparation.
 - [ ] Task 5, full verification/review/deployment and final evidence.
 
 ## Decisions and verification log
 
 2026-10-21: Original checkout has unrelated user documents; preserve them. Initial planning audit ran 22 focused tests successfully. Full implementation verification is pending. User explicitly requested production data as the source of truth and preparation for existing strategies too. Automatic execution/trial approval is a later concrete review step.
+
+2026-10-21 Task 1: Collector guards and daily/historical operational status propagation passed targeted regressions (66 collector checks, 27 scheduler/documentation checks; final historical propagation fix 47 checks). Independent task review approved the final change. Full-suite validation remains pending.
+
+2026-10-21 Task 3: Requeried the same production pykrx KRX date/market endpoint for all malformed rows, preserving 46 raw response files. All 6,157 replacements matched those source responses and valid OHLC ranges; none required inference. Complete PostgreSQL custom backup (408,284,476 bytes, validated TOC), environment backup, original rows and source hashes preceded the transaction. A dry run independently checked source columns, every original row and its timestamp. Applied exactly 6,157 rows; post-repair range query found zero malformed rows. Original failure timing/cause remains unproven. Naver adjusted prices were deliberately not mixed with KRX. The audit and sensitive backups remain private on the production server.
+
+2026-10-21 Storage measurement: Previous actual tape peaked at 1,118 rows/minute; 390 minutes x 22 sessions x 1.3 gives 12,470,172 rows. Proposed quote ceiling 13,000,000; 2,762 candidates x two screens x 22 x 1.3 gives 157,986.4, ceiling 160,000. Five actual raw candidate samples compressed to 67,720–72,204 base64 bytes; measured evidence storage about 610 bytes/row. Conservative combined allocation with 30% byte overhead is 25.33 GB versus 35.96 GB available after backups. These are planning bounds, not a guarantee against bursts or other database growth; monitor storage before trial approval. No settings have been changed yet.
+
+2026-10-21 Annual/PER source audit: sampled official DART responses support current strict rejection, with no demonstrated parser bug. Preferred issues lack issuer mappings; some DPS values are '-' or lack explicit common-share identity; non-calendar fiscal years remain unsupported. Sector membership includes preferred shares/SPACs, and the fundamental source additionally has 969 null PER/EPS pairs. Only one sector has complete observed PER coverage. Do not omit peers or substitute a different financial basis without a separate evidence-backed policy change. Genuine comparability document review remains in progress for two supported annual candidates; this alone cannot resolve their sector valuation blocks.
+
+2026-10-21 Source follow-up: Reviewed six exact official DART original annual XMLs for Hanwha (2023–2025) and Eugene (2023–2025), preserving ZIP/XML hashes and reviewed sections in the private production audit directory. Common issued-share counts/face values and explicit common DPS tables support consistent share units. Hanwha's preferred-share cancellations/common treasury acquisition do not rescale one common share; Eugene's splits/consolidation predate the period. Submitted two substantive comparability records through the authenticated running owner-scoped API (IDs 100581/100582), available from 2026-10-22 KST. This certifies share units only, not growth quality or selection. Retried the exact already-journaled Jongkundang Holdings H1 correction through the existing repository parser; actual snapshot 4269 becomes available 2026-10-22. No historical availability, promotion or trial approval was created. Sector PER blockers remain.
+
+2026-10-21 Task 2: Malformed candidates now retain blocked RuleEvidence and their original finite inputs while screening continues. Nonfinite raw numbers serialize as explicit numeric strings and remain rejected by shared reconstruction. Candidate counts and reason totals are visible; database and programming errors still propagate. Isolated source suite: 17 passed. Independent task review approved. Combined tests + maps/tests are running on 8c9b668; production code deployment is pending.
