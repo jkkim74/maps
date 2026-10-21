@@ -659,10 +659,12 @@ async def test_scan_keeps_metadata_reads_in_worker_during_feed_commit(
                 accepted = await asyncio.wait_for(runtime.scan_once(), timeout=5)
             finally:
                 release_commit.set()
-                if feed_commit is not None:
-                    await asyncio.wait_for(feed_commit, timeout=5)
-                pump.cancel()
-                await asyncio.gather(pump, return_exceptions=True)
+                try:
+                    if feed_commit is not None:
+                        await asyncio.wait_for(feed_commit, timeout=5)
+                finally:
+                    pump.cancel()
+                    await asyncio.gather(pump, return_exceptions=True)
 
             session = db.query(LimitUpSession).filter_by(ticker="111111").one_or_none()
             if execution_mode is not None:
