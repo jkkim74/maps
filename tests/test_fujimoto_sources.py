@@ -1,6 +1,7 @@
 """First-observed annual dividends and current universe evidence."""
 from datetime import date, datetime, timezone
 import pytest
+from sqlalchemy.exc import SQLAlchemyError
 from maps.common.exceptions import DataQualityError
 
 
@@ -141,3 +142,168 @@ def test_export_rescreen_keeps_latest_rules_raw_ranking_and_source_ids(db):
     assert result["provenance"]["screen_evidence"] == [screens[-1]]
     assert result["bars"][day]["AAA"]["close"] == 100
     assert result["provenance"]["bar_evidence"] == [candidates[0]]
+
+
+def _screen_universe(db, tickers):
+    """Persist complete causal sources and valid bars in the isolated test database."""
+    from datetime import timedelta
+    from maps.common.models import (ClassificationRun, ClassificationMember, DartFilingReceipt,
+        DartFinancialSnapshot, HistoricalOHLCV, SecurityFundamental)
+    from maps.fujimoto.repository import FujimotoRepository
+    from maps.market.trading_rules import previous_trading_day
+    day, now = date(2026, 9, 30), datetime(2026, 9, 30, 13, tzinfo=timezone.utc)
+    repo = FujimotoRepository(db)
+    repo.record_evidence("universe", "*", now, now, {"ref_date": day,
+        "members": [{"ticker": t, "eligible": True} for t in tickers]})
+    sector = ClassificationRun(kind="sector", provider="test", ref_date=day, status="complete",
+        started_at=now, published_at=now, expected_tickers=tickers, catalog={"s": "sector"})
+    db.add(sector)
+    db.flush()
+    dates = [day]
+    for _ in range(100):
+        dates.append(previous_trading_day(dates[-1]))
+    for ticker in tickers:
+        db.add(ClassificationMember(run_id=sector.id, ticker=ticker, code="s", name="sector"))
+        db.add(SecurityFundamental(ticker=ticker, date=day, per=10, updated_at=now))
+        for year, value in ((2023, 100), (2024, 110), (2025, 120), (2026, 130)):
+            annual = year != 2026
+            period = date(year, 12, 31) if annual else date(2026, 6, 30)
+            seen = datetime(year + 1, 3, 20) if annual else datetime(2026, 8, 14)
+            available = seen.date() + timedelta(days=4)
+            receipt = f"{ticker}-{year}"
+            common = dict(ticker=ticker, receipt=receipt, period_end=period,
+                publication_date=seen.date(), first_collected_at=seen, available_date=available)
+            db.add(DartFilingReceipt(**common))
+            snapshot = DartFinancialSnapshot(**common, basis="CFS", currency="KRW", raw_hash="a" * 64,
+                raw_response={}, revenue=value, operating_profit=value / 10,
+                prior_revenue=value - 10, prior_operating_profit=(value - 10) / 10)
+            db.add(snapshot)
+            db.flush()
+            if annual:
+                repo.record_evidence("annual_source", ticker, seen, seen,
+                    {"receipt": receipt, "dividend_per_share": value / 100})
+        review_at = datetime(2026, 4, 1)
+        repo.record_evidence("comparability", ticker, review_at, review_at,
+            {"receipts": [f"{ticker}-{y}" for y in (2023, 2024, 2025)], "share_basis": "reviewed"})
+        db.add_all(HistoricalOHLCV(ticker=ticker, date=d, open=4160, high=4180, low=4100,
+            close=4150, volume=70831, adj_close=4150) for d in dates)
+    db.commit()
+    return day, now
+
+
+def _candidate_raw(candidate):
+    """Decode exactly the persisted original candidate source."""
+    import base64, json, zlib
+    return json.loads(zlib.decompress(base64.b64decode(candidate.payload["raw_zlib"])))
+
+
+def test_screen_bad_ticker_preserves_original_bars_and_continues_to_valid_ticker(db):
+    from maps.common.models import FujimotoEvidence, HistoricalOHLCV
+    from maps.fujimoto.domain import CycleState, Mode, RuleEvidence, evaluate
+    from maps.fujimoto.replay import screening_evidence
+    from maps.fujimoto.sources import screen_market
+    day, now = _screen_universe(db, ["095570", "005930"])
+    # Original production bars: close exceeds high; screening must never repair these.
+    for bar_day, values in ((date(2026, 9, 21), (4160, 4180, 4100, 4185, 70205)),
+                            (day, (4315, 4340, 4270, 4370, 45304))):
+        bar = db.query(HistoricalOHLCV).filter_by(ticker="095570", date=bar_day).one()
+        bar.open, bar.high, bar.low, bar.close, bar.volume = values
+    db.commit()
+    result = screen_market(db, day, now=now)
+    assert result["screened"] == 2 and result["selected"] == 1
+    assert result["ranked"] == ["005930"]
+    assert result["blocked"] == 1
+    assert result["blocking_reasons"]["invalid_ohlcv_range"] == 1
+    candidates = db.query(FujimotoEvidence).filter_by(kind="candidate").order_by(FujimotoEvidence.id).all()
+    assert [r.ticker for r in candidates] == ["095570", "005930"]
+    bad, good = candidates
+    rule = RuleEvidence(**{**bad.payload["rule"], "as_of": day,
+        "blocking_reasons": tuple(bad.payload["rule"]["blocking_reasons"])})
+    assert rule.close is None and rule.selection_passed is False
+    assert rule.blocking_reasons == ("invalid_ohlcv_range",)
+    assert all(evaluate(mode, rule, CycleState()).action != "buy" for mode in Mode)
+    raw = _candidate_raw(bad)
+    assert [(p["open"], p["high"], p["low"], p["close"], p["volume"])
+        for p in raw["prices"] if p["date"] in ("2026-09-21", "2026-09-30")] == [
+            (4160, 4180, 4100, 4185, 70205), (4315, 4340, 4270, 4370, 45304)]
+    with pytest.raises(DataQualityError, match="invalid_ohlcv_range"):
+        screening_evidence(raw, bad.ticker, day)
+    assert screening_evidence(_candidate_raw(good), good.ticker, day).selection_passed
+    screen = db.query(FujimotoEvidence).filter_by(kind="screen").one()
+    assert screen.payload["blocking_reasons"]["invalid_ohlcv_range"] == 1
+    from maps.common.settings import MapsSettings
+    from maps.fujimoto.service import FujimotoService
+    service = FujimotoService(db, settings=MapsSettings(_env_file=None, maps_broker_mode="mock"))
+    assert "usable_screen_candidate_source_missing" in service._paper_readiness("isolated", now, ticker="095570")
+    assert "usable_screen_candidate_source_missing" not in service._paper_readiness("isolated", now, ticker="005930")
+
+
+@pytest.mark.parametrize("invalid", [float("nan"), float("inf"), float("-inf")])
+def test_screen_nonfinite_prices_are_serializable_blocked_sources(db, monkeypatch, invalid):
+    import json
+    from maps.common.models import FujimotoEvidence
+    from maps.data.ohlcv_repo import HistoricalOHLCVRepository
+    from maps.fujimoto.replay import screening_evidence
+    from maps.fujimoto.sources import screen_market
+    day, now = _screen_universe(db, ["095570"])
+    original = HistoricalOHLCVRepository.to_dataframe
+    def malformed(self, ticker, **kwargs):
+        frame = original(self, ticker, **kwargs)
+        frame.iloc[-1, frame.columns.get_loc("close")] = invalid
+        return frame
+    # SQLite normalizes NaN to NULL, so inject the repository-shaped numeric frame.
+    monkeypatch.setattr(HistoricalOHLCVRepository, "to_dataframe", malformed)
+    result = screen_market(db, day, now=now)
+    assert result["selected"] == 0 and result["ranked"] == [] and result["blocked"] == 1
+    assert result["blocking_reasons"] == {"nonfinite_ohlcv": 1}
+    candidate = db.query(FujimotoEvidence).filter_by(kind="candidate").one()
+    json.dumps(candidate.payload, allow_nan=False)
+    raw = _candidate_raw(candidate)
+    json.dumps(raw, allow_nan=False)
+    assert isinstance(raw["prices"][-1]["close"], str)
+    assert candidate.payload["rule"]["close"] is None
+    with pytest.raises(DataQualityError, match="nonfinite_ohlcv"):
+        screening_evidence(raw, candidate.ticker, day)
+
+
+def test_screen_all_invalid_candidates_records_complete_blocked_counts(db):
+    from maps.common.models import FujimotoEvidence, HistoricalOHLCV
+    from maps.fujimoto.sources import screen_market
+    day, now = _screen_universe(db, ["095570", "005930"])
+    for bar in db.query(HistoricalOHLCV).filter_by(date=day):
+        bar.close = 4185
+    db.commit()
+    result = screen_market(db, day, now=now)
+    assert result["screened"] == 2 and result["blocked"] == 2
+    assert result["selected"] == 0 and result["ranked"] == []
+    assert result["blocking_reasons"] == {"invalid_ohlcv_range": 2}
+    assert db.query(FujimotoEvidence).filter_by(kind="candidate").count() == 2
+
+
+@pytest.mark.parametrize("failure", [SQLAlchemyError("database defect"), DataQualityError("persistence defect")])
+def test_screen_candidate_persistence_errors_propagate(db, monkeypatch, failure):
+    from maps.common.models import FujimotoEvidence
+    from maps.fujimoto.repository import FujimotoRepository
+    from maps.fujimoto.sources import screen_market
+    day, now = _screen_universe(db, ["005930"])
+    original = FujimotoRepository.record_evidence
+    def persist(self, kind, *args, **kwargs):
+        if kind == "candidate":
+            raise failure
+        return original(self, kind, *args, **kwargs)
+    monkeypatch.setattr(FujimotoRepository, "record_evidence", persist)
+    with pytest.raises(type(failure), match=str(failure)):
+        screen_market(db, day, now=now)
+    assert db.query(FujimotoEvidence).filter_by(kind="screen").count() == 0
+
+
+def test_screen_programming_errors_in_rule_builder_propagate(db, monkeypatch):
+    from maps.common.models import FujimotoEvidence
+    from maps.fujimoto.sources import screen_market
+    day, now = _screen_universe(db, ["005930"])
+    def broken(*args, **kwargs):
+        raise RuntimeError("programming defect")
+    monkeypatch.setattr("maps.fujimoto.sources.screening_evidence", broken)
+    with pytest.raises(RuntimeError, match="programming defect"):
+        screen_market(db, day, now=now)
+    assert db.query(FujimotoEvidence).filter_by(kind="screen").count() == 0

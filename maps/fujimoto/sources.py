@@ -6,6 +6,7 @@ import re
 import base64
 import json
 import zlib
+from math import isfinite
 from dataclasses import asdict
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
@@ -24,6 +25,7 @@ from maps.data.ohlcv_repo import HistoricalOHLCVRepository
 from maps.data_quality.universe_filter import DataQualityFilter
 from maps.fujimoto.repository import FujimotoRepository, fingerprint, json_data, utc_naive, money
 from maps.fujimoto.replay import screening_evidence
+from maps.fujimoto.domain import RuleEvidence
 
 
 def availability(publication: date, seen: datetime) -> datetime:
@@ -229,6 +231,15 @@ def financial_inputs(db, ticker: str, cutoff: date, now: datetime) -> tuple[list
     return json_data(annual), json_data(financial)
 
 
+def _raw_numbers(value: object) -> object:
+    """Keep nonfinite raw inputs as explicit strings that still fail rule validation."""
+    if isinstance(value, dict):
+        return {key: _raw_numbers(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_raw_numbers(item) for item in value]
+    return str(value) if isinstance(value, float) and not isfinite(value) else value
+
+
 def screen_market(db, ref_date: date, *, now: datetime | None = None) -> dict:
     """Screen actual all-market snapshot with causal repositories and persist raw inputs."""
     now = now or datetime.now(timezone.utc)
@@ -253,7 +264,7 @@ def screen_market(db, ref_date: date, *, now: datetime | None = None) -> dict:
         for v in db.query(SecurityFundamental).filter(SecurityFundamental.date == ref_date,
                                                      SecurityFundamental.updated_at <= utc_naive(now))]
     history = HistoricalOHLCVRepository(db)
-    ranked, count = [], 0
+    ranked, count, blocked, blocking_reasons = [], 0, 0, {}
     remaining = max(0, get_settings().maps_fujimoto_candidate_rows -
                     db.query(FujimotoEvidence).filter_by(kind="candidate").count())
     if remaining < len(universe.payload["members"]):
@@ -268,13 +279,19 @@ def screen_market(db, ref_date: date, *, now: datetime | None = None) -> dict:
         # Same close*volume definition as HistoricalOHLCVRepository.avg_turnover_20d.
         prices = [{"date": index.date(), **{k: row[k] for k in ("open", "high", "low", "close", "volume")},
                    "turnover": row["close"] * row["volume"]} for index, row in frame.iterrows()]
-        raw = json_data({"annual_records": annual, "financial_records": financial,
-            "sectors": sectors, "valuations": vals, "prices": prices, "eligible": member["eligible"]})
+        raw = _raw_numbers(json_data({"annual_records": annual, "financial_records": financial,
+            "sectors": sectors, "valuations": vals, "prices": prices, "eligible": member["eligible"]}))
         if prices:
-            rule = screening_evidence(raw, ticker, ref_date, closed_dates=tuple(get_settings().krx_closed_dates))
+            try:
+                rule = screening_evidence(raw, ticker, ref_date, closed_dates=tuple(get_settings().krx_closed_dates))
+            except DataQualityError as exc:
+                rule = RuleEvidence(ref_date, None, blocking_reasons=(str(exc),))
         else:
-            from maps.fujimoto.domain import RuleEvidence
             rule = RuleEvidence(ref_date, None, blocking_reasons=("missing_price_data",))
+        if not rule.selection_passed:
+            blocked += 1
+        for reason in set(rule.blocking_reasons):
+            blocking_reasons[reason] = blocking_reasons.get(reason, 0) + 1
         compressed = base64.b64encode(zlib.compress(json.dumps(raw, separators=(",", ":"), allow_nan=False).encode())).decode()
         payload = {"ref_date": ref_date, "raw_zlib": compressed, "rule": rule,
                    "universe_id": universe.id, "sector_run_id": sector.id if sector else None}
@@ -284,6 +301,7 @@ def screen_market(db, ref_date: date, *, now: datetime | None = None) -> dict:
         count += 1
     ranked.sort(key=lambda x: (-x[1], x[0]))
     payload = {"ref_date": ref_date, "screened": count, "selected": len(ranked),
+               "blocked": blocked, "blocking_reasons": blocking_reasons,
                "ranked": [t for t, _ in ranked], "universe_id": universe.id}
     repo.record_evidence("screen", "*", now, now, payload)
     db.commit()

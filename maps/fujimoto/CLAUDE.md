@@ -41,6 +41,15 @@ fallback or inferred historical turnover is used. `rank_candidates` orders passe
 results by descending turnover then ticker. Ineligible/insufficient results retain
 blocking reasons.
 
+`screen_market` isolates `DataQualityError` from each candidate's shared rule builder:
+the malformed ticker retains a blocked `RuleEvidence` with no close or buy signals,
+and later tickers are still processed. Candidate raw sources preserve original finite
+values; nonfinite numbers are recorded as explicit strings, which shared replay and
+readiness validation continue to reject. They are never repaired into usable prices.
+Screen snapshots expose selection-blocked counts in `blocked` and per-rule reason
+counts in `blocking_reasons`. Database, persistence and programming errors still
+propagate; only a successfully persisted complete screen commits its candidates.
+
 OHLCV is after-close data with a DatetimeIndex and open/high/low/close/volume;
 turnover is needed for screening. Optional complete flags must be true. RSI uses
 Wilder's 14-delta seed (flat=50, rising=100, falling=0); MACD is EMA 12/26/9;
