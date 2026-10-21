@@ -8,7 +8,7 @@ Implement the approved data-completion plan: distinguish verified non-applicable
 
 - Keep real trading disabled, global execution disabled, Fujimoto observe, entries disabled and trial unapproved. Never liquidate existing holdings.
 - Never fabricate data, turn '-' into zero, infer non-applicability from a blank/zero alone, backdate collection, or mix OHLCV fields from different feeds. Keep actual growth/dividend failures blocking.
-- Exclude a peer only when official provider semantics AND actual ticker/date evidence establish PER non-applicability. Unknown peers block the sector; own PER and at least one comparison value must be positive.
+- Exclude a peer only when official provider semantics AND actual ticker/date evidence establish PER non-applicability. Unknown peers block the sector; own PER and at least one value in the existing sector pool must be positive. Preserve the pool including own ticker; no new minimum-other-peer-count gate (controller clarification before implementation).
 - Preserve immutable raw provenance (source, reference date, actual observation time, hash, explanation), next-session annual availability, and legacy frozen snapshot replay semantics. New screening uses an explicit version.
 - No broad refactors, dependencies or schema migration unless a concrete necessity is established. Reuse FujimotoEvidence for sidecar evidence. Preserve main-checkout user files.
 - Use isolated mock tests via D:/workspace/maps/maps/maps/.venv/Scripts/python.exe scripts/run_isolated_tests.py. No real services in tests.
@@ -46,3 +46,7 @@ Rollback code to previous revision; do not erase immutable evidence or restore o
 ## Progress
 
 - 2026-10-21: approved plan recorded; existing isolated worktree verified clean. Main checkout user edits untouched.
+- Task 1 implementation 6d653d9: focused 103 tests passed; independent task review spec/quality PASS. Full suite and final branch review running.
+- Production full backup 561,249,940 bytes verified by pg_restore list. Official KRX MDCSTAT015/017 notes establish current all-market close may include aftermarket, while individual unadjusted OHLC uses regular session. Twenty canonical histories are being collected; current-day volume remains time-sensitive.
+- Actual raw KRX PER response: 2,714 rows, 1,167 PER '-' entries. Official MDCSTAT035 notes establish formula/annual basis but do not prove why each blank is present. No N/A review asserted from blanks alone.
+- Full stable suite: 2,180 passed, 24 existing warnings, 431.83s. Compile/diff checks passed; independent final whole-branch review PASS. Canonical whole-bar repair applied atomically to 883 historical rows across 20 tickers; 20 immutable repair audit records; no rejected raw bars.
