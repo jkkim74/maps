@@ -9,7 +9,8 @@ import os
 import threading
 import time
 from contextlib import contextmanager
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from maps.common.exceptions import ExecutionBlockedError
@@ -69,6 +70,14 @@ class ExecutionContext:
     parameters: dict | None = None
     decision_at: dt.datetime | None = None
     data_as_of: dt.datetime | None = None
+    # Transient process-local validity, never serialized into an order request.
+    quote_is_current: Callable[[], bool] | None = field(default=None, repr=False, compare=False)
+
+
+def require_quote_current(is_current: Callable[[], bool] | None) -> None:
+    """Reject a quote invalidated by feed reset/failure across blocking work."""
+    if is_current is not None and not is_current():
+        raise ExecutionBlockedError("quote_invalidated")
 
 
 def _own_process(key: str) -> None:

@@ -315,3 +315,10 @@ use `account_execution_lock`. Slow lock wait/hold maxima and sample counts are
 aggregated at most once per minute without account identifiers. Nested reentrant
 contexts overlap, so these durations must not be summed or used to refresh broker
 observation timestamps. Account snapshot freshness remains 30 seconds.
+
+`ExecutionContext.quote_is_current` is an optional transient, memory-only predicate
+for Fujimoto's recorder epoch/failure state. OrderManager checks it after acquiring
+the account lock and again immediately before `place_order`, after broker reads.
+It is excluded from persisted order requests and does not replace deadline,
+snapshot, ownership, or authorization checks. An absent predicate preserves existing
+execution behavior; a reset after an order has already been submitted cannot undo it.

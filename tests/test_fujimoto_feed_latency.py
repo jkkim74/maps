@@ -306,12 +306,14 @@ async def test_socket_keeps_recording_while_subscription_allocation_waits(file_d
         await runtime.stop()
 
 
-def test_broker_read_cannot_extend_original_quote_order_deadline(file_db, monkeypatch):
-    """A quote that expires during broker reads must not reserve or send an order."""
+@pytest.mark.parametrize("invalidation", ["elapsed", "reset"])
+def test_broker_read_cannot_extend_original_quote_order_deadline(file_db, monkeypatch, invalidation):
+    """A quote expired/invalidated during broker reads cannot reserve or send."""
     from types import SimpleNamespace
     from maps.common.exceptions import ExecutionBlockedError
     import maps.fujimoto.service as module
     elapsed = [0.]
+    current = [True]
     monkeypatch.setattr(module, "monotonic", lambda: elapsed[0])
     now = datetime.now(timezone.utc)
     service = FujimotoService(file_db, Mock())
@@ -324,15 +326,17 @@ def test_broker_read_cannot_extend_original_quote_order_deadline(file_db, monkey
     service.manager._broker.get_execution_snapshot.return_value = SimpleNamespace(
         as_of=now, positions={}, balance=SimpleNamespace(total_value=10000000, cash=10000000))
     def slow_orders():
-        elapsed[0] = 2.
+        elapsed[0] = 2. if invalidation == "elapsed" else 0.
+        current[0] = invalidation != "reset"
         return []
     service.manager._broker.get_open_orders.side_effect = slow_orders
     monkeypatch.setattr(service, "authorize_order", Mock())
     monkeypatch.setattr(service.repo, "plan_buy", lambda *a, **kw: SimpleNamespace(quantity=10, limit_price=1000, stop_price=920))
     # Quote was already two seconds old at decision start: only one second remains.
-    with pytest.raises(ExecutionBlockedError, match="quote_stale_after_wait"):
+    reason = "quote_stale_after_wait" if invalidation == "elapsed" else "quote_invalidated"
+    with pytest.raises(ExecutionBlockedError, match=reason):
         service._submit_decision(cycle, rule, evaluate(Mode.SAFE, rule, CycleState()),
-                                 1000, None, now, now + timedelta(seconds=1))
+                                 1000, None, now, now + timedelta(seconds=1), lambda: current[0])
     assert service.repo.orders(key) == []
     service.manager.submit.assert_not_called()
 
@@ -409,3 +413,116 @@ async def test_subscription_failure_preserves_frame_received_in_same_wakeup(file
             assert reader.query(FujimotoEvidence).filter_by(kind="quote").count() == 1
     finally:
         await runtime.stop()
+
+
+@pytest.mark.parametrize("invalidation", ["disconnect", "recorder_failure"])
+async def test_inflight_quote_rechecks_invalidation_after_account_lock(file_db, monkeypatch, invalidation):
+    """An actual quote already inside on_quote cannot resume after feed invalidation."""
+    import maps.fujimoto.service as module
+    runtime, service, clock = await start_recorder(file_db, monkeypatch)
+    now = clock[0] = datetime(2026, 10, 8, 1, tzinfo=timezone.utc)
+    monkeypatch.setattr(module, "utcnow", lambda: now.replace(tzinfo=None))
+    monkeypatch.setattr(module, "monotonic", lambda: 0.)
+    monkeypatch.setattr("maps.fujimoto.sources.current_financial_status", lambda *a: "maintained")
+    key, repo = account_key(service.settings), service.repo
+    rule = RuleEvidence(date(2026, 10, 7), 1300, True, financial_status="maintained",
+                        daily_rsi=40, weekly_rsi=50, macd_golden=True)
+    source = repo.record_evidence("candidate", "005930", now - timedelta(days=1), now - timedelta(days=1), {"rule": rule})
+    config = repo.configure(key, 7, Mode.SAFE, 5000000)
+    cycle = repo.create_cycle(config.id, "005930")
+    order = repo.reserve_order(cycle.id, evaluate(Mode.SAFE, rule, CycleState()), source.id,
+                               10, 1300, signal_date=rule.as_of, stop_price=1196)
+    repo.apply_fill(FillEvent(order.id, key, None, 10, 13000, 0, 0, "FILLED", now.date()))
+    repo.record_evidence("control", "*", now - timedelta(minutes=1), now - timedelta(minutes=1),
+                        {"execution_mode": "paper", "entries_enabled": False, "sell_consent": True}, account_key=key)
+    file_db.commit()
+    submitted, attempted = Mock(), threading.Event()
+    monkeypatch.setattr(service, "_submit_decision", submitted)
+    @contextmanager
+    def watched_lock(lock_key):
+        attempted.set()
+        with account_execution_lock(lock_key):
+            yield
+    monkeypatch.setattr(module, "account_execution_lock", watched_lock)
+    release, thread = held_lock(key)
+    try:
+        await runtime.dispatch_message_async(frame(now))
+        assert await asyncio.to_thread(attempted.wait, 2)
+        if invalidation == "disconnect":
+            await runtime._reset_fujimoto_feed("disconnect")
+        else:
+            def broken(*args, **kwargs):
+                raise RuntimeError("synthetic write failure")
+            monkeypatch.setattr(runtime._recording_feed, "record_quote", broken)
+            with pytest.raises(RuntimeError, match="synthetic write failure"):
+                await runtime.dispatch_message_async(frame(now))
+        release.set()
+        await asyncio.gather(*list(runtime._feed_tasks))
+        submitted.assert_not_called()
+        assert len(repo.orders(key)) == 1  # Only the preexisting filled purchase.
+    finally:
+        release.set()
+        thread.join(2)
+        await runtime.stop()
+
+
+@pytest.mark.parametrize("invalidation", ["disconnect", "recorder_failure"])
+async def test_manager_rechecks_quote_after_blocked_broker_read(file_db, monkeypatch, invalidation):
+    """Reset/failure during real manager buying-power I/O cannot reach place_order."""
+    from maps.common.exceptions import ExecutionBlockedError
+    from maps.common.models import AccountObservation, ExecutionAccountState, OrderIntent
+    from maps.execution.broker_adapter import Order, OrderSide, OrderType
+    from maps.execution.mock_broker import MockBroker
+    from maps.execution.order_manager import OrderManager
+    from maps.execution.safety import ExecutionContext
+    from maps.risk.manager import RiskConfig, RiskManager
+    runtime, _, clock = await start_recorder(file_db, monkeypatch)
+    with Session(file_db.get_bind()) as manager_db:
+        broker = MockBroker(1000000, {"AAA": 1000})
+        manager = OrderManager(broker, RiskManager(broker, manager_db, config=RiskConfig(position_size_limit=.5)),
+                               manager_db, settings=runtime.settings, notifier=Mock(send=Mock(return_value=False)))
+        manager.sync_broker_state()
+        observation = manager_db.query(AccountObservation).one()
+        observation.ref_date -= timedelta(days=1)
+        observation.observed_at -= timedelta(days=1)
+        manager_db.get(ExecutionAccountState, account_key(runtime.settings)).ref_date = observation.ref_date
+        manager_db.commit()
+        entered, release = threading.Event(), threading.Event()
+        buying_power = broker.get_buying_power
+        def blocked_power(order):
+            entered.set()
+            assert release.wait(5)
+            return buying_power(order)
+        monkeypatch.setattr(broker, "get_buying_power", blocked_power)
+        place_order = Mock(wraps=broker.place_order)
+        monkeypatch.setattr(broker, "place_order", place_order)
+        epoch = runtime._recording_epoch
+        now = datetime.now(timezone.utc)
+        context = ExecutionContext("inflight-read", source="mock", valid_until=now + timedelta(seconds=3),
+            quote_is_current=lambda: not runtime._recording_failed and epoch == runtime._recording_epoch)
+        order = Order("test", "AAA", OrderSide.BUY, OrderType.LIMIT, 10, limit_price=1000)
+        pending = asyncio.create_task(asyncio.to_thread(manager.submit, order, context=context))
+        try:
+            assert await asyncio.to_thread(entered.wait, 2)
+            if invalidation == "disconnect":
+                await runtime._reset_fujimoto_feed("disconnect")
+            else:
+                def broken(*args, **kwargs):
+                    raise RuntimeError("synthetic write failure")
+                monkeypatch.setattr(runtime._recording_feed, "record_quote", broken)
+                with pytest.raises(RuntimeError, match="synthetic write failure"):
+                    await runtime.dispatch_message_async(frame(clock[0]))
+            release.set()
+            with pytest.raises(ExecutionBlockedError, match="quote_invalidated"):
+                await pending
+            assert datetime.now(timezone.utc) < context.valid_until
+            place_order.assert_not_called()
+            manager_db.expire_all()
+            intent = manager_db.query(OrderIntent).filter_by(event_key="inflight-read").one()
+            assert intent.status == "PREPARED" and intent.broker_order_id is None
+            assert "quote_is_current" not in intent.request
+            assert intent.valid_until == context.valid_until.replace(tzinfo=None)
+        finally:
+            release.set()
+            await asyncio.gather(pending, return_exceptions=True)
+            await runtime.stop()

@@ -256,7 +256,10 @@ Original receipt/exchange timestamps stay unchanged. Decision time advances by
 monotonic elapsed time across account-lock waits and broker reads; order expiry
 is original receipt + **3 seconds**, never processing time + 3 seconds. Account
 freshness remains **30 seconds**. Reset epochs invalidate queued pre-gap decisions;
-the first post-reset quote carries the gap to every cycle. Recorder write failure
+the first post-reset quote carries the gap to every cycle. A transient memory-only
+validity callback travels with an in-flight quote through account-lock/broker waits,
+reservation and OrderManager's final pre-submit check. It is never persisted and
+never changes the original receipt deadline. Recorder write failure
 blocks subsequent quote decisions until restart and is logged explicitly. Shutdown
 drains both lanes before closing either Session; a drain timeout leaves Sessions
 open under still-running threads, as before for order work.

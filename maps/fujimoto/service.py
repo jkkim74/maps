@@ -9,6 +9,7 @@ import base64
 import json
 import logging
 import zlib
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import date, datetime, time, timedelta, timezone
 from time import monotonic
@@ -24,7 +25,7 @@ from maps.common.models import (FujimotoConfig, FujimotoCycle, FujimotoEvidence,
 from maps.common.settings import get_settings
 from maps.execution.broker_adapter import Order, OrderSide, OrderType, raw_broker_order_id
 from maps.execution.broker_adapter import PendingOrder
-from maps.execution.safety import ExecutionContext, account_execution_lock, account_key, utcnow
+from maps.execution.safety import ExecutionContext, account_execution_lock, account_key, require_quote_current, utcnow
 from maps.execution.reconciliation import ACTIVE
 from maps.fujimoto.domain import Mode, RuleEvidence, CycleState, evaluate, ranked_admission, empty_cycle_expired
 from maps.fujimoto.repository import (FujimotoRepository, AccountLimits, FillEvent,
@@ -572,7 +573,8 @@ class FujimotoService:
                 self.db.expire_all()
 
     def on_quote(self, quote, *, now: datetime | None = None,
-                 recorded: bool = False, tape_exhausted: bool = False) -> None:
+                 recorded: bool = False, tape_exhausted: bool = False,
+                 quote_is_current: Callable[[], bool] | None = None) -> None:
         """Persist shared quote then evaluate confirmed owned cycles and actual candidates."""
         now = now or datetime.now(timezone.utc)
         started = monotonic()
@@ -589,11 +591,17 @@ class FujimotoService:
             self.db.rollback()
             return
         with account_execution_lock(key):
+            if quote_is_current is not None and not quote_is_current():
+                self.db.rollback()
+                return
             self.db.expire_all()
             control = self._enforce_trial_window(key, decision_now())
             if control.get("authorization_policy") == "paper_test":
                 self._cancel_stopped_buys(key, control)
             if control["execution_mode"] == "observe" or self.manager is None:
+                return
+            if quote_is_current is not None and not quote_is_current():
+                self.db.rollback()
                 return
             current_time = decision_now()
             # Admission has its own continuity slot: direct recording already
@@ -642,6 +650,9 @@ class FujimotoService:
                                    for row in ranked_rules.values()) >= 5 for mode in Mode):
                             break
                 for mode in Mode:
+                    if quote_is_current is not None and not quote_is_current():
+                        self.db.rollback()
+                        return
                     if mode.value not in current or any(c.mode == mode.value for c in cycles):
                         continue
                     active = [c.ticker for c in self.repo.cycles(key, mode)
@@ -672,6 +683,9 @@ class FujimotoService:
                 if (bid is None or quote.received_utc is None
                         or not time(9) <= wall.time().replace(tzinfo=None) < time(15, 20)):
                     continue
+                if quote_is_current is not None and not quote_is_current():
+                    self.db.rollback()
+                    return
                 decision = evaluate(Mode(cycle.mode), live, state, decision_date=wall.date())
                 if state.pending_order:
                     emergency = evaluate(Mode(cycle.mode), live, state,
@@ -680,6 +694,9 @@ class FujimotoService:
                         for order in self.repo.orders(key):
                             if order.cycle_id == cycle.id and order.status not in TERMINAL and order.decision["action"] == "buy":
                                 if order.broker_order_id and order.status not in {"UNKNOWN", "CANCEL_REQUESTED"}:
+                                    if quote_is_current is not None and not quote_is_current():
+                                        self.db.rollback()
+                                        return
                                     order.status = "CANCEL_REQUESTED"
                                     self.db.commit()
                                     self.manager.cancel(order.broker_order_id)
@@ -695,7 +712,7 @@ class FujimotoService:
                     continue
                 try:
                     self._submit_decision(cycle, live, decision, bid, source, current_time,
-                                          quote.received_utc + timedelta(seconds=3))
+                                          quote.received_utc + timedelta(seconds=3), quote_is_current)
                 except (ExecutionBlockedError, DataQualityError) as exc:
                     self.db.rollback()
                     self._blocked(key, cycle.ticker, str(exc), decision_now())
@@ -709,9 +726,11 @@ class FujimotoService:
             self.db.commit()
 
     def _submit_decision(self, cycle, evidence, decision, bid, source, now,
-                         valid_until: datetime | None = None) -> None:
+                         valid_until: datetime | None = None,
+                         quote_is_current: Callable[[], bool] | None = None) -> None:
         """Commit reservation under account lock before OrderManager's separate session."""
         decision_started_at, started = now, monotonic()
+        require_quote_current(quote_is_current)
         valid_until = utc_naive(valid_until or (now + timedelta(seconds=3)))
         key = cycle.account_key
         stop = None
@@ -741,23 +760,28 @@ class FujimotoService:
         now = decision_started_at + timedelta(seconds=monotonic() - started)
         if utc_naive(now) > valid_until:
             raise ExecutionBlockedError("quote_stale_after_wait")
+        require_quote_current(quote_is_current)
         self.authorize_order(key, buy=decision.action == "buy", now=now, ticker=cycle.ticker)
         now = decision_started_at + timedelta(seconds=monotonic() - started)
         if utc_naive(now) > valid_until:
             raise ExecutionBlockedError("quote_stale_after_wait")
+        require_quote_current(quote_is_current)
         actual = self.repo.record_evidence("execution_decision", cycle.ticker, now, now,
             {"rule": evidence, "decision": decision, "candidate_id": source.id if source else None,
              "authorization_id": self.control(key).get("authorization_id"),
              "approval_id": self.control(key).get("control_id")}, account_key=key)
+        require_quote_current(quote_is_current)
         reservation = self.repo.reserve_order(cycle.id, decision, actual.id, quantity, price,
             signal_date=evidence.as_of, stop_price=stop)
+        require_quote_current(quote_is_current)
         self.db.commit()
         order = Order(Mode(cycle.mode).strategy_id, cycle.ticker,
             OrderSide.BUY if decision.action == "buy" else OrderSide.SELL,
             OrderType.LIMIT, quantity, limit_price=float(price), current_price=bid, atr14=evidence.atr14)
         context = ExecutionContext(f"fujimoto:{reservation.id}", source="fujimoto", source_id=cycle.id,
-            valid_until=valid_until)
+            valid_until=valid_until, quote_is_current=quote_is_current)
         try:
+            require_quote_current(quote_is_current)
             if decision.action == "buy":
                 self.manager.submit(order, context=context)
             else:

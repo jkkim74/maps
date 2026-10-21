@@ -25,7 +25,7 @@ from maps.execution.broker_adapter import (
 from maps.execution.reconciliation import ACTIVE, TERMINAL, apply_result, audit_id, event, money, reconcile
 from maps.execution.safety import (
     ExecutionContext, account_execution_lock, account_key,
-    execution_environment, require_execution_enabled, utcnow,
+    execution_environment, require_execution_enabled, require_quote_current, utcnow,
 )
 from maps.ops.notifications import SlackNotifier
 
@@ -138,6 +138,7 @@ class OrderManager:
         context = self._context(order, context)
         key = account_key(self._settings)
         with account_execution_lock(key), self._session() as db:
+            require_quote_current(context.quote_is_current)
             existing = db.query(OrderIntent).filter_by(account_key=key, event_key=context.event_key).first()
             if existing:
                 request = existing.request
@@ -265,6 +266,7 @@ class OrderManager:
                 snapshot_age = (datetime.now(timezone.utc) - snapshot.as_of.astimezone(timezone.utc)).total_seconds()
                 if snapshot_age > self._settings.maps_execution_snapshot_max_age_seconds:
                     raise ExecutionBlockedError("account_snapshot_stale")
+                require_quote_current(context.quote_is_current)
                 result = self._broker.place_order(order)
             except BrokerOrderRejectedError:
                 intent.status = "REJECTED"

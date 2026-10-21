@@ -694,7 +694,9 @@ class KISIntradayRuntime:
                 if recorded and (self._recording_failed or recording_epoch != self._recording_epoch):
                     return
                 self.fujimoto.on_quote(event, now=self.wall_now(), recorded=recorded,
-                                       tape_exhausted=tape_exhausted)
+                    tape_exhausted=tape_exhausted,
+                    quote_is_current=(lambda: not self._recording_failed
+                                      and recording_epoch == self._recording_epoch) if recorded else None)
 
     async def fallback_once(self) -> None:
         """Poll held prices only after feed loss and apply protection-only events."""
