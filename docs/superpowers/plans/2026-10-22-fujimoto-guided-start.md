@@ -82,6 +82,16 @@
   or deployment is claimed here. Full task report is in ignored workspace
   `.superpowers/sdd/2026-10-22-fujimoto-guided-start/task-1-report.md`.
 
-## Rollback
+## Delivery record — 2026-10-22
+
+- Task review and whole-branch review both approved; no findings. Feature `f940ded`, integrated `c0408ab`.
+- Full isolated regression: 2,193 passed / 24 existing warnings / 514.43s; additional `maps/tests`: 81 passed / 2.92s. Total 2,274 passed. Clean release checkout product files match the tested commit.
+- Original user documents and diary hashes remained unchanged. Morning handoff work preserved separately in `a86ecdf`.
+- Deployed `c0408ab` at 11:12:30 KST. Service active, internal/external health 200, matching template blob; post-restart log sample 61 entries, 0 errors/tracebacks.
+- Read-only pre/post checks match: environment fingerprint, saved budgets, control 100760, observe/entries false/consent false, trading switches off, trial not_started, Fujimoto orders/fills 0.
+- Browser visual QA and screenshots remain **unverified**: Chrome automation repeatedly reported another extension UI blocking it, including after user-assisted closure and browser restart. Synthetic preview was isolated from production. No actual trial approval was used for verification.
+- Operational readiness still requires usable candidate, actual fresh subscribed quote/account data, operator execution configuration and explicit user consent. This UI change performs none of those mutations.
+
+## Rollback procedure
 
 Revert only the guided-screen feature commits. No schema/data migration or trading setting restoration is required because this change does not modify them. Production rollback uses the established deployment workflow with the same trading-state invariants.
