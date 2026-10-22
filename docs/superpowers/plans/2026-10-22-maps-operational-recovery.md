@@ -205,6 +205,27 @@ evidence must not be called verified. Record implementation vs operational resul
   24 warnings in 450.06s**; fix committed as de86422. This additional fix is
   not deployed while production SSH/HTTP remains unavailable. Source operation
   termination/result is unconfirmed; no price apply has been attempted.
+- 15:23 KST SSH recovered. Kernel confirmed OOM killed financial PID1531790 at
+  15:22:48 with 1,486,524KiB anon RSS; original SSH process exit matched. Theme
+  collection completed at 15:23:55. No host reboot/security change was required.
+- Memory fix deployed with master 0a78028 at 15:24:49; health active/200 and OFF
+  settings/counts preserved. Independent final manifest review approved the exact
+  narrowed digest with all239 before-states absent and unchanged source bindings.
+- Applied239 missing Oct21 bars; repeat apply0. All239 after snapshots match;
+  preexisting8289 candidate/decision/screen digest, env/config and order counts
+  unchanged. Exact apply/repeat/verification and review receipts remain private.
+- Current sector2763/29 and theme264/6533 relations completed;2395 assigned and
+  368 verified no-theme. Historical classification availability was not fabricated.
+- Failed OOM attempt recorded as failed. Financial retry ran sequentially in a
+  512MiB/no-swap/50%-CPU cgroup, finished46.63s with45 requests, peak RSS430924KiB.
+  Twenty targets rechecked:10 complete/10 partial missing-source;0 new annual or
+  snapshot rows,20 attempt receipts. Quarterly correctly skipped with0 requests.
+- 15:27:37 actual API verification: account READY, all four operational APIs and
+  external health200; immutable/env/config/orders preserved; pending/today fills0,
+  Fujimoto orders/fills0, observe/entriesfalse/sellfalse, trialnotstarted. Upper
+  recommend_only started but some watched quotes stale and kosdaq_drawdown halt
+  remains; no fresh real signal/fill success claim. Full afterclose/current-day
+  derived regeneration and next trading-session observation remain pending.
 
 ## Decisions / risks
 
