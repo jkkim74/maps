@@ -171,10 +171,15 @@ class AnnualCollector:
             allowed = {m["ticker"] for m in latest.payload["members"] if m.get("eligible") is True} if latest else set()
             summary["rejected_targets"] = sorted(set(targets) - allowed)
             tickers = sorted(set(targets) & allowed)
-            for row in self.db.query(FujimotoEvidence).filter_by(kind="candidate").order_by(FujimotoEvidence.id):
-                if row.observed_at <= utc_naive(self.now()) and row.available_at <= utc_naive(self.now()):
-                    reasons = row.payload.get("rule", {}).get("blocking_reasons", [])
-                    priorities[row.ticker] = bool(set(reasons) & {"annual_growth_failed", "dividend_failed", "ineligible_security"})
+            cutoff = utc_naive(self.now())
+            candidates = self.db.query(FujimotoEvidence.ticker,
+                FujimotoEvidence.payload["rule"]["blocking_reasons"]).filter(
+                    FujimotoEvidence.kind == "candidate", FujimotoEvidence.ticker.in_(tickers),
+                    FujimotoEvidence.observed_at <= cutoff, FujimotoEvidence.available_at <= cutoff,
+                ).order_by(FujimotoEvidence.id).yield_per(100)
+            for candidate_ticker, reasons in candidates:
+                priorities[candidate_ticker] = bool(set(reasons or []) & {
+                    "annual_growth_failed", "dividend_failed", "ineligible_security"})
         checked = {r.ticker: r.observed_at for r in self.db.query(FujimotoEvidence).filter_by(
             kind="annual_collection").order_by(FujimotoEvidence.id)}
         tickers.sort(key=lambda t: (priorities.get(t, False), checked.get(t, datetime.min), t))

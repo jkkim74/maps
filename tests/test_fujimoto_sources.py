@@ -439,6 +439,79 @@ def test_target_selection_prioritizes_latest_candidate_without_growth_failure(db
     assert collector.collect(now.date(), batch=1, tickers=["A", "B"])["attempted"] == ["B"]
 
 
+def test_targeted_annual_priority_projects_only_target_reasons_at_cutoff(db):
+    """A tiny collection must not fetch every candidate's compressed source blob."""
+    from datetime import timedelta
+    from sqlalchemy import event
+    from maps.common.models import FujimotoEvidence
+    from maps.fujimoto.repository import FujimotoRepository
+    from maps.fujimoto.sources import AnnualCollector
+
+    now = datetime(2026, 10, 8, 13, tzinfo=timezone.utc)
+    before = now - timedelta(days=1)
+    later = now + timedelta(seconds=1)
+    repo = FujimotoRepository(db)
+    repo.record_evidence("universe", "*", before, before,
+        {"ref_date": now.date(), "members": [{"ticker": t, "eligible": True} for t in "ABCD"]})
+    # Preserve current latest-by-ID behavior even if observation times differ.
+    for ticker, reasons, observed, available in [
+        ("A", ["annual_growth_failed"], before, before),
+        ("A", ["missing_dividend"], before - timedelta(days=1), before),
+        ("B", ["dividend_failed"], before, before),
+        ("B", [], later, later),
+        ("C", ["ineligible_security"], before, before),
+        ("C", [], before, later),
+    ]:
+        repo.record_evidence("candidate", ticker, observed, available,
+            {"rule": {"blocking_reasons": reasons}, "raw_zlib": "large-source" * 1000})
+    for index in range(32):
+        repo.record_evidence("candidate", f"unrelated-{index}", before, before,
+            {"rule": {"blocking_reasons": []}, "raw_zlib": "unused" * 5000})
+    repo.record_evidence("annual_collection", "A", before, before, {"status": "partial"})
+    repo.record_evidence("candidate", "D", before, before, {"raw_zlib": "no-rule"})
+    db.commit()
+    db.expunge_all()
+    selected_columns = []
+    priority_queries = []
+    loaded_candidates = []
+
+    def capture(connection, cursor, statement, parameters, context, executemany):
+        compiled = context.compiled
+        if compiled is not None and "candidate" in compiled.params.values():
+            selected_columns.append(list(compiled.statement.selected_columns))
+            priority_queries.append((compiled.params, context.execution_options))
+
+    def loaded(row, context):
+        if row.kind == "candidate":
+            loaded_candidates.append(row.ticker)
+
+    class Client:
+        requests = 0
+
+        def corp_codes(self):
+            return {}
+
+    engine = db.get_bind()
+    event.listen(engine, "before_cursor_execute", capture)
+    event.listen(FujimotoEvidence, "load", loaded)
+    try:
+        result = AnnualCollector(db, "test", client=Client(), now=lambda: now).collect(
+            now.date(), batch=4, tickers=["A", "B", "C", "D", "unknown"])
+    finally:
+        event.remove(engine, "before_cursor_execute", capture)
+        event.remove(FujimotoEvidence, "load", loaded)
+    assert result["attempted"] == ["D", "A", "B", "C"]
+    assert result["rejected_targets"] == ["unknown"]
+    assert selected_columns
+    payload = FujimotoEvidence.__table__.c.payload
+    assert not any(column.compare(payload) for columns in selected_columns for column in columns)
+    assert loaded_candidates == []
+    assert all(any(isinstance(value, (list, tuple)) and set(value) == set("ABCD")
+                   for value in parameters.values()) for parameters, _ in priority_queries)
+    assert all(options.get("stream_results") and options.get("yield_per", 0) > 0
+               for _, options in priority_queries)
+
+
 def test_late_review_of_old_source_never_overrides_newer_observation(db):
     from maps.fujimoto.sources import record_valuation_source, record_valuation_review, valuation_inputs
     now = datetime.now(timezone.utc)

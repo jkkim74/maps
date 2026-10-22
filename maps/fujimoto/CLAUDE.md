@@ -472,7 +472,11 @@ replay/readiness builder. Unproven blank/zero values remain blocked.
 metadata rotation by default. Explicit targets are checked against the latest observed
 eligible universe and returned as `rejected_targets` when unverified/ineligible.
 Target selection prioritizes latest candidates without demonstrated annual growth,
-dividend, or eligibility failures, then least-recently-checked/ticker order. Attempts
+dividend, or eligibility failures, then least-recently-checked/ticker order. Priority
+calculation reads only requested eligible tickers' projected `rule.blocking_reasons`, with
+observation/availability cutoff filtering in SQL and streamed rows. Candidate
+`raw_zlib`/full payloads are never fetched for this priority calculation; the last
+eligible candidate by ID still wins per ticker. Attempts
 include `error_categories` (`transient` versus `missing_source`), while summaries expose
 category counts and attempted tickers. Request/time pacing ceilings, receipt journaling,
 strict account parsing, exact annual DPS and comparability gates remain unchanged.
