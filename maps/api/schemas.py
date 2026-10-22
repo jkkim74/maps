@@ -374,6 +374,8 @@ class OrderQueueItem(BaseModel):
     name: str
     side: str
     qty: int
+    fill_qty: int = 0
+    remaining_qty: int = 0
     order_price: float | None
     status: str
     created_at: str
@@ -392,9 +394,12 @@ class FillItem(BaseModel):
     # 전략을 'broker'로, 수량을 공백으로 찍는다(모바일 주문 탭 표시 결함).
     strategy_id: str | None = None
     qty: int = 0
+    order_price: float | None = None
 
 
 class SlippageStats(BaseModel):
+    actual: float | None = None
+    sample_count: int = 0
     large_cap_actual: float | None
     large_cap_assumed: float
     mid_small_actual: float | None
@@ -402,11 +407,23 @@ class SlippageStats(BaseModel):
 
 
 class OrdersResponse(BaseModel):
-    auto_order_active: bool
+    execution_state: Literal["ready", "blocked", "unknown"] = "unknown"
+    block_reasons: list[str] = Field(default_factory=list)
+    checked_at: str | None = None
+    strategy_blocks: dict[str, list[str]] = Field(default_factory=dict)
+    environment: str = "unknown"
+    auto_order_active: bool = False
+    fills_basis: str = "kst_order_created_day_cumulative_fills"
     pending: list[OrderQueueItem]
     fills_today: list[FillItem]
     expired: list[OrderQueueItem]
     slippage: SlippageStats
+
+    @model_validator(mode="after")
+    def derive_auto_order_active(self) -> "OrdersResponse":
+        """Keep the compatibility flag tied to measured readiness."""
+        self.auto_order_active = self.execution_state == "ready"
+        return self
 
 
 class PreviewOrderItem(BaseModel):
@@ -1542,6 +1559,16 @@ class LimitUpStatusResponse(BaseModel):
     """상한가 V1 상태기계 운영 스냅샷."""
 
     mode: str
+    configured_mode: str = "off"
+    running: bool = False
+    start_outcome: str = "not_started"
+    start_reason: str | None = None
+    start_checked_at: str | None = None
+    feed_state: str = "disconnected"
+    feed_age_seconds: float | None = None
+    feed_pending: int = 0
+    feed_stale_drops: int = 0
+    feed_overflow_drops: int = 0
     min_turnover_krw: int | None = None
     min_execution_strength: float | None = None
     attempts: int

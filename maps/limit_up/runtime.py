@@ -23,6 +23,8 @@ from maps.common.exceptions import BrokerAdapterError
 from maps.common.models import SecurityMetadata
 from maps.common.settings import MapsSettings
 from maps.execution.kis_adapter import KISAdapter
+from maps.execution.safety import ExecutionContext
+from maps.limit_up.freshness import EntryFeed, FeedVersion, IndexWindow, QUOTE_MAX_AGE, SIGNAL_MAX_AGE
 from maps.limit_up.domain import LimitUpConfig, LimitUpState
 from maps.execution.kis_adapter import patient_reads
 from maps.limit_up.feed import (
@@ -306,6 +308,15 @@ class KISIntradayRuntime:
         self._fallback_limiter = RestFallbackLimiter(min_interval_seconds=0.5)
         self._last_frame_at = 0.0
         self._feed_tasks: set[asyncio.Future] = set()
+        self._entry_feed = EntryFeed(self.monotonic)
+        self._applied_feed_versions: dict[str, FeedVersion] = {}
+        self._feed_overflow = False
+        self._feed_overflow_drops = 0
+        self._feed_stale_drops = 0
+        self._last_backlog_log = 0.0
+        self._scan_task: asyncio.Task | None = None
+        self._index_task: asyncio.Future | None = None
+        self._pending_index: tuple[IndexWindow, dt.datetime] | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._service_queue: asyncio.PriorityQueue = asyncio.PriorityQueue()
         self._service_sequence = itertools.count()
@@ -317,6 +328,22 @@ class KISIntradayRuntime:
         self._recording_failed = False
         self._recording_epoch = 0
         self._recording_executor: ThreadPoolExecutor | None = None
+
+    def feed_status(self) -> dict[str, Any]:
+        """Return bounded, secret-free receipt health without polling the broker."""
+        ages = [self._entry_feed.age(ticker) for ticker in self.service.watched_tickers()]
+        if not self._feed_connected:
+            state = "disconnected"
+        elif not ages or any(age is None for age in ages):
+            state = "waiting"
+        elif any(not 0 <= age < QUOTE_MAX_AGE for age in ages):
+            state = "degraded"
+        else:
+            state = "ready"
+        known = [age for age in ages if age is not None]
+        return {"feed_state": state, "feed_age_seconds": max(known) if known else None,
+                "feed_pending": len(self._feed_tasks), "feed_stale_drops": self._feed_stale_drops,
+                "feed_overflow_drops": self._feed_overflow_drops}
 
     async def _call_service(
         self,
@@ -471,6 +498,8 @@ class KISIntradayRuntime:
         """
         self._stop.set()
         producers = [t for t in self._tasks if t.get_name() not in {"limit-up-service", "fujimoto-recording"}]
+        if self._scan_task is not None:
+            producers.append(self._scan_task)
         for task in producers:
             task.cancel()
         if producers:
@@ -524,18 +553,33 @@ class KISIntradayRuntime:
         now = self.wall_now()
         if not dt.time(9, 10) <= now.time().replace(tzinfo=None) <= dt.time(14, 30):
             return 0
+        rank_only = getattr(self.adapter, "get_limit_up_rank_candidates", None)
         rows, ranked_count = await asyncio.to_thread(
-            self.adapter.get_limit_up_candidates
-        )
+            rank_only if callable(rank_only) else self.adapter.get_limit_up_candidates)
         accepted = 0
         rejected: Counter[str] = Counter()
         for row in rows:
             ticker = str(row["ticker"])
+            if callable(rank_only) and ticker in self.service.watched_tickers():
+                rejected["already_watching"] += 1
+                continue
             # 같은 ORM 세션을 펌프 스레드가 쓰고 있다. 이벤트 루프에서 직접 조회하면
             # 스캔과 주문 처리가 겹치는 순간 동시 사용이 된다.
             ineligible_reason = await self._call_service(
                 self._security_ineligibility_reason, ticker, as_of=now.date()
             )
+            if callable(rank_only):
+                if ineligible_reason not in (None, "too_new"):
+                    reason = f"ineligible_security:{ineligible_reason}"
+                    rejected[reason] += 1
+                    await self._call_service(self.service.record_scan_rejection,
+                        ticker, reason, ref_date=now.date())
+                    continue
+                row = await asyncio.to_thread(
+                    self.adapter.get_limit_up_candidate_details, ticker, ranked=row)
+                if row is None:
+                    rejected["incomplete_quote"] += 1
+                    continue
             # ``too_new`` 는 매매를 막되 **감시까지 막지는 않는다.** 이 엔진의 입력은
             # 전부 실시간(상한가·상장주식수·누적거래대금·체결강도)이고 하드스톱은 ATR
             # 없이 고정 5% 라 100일치 이력이 필요한 계산이 하나도 없다. 그런데 2026년
@@ -557,7 +601,7 @@ class KISIntradayRuntime:
                 observe_only=observe_only,
             )
             reason = await self._call_service(
-                self.service.watch_candidate, candidate, now_kst=now
+                self.service.watch_candidate, candidate, now_kst=self.wall_now()
             )
             if reason is None:
                 accepted += 1
@@ -589,6 +633,15 @@ class KISIntradayRuntime:
                 )
         self._log_scan_summary(ranked_count, len(rows), accepted, rejected)
         return accepted
+
+    async def _scan_in_background(self) -> None:
+        """A slow rank/detail fetch must not hold the control-loop timers."""
+        try:
+            await self.scan_once()
+        except BrokerAdapterError as exc:
+            logger.warning("상한가 스캔 실패 — 이번 회차 생략: %s", exc)
+        except Exception:
+            logger.exception("Upper-limit candidate scan failed")
 
     def _log_scan_summary(
         self, ranked_count: int, candidates: int, accepted: int, rejected: Counter[str]
@@ -623,7 +676,12 @@ class KISIntradayRuntime:
         at = self.monotonic() if received_at is None else received_at
         now = self.wall_now()
         for event in parse_kis_ws_message(raw, received_at=at, received_utc=now):
-            self._apply_feed_event(event, now)
+            if isinstance(event, FeedIndex):
+                if self.upper_enabled:
+                    self._on_ws_index(event, now)
+                continue
+            version, _ = self._entry_feed.observe(event)
+            self._apply_feed_event(event, now, feed_version=version)
         return 1 if raw else 0
 
     async def dispatch_message_async(
@@ -645,6 +703,7 @@ class KISIntradayRuntime:
             # 파싱 실패가 피드 끊김으로 오인돼 진입이 래치되고, 재연결→같은 프레임→
             # 다시 실패의 무한 루프가 된다.
             logger.exception("상한가 실시간 프레임 파싱 실패 — 이 프레임만 버린다")
+            self._entry_feed.reset()
             if self.fujimoto:
                 await self._reset_fujimoto_feed("parse_gap")
             return 0
@@ -658,13 +717,25 @@ class KISIntradayRuntime:
                     self._on_ws_index(event, now)
                 continue
             recorded, tape_exhausted = False, False
+            version, _ = self._entry_feed.observe(event)
             recording_epoch = None
             if self.fujimoto and isinstance(event, FeedQuote) and self._recording_feed is not None:
                 recording_epoch = self._recording_epoch
                 event, tape_exhausted = await self._call_recording(self._record_quote, event)
                 recorded = True
+            # Reserve one of the 256 decisions for the coalesced index guard.
+            if len(self._feed_tasks) >= 255:
+                self._feed_overflow_drops += 1
+                if not self._feed_overflow:
+                    self._feed_overflow = True
+                    self._entry_feed.reset()
+                    if self.fujimoto:
+                        await self._reset_fujimoto_feed("decision_overflow")
+                continue
+            self._feed_overflow = False
             task = asyncio.ensure_future(
                 self._call_service(self._apply_feed_event, event, now,
+                                   feed_version=version,
                                    **({"recorded": True, "tape_exhausted": tape_exhausted,
                                        "recording_epoch": recording_epoch} if recorded else {}))
             )
@@ -673,7 +744,8 @@ class KISIntradayRuntime:
             self._feed_tasks.add(task)
             task.add_done_callback(self._feed_tasks.discard)
             task.add_done_callback(_log_feed_task_error)
-        if len(self._feed_tasks) >= _FEED_BACKLOG_ALERT:
+        if len(self._feed_tasks) >= _FEED_BACKLOG_ALERT and at - self._last_backlog_log >= 60:
+            self._last_backlog_log = at
             logger.warning(
                 "상한가 시세 처리 적체 %d건 — 브로커 응답이 느리다", len(self._feed_tasks)
             )
@@ -681,14 +753,49 @@ class KISIntradayRuntime:
 
     def _apply_feed_event(self, event: Any, now: dt.datetime, *,
                           recorded: bool = False, tape_exhausted: bool = False,
-                          recording_epoch: int | None = None) -> None:
+                          recording_epoch: int | None = None,
+                          feed_version: FeedVersion | None = None) -> None:
         """Apply one normalized feed event to the state machine."""
+        if feed_version is None:
+            feed_version, _ = self._entry_feed.observe(event)
+        current = self._entry_feed.current(event.ticker, feed_version)
+        fresh = (current and 0 <= self.monotonic() - event.received_at < QUOTE_MAX_AGE
+                 and self._entry_feed.continuous(event.ticker, feed_version))
+        if self.upper_enabled:
+            if not fresh:
+                self._feed_stale_drops += 1
+                if current:
+                    self._entry_feed.reset(ticker=event.ticker)
+                    self.service.on_feed_gap(event.ticker, now_kst=self.wall_now())
+            elif self._applied_feed_versions.get(event.ticker) != feed_version:
+                self.service.on_feed_gap(event.ticker, now_kst=self.wall_now())
+                # Gap cleanup may cancel/reconcile through slow HTTP. Recheck
+                # receipt and generation at the actual machine boundary.
+                current = self._entry_feed.current(event.ticker, feed_version)
+                fresh = (current and 0 <= self.monotonic() - event.received_at < QUOTE_MAX_AGE
+                         and self._entry_feed.continuous(event.ticker, feed_version))
+                if fresh:
+                    self._applied_feed_versions[event.ticker] = feed_version
+                    self.service.on_feed_reconnect()
+                else:
+                    self._feed_stale_drops += 1
+                    if current:
+                        self._entry_feed.reset(ticker=event.ticker)
         if isinstance(event, FeedTrade):
-            if self.upper_enabled:
-                self.service.on_trade(event, now_kst=now)
+            if self.upper_enabled and fresh:
+                if event.ticker not in self.service.watched_tickers():
+                    return
+                machine = self.service.machine(event.ticker)
+                decision_at = event.received_utc or now
+                context = ExecutionContext("", decision_at=decision_at, data_as_of=decision_at,
+                    valid_until=decision_at + dt.timedelta(seconds=SIGNAL_MAX_AGE),
+                    quote_is_current=self._entry_feed.entry_check(event, feed_version,
+                        upper_limit_price=machine.upper_limit_price, config=self.service.config))
+                self.service.on_trade(event, now_kst=now, entry_context=context)
         else:
-            self._quotes[event.ticker] = event
-            if self.upper_enabled:
+            if fresh:
+                self._quotes[event.ticker] = event
+            if self.upper_enabled and fresh:
                 self.service.on_quote(event, now_kst=now)
             if self.fujimoto:
                 if recorded and (self._recording_failed or recording_epoch != self._recording_epoch):
@@ -698,10 +805,17 @@ class KISIntradayRuntime:
                     quote_is_current=(lambda: not self._recording_failed
                                       and recording_epoch == self._recording_epoch) if recorded else None)
 
+    def _timer_feed_current(self, ticker: str) -> bool:
+        """Evaluate continuity after any broker wait, immediately before timers."""
+        return self._entry_feed.continuous(ticker, self._applied_feed_versions.get(ticker))
+
+    def _tick_service(self) -> None:
+        """Run protective timers using current clocks and per-stream evidence."""
+        self.service.tick(now_monotonic=self.monotonic(), now_kst=self.wall_now(),
+                          feed_is_current=self._timer_feed_current, monotonic=self.monotonic)
+
     async def fallback_once(self) -> None:
         """Poll held prices only after feed loss and apply protection-only events."""
-        if self._feed_connected:
-            return
         if not self.upper_enabled:
             return
         now_mono = self.monotonic()
@@ -709,6 +823,8 @@ class KISIntradayRuntime:
         if delay > 0:
             await asyncio.sleep(delay)
         tickers = self.service.held_tickers()
+        if self._feed_connected:
+            tickers = [ticker for ticker in tickers if not self._entry_feed.fresh(ticker)]
         if not tickers:
             return
         try:
@@ -753,9 +869,7 @@ class KISIntradayRuntime:
                     await asyncio.sleep(1)
                     continue
                 await self._call_service(
-                    self.service.tick,
-                    now_monotonic=now_mono,
-                    now_kst=wall,
+                    self._tick_service,
                     priority=_PRIORITY_HIGH,
                 )
                 if now_mono - self._last_scan_at >= 5.0:
@@ -763,10 +877,9 @@ class KISIntradayRuntime:
                     # 스캔의 KIS 호출 한도 초과(EGW00201, 2026-09-04 실제 발생)는 이
                     # 회차만 건너뛸 일이다 — 지수 폴링과 같은 이유로 바깥 except 에
                     # 흘리지 않는다. 그 외 예외(코드 결함)는 ERROR 로 남긴다.
-                    try:
-                        await self.scan_once()
-                    except BrokerAdapterError as exc:
-                        logger.warning("상한가 스캔 실패 — 이번 회차 생략: %s", exc)
+                    if self._scan_task is None or self._scan_task.done():
+                        self._scan_task = asyncio.create_task(
+                            self._scan_in_background(), name="limit-up-scan")
                 if index_guard_active_at(wall) and self._index_rest_poll_due(now_mono):
                     self._last_index_at = now_mono
                     # 지수를 못 읽는 것은 이 이터레이션의 나머지를 포기할 이유가 아니다.
@@ -826,12 +939,9 @@ class KISIntradayRuntime:
                     # "이미 구독함" 으로 건너뛰어 시세가 영영 안 들어오는데
                     # _feed_connected=True 라 REST 폴백까지 멈춘다.
                     self._subscribed.clear()
+                    self._entry_feed.reset()
                     self._feed_connected = True
                     backoff = 1.0
-                    if self.upper_enabled:
-                        await self._call_service(
-                            self.service.on_feed_reconnect, priority=_PRIORITY_HIGH
-                        )
                     if self.fujimoto:
                         await self._reset_fujimoto_feed("reconnect")
                     await self._refresh_subscriptions(socket, approval)
@@ -841,16 +951,18 @@ class KISIntradayRuntime:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - disconnect is a strategy event
+                was_connected = self._feed_connected
+                self._feed_connected = False
+                self._entry_feed.reset()
                 if self.fujimoto:
                     await self._reset_fujimoto_feed("disconnect")
-                if self._feed_connected and self.upper_enabled:
+                if was_connected and self.upper_enabled:
                     await self._call_service(
                         self.service.on_feed_disconnect,
                         at=self.monotonic(),
                         now_kst=self.wall_now(),
                         priority=_PRIORITY_HIGH,
                     )
-                self._feed_connected = False
                 _log_feed_disconnect(exc, backoff)
                 # 고정 1초 재시도는 자격증명이 만료되면 인증 API 를 초당 한 번씩 때린다.
                 # 2026-07-27 KRX 계정 잠금(하루 158회 재로그인)과 같은 실패 유형이다.
@@ -993,18 +1105,25 @@ class KISIntradayRuntime:
         if applied is not None and event.received_at - applied < _INDEX_WS_APPLY_INTERVAL_SECONDS:
             return
         self._last_ws_index_applied_at = event.received_at
-        task = asyncio.ensure_future(
-            self._call_service(
-                self.service.on_kosdaq,
-                value=event.value,
-                at=event.received_at,
-                now_kst=now,
-                priority=_PRIORITY_HIGH,
-            )
-        )
+        if self._pending_index is None or self._pending_index[1].date() != now.date():
+            self._pending_index = (IndexWindow(), now)
+        self._pending_index[0].observe(event)
+        if self._index_task is not None and not self._index_task.done():
+            return
+        task = asyncio.ensure_future(self._drain_index())
+        self._index_task = task
         self._feed_tasks.add(task)
         task.add_done_callback(self._feed_tasks.discard)
         task.add_done_callback(_log_feed_task_error)
+
+    async def _drain_index(self) -> None:
+        """Apply bounded real index extrema without losing a transient drawdown."""
+        while self._pending_index is not None:
+            window, now = self._pending_index
+            self._pending_index = None
+            for event in window.samples():
+                await self._call_service(self.service.on_kosdaq, value=event.value,
+                    at=event.received_at, now_kst=now, priority=_PRIORITY_HIGH)
 
     def call_threadsafe(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
         """Run one service call from a non-loop thread (FastAPI) safely.

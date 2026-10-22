@@ -519,7 +519,8 @@ async def test_manager_rechecks_quote_after_blocked_broker_read(file_db, monkeyp
             place_order.assert_not_called()
             manager_db.expire_all()
             intent = manager_db.query(OrderIntent).filter_by(event_key="inflight-read").one()
-            assert intent.status == "PREPARED" and intent.broker_order_id is None
+            assert intent.status == "REJECTED" and intent.broker_order_id is None
+            assert intent.reserved_amount == 0 and intent.reserved_quantity == 0
             assert "quote_is_current" not in intent.request
             assert intent.valid_until == context.valid_until.replace(tzinfo=None)
         finally:

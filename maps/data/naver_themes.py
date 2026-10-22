@@ -15,6 +15,7 @@ from maps.data.classifications import ClassificationPayload
 _BASE = "https://stock.naver.com/api/domestic/market/theme"
 _MOBILE_MEMBERS = "https://m.stock.naver.com/front-api/domestic/sector/item/list"
 _PAGE_SIZE = 200
+_MEMBER_PAGE_SIZE = 50
 _MAX_PAGES = 100
 
 
@@ -117,6 +118,41 @@ class NaverThemeAdapter:
             raise DataCollectionError("Npay theme empty catalog")
         return manifest
 
+    def _members(self, code: str) -> set[str]:
+        """Read both market cursor streams, including explicitly empty markets."""
+        seen: set[str] = set()
+        for market in ("KOSPI", "KOSDAQ"):
+            params = {"marketType": market, "orderType": "marketSum", "size": _MEMBER_PAGE_SIZE}
+            cursors: set[str] = set()
+            for _ in range(_MAX_PAGES):
+                body = self._request(f"{_BASE}/{code}/stocklist", dict(params))
+                if not isinstance(body, dict) or "cursor" not in body:
+                    raise DataCollectionError(f"Npay theme invalid member response in {code}/{market}")
+                items, has_next, cursor = (body.get(key) for key in ("items", "hasNext", "cursor"))
+                if (not isinstance(items, list) or len(items) > _MEMBER_PAGE_SIZE
+                        or type(has_next) is not bool or (has_next and not items)):
+                    raise DataCollectionError(f"Npay theme invalid member page in {code}/{market}")
+                if cursor is not None:
+                    self._text(cursor, "member cursor")
+                for item in items:
+                    if not isinstance(item, dict) or item.get("marketType") != market:
+                        raise DataCollectionError(f"Npay theme invalid member market in {code}/{market}")
+                    ticker = self._text(item.get("itemCode"), "member ticker", symbol=True)
+                    self._text(item.get("itemName"), "member name")
+                    if ticker in seen:
+                        raise DataCollectionError(f"Npay theme duplicate member in {code}")
+                    seen.add(ticker)
+                if not has_next:
+                    break
+                cursor = self._text(cursor, "member cursor")
+                if cursor in cursors:
+                    raise DataCollectionError(f"Npay theme repeated member cursor in {code}/{market}")
+                cursors.add(cursor)
+                params["cursor"] = cursor
+            else:
+                raise DataCollectionError(f"Npay theme member page guard reached in {code}/{market}")
+        return seen
+
     def _mobile_members(self, code: str, name: str) -> set[str]:
         """Corroborate a stale count using the mobile API's explicit last page."""
         params = {"sectorCode": code, "sectorType": "theme",
@@ -166,14 +202,7 @@ class NaverThemeAdapter:
         source_relations = 0
         discrepancies = []
         for code, (name, count) in manifest.items():
-            rows = self._pages(f"{_BASE}/{code}/stocklist", {"marketType": "ALL", "orderType": "marketSum"})
-            seen = set()
-            for row in rows:
-                ticker = self._text(row.get("itemcode"), "member ticker", symbol=True)
-                self._text(row.get("itemname"), "member name")
-                if ticker in seen:
-                    raise DataCollectionError(f"Npay theme duplicate member in {code}")
-                seen.add(ticker)
+            seen = self._members(code)
             if len(seen) != count:
                 if not seen or self._mobile_members(code, name) != seen:
                     raise DataCollectionError(

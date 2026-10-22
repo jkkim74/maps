@@ -10,6 +10,7 @@
 | `backfill_market_score.py` | **기존** `market_regime_log` 행의 composite 점수만 재계산 (`--start/--end`, 기본 dry-run, `--apply` 로만 쓰기). 결정 기록(`applied_regime`·`entry_limit_ratio` 등)은 건드리지 않고 커버리지를 낮추지도 않는다 |
 | `backfill_fundamentals_naver.py` | Naver 소스로 펀더멘털 백필 |
 | `backfill_listing_dates.py` | `security_metadata.listing_date` 를 KRX 전종목 기본정보로 채운다 (기본 dry-run, `--apply`). 상장일 컬럼만 갱신 — 장중에 `collect_daily` 를 대신 돌리면 미완성 봉이 들어간다. 2026-09-07 상한가 엔진 전원 탈락 복구용 |
+| `recover_operational_data.py` | 기본 read-only bounded 가격 inventory. `--source`는 신뢰한 MDCSTAT017 비수정 종목별 원문 envelope로 정확한 전후 manifest를 생성한다. `--apply/--rollback --manifest`만 트랜잭션 CAS·불변 감사 영수증과 함께 가격을 변경한다. `python -m scripts.recover_operational_data --help` 사용; 네트워크 수집·과거 의사결정 갱신 없음 |
 | `backfill_entry_atr.py` | 과거 주문 행의 진입 ATR 보정 |
 | `normalize_pick_tick_prices.py` | 픽 가격을 KRX 호가 단위로 정규화 |
 | `load_analysis_picks.py` | 분석 픽 적재 |

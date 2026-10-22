@@ -19,10 +19,11 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 import threading
 import time
-from dataclasses import dataclass
+import tempfile
+from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import requests
 
@@ -113,6 +114,8 @@ _TOKEN_EXPIRED_CODES: frozenset[str] = frozenset({"90020000", "EGW00123"})
 # ContextVar 라 설정한 스레드·태스크 안에서만 보인다 — 같은 어댑터를 쓰는 화면·주기 조회는
 # 계속 짧게 끊는다.
 _PATIENT_READS: ContextVar[bool] = ContextVar("kis_patient_reads", default=False)
+# Propagate order evidence through unchanged auth/hash hooks and legacy mocks.
+_PRE_SEND_CHECK: ContextVar[Callable[[], None] | None] = ContextVar("kis_pre_send_check", default=None)
 
 
 @contextmanager
@@ -149,6 +152,8 @@ class _TokenCacheEntry:
 
 _TOKEN_CACHE: dict[tuple[str, str, str, bool], _TokenCacheEntry] = {}
 _TOKEN_CACHE_LOCK = threading.Lock()
+_TOKEN_ISSUE_LOCKS: dict[tuple, threading.Lock] = {}
+_TOKEN_ISSUE_COOLDOWN: dict[tuple, float] = {}
 
 # 잔고 응답 단기 캐시 — 화면 한 번 로드에 잔고 API가 여러 번 호출돼
 # 모의투자 초당 호출한도(EGW00201)를 넘는 것을 막는다. 주문·취소 직후에는
@@ -166,6 +171,7 @@ class _RequestPaceState:
     """One shared KIS REST lane for an account/environment tuple."""
 
     lock: threading.Lock
+    send_lock: threading.Lock = field(default_factory=threading.Lock)
     last_request_at: float = float("-inf")
     last_http_start: float | None = None
 
@@ -275,6 +281,31 @@ class KISAdapter(BrokerAdapter):
             state.last_http_start = started
         return started, gap
 
+    @contextmanager
+    def _paced_send(self, pre_send_check: Callable[[], None] | None = None) -> Iterator[tuple[float, float | None, float]]:
+        """Hold the account lane only across pacing/check/HTTP, never auth or retry."""
+        waiting = time.monotonic()
+        with _REQUEST_PACE_STATES_LOCK:
+            state = _REQUEST_PACE_STATES.setdefault(
+                self._request_pace_key, _RequestPaceState(lock=threading.Lock()),
+            )
+        with state.send_lock:
+            self._pace_request()
+            check = pre_send_check or _PRE_SEND_CHECK.get()
+            if check is not None:
+                check()
+            started, gap = self._http_start()
+            # A descheduled grant must not permit a burst at actual HTTP start.
+            with state.lock:
+                state.last_request_at = started
+            try:
+                yield started, gap, (started - waiting) * 1000
+            finally:
+                # Conservative completion spacing also covers a deschedule
+                # between observing start and entering the HTTP client.
+                with state.lock:
+                    state.last_request_at = time.monotonic()
+
     def _record_attempt(
         self, outcome: str, *, path: str, tr_id: str, attempt: int,
         gate_wait_ms: float, start_gap_ms: float | None, latency_ms: float,
@@ -306,7 +337,8 @@ class KISAdapter(BrokerAdapter):
             "ORD_UNPR": str(order_price),
         }
         data = self._request(
-            "POST", _ORDER_PATH, tr_id=tr_id, json=body, hash_body=body, idempotent=False
+            "POST", _ORDER_PATH, tr_id=tr_id, json=body, hash_body=body, idempotent=False,
+            pre_send_check=order.pre_send_check,
         )
         self._invalidate_balance_cache()
         output = self._output(data)
@@ -399,12 +431,12 @@ class KISAdapter(BrokerAdapter):
             "secretkey": self._app_secret,
         }
         try:
-            self._pace_request()
-            response = self._http.post(
-                f"{self._base_url}{_WS_APPROVAL_PATH}",
-                json=body,
-                timeout=self._timeout,
-            )
+            with self._paced_send():
+                response = self._http.post(
+                    f"{self._base_url}{_WS_APPROVAL_PATH}",
+                    json=body,
+                    timeout=self._timeout,
+                )
             data = response.json()
         except (requests.RequestException, ValueError) as exc:
             raise BrokerAdapterError("KIS websocket approval request failed") from exc
@@ -439,7 +471,7 @@ class KISAdapter(BrokerAdapter):
             raise BrokerAdapterError("KIS KOSDAQ index response had no current value")
         return value
 
-    def get_limit_up_candidates(self) -> tuple[list[dict[str, Any]], int]:
+    def get_limit_up_rank_candidates(self) -> tuple[list[dict[str, Any]], int]:
         """Return +25% candidates and the row count of the +25% band query.
 
         Source is the KIS fluctuation ranking filtered to the +25%~+100% band,
@@ -487,44 +519,46 @@ class KISAdapter(BrokerAdapter):
             )
             if not ticker or self._to_float(ranked.get("prdy_ctrt") or ranked.get("chgrate")) < 25.0:
                 continue
-            quote_data = self._request(
-                "GET",
-                _PRICE_PATH,
-                tr_id=_PRICE_TR_ID,
-                params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": ticker},
-            )
-            quote = quote_data.get("output") or {}
-            upper = self._to_int(quote.get("stck_mxpr") or quote.get("uplmtprice"))
-            listed = self._to_int(quote.get("lstn_stcn"))
-            current = self._to_int(quote.get("stck_prpr") or quote.get("price"))
-            if upper <= 0 or listed <= 0 or current <= 0:
-                continue
-            market_name = str(
-                quote.get("rprs_mrkt_kor_name")
-                or ranked.get("rprs_mrkt_kor_name")
-                or ""
-            ).upper()
-            market = "KOSDAQ" if "KOSDAQ" in market_name or "코스닥" in market_name else "KOSPI"
-            candidates.append(
-                {
-                    "ticker": ticker,
-                    "market": market,
-                    "current_price": current,
-                    "change_rate": self._to_float(quote.get("prdy_ctrt") or ranked.get("prdy_ctrt")),
-                    "cumulative_turnover_krw": self._to_int(
-                        quote.get("acml_tr_pbmn") or ranked.get("acml_tr_pbmn")
-                    ),
-                    "execution_strength": self._to_float(
-                        quote.get("cttr") or ranked.get("cttr")
-                    ),
-                    "upper_limit_price": upper,
-                    "total_listed_shares": listed,
-                    # 거래정지·VI 여부는 이미 이 inquire-price 응답에 들어 있다.
-                    # 담지 않으면 스캐너의 정지 게이트가 늘 False 를 읽는 죽은 코드가 된다.
-                    "trading_halted": _quote_is_halted(quote),
-                }
-            )
+            candidates.append({**ranked, "ticker": ticker,
+                "change_rate": self._to_float(ranked.get("prdy_ctrt") or ranked.get("chgrate"))})
         return candidates, len(ranked_rows)
+
+    def get_limit_up_candidate_details(
+        self, ticker: str, *, ranked: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """Fetch one eligible ticker's current quote, retaining rank fallbacks."""
+        ranked = ranked or {}
+        quote_data = self._request("GET", _PRICE_PATH, tr_id=_PRICE_TR_ID,
+            params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": ticker})
+        quote = quote_data.get("output") or {}
+        upper = self._to_int(quote.get("stck_mxpr") or quote.get("uplmtprice"))
+        listed = self._to_int(quote.get("lstn_stcn"))
+        current = self._to_int(quote.get("stck_prpr") or quote.get("price"))
+        if upper <= 0 or listed <= 0 or current <= 0:
+            return None
+        market_name = str(quote.get("rprs_mrkt_kor_name") or ranked.get("rprs_mrkt_kor_name") or "").upper()
+        market = "KOSDAQ" if "KOSDAQ" in market_name or "코스닥" in market_name else "KOSPI"
+        return {
+            "ticker": ticker,
+            "market": market,
+            "current_price": current,
+            "change_rate": self._to_float(quote.get("prdy_ctrt") or ranked.get("prdy_ctrt")),
+            "cumulative_turnover_krw": self._to_int(quote.get("acml_tr_pbmn") or ranked.get("acml_tr_pbmn")),
+            "execution_strength": self._to_float(quote.get("cttr") or ranked.get("cttr")),
+            "upper_limit_price": upper,
+            "total_listed_shares": listed,
+            "trading_halted": _quote_is_halted(quote),
+        }
+
+    def get_limit_up_candidates(self) -> tuple[list[dict[str, Any]], int]:
+        """Compatibility scan: fetch rank and then all qualifying ticker details."""
+        ranks, count = self.get_limit_up_rank_candidates()
+        candidates = []
+        for ranked in ranks:
+            candidate = self.get_limit_up_candidate_details(ranked["ticker"], ranked=ranked)
+            if candidate is not None:
+                candidates.append(candidate)
+        return candidates, count
 
     def get_position(self, ticker: str) -> Position | None:
         positions, _balance = self._fetch_positions_and_balance()
@@ -900,35 +934,50 @@ class KISAdapter(BrokerAdapter):
             _BALANCE_CACHE.pop(self._token_cache_key, None)
 
     def _ensure_token(self) -> str:
-        now = dt.datetime.now(dt.timezone.utc)
-        cached = self._get_cached_token(now)
+        """Issue once per cache key, rechecking after another issuer finishes."""
+        cached = self._get_cached_token(dt.datetime.now(dt.timezone.utc))
         if cached:
             return cached
+        with _TOKEN_CACHE_LOCK:
+            issue_lock = _TOKEN_ISSUE_LOCKS.setdefault(self._token_cache_key, threading.Lock())
+        with issue_lock:
+            cached = self._get_cached_token(dt.datetime.now(dt.timezone.utc))
+            if cached:
+                return cached
+            if time.monotonic() < _TOKEN_ISSUE_COOLDOWN.get(self._token_cache_key, float("-inf")):
+                raise BrokerAdapterError("KIS token issuance cooldown (EGW00133)")
+            return self._issue_token()
 
+    def _issue_token(self) -> str:
+        """Issue and cache a token while holding only its credential issue lock."""
         body = {
             "grant_type": "client_credentials",
             "appkey": self._app_key,
             "appsecret": self._app_secret,
         }
         try:
-            self._pace_request()
-            response = self._http.post(
-                self._url(_TOKEN_PATH),
-                json=body,
-                headers={"content-type": "application/json; charset=utf-8"},
-                timeout=self._timeout,
-            )
+            with self._paced_send():
+                response = self._http.post(
+                    self._url(_TOKEN_PATH),
+                    json=body,
+                    headers={"content-type": "application/json; charset=utf-8"},
+                    timeout=self._timeout,
+                )
         except requests.RequestException as exc:
             # KIS 모의투자(VTS) 서버는 주말·야간에 접속을 거부한다. 원시 requests 예외가
             # 새어나가면 상위의 BrokerAdapterError 폴백 처리가 작동하지 못하므로 래핑한다.
-            raise BrokerAdapterError(f"KIS token request failed: {exc}") from exc
+            raise BrokerAdapterError("KIS token request failed") from exc
+        if self._peek_msg_cd(response) == "EGW00133":
+            _TOKEN_ISSUE_COOLDOWN[self._token_cache_key] = time.monotonic() + 60.0
+            raise BrokerAdapterError("KIS token issuance cooldown (EGW00133)")
         payload = self._decode_response(response)
         token = payload.get("access_token")
         if not token:
             self._raise_api_error(payload, "KIS token issuance failed")
         expires_in = self._to_int(payload.get("expires_in") or 86400)
         access_token = str(token)
-        expires_at = now + dt.timedelta(seconds=max(expires_in - 60, 60))
+        expires_at = dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=max(expires_in - 60, 60))
+        _TOKEN_ISSUE_COOLDOWN.pop(self._token_cache_key, None)
         with _TOKEN_CACHE_LOCK:
             _TOKEN_CACHE[self._token_cache_key] = _TokenCacheEntry(access_token, expires_at)
             self._write_file_cached_token(access_token, expires_at)
@@ -985,23 +1034,38 @@ class KISAdapter(BrokerAdapter):
                 "access_token": access_token,
                 "expires_at": expires_at.isoformat(),
             }
-            self._token_cache_file.write_text(json.dumps(payload), encoding="utf-8")
+            self._replace_token_file(payload)
         except Exception as exc:  # pragma: no cover - file cache is best-effort
             logger.warning("Could not write KIS token cache file: %s", exc)
 
+    def _replace_token_file(self, payload: dict[str, Any]) -> None:
+        """Replace a complete cache atomically; never expose a partial JSON file."""
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=self._token_cache_file.parent,
+                                             prefix=".kis-token-", suffix=".tmp", delete=False) as stream:
+                temporary = Path(stream.name)
+                json.dump(payload, stream)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, self._token_cache_file)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+
     def _hashkey(self, body: dict[str, Any]) -> str:
         try:
-            self._pace_request()
-            response = self._http.post(
-                self._url(_HASHKEY_PATH),
-                json=body,
-                headers={
-                    "content-type": "application/json; charset=utf-8",
-                    "appkey": self._app_key,
-                    "appsecret": self._app_secret,
-                },
-                timeout=self._timeout,
-            )
+            with self._paced_send():
+                response = self._http.post(
+                    self._url(_HASHKEY_PATH),
+                    json=body,
+                    headers={
+                        "content-type": "application/json; charset=utf-8",
+                        "appkey": self._app_key,
+                        "appsecret": self._app_secret,
+                    },
+                    timeout=self._timeout,
+                )
         except requests.RequestException as exc:
             raise BrokerAdapterError(f"KIS hashkey request failed: {exc}") from exc
         payload = self._decode_response(response)
@@ -1022,7 +1086,24 @@ class KISAdapter(BrokerAdapter):
         tr_cont: str = "",
         idempotent: bool = True,
         attempts: int | None = None,
+        pre_send_check: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
+        """Keep the order's final check active for auth/hash and every retry."""
+        check_token = _PRE_SEND_CHECK.set(pre_send_check)
+        try:
+            return self._authenticated_request(method, path, tr_id=tr_id, params=params, json=json,
+                hash_body=hash_body, tr_cont=tr_cont, idempotent=idempotent, attempts=attempts,
+                pre_send_check=pre_send_check)
+        finally:
+            _PRE_SEND_CHECK.reset(check_token)
+
+    def _authenticated_request(
+        self, method: str, path: str, *, tr_id: str,
+        params: dict[str, Any] | None, json: dict[str, Any] | None,
+        hash_body: dict[str, Any] | None, tr_cont: str, idempotent: bool,
+        attempts: int | None, pre_send_check: Callable[[], None] | None,
+    ) -> dict[str, Any]:
+        """Prepare authentication without holding request serialization."""
         headers = {
             "content-type": "application/json; charset=utf-8",
             "authorization": f"Bearer {self._ensure_token()}",
@@ -1038,7 +1119,7 @@ class KISAdapter(BrokerAdapter):
 
         response = self._send_with_retry(
             method, path, headers=headers, params=params, json=json,
-            idempotent=idempotent, attempts=attempts,
+            idempotent=idempotent, attempts=attempts, pre_send_check=pre_send_check,
         )
         self._last_tr_cont = str(response.headers.get("tr_cont") or "").strip().upper()
         payload = self._decode_response(response)
@@ -1048,13 +1129,13 @@ class KISAdapter(BrokerAdapter):
             # 토큰 만료(90020000 / EGW00123): 캐시 무효화 후 새 토큰으로 1회 재시도
             if code in _TOKEN_EXPIRED_CODES:
                 logger.warning("KIS token expired (%s) — invalidating cache and retrying: %s", code, path)
-                self._invalidate_token_cache()
+                self._invalidate_rejected_token(headers["authorization"].removeprefix("Bearer "))
                 headers["authorization"] = f"Bearer {self._ensure_token()}"
                 if hash_body is not None:
                     headers["hashkey"] = self._hashkey(hash_body)
                 response = self._send_with_retry(
                     method, path, headers=headers, params=params, json=json,
-                    idempotent=idempotent, attempts=attempts,
+                    idempotent=idempotent, attempts=attempts, pre_send_check=pre_send_check,
                 )
                 self._last_tr_cont = str(response.headers.get("tr_cont") or "").strip().upper()
                 payload = self._decode_response(response)
@@ -1066,17 +1147,26 @@ class KISAdapter(BrokerAdapter):
         return payload
 
     def _invalidate_token_cache(self) -> None:
-        """인메모리 및 파일 토큰 캐시를 즉시 무효화한다."""
+        """Explicitly invalidate the currently cached token."""
+        self._invalidate_rejected_token(None)
+
+    def _invalidate_rejected_token(self, rejected_token: str | None) -> None:
+        """CAS invalidation: a stale rejection cannot erase a newer token."""
         with _TOKEN_CACHE_LOCK:
+            entry = _TOKEN_CACHE.get(self._token_cache_key)
+            if rejected_token is not None and entry and entry.access_token != rejected_token:
+                return
             _TOKEN_CACHE.pop(self._token_cache_key, None)
             try:
-                if self._token_cache_file.exists():
+                # The inherited US adapter intentionally has no domestic file.
+                if hasattr(self, "_token_cache_file") and self._token_cache_file.exists():
                     payload = json.loads(self._token_cache_file.read_text(encoding="utf-8"))
                     if isinstance(payload, dict):
+                        item = payload.get(self._token_file_key())
+                        if rejected_token is not None and isinstance(item, dict) and item.get("access_token") != rejected_token:
+                            return
                         payload.pop(self._token_file_key(), None)
-                        self._token_cache_file.write_text(
-                            json.dumps(payload), encoding="utf-8"
-                        )
+                        self._replace_token_file(payload)
             except Exception as exc:
                 logger.warning("토큰 캐시 파일 무효화 실패 (무시): %s", exc)
 
@@ -1090,6 +1180,7 @@ class KISAdapter(BrokerAdapter):
         json: dict[str, Any] | None,
         idempotent: bool = True,
         attempts: int | None = None,
+        pre_send_check: Callable[[], None] | None = None,
     ) -> requests.Response:
         """KIS 요청을 보내고 일시 오류는 재시도한다.
 
@@ -1106,24 +1197,22 @@ class KISAdapter(BrokerAdapter):
         attempt = 0
         while attempt < attempts:
             attempt += 1
-            gate_started = time.monotonic()
-            self._pace_request()
-            if path in (_ORDER_PATH, _CANCEL_PATH):
-                require_execution_enabled(self._settings)
-            started, start_gap_ms = self._http_start()
-            diagnostics = dict(
-                path=path, tr_id=headers.get("tr_id", ""), attempt=attempt,
-                gate_wait_ms=(started - gate_started) * 1000, start_gap_ms=start_gap_ms,
-            )
             try:
-                response = self._http.request(
-                    method,
-                    self._url(path),
-                    headers=headers,
-                    params=params,
-                    json=json,
-                    timeout=self._http_timeout(idempotent=idempotent),
-                )
+                with self._paced_send(pre_send_check) as (started, start_gap_ms, gate_wait_ms):
+                    if path in (_ORDER_PATH, _CANCEL_PATH):
+                        require_execution_enabled(self._settings)
+                    diagnostics = dict(
+                        path=path, tr_id=headers.get("tr_id", ""), attempt=attempt,
+                        gate_wait_ms=gate_wait_ms, start_gap_ms=start_gap_ms,
+                    )
+                    response = self._http.request(
+                        method,
+                        self._url(path),
+                        headers=headers,
+                        params=params,
+                        json=json,
+                        timeout=self._http_timeout(idempotent=idempotent),
+                    )
                 latency_ms = (time.monotonic() - started) * 1000
                 if response.status_code not in {429, 500, 502, 503, 504}:
                     try:
@@ -1158,7 +1247,7 @@ class KISAdapter(BrokerAdapter):
                         "KIS 토큰 만료가 HTTP %s로 반환됨 (%s) — 토큰 재발급 후 재시도: %s",
                         response.status_code, msg_cd, path,
                     )
-                    self._invalidate_token_cache()
+                    self._invalidate_rejected_token(headers["authorization"].removeprefix("Bearer "))
                     headers["authorization"] = f"Bearer {self._ensure_token()}"
                     continue
                 if not idempotent and msg_cd not in _REQUEST_REJECTED_CODES:

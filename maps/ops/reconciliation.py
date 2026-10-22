@@ -98,6 +98,8 @@ def build_reconciliation(
     *,
     days: int = 30,
     end: dt.date | None = None,
+    account: str | None = None,
+    environment: str | None = None,
 ) -> ReconciliationSummary:
     """최근 `days`일(KST) 주문 정산 요약을 생성한다."""
     end = end or dt.datetime.now(_KST).date()
@@ -106,12 +108,15 @@ def build_reconciliation(
     start_utc = dt.datetime.combine(start, dt.time.min) - dt.timedelta(hours=9)
     end_utc = dt.datetime.combine(end + dt.timedelta(days=1), dt.time.min) - dt.timedelta(hours=9)
 
-    rows = (
+    query = (
         db.query(OrderLog)
         .filter(OrderLog.created_at >= start_utc, OrderLog.created_at < end_utc)
-        .order_by(OrderLog.created_at.desc())
-        .all()
     )
+    if account is not None:
+        query = query.filter(OrderLog.account_key == account)
+    if environment is not None:
+        query = query.filter(OrderLog.environment == environment)
+    rows = query.order_by(OrderLog.created_at.desc()).all()
 
     stats: dict[str, SideStat] = {"buy": SideStat(side="buy"), "sell": SideStat(side="sell")}
     unfilled: list[UnfilledOrder] = []

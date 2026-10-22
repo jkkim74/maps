@@ -45,3 +45,10 @@ src/
 - `keystore.properties.example` 만 저장소에 있고 실제 서명 키는 로컬에만 둔다
 - 릴리스 절차는 `apps/mobile/RELEASE.md`
 - 서버 쪽 대응 라우터는 `maps/api/mobile.py` (`/api/v1/mobile`)
+
+주문 상태는 서버 `orders.execution_state`와 실제 `block_reasons`, `checked_at`,
+`strategy_blocks`를 홈/주문 탭의 `ExecutionReadiness`가 함께 표시한다. 기존 boolean만
+있는 응답은 준비됨으로 추정하지 않는다. 주문 탭은 기간 제한 없는 미체결 잔량,
+오늘 KST 생성 주문의 누적 체결(취소 부분 체결 포함), 오늘 및 지난 7일 만료 주문
+최대 100건을 구분한다. 실제 체결 발생일별 원장이 아니며, 실측 절대 가격 괴리와
+표본 수/가정값을 구분한다. `OrdersReadiness.test.tsx`가 근거와 잔량 표시를 검증한다.

@@ -417,13 +417,50 @@ def test_never_sent_expired_intent_releases_its_reservation(db, setup):
     with pytest.raises(ExecutionBlockedError):
         manager.submit(order(), context=context())
     intent = db.query(OrderIntent).one()
-    assert intent.status == "PREPARED"
-    intent.valid_until = utcnow() - dt.timedelta(seconds=1)
-    db.commit()
-    manager.sync_broker_state()
-    db.refresh(intent)
     assert intent.status == "REJECTED"
     assert intent.reserved_amount == 0
+    assert intent.reserved_quantity == 0
+
+
+@pytest.mark.parametrize("invalidated", ["deadline", "quote", "snapshot", "disabled", "original_check"])
+def test_delayed_broker_guard_releases_known_unsent_reservation(db, setup, monkeypatch, invalidated):
+    """The broker receives a memory-only final check which expires during preparation."""
+    broker, manager = setup
+    from maps.execution import order_manager
+    current = [True]
+    original_check_current = [True]
+    send_context = replace(context(), quote_is_current=lambda: current[0])
+
+    def delayed_send(request):
+        if invalidated == "deadline":
+            monkeypatch.setattr(order_manager, "utcnow", lambda: send_context.valid_until)
+        elif invalidated == "quote":
+            current[0] = False
+        elif invalidated == "snapshot":
+            manager._settings = manager._settings.model_copy(update={"maps_execution_snapshot_max_age_seconds": -1})
+        elif invalidated == "original_check":
+            original_check_current[0] = False
+        else:
+            manager._settings = manager._settings.model_copy(update={"maps_live_trading_enabled": False})
+        assert request is not original
+        assert callable(getattr(request, "pre_send_check", None))
+        request.pre_send_check()
+        raise AssertionError("stale order would reach the broker")
+
+    def original_check():
+        if not original_check_current[0]:
+            raise ExecutionBlockedError("original_check_expired")
+
+    original = replace(order(), pre_send_check=original_check)
+    broker.place_order = delayed_send
+    with pytest.raises(ExecutionBlockedError):
+        manager.submit(original, context=send_context)
+    intent = db.query(OrderIntent).one()
+    assert intent.status == "REJECTED"
+    assert intent.reserved_amount == 0 and intent.reserved_quantity == 0
+    assert "pre_send_check" not in intent.request
+    assert original.pre_send_check is original_check
+    assert original == order() and "pre_send_check" not in repr(original)
 
 
 def test_notification_failure_is_persisted_and_retried(db, setup):

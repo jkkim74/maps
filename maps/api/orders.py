@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import datetime as dt
+import math
+
 from fastapi import APIRouter, Depends, Query
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from maps.api.deps import get_db
@@ -16,8 +20,10 @@ from maps.api.schemas import (
     ReconciliationUnfilledItem,
     SlippageStats,
 )
-from maps.common.models import KillSwitchLog, OrderLog, SecurityMetadata
+from maps.common.models import OrderLog, SecurityMetadata
 from maps.common.settings import get_settings
+from maps.execution.readiness import execution_readiness, utc_iso
+from maps.execution.safety import account_key, execution_environment, utcnow
 from maps.ops.order_preview import build_order_preview
 from maps.ops.reconciliation import build_reconciliation
 
@@ -30,7 +36,9 @@ def get_reconciliation(
     db: Session = Depends(get_db),
 ) -> ReconciliationResponse:
     """최근 N일 주문 정산 리포트 — 제출/체결/만료 집계 + 미체결 도달가능성 진단."""
-    summary = build_reconciliation(db, days=days)
+    settings = get_settings()
+    summary = build_reconciliation(db, days=days, account=account_key(settings),
+                                   environment=execution_environment(settings))
     return ReconciliationResponse(
         start_kst=summary.start_kst,
         end_kst=summary.end_kst,
@@ -68,124 +76,49 @@ def get_reconciliation(
 
 @router.get("", response_model=OrdersResponse)
 def get_orders(db: Session = Depends(get_db)) -> OrdersResponse:
-    """주문 큐 및 금일 체결 이력을 반환한다."""
-    import datetime
+    """Return scoped open orders and cumulative fills of orders created today KST."""
+    settings, now = get_settings(), utcnow()
+    day = (now + dt.timedelta(hours=9)).date()
+    start = dt.datetime.combine(day, dt.time.min) - dt.timedelta(hours=9)
+    end = start + dt.timedelta(days=1)
+    scoped = db.query(OrderLog).filter(OrderLog.account_key == account_key(settings),
+                                       OrderLog.environment == execution_environment(settings))
+    pending_rows = (scoped.filter(func.lower(OrderLog.status).in_(
+        ("pending", "partially_filled", "partial", "unknown")),
+        OrderLog.qty > OrderLog.fill_qty).order_by(OrderLog.created_at.desc(), OrderLog.id.desc()).all())
+    # Today is the order-created day, not a fill-event date (not stored here).
+    fill_rows = (scoped.filter(OrderLog.created_at >= start, OrderLog.created_at < end,
+                               OrderLog.fill_qty > 0)
+                 .order_by(OrderLog.created_at.desc(), OrderLog.id.desc()).all())
+    expired_rows = (scoped.filter(OrderLog.created_at >= start - dt.timedelta(days=7),
+                                  OrderLog.created_at < end, func.lower(OrderLog.status) == "expired")
+                    .order_by(OrderLog.created_at.desc(), OrderLog.id.desc()).limit(100).all())
+    tickers = {r.ticker for r in pending_rows + fill_rows + expired_rows}
+    names = {m.ticker: m.name for m in db.query(SecurityMetadata).filter(
+        SecurityMetadata.ticker.in_(tickers)).all()} if tickers else {}
 
-    import zoneinfo
-    _KST = zoneinfo.ZoneInfo("Asia/Seoul")
-    today_kst = datetime.datetime.now(_KST).date()
-    # KST 자정 기준으로 "오늘" 산정 (8:55 KST 주문 = 23:55 UTC 전날 포함)
-    kst_today_start = datetime.datetime.combine(today_kst, datetime.time.min) - datetime.timedelta(hours=9)
-    week_start = kst_today_start - datetime.timedelta(days=7)
+    def queue_item(row: OrderLog) -> OrderQueueItem:
+        """Keep requested, confirmed filled and unresolved remaining shares distinct."""
+        return OrderQueueItem(order_id=row.order_id, strategy_id=row.strategy_id,
+            ticker=row.ticker, name=names.get(row.ticker, ""), side=row.side,
+            qty=row.qty, fill_qty=row.fill_qty, remaining_qty=max(0, row.qty - row.fill_qty),
+            order_price=row.order_price, status=row.status, created_at=utc_iso(row.created_at) or "")
 
-    rows = (
-        db.query(OrderLog)
-        .filter(OrderLog.created_at >= week_start)
-        .order_by(OrderLog.created_at.desc())
-        .limit(100)
-        .all()
-    )
-
-    # 종목명 일괄 조회
-    tickers = {r.ticker for r in rows}
-    name_map: dict[str, str] = {}
-    if tickers:
-        name_map = {
-            m.ticker: m.name
-            for m in db.query(SecurityMetadata).filter(SecurityMetadata.ticker.in_(tickers)).all()
-        }
-
-    pending = [
-        OrderQueueItem(
-            order_id=r.order_id,
-            strategy_id=r.strategy_id,
-            ticker=r.ticker,
-            name=name_map.get(r.ticker, ""),
-            side=r.side,
-            qty=r.qty,
-            order_price=r.order_price,
-            status=r.status,
-            created_at=r.created_at.isoformat() if r.created_at else "",
-        )
-        for r in rows
-        if r.status in ("pending", "PENDING")
-    ]
-    fills = [
-        FillItem(
-            order_id=r.order_id,
-            ticker=r.ticker,
-            name=name_map.get(r.ticker, ""),
-            side=r.side,
-            fill_price=r.fill_price,
-            fill_qty=r.fill_qty,
-            status=r.status,
-            created_at=r.created_at.isoformat() if r.created_at else "",
-            strategy_id=r.strategy_id,
-            qty=r.qty,
-        )
-        for r in rows
-        if r.status in ("filled", "FILLED", "partially_filled", "PARTIAL")
-        and r.created_at is not None
-        and r.created_at >= kst_today_start
-    ]
-    expired_orders = [
-        OrderQueueItem(
-            order_id=r.order_id,
-            strategy_id=r.strategy_id,
-            ticker=r.ticker,
-            name=name_map.get(r.ticker, ""),
-            side=r.side,
-            qty=r.qty,
-            order_price=r.order_price,
-            status=r.status,
-            created_at=r.created_at.isoformat() if r.created_at else "",
-        )
-        for r in rows
-        if r.status in ("expired", "EXPIRED")
-    ]
-
-    # 활성 Kill Switch(trigger/approved)가 하나라도 있으면 자동 주문 비활성
-    ks_recent = (
-        db.query(KillSwitchLog)
-        .order_by(KillSwitchLog.created_at.desc(), KillSwitchLog.id.desc())
-        .limit(200)
-        .all()
-    )
-    latest_ks: dict[str, KillSwitchLog] = {}
-    for ks in ks_recent:
-        if ks.strategy_id and ks.strategy_id not in latest_ks:
-            latest_ks[ks.strategy_id] = ks
-    auto_order_active = not any(
-        ks.event_type in ("trigger", "approved") for ks in latest_ks.values()
-    )
-
-    # 실제 슬리피지: 금일 체결 주문의 fill_price vs order_price 평균 괴리율
-    # (대형/중소형 분류는 종목 시가총액 연동 후 세분화 예정 — 현재는 통합 평균)
-    fill_rows_with_price = [
-        r for r in rows
-        if r.status in ("filled", "FILLED", "partially_filled", "PARTIAL")
-        and r.fill_price is not None
-        and r.order_price is not None
-        and r.order_price > 0
-    ]
-    actual_slip: float | None = None
-    if fill_rows_with_price:
-        actual_slip = sum(
-            abs(r.fill_price - r.order_price) / r.order_price  # type: ignore[operator]
-            for r in fill_rows_with_price
-        ) / len(fill_rows_with_price)
-
+    samples = [abs(r.fill_price - r.order_price) / r.order_price for r in fill_rows
+               if r.fill_price is not None and r.order_price is not None
+               and math.isfinite(r.fill_price) and math.isfinite(r.order_price)
+               and r.order_price > 0 and r.fill_price > 0]
     return OrdersResponse(
-        auto_order_active=auto_order_active,
-        pending=pending,
-        fills_today=fills,
-        expired=expired_orders,
-        slippage=SlippageStats(
-            large_cap_actual=actual_slip if actual_slip is not None else 0.0005,
-            large_cap_assumed=0.0005,
-            mid_small_actual=actual_slip if actual_slip is not None else 0.0015,
-            mid_small_assumed=0.0015,
-        ),
+        **execution_readiness(db, settings, now),
+        pending=[queue_item(r) for r in pending_rows],
+        fills_today=[FillItem(order_id=r.order_id, ticker=r.ticker, name=names.get(r.ticker, ""),
+            side=r.side, fill_price=r.fill_price, fill_qty=r.fill_qty, status=r.status,
+            created_at=utc_iso(r.created_at) or "", strategy_id=r.strategy_id, qty=r.qty,
+            order_price=r.order_price) for r in fill_rows],
+        expired=[queue_item(r) for r in expired_rows],
+        slippage=SlippageStats(actual=sum(samples) / len(samples) if samples else None,
+            sample_count=len(samples), large_cap_actual=None, mid_small_actual=None,
+            large_cap_assumed=0.0005, mid_small_assumed=0.0015),
     )
 
 

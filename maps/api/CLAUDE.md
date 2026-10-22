@@ -64,6 +64,12 @@ DbDep = Depends(get_db)                    # 라우터 함수 파라미터로 �
 배치 모니터는 21:10 DART 수집 및 partial 상태를 표시하고, 이후 성공한 재시도도
 같은 날짜의 부분 수집 이력을 숨기지 않는다.
 
+Broker-sync cells count only failed `JobRunLog` rows as failures. Explicit skips
+remain skipped; partial sync history remains visible after a later skip/success.
+Existing successful heartbeat freshness and historical genuine failure priority
+remain unchanged. Consecutive market-closed interval ticks deduplicate within a
+KST day; a skip following another durable outcome records a fresh transition.
+
 ### Theme backtest snapshots
 
 Theme universe options come from the latest published classification catalog;
@@ -235,6 +241,38 @@ native-timer substitutes and deferred fetch fixtures. Its regression checks incl
 guidance states, escaped candidate reasons, GET-only/hidden-page polling, preservation
 of drafts and consent, failed partial batches and delayed-read/mutation races. These
 synthetic checks establish UI behavior, not operational readiness or measured results.
+
+## Order readiness and collection basis
+
+`GET /api/v1/orders` and mobile summary `orders` share persisted-only readiness:
+`execution_state=ready|blocked|unknown`, `block_reasons`, UTC `checked_at`,
+`environment`, and `strategy_blocks` keyed by strategy. `auto_order_active` is
+derived strictly from `execution_state == ready`. Global enable, dry-run, real
+trading confirmation, supported broker, current account READY/killed state and
+the existing reconciliation maximum age must all pass. Missing, future or stale
+evidence is unknown; explicit config/account blocks are blocked. Strategy kills
+are separate from account gates; legacy NULL-account strategy kills still match
+RiskManager semantics. Ready does not authorize a strategy or guarantee a send.
+The helper `maps/execution/readiness.py` never polls the broker or writes state.
+
+All order lists and the reconciliation API use the exact configured account and
+environment. Legacy orders with unknown ownership are excluded. The report
+helper's optional `account`/`environment` arguments leave its other callers intact.
+Pending/partial/unknown orders with remaining shares are queried independently
+of history limits, including old orders; `fill_qty` and `remaining_qty` are explicit.
+`fills_today` contains every positive cumulative fill on an order created during
+the current KST day, including cancelled partial fills. It is not a fill-event-day
+ledger: `fills_basis=kst_order_created_day_cumulative_fills` records that contract.
+All returned event timestamps include UTC offsets. Expired history is capped at
+100 rows from today's and the preceding seven KST dates.
+
+Slippage `actual` is the unweighted mean absolute relative deviation between
+those same orders' cumulative fill price and positive order price; `sample_count`
+counts only usable price pairs. No samples produces null, including unknown
+market-cap buckets; the large/mid-small assumptions remain separate. Web and
+mobile show the state, reasons, account check time, collection basis and sample
+count. Regression coverage: `tests/test_orders_api.py`, `test_orders_ui.py`,
+`test_mobile_api.py`, and mobile `OrdersReadiness.test.tsx`.
 
 ## Paper cost operator API and screen
 

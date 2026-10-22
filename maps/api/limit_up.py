@@ -56,9 +56,15 @@ def get_limit_up_status() -> LimitUpStatusResponse:
     screen asking this is an operations view, and "not running" is an answer.
     """
     runtime = bootstrap.get_runtime()
-    if runtime is None:
-        return LimitUpStatusResponse(**_STOPPED)
-    return LimitUpStatusResponse(**{**_STOPPED, **runtime.service.status()})
+    diagnostics = {**bootstrap.get_start_status(),
+                   "configured_mode": get_settings().maps_limit_up_mode,
+                   "running": runtime is not None and getattr(runtime, "upper_enabled", True)}
+    if not diagnostics["running"]:
+        return LimitUpStatusResponse(**{**_STOPPED, **diagnostics})
+    feed_status = getattr(runtime, "feed_status", None)
+    if callable(feed_status):
+        diagnostics.update(feed_status())
+    return LimitUpStatusResponse(**{**_STOPPED, **runtime.service.status(), **diagnostics})
 
 
 @router.post("/emergency-off", response_model=LimitUpStatusResponse)
@@ -70,7 +76,7 @@ def emergency_off() -> LimitUpStatusResponse:
     """
     runtime = bootstrap.get_runtime()
     if runtime is None:
-        return LimitUpStatusResponse(**_STOPPED)
+        return get_limit_up_status()
     try:
         runtime.emergency_off()
     except TimeoutError as exc:
@@ -90,7 +96,7 @@ def emergency_off() -> LimitUpStatusResponse:
         ) from exc
     # 하드코딩된 _STOPPED 를 돌려주면 곧이어 GET /status 를 본 운영자가 값이 달라진 것을
     # 보고 "비상정지가 풀렸다" 고 읽는다. 실제 상태를 그대로 준다.
-    return LimitUpStatusResponse(**{**_STOPPED, **runtime.service.status()})
+    return get_limit_up_status()
 
 
 @router.put("/settings", response_model=LimitUpStatusResponse)
@@ -117,11 +123,11 @@ def update_limit_up_settings(payload: LimitUpSettingsUpdate) -> LimitUpStatusRes
             )
     runtime = bootstrap.get_runtime()
     if runtime is None:
-        return LimitUpStatusResponse(**{**_STOPPED, "mode": payload.mode})
+        return get_limit_up_status()
     runtime.apply_settings(
         mode=payload.mode, min_turnover_krw=payload.min_turnover_krw
     )
-    return LimitUpStatusResponse(**{**_STOPPED, **runtime.service.status()})
+    return get_limit_up_status()
 
 
 @router.get("/sessions", response_model=LimitUpSessionsResponse)

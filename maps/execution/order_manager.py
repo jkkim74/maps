@@ -259,15 +259,21 @@ class OrderManager:
             intent.status = "SENDING"
             intent.updated_at = utcnow()
             db.commit()
-            try:
+            def pre_send_check() -> None:
+                """Revalidate transient evidence after broker preparation and pacing."""
                 require_execution_enabled(self._settings)
                 if utcnow() >= expires:
                     raise ExecutionBlockedError("intent_expired")
                 snapshot_age = (datetime.now(timezone.utc) - snapshot.as_of.astimezone(timezone.utc)).total_seconds()
-                if snapshot_age > self._settings.maps_execution_snapshot_max_age_seconds:
+                if snapshot_age < -5 or snapshot_age > self._settings.maps_execution_snapshot_max_age_seconds:
                     raise ExecutionBlockedError("account_snapshot_stale")
                 require_quote_current(context.quote_is_current)
-                result = self._broker.place_order(order)
+                if order.pre_send_check is not None:
+                    order.pre_send_check()
+
+            try:
+                pre_send_check()
+                result = self._broker.place_order(replace(order, pre_send_check=pre_send_check))
             except BrokerOrderRejectedError:
                 intent.status = "REJECTED"
                 intent.reserved_amount = 0
@@ -282,8 +288,14 @@ class OrderManager:
                 self._risk.on_order_failure(risk_strategy_id or order.strategy_id, reason="broker rejected",
                     order_id=f"rejected:{intent.id}")
                 raise
-            except ExecutionBlockedError:
-                intent.status = "PREPARED"
+            except ExecutionBlockedError as exc:
+                # This exception proves no order was sent (including safe retries).
+                intent.status = "REJECTED"
+                intent.reserved_amount = 0
+                intent.reserved_quantity = 0
+                intent.updated_at = utcnow()
+                intent.version += 1
+                event(db, key, "intent_blocked_before_send", {"intent_id": intent.id, "reason": exc.reason_code})
                 db.commit()
                 raise
             except Exception as exc:

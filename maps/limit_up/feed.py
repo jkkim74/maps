@@ -65,6 +65,7 @@ class FeedTrade:
     execution_strength: float
     buy_initiated: bool
     received_at: float
+    received_utc: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -163,6 +164,7 @@ def parse_kis_ws_message(
                     execution_strength=_as_float(row["CTTR"]),
                     buy_initiated=row["CCLD_DVSN"] == "1",
                     received_at=received_at,
+                    received_utc=received_utc,
                 )
             )
         else:

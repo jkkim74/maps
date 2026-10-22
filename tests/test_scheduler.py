@@ -236,7 +236,7 @@ def test_order_cycle_is_sync_only_when_live_disabled() -> None:
 
     run = pipeline.run_order_cycle()
 
-    assert run.status == "success"
+    assert run.status == "skipped"
     assert run.details["live_trading_enabled"] is False
     assert run.details["submitted_orders"] == 0
 
@@ -945,7 +945,7 @@ def test_scheduler_status_and_run_once() -> None:
     run = scheduler.run_once("validation")
     status = scheduler.status()
 
-    assert run.status == "success"
+    assert run.status == "skipped"
     assert status["enabled"] is False
     assert status["running"] is False
     assert status["last_runs"]["validation"]["details"]["status"] == "skipped"
@@ -1901,8 +1901,8 @@ def _make_scheduler():
     return engine, factory, MapsOperationalScheduler(settings=settings, pipeline=pipeline)
 
 
-def test_run_once_persists_success_to_job_run_log() -> None:
-    """잡 성공이 job_run_log에 남는다 — 인메모리 _last_runs와 달리 재시작에 생존."""
+def test_run_once_persists_skip_to_job_run_log() -> None:
+    """입력 부족으로 생략한 검증도 명시적인 상태로 재시작에 생존한다."""
     engine, factory, scheduler = _make_scheduler()
     try:
         scheduler.run_once("validation")
@@ -1912,7 +1912,7 @@ def test_run_once_persists_success_to_job_run_log() -> None:
             rows = db.query(JobRunLog).all()
             assert len(rows) == 1
             assert rows[0].name == "validation"
-            assert rows[0].status == "success"
+            assert rows[0].status == "skipped"
             assert rows[0].ref_date == dt.date.today()
             assert rows[0].finished_at is not None
         finally:
@@ -1991,7 +1991,7 @@ def test_persist_failure_does_not_break_job(monkeypatch) -> None:
     engine, factory, scheduler = _make_scheduler()
     try:
         run_ok = scheduler.run_once("validation")  # 워밍업: 정상 경로 확인
-        assert run_ok.status == "success"
+        assert run_ok.status == "skipped"
 
         def _broken_factory():
             raise RuntimeError("db down")
@@ -1999,7 +1999,7 @@ def test_persist_failure_does_not_break_job(monkeypatch) -> None:
         monkeypatch.setattr(scheduler._pipeline, "_session_factory", _broken_factory)
         # _persist_run 내부 예외가 삼켜지고 run은 그대로 반환돼야 한다
         run = scheduler._record("validation", lambda: run_ok)
-        assert run.status == "success"
+        assert run.status == "skipped"
     finally:
         Base.metadata.drop_all(engine)
         engine.dispose()
@@ -2321,7 +2321,7 @@ def test_after_hours_watch_is_off_unless_the_engine_is_automatic() -> None:
 
     run = pipeline.run_limit_up_after_hours(ref_date=dt.date(2026, 8, 28))
 
-    assert run.status == "success"
+    assert run.status == "skipped"
     assert run.details["skipped"] == "limit_up_mode"
     engine.dispose()
 
@@ -2343,7 +2343,7 @@ def test_after_hours_watch_is_blocked_by_the_live_trading_switch() -> None:
 
     run = pipeline.run_limit_up_after_hours(ref_date=dt.date(2026, 8, 28))
 
-    assert run.status == "success"
+    assert run.status == "skipped"
     assert run.details["skipped"] == "live_trading_disabled"
     engine.dispose()
 
@@ -2368,12 +2368,12 @@ def test_after_hours_watch_runs_with_no_carried_sessions() -> None:
 
 
 def test_run_once_daily_close_report_skips_when_telegram_disabled() -> None:
-    """텔레그램이 꺼져 있으면 잡은 성공으로 끝나되 skipped 를 남긴다."""
+    """텔레그램이 꺼져 있으면 실제 발송 없이 skipped 를 남긴다."""
     engine, factory, scheduler = _make_scheduler()
     try:
         run = scheduler.run_once("daily_close_report")
 
-        assert run.status == "success"
+        assert run.status == "skipped"
         assert run.details["skipped"] == "telegram_disabled"
     finally:
         Base.metadata.drop_all(engine)

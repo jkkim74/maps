@@ -133,6 +133,7 @@ class FakeSession:
 @pytest.fixture
 def settings(tmp_path: Path) -> MapsSettings:
     kis_adapter._TOKEN_CACHE.clear()
+    kis_adapter._TOKEN_ISSUE_COOLDOWN.clear()
     kis_adapter._BALANCE_CACHE.clear()
     kis_adapter._REQUEST_PACE_STATES.clear()
     return MapsSettings(
@@ -144,6 +145,286 @@ def settings(tmp_path: Path) -> MapsSettings:
         kis_real_trading=False,
         kis_paper_base_url="https://paper.example",
     )
+
+
+def test_concurrent_token_issue_is_singleflight(settings, monkeypatch):
+    """Two initial cache misses must issue only one token for the shared key."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    settings = settings.model_copy(update={"maps_kis_paper_min_interval_seconds": 0})
+    sessions = [FakeSession(), FakeSession()]
+    brokers = [KISAdapter(settings, http=session) for session in sessions]
+    initial_misses = threading.Barrier(2)
+    local = threading.local()
+    original = KISAdapter._get_cached_token
+
+    def cache(self, now):
+        value = original(self, now)
+        if not getattr(local, "checked", False):
+            local.checked = True
+            initial_misses.wait(3)
+        return value
+
+    monkeypatch.setattr(KISAdapter, "_get_cached_token", cache)
+    with ThreadPoolExecutor(2) as pool:
+        tokens = list(pool.map(lambda broker: broker._ensure_token(), brokers))
+    assert tokens == ["token", "token"]
+    assert sum(call["url"].endswith("/oauth2/tokenP") for session in sessions for call in session.calls) == 1
+
+
+@pytest.mark.parametrize("status", [200, 500])
+def test_stale_token_rejection_preserves_newer_shared_token(settings, monkeypatch, status):
+    """A late rejection of an old token must not delete another caller's refresh."""
+    import datetime as dt
+    http = FakeSession()
+    broker = KISAdapter(settings, http=http)
+    expires = dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=1)
+    kis_adapter._TOKEN_CACHE[broker._token_cache_key] = kis_adapter._TokenCacheEntry("old", expires)
+    authorizations = []
+
+    def request(method, url, **kwargs):
+        authorizations.append(kwargs["headers"]["authorization"])
+        if len(authorizations) == 1:
+            kis_adapter._TOKEN_CACHE[broker._token_cache_key] = kis_adapter._TokenCacheEntry("new", expires)
+            return FakeResponse({"rt_cd": "1", "msg_cd": "EGW00123"}, status)
+        return FakeResponse({"rt_cd": "0"})
+
+    monkeypatch.setattr(http, "request", request)
+    monkeypatch.setattr(broker, "_pace_request", lambda: None)
+    broker._request("GET", "/query", tr_id="query")
+    assert authorizations == ["Bearer old", "Bearer new"]
+    assert http.calls == []
+
+
+def test_token_issue_cooldown_is_shared_and_expires(settings, monkeypatch):
+    """EGW00133 suppresses same-key issuance for 60 seconds across instances."""
+    http = FakeSession()
+    clock = [100.0]
+    monkeypatch.setattr(kis_adapter.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(kis_adapter.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+    attempts = []
+
+    def post(url, **kwargs):
+        attempts.append(clock[0])
+        if len(attempts) == 1:
+            return FakeResponse({"error_code": "EGW00133", "error_description": "too often"}, 403)
+        return FakeResponse({"access_token": "token", "expires_in": 86400})
+
+    monkeypatch.setattr(http, "post", post)
+    brokers = [KISAdapter(settings, http=http) for _ in range(2)]
+    with pytest.raises(BrokerAdapterError):
+        brokers[0]._ensure_token()
+    clock[0] = 159.999
+    with pytest.raises(BrokerAdapterError, match="cooldown"):
+        brokers[1]._ensure_token()
+    assert attempts == [100.0]
+    clock[0] = 160.0
+    assert brokers[1]._ensure_token() == "token"
+    assert attempts == [100.0, 160.0]
+
+
+def test_token_file_is_replaced_atomically(settings, monkeypatch):
+    """An interrupted replacement must preserve the previous complete cache."""
+    import datetime as dt
+    broker = KISAdapter(settings, http=FakeSession())
+    expires = dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=1)
+    broker._write_file_cached_token("old", expires)
+    replacements = []
+
+    def fail_replace(source, target):
+        replacements.append((source, target))
+        raise OSError("interrupted replacement")
+
+    monkeypatch.setattr(kis_adapter.os, "replace", fail_replace)
+    broker._write_file_cached_token("new", expires)
+    assert broker._read_file_cached_token(dt.datetime.now(dt.timezone.utc)).access_token == "old"
+    assert len(replacements) == 1
+
+
+@pytest.mark.parametrize("delay_at", ["token", "hash", "pace", "retry", "refresh"])
+def test_order_guard_rechecks_after_delays_and_before_every_send(settings, monkeypatch, delay_at):
+    """Delayed auth/hash/pacing and confirmed-not-sent retries cannot send stale orders."""
+    from maps.common.exceptions import ExecutionBlockedError
+    clock = [0.0]
+    http = FakeSession()
+    broker = KISAdapter(settings.model_copy(update={"maps_order_retry_backoff_seconds": 0}), http=http)
+    monkeypatch.setattr(kis_adapter.time, "sleep", lambda seconds: None)
+    original_post = http.post
+    original_request = http.request
+    sent = []
+
+    def guard():
+        if clock[0] >= 15:
+            raise ExecutionBlockedError("intent_expired")
+
+    def post(url, **kwargs):
+        result = original_post(url, **kwargs)
+        if (delay_at == "token" and url.endswith("tokenP")) or (delay_at == "hash" and url.endswith("hashkey")):
+            clock[0] = 15.0
+        return result
+
+    def pace():
+        if delay_at == "pace" and any(call["url"].endswith("hashkey") for call in http.calls):
+            clock[0] = 15.0
+
+    def request(method, url, **kwargs):
+        sent.append(url)
+        if delay_at in {"retry", "refresh"}:
+            clock[0] = 15.0
+            return FakeResponse({"rt_cd": "1", "msg_cd": "EGW00201" if delay_at == "retry" else "EGW00123"}, 500)
+        return original_request(method, url, **kwargs)
+
+    monkeypatch.setattr(http, "post", post)
+    monkeypatch.setattr(http, "request", request)
+    monkeypatch.setattr(broker, "_pace_request", pace)
+    request_order = Order("s", "005930", OrderSide.BUY, OrderType.MARKET, 1)
+    # Set after construction so the missing dataclass field itself is not the failure.
+    request_order.pre_send_check = guard
+    with pytest.raises(ExecutionBlockedError, match="intent_expired"):
+        broker.place_order(request_order)
+    assert len(sent) == (1 if delay_at in {"retry", "refresh"} else 0)
+    if delay_at == "refresh":
+        assert sum(call["url"].endswith("tokenP") for call in http.calls) == 1
+
+
+def test_rank_only_scan_defers_per_ticker_quote(settings, monkeypatch):
+    """Early eligibility filtering can inspect ranks without N quote requests."""
+    broker = KISAdapter(settings, http=FakeSession())
+    paths = []
+
+    def request(method, path, **kwargs):
+        paths.append(path)
+        if path.endswith("fluctuation"):
+            assert kwargs["params"]["FID_RSFL_RATE1"] == "25"
+            assert kwargs["params"]["FID_RSFL_RATE2"] == "100"
+            return {"output": [{"stck_shrn_iscd": "005930", "prdy_ctrt": "25.10"},
+                               {"stck_shrn_iscd": "000660", "prdy_ctrt": "24.99"}]}
+        return {"output": {"stck_prpr": "99700", "stck_mxpr": "100000", "lstn_stcn": "10000000"}}
+
+    monkeypatch.setattr(broker, "_request", request)
+    rows, count = broker.get_limit_up_rank_candidates()
+    assert count == 2
+    assert [row["ticker"] for row in rows] == ["005930"]
+    assert len(paths) == 1
+    details = broker.get_limit_up_candidate_details("005930", ranked=rows[0])
+    assert details["upper_limit_price"] == 100000
+    assert details["change_rate"] == 25.1
+    assert len(paths) == 2
+
+
+@pytest.mark.parametrize("delay_at", ["grant", "start_observation"])
+def test_all_http_paths_space_actual_starts_after_delayed_grant(settings, monkeypatch, delay_at):
+    """Auth/hash/approval/trading start spacing survives a delayed pacing grant."""
+    clock = [100.0]
+    monkeypatch.setattr(kis_adapter.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(kis_adapter.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+    http = FakeSession()
+    broker = KISAdapter(settings, http=http)
+    original_pace = broker._pace_request
+    original_start = broker._http_start
+    original_post, original_request = http.post, http.request
+    starts = []
+
+    def pace():
+        original_pace()
+        if not starts and delay_at == "grant":
+            clock[0] += 2.0  # descheduled after its initial grant
+
+    def start():
+        observed = original_start()
+        if not starts and delay_at == "start_observation":
+            clock[0] += 2.0  # descheduled immediately before entering HTTP
+        return observed
+
+    def post(url, **kwargs):
+        starts.append(clock[0])
+        return original_post(url, **kwargs)
+
+    def request(method, url, **kwargs):
+        starts.append(clock[0])
+        return original_request(method, url, **kwargs)
+
+    monkeypatch.setattr(broker, "_pace_request", pace)
+    monkeypatch.setattr(broker, "_http_start", start)
+    monkeypatch.setattr(http, "post", post)
+    monkeypatch.setattr(http, "request", request)
+    broker.place_order(Order("s", "005930", OrderSide.BUY, OrderType.MARKET, 1))
+    broker.issue_websocket_approval_key()
+    assert starts == pytest.approx([102.0, 102.55, 103.1, 103.65])
+
+
+def test_concurrent_http_starts_are_serialized_through_the_actual_send(settings, monkeypatch):
+    """A second adapter cannot send while the first is paused after its grant."""
+    import datetime as dt
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    clock = [100.0]
+    monkeypatch.setattr(kis_adapter.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(kis_adapter.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+    brokers = [KISAdapter(settings, http=FakeSession()) for _ in range(2)]
+    expires = dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=1)
+    kis_adapter._TOKEN_CACHE[brokers[0]._token_cache_key] = kis_adapter._TokenCacheEntry("token", expires)
+    before_first_send = threading.Event()
+    second_started = threading.Event()
+    release_first = threading.Event()
+    first_pace = brokers[0]._pace_request
+    starts = []
+
+    def pace():
+        first_pace()
+        before_first_send.set()
+        assert release_first.wait(3)
+
+    def request(method, url, **kwargs):
+        starts.append(clock[0])
+        return FakeResponse({"rt_cd": "0"})
+
+    def second():
+        second_started.set()
+        return brokers[1]._request("GET", "/query", tr_id="query")
+
+    monkeypatch.setattr(brokers[0], "_pace_request", pace)
+    for broker in brokers:
+        monkeypatch.setattr(broker._http, "request", request)
+    with ThreadPoolExecutor(2) as pool:
+        first = pool.submit(brokers[0]._request, "GET", "/query", tr_id="query")
+        assert before_first_send.wait(3)
+        following = pool.submit(second)
+        try:
+            assert second_started.wait(3)
+            clock[0] = 102.0
+        finally:
+            release_first.set()
+        first.result(3)
+        following.result(3)
+    assert starts == pytest.approx([102.0, 102.55])
+
+
+def test_slow_http_uses_completion_plus_existing_interval(settings, monkeypatch):
+    """A one-second HTTP response costs 1.55 seconds per shared paper-lane slot."""
+    clock = [100.0]
+    starts = []
+    http = FakeSession()
+    original_post, original_request = http.post, http.request
+    monkeypatch.setattr(kis_adapter.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(kis_adapter.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+
+    def post(url, **kwargs):
+        starts.append(clock[0])
+        clock[0] += 1.0
+        return original_post(url, **kwargs)
+
+    def request(method, url, **kwargs):
+        starts.append(clock[0])
+        clock[0] += 1.0
+        return original_request(method, url, **kwargs)
+
+    monkeypatch.setattr(http, "post", post)
+    monkeypatch.setattr(http, "request", request)
+    KISAdapter(settings, http=http).place_order(Order("s", "005930", OrderSide.BUY, OrderType.MARKET, 1))
+    assert starts == pytest.approx([100.0, 101.55, 103.1])
+    assert clock[0] == pytest.approx(104.1)
 
 
 @pytest.mark.parametrize("real, expected", [(False, 0.55), (True, 0.05)])

@@ -11,7 +11,7 @@ import datetime
 import hashlib
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, Callable
 from decimal import Decimal
 
 from maps.common.settings import get_settings
@@ -100,6 +100,8 @@ class Order:
     market: str = "KR"
     currency: str = "KRW"
     exchange: str = ""
+    # Memory-only final send validation. Persisted requests explicitly select fields.
+    pre_send_check: Callable[[], None] | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass

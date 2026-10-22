@@ -6,9 +6,11 @@ import datetime as dt
 import logging
 from dataclasses import dataclass
 from enum import Enum
+from collections.abc import Callable
 
 from maps.common.models import LimitUpSession
 from maps.common.settings import MapsSettings, get_settings
+from maps.execution.safety import ExecutionContext
 from maps.limit_up.domain import (
     CommandKind,
     DailyGuard,
@@ -37,6 +39,7 @@ _TRANSIENT_LATCHES = frozenset({"feed_disconnected"})
 # 관측치를 틱마다 쓰면 상한가 종목 하나가 초당 수십 UPDATE 를 만든다.
 # 30초면 프로세스가 죽어도 그날 관측을 거의 다 남기면서 DB 는 조용하다.
 _OBSERVATION_FLUSH_SECONDS = 30.0
+_PENDING_BUY_CANCEL_PREFIX = "cancel_buys_pending:"
 
 
 def automatic_mode_blocked_reason(settings: "MapsSettings") -> str | None:
@@ -189,7 +192,8 @@ class LimitUpService:
         notify.watch_started(session)
         return None
 
-    def on_trade(self, trade: FeedTrade, *, now_kst: dt.datetime) -> None:
+    def on_trade(self, trade: FeedTrade, *, now_kst: dt.datetime,
+                 entry_context: ExecutionContext | None = None) -> None:
         """Process one normalized trade without database I/O in the tape callback path."""
         machine = self._machines.get(trade.ticker)
         if machine is None:
@@ -218,7 +222,8 @@ class LimitUpService:
                 at_kst=now_kst.strftime("%H:%M:%S"),
             )
         )
-        self._handle_commands(trade.ticker, commands, now_kst=now_kst, trade=trade)
+        self._handle_commands(trade.ticker, commands, now_kst=now_kst, trade=trade,
+                              entry_context=entry_context)
 
     def on_quote(self, quote: FeedQuote, *, now_kst: dt.datetime) -> None:
         """Process one best-level quote and track the continuous lock buffer."""
@@ -255,14 +260,21 @@ class LimitUpService:
         )
         self._handle_commands(quote.ticker, commands, now_kst=now_kst)
 
-    def tick(self, *, now_monotonic: float, now_kst: dt.datetime | None = None) -> None:
+    def tick(self, *, now_monotonic: float, now_kst: dt.datetime | None = None,
+             feed_is_current: Callable[[str], bool] | None = None,
+             monotonic: Callable[[], float] | None = None) -> None:
         """Apply all session timers and reconcile automatic broker fills."""
         wall = now_kst or dt.datetime.now(dt.timezone(dt.timedelta(hours=9)))
         self.monotonic_hint = now_monotonic
         for ticker, machine in list(self._machines.items()):
             last_reconcile = self._last_reconcile_at.get(ticker, float("-inf"))
             if self.can_place_exit_for(ticker) and now_monotonic - last_reconcile >= 1.0:
-                if machine.state in {LimitUpState.NET_OPEN, LimitUpState.FILLED_WAIT_LOCK}:
+                pending_cancel = self._pending_buy_cancel_reason(self._sessions[ticker])
+                if pending_cancel is not None:
+                    self._last_reconcile_at[ticker] = now_monotonic
+                    self._handle_commands(ticker,
+                        [MachineCommand(CommandKind.CANCEL_BUYS, pending_cancel)], now_kst=wall)
+                elif machine.state in {LimitUpState.NET_OPEN, LimitUpState.FILLED_WAIT_LOCK}:
                     self._last_reconcile_at[ticker] = now_monotonic
                     result = self.worker.reconcile(self._sessions[ticker])
                     if result.owned_quantity > machine.filled_quantity:
@@ -293,7 +305,9 @@ class LimitUpService:
                         # 손절 이벤트는 중복 방지로 무시된다. 열린 주문이 하나도 없는데
                         # 보유가 남아 있다는 건 매도가 나가지 않았다는 뜻이다.
                         self._retry_stuck_exit(ticker, result.owned_quantity)
-            commands = machine.on_timer(now_monotonic)
+            if feed_is_current is not None and not feed_is_current(ticker):
+                self.on_feed_gap(ticker, now_kst=wall)
+            commands = machine.on_timer(monotonic() if monotonic is not None else now_monotonic)
             self._handle_commands(ticker, commands, now_kst=wall)
         if self._flush_observations(now_monotonic=now_monotonic):
             self.repository.db.commit()
@@ -428,8 +442,14 @@ class LimitUpService:
         self.guard.halted_reasons.add("feed_disconnected")
         self._persist_guard()
         for ticker, machine in list(self._machines.items()):
-            commands = machine.on_market_halt(at=at)
-            self._handle_commands(ticker, commands, now_kst=now_kst)
+            self.on_feed_gap(ticker, now_kst=now_kst)
+
+    def on_feed_gap(self, ticker: str, *, now_kst: dt.datetime) -> None:
+        """Invalidate entry/lock continuity while retaining held-position protection."""
+        machine = self._machines.get(ticker)
+        if machine is not None:
+            self._last_prices.pop(ticker, None)
+            self._handle_commands(ticker, machine.on_feed_gap(), now_kst=now_kst)
 
     def on_fallback_price(
         self,
@@ -864,6 +884,15 @@ class LimitUpService:
                 current_price=0,
                 change_rate=0.0,
             )
+            pending_cancel = self._pending_buy_cancel_reason(row)
+            if pending_cancel is not None:
+                # A pending BUY cancellation is not an interrupted SELL intent.
+                self.manual_lock = True
+                if machine.filled_quantity > 0:
+                    self._record_fill(row.ticker, machine.filled_quantity, now_monotonic, wall)
+                    if pending_cancel in {"hard_stop", "time_stop"}:
+                        machine.state = LimitUpState.RECONCILING
+                    row.state = machine.state.value
             if (
                 row.execution_mode == LimitUpMode.AUTOMATIC.value
                 and position_qty == 0
@@ -927,6 +956,9 @@ class LimitUpService:
             if machine.filled_quantity <= 0:
                 continue
             session = self._sessions[ticker]
+            if self._pending_buy_cancel_reason(session) is not None:
+                # tick must first verify the outstanding buy cancellation.
+                continue
             if self._is_virtual(ticker):
                 self._close_virtual(
                     ticker,
@@ -1140,6 +1172,12 @@ class LimitUpService:
             )
             return None
 
+    @staticmethod
+    def _pending_buy_cancel_reason(session: LimitUpSession) -> str | None:
+        """Return the durable cancellation intent without treating it as an exit."""
+        reason = session.end_reason or ""
+        return reason.removeprefix(_PENDING_BUY_CANCEL_PREFIX) if reason.startswith(_PENDING_BUY_CANCEL_PREFIX) else None
+
     def _apply_virtual_fills(
         self, ticker: str, price: int, at: float, now_kst: dt.datetime
     ) -> None:
@@ -1201,6 +1239,7 @@ class LimitUpService:
         *,
         now_kst: dt.datetime,
         trade: FeedTrade | None = None,
+        entry_context: ExecutionContext | None = None,
     ) -> None:
         """Persist transitions before dispatching all emitted side effects."""
         for command in commands:
@@ -1297,6 +1336,7 @@ class LimitUpService:
                     result = self.worker.fire_grid(
                         session,
                         grid,
+                        entry_context=entry_context,
                         daily_pnl_ratio=self.repository.daily_account_pnl_ratio(
                             now_kst.date()
                         ),
@@ -1322,9 +1362,43 @@ class LimitUpService:
 
             if command.kind is CommandKind.CANCEL_BUYS:
                 if self.can_place_exit_for(ticker):
+                    pending_reason = self._pending_buy_cancel_reason(session)
+                    protective_exit = (machine.state is LimitUpState.RECONCILING
+                        and machine.filled_quantity > 0
+                        and command.reason in {"hard_stop", "time_stop"})
+                    if machine.state is LimitUpState.CLOSED and pending_reason is None:
+                        # Persist before I/O: a crash or failed cancellation must
+                        # not hide a still-live buy from tick/restart recovery.
+                        pending_reason = command.reason
+                        machine.state = LimitUpState.RECONCILING
+                        session.end_reason = _PENDING_BUY_CANCEL_PREFIX + pending_reason
+                        self.repository.transition(session, state=LimitUpState.RECONCILING,
+                            action="buy_cancel_pending", payload={"reason": pending_reason})
+                        self.repository.db.commit()
+                    elif pending_reason is not None and protective_exit:
+                        pending_reason = command.reason
+                        session.end_reason = _PENDING_BUY_CANCEL_PREFIX + pending_reason
+                        self.repository.db.commit()
                     cancel = self._cancel_buys_safely(session)
                     if cancel is None:
                         return
+                    if pending_reason is not None:
+                        if (cancel.reconciliation.owned_quantity > 0
+                                and (cancel.reconciliation.owned_quantity > machine.filled_quantity
+                                     or machine.first_fill_at is None)):
+                            self._record_fill(ticker, cancel.reconciliation.owned_quantity,
+                                self.monotonic_hint, now_kst)
+                        if protective_exit:
+                            machine.state = LimitUpState.RECONCILING
+                        session.state = machine.state.value
+                        if cancel.is_clear:
+                            if cancel.reconciliation.owned_quantity > 0:
+                                session.end_reason = pending_reason if protective_exit else None
+                                self.repository.db.commit()
+                                continue
+                            machine.state = LimitUpState.CLOSED
+                            session.end_reason = pending_reason
+                        self.repository.db.commit()
                     if not cancel.is_clear:
                         # 취소하지 못한 매수가 브로커에 살아 있다. 지금 팔아도 그 주문이
                         # 나중에 체결되면 포지션이 되살아난다 — 사람이 볼 수 있게 잠근다.

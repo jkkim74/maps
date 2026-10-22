@@ -191,6 +191,7 @@ def _control_loop_runtime(
     runtime._stop = asyncio.Event()
     runtime.monotonic = lambda: 2.0
     runtime._last_scan_at = 2.0
+    runtime._scan_task = None
     runtime._last_index_at = last_index_at
     runtime.settings = settings or MapsSettings()
     runtime._last_ws_index_at = last_ws_index_at
@@ -216,7 +217,7 @@ def _control_loop_runtime(
         return callable_(*args, **kwargs)
 
     async def _finish_iteration(*_args: object, **_kwargs: object) -> None:
-        runtime.daily_actions_iteration = runtime.iterations
+        runtime.daily_actions_iteration += 1
         runtime._stop.set()
 
     async def _fallback_once() -> None:
@@ -457,10 +458,16 @@ async def test_reading_the_next_frame_does_not_wait_for_the_previous_one() -> No
     runtime.wall_now = lambda: dt.datetime(2026, 8, 28, 10, 0, tzinfo=KST)
     runtime._quotes = {}
     runtime._feed_tasks = set()
+    from maps.limit_up.freshness import EntryFeed
+    from maps.limit_up.feed import FeedTrade
+    runtime._entry_feed = EntryFeed(runtime.monotonic)
+    runtime._feed_overflow = False
+    runtime._feed_overflow_drops = 0
+    runtime._last_backlog_log = 0.0
     applied: list[str] = []
     release = threading.Event()
 
-    def _slow_apply(event, now) -> None:
+    def _slow_apply(event, now, **kwargs) -> None:
         applied.append("first")
         release.wait(timeout=5)
 
@@ -470,7 +477,8 @@ async def test_reading_the_next_frame_does_not_wait_for_the_previous_one() -> No
     import maps.limit_up.runtime as runtime_module
 
     original = runtime_module.parse_kis_ws_message
-    runtime_module.parse_kis_ws_message = lambda raw, received_at, received_utc=None: [object()]
+    runtime_module.parse_kis_ws_message = lambda raw, received_at, received_utc=None: [
+        FeedTrade("005930", 100, 50_000_000_000, 150, True, received_at)]
     try:
         # the dispatch returns immediately even though the work is still running
         assert await asyncio.wait_for(runtime.dispatch_message_async("x"), timeout=1) == 1
@@ -1096,6 +1104,8 @@ async def test_ws_index_frames_feed_the_guard_at_most_once_per_second() -> None:
     runtime._feed_tasks = set()
     runtime._last_ws_index_at = None
     runtime._last_ws_index_applied_at = None
+    runtime._index_task = None
+    runtime._pending_index = None
     runtime._ws_index_live = False
 
     async def _call_service(callable_, *args: object, **kwargs: object) -> object:

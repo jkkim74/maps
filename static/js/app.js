@@ -1743,13 +1743,29 @@ async function loadOrders() {
   try {
     const d = await apiFetch('/orders');
     const slip = d.slippage || {};
+    const reasonLabels = {
+      trading_disabled: '전역 주문 OFF', dry_run: '드라이런 모드',
+      real_trading_unconfirmed: '실거래 확인 미완료', broker_execution_unsupported: '지원하지 않는 주문 브로커',
+      account_unobserved: '계좌 대사 근거 없음', account_environment_mismatch: '계좌 환경 불일치',
+      reconciliation_stale: '계좌 대사 근거가 없거나 오래됨', account_warmup: '계좌 준비 중',
+      account_blocked: '계좌 실행 차단', account_status_unknown: '계좌 상태 확인 필요',
+      account_kill_switch: '계좌 Kill Switch', strategy_kill_switch: '전략 Kill Switch',
+    };
+    const reasons = values => (values || []).map(value => esc(reasonLabels[value] || value)).join(' · ');
+    const ready = d.execution_state === 'ready';
+    const stateLabel = ready ? '준비됨' : d.execution_state === 'blocked' ? '차단' : '확인 필요';
+    const checked = d.checked_at ? new Date(d.checked_at).toLocaleString('ko-KR', {timeZone:'Asia/Seoul'}) + ' KST' : '근거 없음';
     document.getElementById('orders-kpi').innerHTML = `
       <div class="kpi-grid">
-        <div class="kpi-card ${d.auto_order_active ? 'pass' : 'fail'}"><div class="kpi-label">Auto Orders</div><div class="kpi-value">${d.auto_order_active ? 'ACTIVE' : 'BLOCKED'}</div><div class="kpi-sub">Kill Switch aware</div></div>
-        <div class="kpi-card"><div class="kpi-label">Pending</div><div class="kpi-value">${d.pending.length}</div><div class="kpi-sub">open queue</div></div>
-        <div class="kpi-card info"><div class="kpi-label">Fills Today</div><div class="kpi-value">${d.fills_today.length}</div><div class="kpi-sub">audit log</div></div>
-        <div class="kpi-card"><div class="kpi-label">Slip Assumed</div><div class="kpi-value">${fmt.pct1(slip.mid_small_assumed)}</div><div class="kpi-sub">mid/small cap</div></div>
-      </div>`;
+        <div class="kpi-card ${ready ? 'pass' : 'fail'}"><div class="kpi-label">자동 주문</div><div class="kpi-value">${stateLabel}</div><div class="kpi-sub">${reasons(d.block_reasons) || (ready ? '계좌 공통 조건 통과 · 전략 진입 조건 별도 확인' : '실행 근거 확인 필요')}</div></div>
+        <div class="kpi-card"><div class="kpi-label">미체결 주문</div><div class="kpi-value">${d.pending.length}</div><div class="kpi-sub">과거 주문 포함 · 부분 체결 잔량 포함</div></div>
+        <div class="kpi-card info"><div class="kpi-label">오늘 생성 주문 중 체결 있음</div><div class="kpi-value">${d.fills_today.length}</div><div class="kpi-sub">오늘 생성 주문의 누적 체결 (KST)</div></div>
+        <div class="kpi-card"><div class="kpi-label">실제 평균 절대 가격 괴리</div><div class="kpi-value">${fmt.pct3(slip.actual)}</div><div class="kpi-sub">표본 ${slip.sample_count ?? 0}건 · 시가총액별 실측 미분류</div></div>
+      </div>
+      <p class="text-muted">대사 확인 ${esc(checked)} · 현재 계좌·환경 ${esc(d.environment || '확인 필요')}의 저장 기록</p>
+      <p class="text-muted">오늘 생성 주문의 누적 체결가와 주문가 비교 · 실제 체결 시각 기준 아님 · 취소 주문 부분 체결 포함</p>
+      <p class="text-muted">슬리피지 가정: 대형 ${fmt.pct3(slip.large_cap_assumed)} · 중소형 ${fmt.pct3(slip.mid_small_assumed)}</p>
+      ${Object.entries(d.strategy_blocks || {}).map(([strategy, blocks]) => `<p>전략 차단 ${esc(strategy)}: ${reasons(blocks)}</p>`).join('')}`;
 
     if (!d.pending.length) {
       empty('orders-pending', 'No pending orders');
@@ -1765,17 +1781,19 @@ async function loadOrders() {
           <td>${o.name || '-'}</td>
           <td>${badge(o.side, o.side === 'BUY' ? 'pass' : 'warn')}</td>
           <td class="mono">${o.qty}</td>
+          <td class="mono">${o.fill_qty ?? '—'}</td>
+          <td class="mono">${o.remaining_qty ?? '—'}</td>
           <td class="mono">${o.order_price == null ? '-' : o.order_price.toLocaleString('ko-KR')}</td>
           <td>${badge(o.status, statusCls)}</td>
           <td class="mono text-muted">${fmt.date(o.created_at)}</td>
         </tr>`;
       }).join('');
       document.getElementById('orders-pending').innerHTML =
-        `<table><thead><tr><th>Order</th><th>Strategy</th><th>Ticker</th><th>종목명</th><th>Side</th><th>Qty</th><th>Price</th><th>Status</th><th>Created</th></tr></thead><tbody>${rows}</tbody></table>`;
+        `<table><thead><tr><th>Order</th><th>Strategy</th><th>Ticker</th><th>종목명</th><th>Side</th><th>주문 수량</th><th>누적 체결</th><th>잔량</th><th>Price</th><th>Status</th><th>주문 생성</th></tr></thead><tbody>${rows}</tbody></table>`;
     }
 
     if (!d.fills_today.length) {
-      empty('orders-fills', 'No fills today');
+      empty('orders-fills', '오늘 생성 주문의 누적 체결 기록 없음');
     } else {
       const rows = d.fills_today.map(f => {
         const statusCls = ['filled','FILLED'].includes(f.status) ? 'pass'
@@ -2159,6 +2177,8 @@ async function loadLimitUp() {
 
 function _luRenderStatus(st, guard) {
   const halted = st.entry_halted;
+  const feedLabel = {ready:'수신 정상', waiting:'수신 대기', degraded:'지연', disconnected:'연결 끊김'}[st.feed_state] || '확인 필요';
+  const feedAge = Number.isFinite(st.feed_age_seconds) ? `${st.feed_age_seconds.toFixed(1)}초` : '관측 없음';
   const reasons = st.halted_reasons.length ? st.halted_reasons.join(', ') : '없음';
   const unknown = st.unknown_positions.length
     ? st.unknown_positions.join(', ') : '없음';
@@ -2167,7 +2187,9 @@ function _luRenderStatus(st, guard) {
       <div class="kpi-card ${st.mode === 'off' ? 'fail' : ''}">
         <div class="kpi-label">모드</div>
         <div class="kpi-value">${esc(st.mode)}</div>
-        <div class="kpi-sub">recommend_only 는 실주문을 내지 않습니다</div>
+        <div class="kpi-sub">설정 ${esc(st.configured_mode || st.mode)} · ${st.running ? '엔진 실행' : '엔진 정지'}<br>
+          ${esc(st.start_outcome || '확인 필요')}${st.start_reason ? ` · ${esc(st.start_reason)}` : ''}<br>
+          recommend_only 는 실주문을 내지 않습니다</div>
       </div>
       <div class="kpi-card ${halted ? 'fail' : 'pass'}">
         <div class="kpi-label">신규 진입</div>
@@ -2178,6 +2200,12 @@ function _luRenderStatus(st, guard) {
         <div class="kpi-label">수동 잠금</div>
         <div class="kpi-value">${st.manual_lock ? 'LOCKED' : '해제'}</div>
         <div class="kpi-sub">미분류 보유 ${esc(unknown)}</div>
+      </div>
+      <div class="kpi-card ${st.feed_state === 'ready' ? '' : 'fail'}">
+        <div class="kpi-label">시세 수신</div>
+        <div class="kpi-value">${feedLabel}</div>
+        <div class="kpi-sub">수신 후 ${feedAge} · 대기 ${st.feed_pending ?? 0}<br>
+          제외: 오래된 시세 ${st.feed_stale_drops ?? 0} · 초과 ${st.feed_overflow_drops ?? 0}</div>
       </div>
       <div class="kpi-card ${st.daily_pnl < 0 ? 'fail' : ''}">
         <div class="kpi-label">당일 실현손익</div>

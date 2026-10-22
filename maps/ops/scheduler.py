@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 import hashlib
 import json
 import logging
+import math
 from dataclasses import dataclass, field
 from typing import Callable, TYPE_CHECKING
 
@@ -242,6 +243,28 @@ class JobResult:
     message: str = "ok"
 
 
+def _normalize_job_details(value: object, path: str = "details") -> object:
+    """Copy supported job values into strict JSON, reporting unsupported paths."""
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError(f"{path}: non-finite float")
+        return value
+    if isinstance(value, (dt.datetime, dt.date)):
+        return value.isoformat()
+    if isinstance(value, dict):
+        result = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise TypeError(f"{path}: non-string dictionary key ({type(key).__name__})")
+            result[key] = _normalize_job_details(item, f"{path}.{key}")
+        return result
+    if isinstance(value, (list, tuple)):
+        return [_normalize_job_details(item, f"{path}[{index}]") for index, item in enumerate(value)]
+    raise TypeError(f"{path}: unsupported value type {type(value).__name__}")
+
+
 @dataclass(frozen=True)
 class TickerContext:
     """종목당 한 번만 계산하는 값들 — 전략 8개가 공유한다.
@@ -343,7 +366,7 @@ class OperationalPipeline:
     def collect_data(self, ref_date: dt.date | None = None) -> JobRun:
         ref_date = ref_date or dt.date.today()
 
-        def _run(db: Session) -> dict:
+        def _run(db: Session) -> JobResult:
             collector = DataCollector(self._make_krx_adapter(), db)
             result = collector.collect_daily(ref_date)
             self._last_collection = result
@@ -370,6 +393,7 @@ class OperationalPipeline:
             quality_status = (result.metadata_quality or {}).get("status", "unavailable")
             status = "failed" if quality_status == "unavailable" else (
                 "partial" if quality_status != "complete" or result.investor_flow_count == 0
+                or result.investor_flow_error
                 or (result.ohlcv_quality or {}).get("status", "complete") != "complete"
                 or (result.classification_quality or {}).get("status") != "complete" else "success"
             )
@@ -387,7 +411,8 @@ class OperationalPipeline:
         started = dt.datetime.now(dt.timezone.utc)
         details = self._classification_jobs().collect(ref_date or dt.datetime.now(ZoneInfo("Asia/Seoul")).date())
         status = details["status"]
-        return JobRun(name="theme_collection", status="success" if status == "complete" else status,
+        return JobRun(name="theme_collection", status="success" if status == "complete" else (
+                      "skipped" if status == "disabled" else status),
                       started_at=started, finished_at=dt.datetime.now(dt.timezone.utc),
                       message=details.get("error") or status, details=details)
 
@@ -666,16 +691,19 @@ class OperationalPipeline:
         역사적 밸류 밴드(`FundamentalRepository.historical_band`)·가치 목표가용 히스토리를
         적재한다. 가격 백필(`backfill_ohlcv`)과 분리된 일자별 펀더멘털 경로다.
         """
-        def _run(db: Session) -> dict:
+        def _run(db: Session) -> JobResult:
             collector = DataCollector(self._make_krx_adapter(), db)
-            return collector.collect_fundamental_history(start, end)
+            details = collector.collect_fundamental_history(start, end)
+            incomplete = details["failed_days"] > 0
+            status = ("partial" if details["rows"] else "failed") if incomplete else "success"
+            return JobResult(details, status, "collection_incomplete" if incomplete else "ok")
 
         return self._job("fundamental_backfill", _run)
 
     def run_validation(self, ref_date: dt.date | None = None) -> JobRun:
         ref_date = ref_date or dt.date.today()
 
-        def _run(db: Session) -> dict:
+        def _run(db: Session) -> JobResult:
             generated = self._generate_validation_metrics(db, ref_date)
             promotion = self._evaluate_promotions(db, ref_date)
             if promotion["evaluated"] > 0:
@@ -690,13 +718,13 @@ class OperationalPipeline:
                         f"failed={promotion['failed']}."
                     ),
                 )
-                return {
+                return JobResult({
                     "ref_date": ref_date.isoformat(),
                     "status": "success",
                     "reason": "promotion_evaluation_completed",
                     "generated": generated,
                     **promotion,
-                }
+                }, "success", "promotion_evaluation_completed")
 
             # Full WFA/MC requires persisted OHLCV history. If no validation or
             # candidate data is available yet, record readiness without creating
@@ -709,20 +737,20 @@ class OperationalPipeline:
                 items=0,
                 note="No candidate or validation metrics available for promotion evaluation.",
             )
-            return {
+            return JobResult({
                 "ref_date": ref_date.isoformat(),
                 "status": "skipped",
                 "reason": "promotion_inputs_missing",
                 "generated": generated,
                 **promotion,
-            }
+            }, "skipped", "promotion_inputs_missing")
 
         return self._job("validation", _run)
 
     def run_order_cycle(self, ref_date: dt.date | None = None) -> JobRun:
         ref_date = ref_date or dt.date.today()
 
-        def _run(db: Session) -> dict:
+        def _run(db: Session) -> JobResult:
             broker = get_broker(self._settings.maps_broker_mode)
             manager = OrderManager(broker=broker, risk=self._make_risk_manager(broker, db), db=db, settings=self._settings)
             sync = manager.sync_broker_state()
@@ -785,7 +813,7 @@ class OperationalPipeline:
             else:
                 note = "Order submission disabled by MAPS_LIVE_TRADING_ENABLED=false."
 
-            status = "success" if live_enabled else "skipped"
+            status = "success" if live_enabled and not dry_run else "skipped"
             self._write_log(
                 db,
                 ref_date=ref_date,
@@ -794,7 +822,7 @@ class OperationalPipeline:
                 items=submitted_orders,
                 note=note,
             )
-            return {
+            return JobResult({
                 "ref_date": ref_date.isoformat(),
                 "live_trading_enabled": live_enabled,
                 "cash": sync["cash"],
@@ -808,7 +836,7 @@ class OperationalPipeline:
                 "skipped_buy_orders": skipped_buy_orders,
                 "skipped_sell_orders": skipped_sell_orders,
                 "blocked_by_readiness": blocked_by_readiness,
-            }
+            }, status, "dry_run" if dry_run else "ok" if live_enabled else "execution_disabled")
 
         return self._job("order_cycle", _run)
 
@@ -941,11 +969,12 @@ class OperationalPipeline:
     def run_eod_cleanup(self, ref_date: dt.date | None = None) -> JobRun:
         ref_date = ref_date or dt.date.today()
 
-        def _run(db: Session) -> dict:
+        def _run(db: Session) -> dict | JobResult:
             broker = get_broker(self._settings.maps_broker_mode)
             manager = OrderManager(broker=broker, risk=self._make_risk_manager(broker, db), db=db, settings=self._settings)
             if self._settings.maps_dry_run or not self._settings.maps_live_trading_enabled:
-                return {"skipped": "execution_disabled"}
+                return JobResult({"ref_date": ref_date.isoformat(), "skipped": "execution_disabled"},
+                                 "skipped", "execution_disabled")
             manager.sync_broker_state()
             cancelled = 0
             try:
@@ -994,10 +1023,11 @@ class OperationalPipeline:
 
         ref_date = ref_date or dt.date.today()
 
-        def _run(db: Session) -> dict:
+        def _run(db: Session) -> dict | JobResult:
             notifier = get_telegram_notifier()
             if not notifier.enabled:
-                return {"ref_date": ref_date.isoformat(), "skipped": "telegram_disabled"}
+                return JobResult({"ref_date": ref_date.isoformat(), "skipped": "telegram_disabled"},
+                                 "skipped", "telegram_disabled")
             text = build_close_report(db, self._settings, ref_date)
             if not notifier.send_long(text):
                 raise RuntimeError("Telegram send failed for the close report")
@@ -1039,19 +1069,20 @@ class OperationalPipeline:
         """
         ref_date = ref_date or dt.date.today()
 
-        def _run(db: Session) -> dict:
+        def _run(db: Session) -> dict | JobResult:
             # 런타임이 살아 있으면 그 상태가 정본이다. 설정값만 보면 관리자 API 로
             # automatic 으로 바꾼 뒤 보유가 생겨도 .env 가 recommend_only 라는 이유로
             # 저녁 보호가 건너뛰어지고, 비상정지 뒤에는 보유가 남았는데도 멈춘다.
             if not self._limit_up_exits_active():
-                return {"ref_date": ref_date.isoformat(), "skipped": "limit_up_mode"}
+                return JobResult({"ref_date": ref_date.isoformat(), "skipped": "limit_up_mode"},
+                                 "skipped", "limit_up_mode")
             # 시간외 탈출도 실주문이다. 장중 엔진과 같은 안전 스위치를 통과해야 한다 —
             # 이 잡만 빠지면 장중 자동매매가 막혀 있어도 16시 스케줄러가 실계좌에
             # 매도를 낼 수 있다.
             blocked = automatic_mode_blocked_reason(self._settings)
             if blocked is not None:
                 logger.error("상한가 시간외 감시 차단 — 실주문 안전 스위치(%s)", blocked)
-                return {"ref_date": ref_date.isoformat(), "skipped": blocked}
+                return JobResult({"ref_date": ref_date.isoformat(), "skipped": blocked}, "skipped", blocked)
             if not has_carried_sessions(db, ref_date):
                 return {"ref_date": ref_date.isoformat(), "final_round": final_round,
                         "watched": 0, "exited": 0, "no_trade": 0, "bad_data": 0, "errors": 0}
@@ -1100,15 +1131,21 @@ class OperationalPipeline:
         ref_date = ref_date or dt.datetime.now(ZoneInfo("Asia/Seoul")).date()
         def _run(db):
             if not self._settings.maps_fujimoto_enabled:
-                return {"status": "disabled"}
+                return JobResult({"status": "disabled", "ref_date": ref_date.isoformat()},
+                                 "skipped", "fujimoto_disabled")
             client = DartClient(self._settings.dart_api_key)
             metadata = collect_metadata(db, ref_date)
             eps = EPSCollector(db, self._settings.dart_api_key, client=client).collect(ref_date,
                 batch=self._settings.maps_fujimoto_collect_batch)
             collection = AnnualCollector(db, self._settings.dart_api_key, client=client).collect(ref_date,
                 batch=self._settings.maps_fujimoto_collect_batch)
-            return {"collection": collection, "valuation_collection": {"metadata":metadata,"eps":eps},
-                    "screen": screen_market(db, ref_date)}
+            details = {"collection": collection, "valuation_collection": {"metadata":metadata,"eps":eps},
+                       "screen": screen_market(db, ref_date)}
+            incomplete = any(source.get("status") not in {"success", "complete"}
+                             for source in (metadata, eps, collection))
+            incomplete = incomplete or bool(details["screen"].get("reason"))
+            return JobResult(details, "partial" if incomplete else "success",
+                             "collection_incomplete" if incomplete else "ok")
         return self._job("fujimoto_screen", _run)
 
     def _job(self, name: str, fn: Callable[[Session], dict | JobResult]) -> JobRun:
@@ -4192,6 +4229,7 @@ class MapsOperationalScheduler:
         self._pipeline = pipeline or OperationalPipeline(settings=self._settings)
         self._scheduler = BackgroundScheduler(timezone=self._settings.maps_scheduler_timezone)
         self._last_runs: dict[str, JobRun] = {}
+        self._restore_last_runs()
 
     @property
     def running(self) -> bool:
@@ -4266,7 +4304,8 @@ class MapsOperationalScheduler:
         """
         def _job() -> None:
             if not _is_krx_market_day():
-                logger.info("Scheduler job [%s] skipped: KRX 비거래일", name)
+                now = dt.datetime.now(dt.timezone.utc)
+                self._record(name, lambda: JobRun(name, "skipped", now, now, "krx_market_closed"))
                 return
             self.run_once(name)
         return _job
@@ -4370,14 +4409,66 @@ class MapsOperationalScheduler:
 
     def _record(self, name: str, fn: Callable[[], JobRun]) -> JobRun:
         run = fn()
+        run.name = name
+        # Business work has already run. A recording failure must never replay it.
+        try:
+            if not isinstance(run.details, dict):
+                raise TypeError("details: expected dictionary")
+            run.details = _normalize_job_details(run.details)
+        except (TypeError, ValueError, RecursionError) as exc:
+            original_status = run.status
+            run.status = "failed"
+            run.message = f"result_normalization_failed: {exc}"
+            run.details = {"recording_error": run.message, "business_status": original_status}
         self._last_runs[name] = run
         self._persist_run(run)
-        details = json.dumps(run.details, ensure_ascii=False)
+        details = json.dumps(run.details, ensure_ascii=False, allow_nan=False)
         if run.status == "failed":
             logger.error("Scheduler job %s: failed error=%s %s", name, run.message, details)
         else:
             logger.info("Scheduler job %s: %s %s", name, run.status, details)
         return run
+
+    def _restore_last_runs(self) -> None:
+        """Restore the newest durable result per job without executing any work."""
+        try:
+            with self._pipeline._session_factory() as db:
+                latest_ids = db.query(func.max(JobRunLog.id)).group_by(JobRunLog.name)
+                for row in db.query(JobRunLog).filter(JobRunLog.id.in_(latest_ids)):
+                    status, message = row.status, row.message or ""
+                    try:
+                        details = json.loads(row.details_json) if row.details_json else {}
+                        if not isinstance(details, dict):
+                            raise TypeError("details: expected dictionary")
+                        details = _normalize_job_details(details)
+                    except (TypeError, ValueError, RecursionError) as exc:
+                        logger.error("Invalid persisted scheduler result %s: %s", row.name, exc)
+                        status, message = "failed", f"persisted_details_invalid: {exc}"
+                        details = {"recording_error": message, "business_status": row.status}
+                    self._last_runs[row.name] = JobRun(
+                        name=row.name, status=status, started_at=row.started_at.replace(tzinfo=dt.timezone.utc),
+                        finished_at=row.finished_at.replace(tzinfo=dt.timezone.utc) if row.finished_at else None,
+                        message=message, details=details,
+                    )
+                for name in ("broker_sync", "classification_check"):
+                    source = f"scheduler.{name}"
+                    heartbeat = (db.query(CollectionLog).filter_by(source=source)
+                                 .order_by(CollectionLog.created_at.desc(), CollectionLog.id.desc()).first())
+                    if heartbeat is None:
+                        continue
+                    observed_at = heartbeat.created_at.replace(tzinfo=dt.timezone.utc)
+                    previous = self._last_runs.get(name)
+                    if previous and observed_at <= (previous.finished_at or previous.started_at):
+                        continue
+                    self._last_runs[name] = JobRun(
+                        name=name, status=heartbeat.status, started_at=observed_at,
+                        finished_at=observed_at, message=heartbeat.note or heartbeat.status,
+                        details={"ref_date": heartbeat.ref_date.isoformat(), "items": heartbeat.items,
+                                 "source": source, "restored_from_heartbeat": True,
+                                 "observed_at": observed_at.isoformat()},
+                    )
+        except Exception:
+            logger.exception("job_run_log restore failed")
 
     def _persist_run(self, run: JobRun) -> None:
         """잡 실행 결과를 job_run_log에 남긴다 (SCR-21 배치 모니터).
@@ -4386,20 +4477,48 @@ class MapsOperationalScheduler:
         """
         # ponytail: broker_sync 성공은 60초마다 → 하루 ~500행 노이즈.
         # 성공 하트비트는 collection_log(source='scheduler.broker_sync')가 이미 담당.
-        if run.name in {"broker_sync", "classification_check"} and run.status == "success":
+        if run.name == "broker_sync" and run.status == "success":
             return
         try:
             db = self._pipeline._session_factory()
             try:
+                ref_date = run.started_at.astimezone(ZoneInfo("Asia/Seoul")).date()
+                if (run.name == "broker_sync" and run.status == "skipped"
+                        and run.message == "krx_market_closed"):
+                    # Collapse consecutive identical skips, preserving every outcome transition.
+                    recorded = (db.query(JobRunLog).filter_by(name=run.name)
+                                .order_by(JobRunLog.id.desc()).first())
+                    if (recorded is not None and recorded.status == run.status
+                            and recorded.ref_date == ref_date and recorded.message == run.message):
+                        heartbeat = (db.query(CollectionLog).filter_by(source="scheduler.broker_sync")
+                                     .order_by(CollectionLog.created_at.desc(), CollectionLog.id.desc()).first())
+                        recorded_at = recorded.finished_at or recorded.started_at
+                        if heartbeat is None or heartbeat.created_at <= recorded_at:
+                            return
+                if run.name == "classification_check" and run.status == "success":
+                    # One mutable current-state heartbeat; failure audit rows stay immutable.
+                    source = "scheduler.classification_check"
+                    heartbeat = (db.query(CollectionLog).filter_by(source=source)
+                                 .order_by(CollectionLog.id.desc()).first())
+                    if heartbeat is None:
+                        heartbeat = CollectionLog(source=source)
+                        db.add(heartbeat)
+                    heartbeat.ref_date = dt.datetime.now(ZoneInfo("Asia/Seoul")).date()
+                    heartbeat.status = run.status
+                    heartbeat.items = len(run.details.get("runs", []))
+                    heartbeat.note = run.message
+                    heartbeat.created_at = run.finished_at or run.started_at
+                    db.commit()
+                    return
                 db.add(
                     JobRunLog(
                         name=run.name,
                         status=run.status,
-                        ref_date=dt.date.today(),
+                        ref_date=ref_date,
                         started_at=run.started_at,
                         finished_at=run.finished_at,
                         message=run.message,
-                        details_json=json.dumps(run.details, ensure_ascii=False, default=str),
+                        details_json=json.dumps(run.details, ensure_ascii=False, allow_nan=False),
                     )
                 )
                 db.commit()

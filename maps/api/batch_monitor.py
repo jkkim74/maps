@@ -114,12 +114,12 @@ def get_batch_monitor(
         .order_by(JobRunLog.id)
         .all()
     ):
+        latest_run[(row.name, row.ref_date)] = row
         if row.name == "broker_sync":
-            sync_failures.setdefault(row.ref_date, []).append(row)
-        else:
-            latest_run[(row.name, row.ref_date)] = row
-            if row.status == "partial":
-                partial_history.setdefault((row.name, row.ref_date), []).append(row.message or "부분 수집")
+            if row.status == "failed":
+                sync_failures.setdefault(row.ref_date, []).append(row)
+        if row.status == "partial":
+            partial_history.setdefault((row.name, row.ref_date), []).append(row.message or "부분 수집")
 
     for row in db.query(CollectionLog).filter(
         CollectionLog.source == "krx", CollectionLog.ref_date >= start_date,
@@ -267,6 +267,13 @@ def _build_cell(
             else:
                 cell.status = "success"
                 cell.detail = f"{count}회 · 마지막 {last_kst.strftime('%H:%M')}"
+            return cell
+        run = latest_run.get((name, d))
+        if run is not None:
+            cell.status = run.status
+            cell.started_at = run.started_at.isoformat()
+            cell.duration_sec = _duration_sec(run.started_at, run.finished_at)
+            cell.message = run.message
             return cell
 
     elif kind == "analyze":

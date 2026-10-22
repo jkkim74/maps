@@ -88,7 +88,7 @@ describe('drill-down 상세 화면', () => {
 
     // 목록으로 복귀
     fireEvent.click(screen.getByText('목록으로'))
-    expect(await screen.findByText('오늘 주문 및 체결')).toBeInTheDocument()
+    expect(await screen.findByText('오늘 생성 주문의 누적 체결 (KST)')).toBeInTheDocument()
     expect(screen.queryByText('주문번호')).not.toBeInTheDocument()
   })
 

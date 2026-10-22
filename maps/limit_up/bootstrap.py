@@ -9,6 +9,7 @@ scheduler is. Being wired is not the same as being on.
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import logging
 from collections.abc import Awaitable, Callable
 from enum import Enum
@@ -34,6 +35,9 @@ from maps.risk.manager import RiskConfig, RiskManager
 logger = logging.getLogger(__name__)
 
 _runtime: Any | None = None
+_start_status: dict[str, Any] = {
+    "start_outcome": "not_started", "start_reason": None, "start_checked_at": None,
+}
 
 # 기동 실패 재시도 백오프. 첫 재시도 1분 — 06:04 자동 업데이트 때 PG 재시작은 3초였다.
 _RETRY_INITIAL_SECONDS = 60.0
@@ -47,6 +51,18 @@ class StartOutcome(str, Enum):
     REFUSED = "refused"    # 설정이 기동을 거부 — 재시도해도 같다
     STARTED = "started"
     FAILED = "failed"      # 예외 — 일시적일 수 있다(DB 재시작 등)
+
+
+def get_start_status() -> dict[str, Any]:
+    """Expose the last actual start result independently of API process liveness."""
+    return dict(_start_status)
+
+
+def _record_start(outcome: StartOutcome, reason: str | None = None) -> StartOutcome:
+    """Keep secret-free operational startup diagnostics for the status endpoint."""
+    _start_status.update(start_outcome=outcome.value, start_reason=reason,
+                         start_checked_at=dt.datetime.now(dt.timezone.utc).isoformat())
+    return outcome
 
 
 def get_runtime() -> Any | None:
@@ -122,14 +138,14 @@ async def start_limit_up_if_enabled(settings: MapsSettings) -> StartOutcome:
         What happened. Only ``FAILED`` is worth retrying.
     """
     if not settings.maps_limit_up_enabled and not settings.maps_fujimoto_enabled:
-        return StartOutcome.DISABLED
+        return _record_start(StartOutcome.DISABLED, "engine_disabled")
     if settings.maps_broker_mode != "kis":
         logger.error(
             "상한가 V1 기동 거부 — 실시간 시세가 없는 브로커 모드(%s). "
             "MAPS_BROKER_MODE=kis 가 필요하다.",
             settings.maps_broker_mode,
         )
-        return StartOutcome.REFUSED
+        return _record_start(StartOutcome.REFUSED, "realtime_broker_required")
     if settings.maps_limit_up_enabled and settings.maps_limit_up_mode == LimitUpMode.AUTOMATIC.value:
         blocked = automatic_mode_blocked_reason(settings)
         if blocked is not None:
@@ -139,19 +155,19 @@ async def start_limit_up_if_enabled(settings: MapsSettings) -> StartOutcome:
                 "MAPS_LIMIT_UP_MODE 를 직접 고칠 것.",
                 blocked,
             )
-            return StartOutcome.REFUSED
+            return _record_start(StartOutcome.REFUSED, blocked)
     try:
         runtime = build_runtime(settings)
         await runtime.start()
-    except Exception:
+    except Exception as exc:
         logger.exception("상한가 V1 기동 실패 — 엔진 없이 서버만 계속한다")
-        return StartOutcome.FAILED
+        return _record_start(StartOutcome.FAILED, f"startup_failed:{type(exc).__name__}")
     set_runtime(runtime)
     logger.warning(
         "=== 상한가 V1 기동: mode=%s (automatic 이 아니면 주문은 나가지 않는다) ===",
         settings.maps_limit_up_mode,
     )
-    return StartOutcome.STARTED
+    return _record_start(StartOutcome.STARTED)
 
 
 async def retry_limit_up_start(

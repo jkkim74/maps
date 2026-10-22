@@ -838,6 +838,17 @@ class LimitUpMachine:
             return [MachineCommand(CommandKind.CANCEL_BUYS, "market_halt")]
         return []
 
+    def on_feed_gap(self) -> list[MachineCommand]:
+        """Discard crossing/continuous-lock evidence without clearing a loss halt."""
+        self.last_trade_price = None
+        self.lock_started_at = None
+        # Incomplete shadow probes cannot infer fills/locks across missing tape.
+        self._active_probe = None
+        if self.state is LimitUpState.NET_OPEN and self.filled_quantity == 0:
+            self.state = LimitUpState.CLOSED
+            return [MachineCommand(CommandKind.CANCEL_BUYS, "feed_gap")]
+        return []
+
     def _hard_stop_crossed(self, price: int) -> bool:
         """Return whether a held position crossed below the absolute stop."""
         held_state = self.state in {

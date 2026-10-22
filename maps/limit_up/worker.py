@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from sqlalchemy import or_
 
@@ -160,6 +160,7 @@ class LimitUpCommandWorker:
         grid: tuple[GridLeg, GridLeg],
         *,
         daily_pnl_ratio: float = 0.0,
+        entry_context: ExecutionContext | None = None,
     ) -> ReconcileResult:
         """Persist then submit S and A back-to-back, unwinding a half-open grid."""
         for spec in grid:
@@ -218,14 +219,17 @@ class LimitUpCommandWorker:
                     order,
                     daily_pnl=daily_pnl_ratio,
                     risk_strategy_id="limit_up_v1",
-                    context=ExecutionContext(f"limit_up:{session.id}:entry:{spec.name}", source="limit_up", source_id=session.id),
+                    context=replace(entry_context or ExecutionContext(""),
+                        event_key=f"limit_up:{session.id}:entry:{spec.name}",
+                        source="limit_up", source_id=session.id),
                 )
-            except ExecutionBlockedError:
-                leg.status = "created"
+            except ExecutionBlockedError as exc:
+                leg.status = "rejected"
                 self.repository.append_event(session, action="entry_blocked",
-                    state_version=session.state_version, leg=spec.name)
+                    state_version=session.state_version, leg=spec.name,
+                    payload={"reason": str(exc)})
                 self.repository.db.commit()
-                return self.reconcile(session)
+                return self.cancel_pending_buys(session).reconciliation
             except BrokerOrderUnknownError:
                 leg.status = "reconciling"
                 self.repository.db.commit()
@@ -332,6 +336,9 @@ class LimitUpCommandWorker:
             for item in (session.exit_order_ids or "").split(",")
             if item
         }
+        # Ownership aggregates must include the fills just applied above even
+        # when the session disables autoflush. No extra broker read is needed.
+        self.repository.db.flush()
         bought = self.repository.bought_quantity(session)
         exited = self.repository.exited_quantity(session)
         self.repository.db.commit()

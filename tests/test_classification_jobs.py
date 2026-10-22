@@ -129,9 +129,9 @@ def test_real_adapter_provider_contract(factory):
     from maps.ops.classification_jobs import ClassificationJobs
     from maps.data.classifications import ClassificationRepository, ClassificationPayload
     from maps.data.naver_themes import NaverThemeAdapter
-    from tests.test_naver_themes import Clock, Session, theme, member
+    from tests.test_naver_themes import Clock, Session, theme, member, member_page
     clock = Clock()
-    adapter = NaverThemeAdapter(session=Session([[theme()], [member()], [theme()]], clock), sleep=clock.sleep, monotonic=clock.monotonic)
+    adapter = NaverThemeAdapter(session=Session([[theme()], member_page(member()), member_page(), [theme()]], clock), sleep=clock.sleep, monotonic=clock.monotonic)
     with factory() as db:
         repo = ClassificationRepository(db)
         repo.publish(repo.start("sector", "krx", DAY), ClassificationPayload("sector", "krx", DAY, ["005930"], {"S":"Sector"}, {"005930":["S"]}))

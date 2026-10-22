@@ -6,6 +6,7 @@
 
 ```
 execution/
+├── readiness.py       # persisted account readiness without broker polling
 ├── safety.py          # 실행 모드·계좌별 단일 프로세스 잠금
 ├── safety_admin.py    # 근거와 버전을 확인하는 관리자 해결 작업
 ├── reconciliation.py # 브로커 체결·계좌 검증, 입출금 보정 손실 한도
@@ -322,3 +323,39 @@ the account lock and again immediately before `place_order`, after broker reads.
 It is excluded from persisted order requests and does not replace deadline,
 snapshot, ownership, or authorization checks. An absent predicate preserves existing
 execution behavior; a reset after an order has already been submitted cannot undo it.
+
+## KIS authentication and final HTTP boundary (2026-10-22)
+
+Token issuance uses a process-wide keyed lock with a second cache check. A late
+rejection invalidates only the exact rejected token, preserving a newer shared
+token. EGW00133 starts a shared 60-second monotonic issuance cooldown for that
+credential cache key. Cache JSON is written to a temporary sibling and atomically
+replaced; tokens and secrets are excluded from attempt diagnostics.
+
+Every actual HTTP call (token, hash, WebSocket approval, query, order and cancel)
+uses one account/environment send lane. The lane is released before auth refresh
+or retry handling. It conservatively waits the existing configured minimum after
+the previous HTTP completion, covering descheduling between a pacing grant and
+the HTTP call. The paper interval remains 0.55 seconds by default and production
+0.05 seconds. Slow responses reduce throughput: a synthetic one-second response
+produces 1.55-second paper start gaps; token/hash/order total 4.10 seconds. These
+are local deterministic test observations, not measured KIS server latency.
+
+`Order.pre_send_check: Callable[[], None] | None` is memory-only, excluded from
+repr/equality and from the explicitly selected persisted request fields.
+OrderManager passes a copied order composing the original callback with current
+execution, fixed intent deadline, account snapshot freshness and quote-epoch
+checks. KIS invokes it after pacing immediately before every HTTP call in that
+order's auth/hash/send/retry chain. Legacy `_ensure_token()` and `_hashkey(body)`
+hooks remain compatible through a scoped ContextVar. Cancellation has no new
+order guard. A known-unsent block becomes terminal REJECTED and immediately
+releases cash/share reservations; ambiguous transport remains UNKNOWN and cannot
+be automatically resent.
+
+`get_limit_up_rank_candidates() -> tuple[list[dict], int]` reads only the existing
++25% through +100% fluctuation band and retains source fields with normalized
+`ticker`/`change_rate`. The count remains all provider rows (provider cap unchanged).
+`get_limit_up_candidate_details(ticker, *, ranked=None) -> dict | None` fetches one
+eligible ticker's current quote and uses the same rank fallbacks/validity rules.
+`get_limit_up_candidates()` composes both for compatibility. Callers can reject
+ineligible/already-watched tickers before spending a detail HTTP request.

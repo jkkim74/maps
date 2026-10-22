@@ -370,6 +370,38 @@ visible as `disabled` and does not produce theme missed alerts.
 
 ## Fujimoto scheduled evidence
 
+### Scheduler result recording
+
+Scheduler results use explicit `JobResult` outcomes: disabled execution, dry-run,
+disabled reporting/screening, missing promotion inputs, and KRX closed sessions
+are `skipped`. Completed promotion evaluation stays `success` even when no
+strategy passes. Incomplete fundamental backfills are `partial` when rows were
+saved and `failed` otherwise. Fujimoto required metadata/EPS/annual collection
+with non-success source status makes the enclosing job `partial`; source details
+and actual screening results remain visible. DART preserves collector status.
+
+`MapsOperationalScheduler._record` normalizes details once before memory, logging,
+`JobRunLog`, or API exposure: JSON primitives, finite floats, string-keyed dicts,
+lists/tuples, and dates/datetimes (ISO strings) are supported. Unexpected values,
+non-string keys, nonfinite numbers, or cycles produce an explicit failed recording
+with the failing field path and prior business status; business work is never
+replayed. No generic stringification hides unsupported objects.
+
+Construction restores the newest durable `JobRunLog` row per job without business
+work or external calls. UTC timestamps and distinct final after-hours job identity
+survive restart. Newer `CollectionLog` heartbeats (`scheduler.broker_sync` and
+`scheduler.classification_check`) supersede older durable failures/skips using
+their explicit UTC observation timestamp, status and note. Restored heartbeat
+details identify their source and observation time; they do not imply that full
+business details were persisted. Broker sync retains its existing heartbeat;
+successful classification checks update one bounded current-state heartbeat row.
+Successful heartbeat checks add no `JobRunLog` rows and historical failures remain.
+Consecutive market-closed interval broker-sync skips retain one explicit
+`JobRunLog` row per KST start date/reason while the latest durable outcome stays
+that skip. An intervening failed/partial row or newer heartbeat requires a new
+skip transition row; repeated ticks alone add none. Batch monitoring counts only actual failed sync rows as
+failures, preserves partial history, and displays recorded skips as skipped.
+
 When MAPS_FUJIMOTO_ENABLED is true, successful after-close data collection captures
 the actual current universe using DataQualityFilter and actual adjusted-price
 availability. The weekday/KRX-aware `fujimoto_screen` job (default 22:00 KST) runs

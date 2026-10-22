@@ -259,6 +259,60 @@ def test_broker_sync_stale_heartbeat_today_is_failed(client) -> None:
     assert "하트비트" in cell["message"]
 
 
+def test_market_closed_interval_skips_remain_skipped_without_duplicate_rows(client, monkeypatch) -> None:
+    """Repeated real scheduler ticks on Saturday are skips, never sync failures."""
+    from types import SimpleNamespace
+    from maps.ops import scheduler as scheduler_module
+    saturday = dt.datetime(2026, 10, 24, 12)
+    class Clock(dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return (saturday - _KST_OFFSET).replace(tzinfo=dt.timezone.utc)
+    class Day(dt.date):
+        @classmethod
+        def today(cls):
+            return saturday.date()
+    tc, factory, _ = client
+    monkeypatch.setattr(bm, "_now", lambda: saturday)
+    monkeypatch.setattr(scheduler_module, "dt", SimpleNamespace(
+        datetime=Clock, date=Day, timezone=dt.timezone))
+    monkeypatch.setattr(scheduler_module, "_is_krx_market_day", lambda: False)
+    settings = MapsSettings(maps_broker_mode="mock", maps_live_trading_enabled=False)
+    pipeline = scheduler_module.OperationalPipeline(settings=settings, session_factory=factory)
+    scheduler = scheduler_module.MapsOperationalScheduler(settings=settings, pipeline=pipeline)
+    for _ in range(3):
+        scheduler._make_krx_job("broker_sync")()
+        cell = _get_cell(tc.get("/api/v1/batch-monitor?days=1").json(), "broker_sync", saturday.date())
+        assert cell["status"] == "skipped"
+        assert "실패" not in (cell["detail"] or "")
+        assert cell["message"] == "krx_market_closed"
+    with factory() as db:
+        assert db.query(JobRunLog).filter_by(name="broker_sync", status="skipped").count() == 1
+
+
+def test_broker_partial_and_real_failure_history_survive_later_skip(client) -> None:
+    """An ordinary skip must neither become nor hide a genuine failure/partial."""
+    tc, factory, _ = client
+    with factory() as db:
+        for day, status, message in [
+            (_TODAY, "partial", "incomplete sync"),
+            (_TODAY, "skipped", "ordinary skip"),
+            (_TODAY - dt.timedelta(days=1), "failed", "KIS 500"),
+            (_TODAY - dt.timedelta(days=1), "skipped", "ordinary skip"),
+        ]:
+            db.add(JobRunLog(name="broker_sync", status=status, ref_date=day,
+                             started_at=_utc(_NOW), message=message))
+        db.commit()
+    body = tc.get("/api/v1/batch-monitor?days=2").json()
+    partial = _get_cell(body, "broker_sync", _TODAY)
+    assert partial["status"] == "partial"
+    assert "incomplete sync" in partial["message"]
+    failed = _get_cell(body, "broker_sync", _TODAY - dt.timedelta(days=1))
+    assert failed["status"] == "failed"
+    assert failed["detail"] == "실패 1회"
+    assert failed["message"] == "KIS 500"
+
+
 def test_rerunnable_flags_limited_to_pipeline_jobs(client) -> None:
     """재실행 버튼 대상은 run_once가 지원하는 스케줄러 잡 7개뿐이다."""
     tc, _, _ = client

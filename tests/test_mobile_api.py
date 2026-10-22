@@ -43,6 +43,9 @@ def test_mobile_summary_combines_operational_endpoints(monkeypatch) -> None:
         mobile,
         "get_orders",
         lambda db: OrdersResponse(
+            execution_state="ready",
+            checked_at="2026-10-22T03:00:00+00:00",
+            strategy_blocks={"stopped_strategy": ["strategy_kill_switch"]},
             auto_order_active=True,
             pending=[],
             fills_today=[],
@@ -92,6 +95,10 @@ def test_mobile_summary_combines_operational_endpoints(monkeypatch) -> None:
     data = response.json()
     assert data["dashboard"]["total_assets"] == 10_000_000
     assert data["orders"]["auto_order_active"] is True
+    assert data["orders"]["execution_state"] == "ready"
+    assert data["orders"]["checked_at"] == "2026-10-22T03:00:00+00:00"
+    assert data["orders"]["strategy_blocks"] == {"stopped_strategy": ["strategy_kill_switch"]}
+    assert data["orders"]["fills_basis"] == "kst_order_created_day_cumulative_fills"
     assert data["alerts"][0]["message"] == "Check risk limit"
     # 장세 블록이 응답에 포함된다(로그 없으면 unknown).
     assert data["regime"]["regime"] == "unknown"

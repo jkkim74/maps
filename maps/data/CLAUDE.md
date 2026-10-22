@@ -8,6 +8,7 @@ KRX OHLCV 및 종목 메타데이터 수집·조회 패키지.
 data/
 ├── classifications.py     # immutable classification snapshots
 ├── naver_themes.py        # public Npay multi-theme collector
+├── recovery.py            # audited offline operational data repair manifests
 ├── __init__.py            # 빈 패키지 마커
 ├── collector.py           # DataCollector — 일별/기간 수집 오케스트레이터
 ├── krx_adapter.py         # KRXAdapterBase / KRXAdapter / MockKRXAdapter + 데이터 클래스
@@ -216,8 +217,28 @@ labels. There is no historical classification backfill.
 
 `NaverThemeAdapter.collect(ref_date, expected_tickers)` returns provider `naver` current
 public multi-theme memberships, including explicitly verified empty entries. It checks
-full source member counts before universe filtering. A stale catalog count is accepted
+the catalog with the existing zero-based `startIdx`/`pageSize` list contract. Member
+requests use separate `marketType=KOSPI` and `KOSDAQ` cursor streams with `size=50`;
+the dict response contains `items`, boolean `hasNext`, and `cursor`, and members use
+`itemCode`/`itemName`/`marketType`. An explicitly final empty market is valid. Each
+market must reach its final page; malformed fields, market mismatches, duplicate
+members across pages/markets, repeated cursors, and more than 100 pages fail closed.
+It checks full source member counts before universe filtering. A stale catalog count is accepted
 only when the mobile cursor API reaches an explicit final page with the same theme name
 and exactly the same nonempty ticker set; discrepancies remain in snapshot metrics.
 It verifies unchanged start/end catalog manifests and enforces a shared 1200-second
 deadline across both APIs. This is current snapshot evidence, not reconstructed history.
+No partially collected theme snapshot is published; failures retain the last complete
+publication. Current theme memberships cannot repair missing historical dates.
+
+`recovery.py` builds bounded offline inventories and exact before/after repair
+manifests from trusted KRX MDCSTAT017 raw envelopes. Transactional apply/rollback
+checks optimistic conflicts and records source hashes and observed times in
+FujimotoEvidence audit records through `FujimotoRepository.record_evidence`, which
+also loads the existing ORM update/delete protection in standalone CLI processes.
+Volume is checked as an exact integral Decimal before conversion; because the source
+contains total trading volume, each row date must precede observation's KST date.
+Same-day rows remain incomplete even after the regular-session close.
+It does not fetch network data, invent historical
+availability, or mutate immutable decisions. The entrypoint is
+`scripts/recover_operational_data.py`.

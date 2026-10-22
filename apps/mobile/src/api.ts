@@ -17,6 +17,7 @@ export type Order = {
   // 체결(fills_today) 항목에만 존재하는 선택 필드 — 드릴다운 상세에서 사용.
   fill_price?: number | null
   fill_qty?: number | null
+  remaining_qty?: number
 }
 
 export type Holding = {
@@ -49,6 +50,20 @@ export type MobileSummary = {
   }
   orders: {
     auto_order_active: boolean
+    execution_state: 'ready' | 'blocked' | 'unknown'
+    block_reasons: string[]
+    checked_at: string | null
+    strategy_blocks: Record<string, string[]>
+    environment: string
+    fills_basis: 'kst_order_created_day_cumulative_fills'
+    slippage: {
+      actual: number | null
+      sample_count: number
+      large_cap_actual: number | null
+      mid_small_actual: number | null
+      large_cap_assumed: number
+      mid_small_assumed: number
+    }
     pending: Order[]
     fills_today: Order[]
     expired: Order[]

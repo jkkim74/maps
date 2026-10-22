@@ -56,6 +56,38 @@ Sessions; a timeout retains Sessions used by running threads. Slow queue/process
 maxima are aggregated at most once per minute. Fujimoto's 3-second quote freshness
 and existing execution locks/upper-limit order priority remain unchanged.
 
+### Receipt freshness and operational recovery (2026-10-22)
+
+Socket ingestion publishes the latest observations before the serialized order
+worker runs. Upper-limit decision callbacks require a monotonic receipt age <3s;
+queued callbacks from obsolete connections cannot change the current machine.
+A gap resets crossing/lock continuity and permanently invalidates the old entry
+predicate. The first new trade seeds the crossing; a later new crossing may enter.
+Already attempted unfilled sessions close only after broker-confirmed cancellation.
+Unresolved cancellation retains a durable pending reason and RECONCILING state;
+late fills regain position protection. Pending protective exits retain RECONCILING
+and wait for buy cancellation before selling. Reconciliation flushes newly observed
+leg fills before ownership aggregation, so the same call cannot falsely report flat.
+Held-position protection and market/loss guards remain. Reconnect alone does not
+release the feed guard.
+
+Both grid legs share the original crossing's 15s deadline. OrderManager/KIS checks
+the live receipt predicate after auth/hash/pacing and before each actual send.
+A blocked second leg cancels the first pending buy and reconciles possible fills.
+Raw Fujimoto recording retains its independent bounded FIFO and all source events.
+Decision work has at most 255 instrument tasks plus one index task. The index task
+coalesces actual minima, highs and worst ordered drawdown pairs (at most 4 prints),
+preserving panic evidence without unbounded futures. Overflow invalidates old
+entry signals; stale/backlog/drop counters and startup refusal appear in status.
+Per-stream continuity is checked again after broker reconciliation before every
+timer. Silent quotes cannot confirm a lock; the original protective time stop
+still runs. Incomplete shadow probes are discarded when their tape has a gap.
+
+Rank-only scans exclude watched/ineligible symbols before per-symbol REST details.
+One background scan task keeps control timers running during slow scans. Stale
+held-symbol feeds use protection-only REST fallback even if the socket is connected.
+No liquidity/strength thresholds or global trading activation settings changed.
+
 ## Directory structure
 
 ```
@@ -65,6 +97,7 @@ limit_up/
 ├── bootstrap.py      # 엔진 조립·기동 게이트·런타임 핸들
 ├── domain.py         # 순수 상태기계·가격 규칙·일일 가드·위험 예산
 ├── feed.py           # KIS 실시간 메시지 정규화, 테이프 링버퍼
+├── freshness.py      # 수신 시세 공유·연결 세대·3초 신선도·15초 신호 유효시간
 ├── notify.py         # 감시·트리거·청산 텔레그램 알림 (논블로킹 fire-and-forget)
 ├── repository.py     # 세션·레그·이벤트 영속과 멱등 키
 ├── runtime.py        # asyncio 수명주기, 웹소켓, 15:18~15:28 시각 훅

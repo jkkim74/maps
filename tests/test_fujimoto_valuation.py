@@ -288,7 +288,7 @@ def test_daily_job_refreshes_bounded_eps_with_shared_dart_request_budget(db,monk
     assert [r if isinstance(r,str) else r[0] for r in seen] == ["metadata","eps","annual","screen"]
     assert isinstance(seen[1][1],DartClient) and seen[1][1] is seen[2][1]
     assert seen[1][2] == seen[2][2] == 2
-    assert "valuation_collection" in result
+    assert "valuation_collection" in result.details
 
 
 def test_existing_fss_provider_contract_review_survives_separate_dart_strategy_flow(db):

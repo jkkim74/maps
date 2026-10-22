@@ -1,6 +1,7 @@
 import { AlertTriangle } from 'lucide-react'
 import type { MobileSummary, Order, OrderPreview } from '../api'
 import { Empty } from '../components/Empty'
+import { ExecutionReadiness } from '../components/ExecutionReadiness'
 import { money, orderStatusLabel, previewSkipLabel, sideLabel, won } from '../format'
 
 /** 다음 거래일 예정 주문 섹션 — 핵심만: 총 예상 건수·금액 + 종목별 예상금액([실주문]/[모의] 구분). */
@@ -95,28 +96,41 @@ export function OrdersScreen({
   onReloadPreview: () => void
   onSelect: (order: Order) => void
 }) {
-  const orders = [...data.orders.pending, ...data.orders.fills_today, ...data.orders.expired]
+  const groups = [
+    { label: '미체결 주문 · 과거 주문 포함', items: data.orders.pending, pending: true },
+    { label: '오늘 생성 주문의 누적 체결 (KST)', items: data.orders.fills_today, pending: false },
+    { label: '오늘 및 지난 7일 만료 주문 · 최대 100건', items: data.orders.expired, pending: false },
+  ]
+  const slip = data.orders.slippage
   return (
     <>
+      <ExecutionReadiness orders={data.orders} />
       <OrderPreviewSection
         preview={preview} loading={previewLoading} error={previewError} onReload={onReloadPreview}
       />
       <section>
-        {/* 오늘의 주문·체결만 보여준다 — 보유 종목 목록이 아니다(어제 산 종목은 안 나온다).
-            보유는 리스크 탭의 '보유 현황'과 홈 요약이 담당한다. */}
-        <h2>오늘 주문 및 체결</h2>
-        {orders.length === 0 ? <Empty text="오늘 주문·체결 내역이 없습니다." /> : (
+        <p>현재 계좌·환경의 주문 기록 · 실제 체결 시각 기준 아님 · 취소 주문의 부분 체결 포함</p>
+        <p>실제 평균 절대 가격 괴리 {slip?.actual == null ? '—' : `${(slip.actual * 100).toFixed(3)}%`} · 표본 {slip?.sample_count ?? 0}건</p>
+        <p>오늘 생성 주문의 누적 체결가와 주문가 비교 · 시가총액별 실측 미분류</p>
+        <p>슬리피지 가정: 대형 {slip?.large_cap_assumed == null ? '—' : `${slip.large_cap_assumed * 100}%`} · 중소형 {slip?.mid_small_assumed == null ? '—' : `${slip.mid_small_assumed * 100}%`}</p>
+      </section>
+      {groups.map(group => <section key={group.label}>
+        <h2>{group.label}</h2>
+        {group.items.length === 0 ? <Empty text="해당 주문 내역이 없습니다." /> : (
           <div className="rows">
-            {orders.map((order) => (
+            {group.items.map((order) => (
               <article className="row tappable" key={`${order.order_id}-${order.status}`} onClick={() => onSelect(order)}>
                 <div><strong>{order.name || order.ticker}</strong><span>{order.ticker} · {order.strategy_id || '수동/브로커'}</span></div>
                 {/* pill 클래스는 영문 상태값을 그대로 쓴다(.pill.filled 등). 표시 문구만 한글. */}
-                <div className="row-end"><b>{sideLabel(order.side)}{order.qty ? ` ${order.qty.toLocaleString('ko-KR')}주` : ''}</b><span className={`pill ${order.status.toLowerCase()}`}>{orderStatusLabel(order.status)}</span></div>
+                <div className="row-end"><b>{sideLabel(order.side)}{order.qty ? ` ${order.qty.toLocaleString('ko-KR')}주` : ''}</b>
+                  {group.pending ? <span>잔량 {order.remaining_qty == null ? '확인 필요' : `${order.remaining_qty.toLocaleString('ko-KR')}주`}</span> : null}
+                  {order.fill_qty != null ? <span>누적 체결 {order.fill_qty.toLocaleString('ko-KR')}주</span> : null}
+                  <span className={`pill ${order.status.toLowerCase()}`}>{orderStatusLabel(order.status)}</span></div>
               </article>
             ))}
           </div>
         )}
-      </section>
+      </section>)}
     </>
   )
 }
