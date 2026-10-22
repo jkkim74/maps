@@ -571,7 +571,10 @@ An explicit empty ticker list performs no candidate comparison query. This avoid
 loading all candidate history or retaining every latest compressed snapshot in
 application memory, including for whole-market reports. Metadata/EPS coverage
 queries and the small report result rows retain their existing behavior.
-The 2026-10-21 operational investigation confirmed the earlier report bulk-fetch
-defect; whether it caused the server response delay or an OOM remains unconfirmed.
+The 2026-10-21 recovery confirmed the earlier report bulk-fetch defect and a
+kernel OOM kill in the ingestion/report SSH session. The bounded report then
+completed in 31.78 seconds at approximately 214MiB peak RSS. See the
+[PER v3 handoff](../../docs/handoffs/2026-10-21-per-completion-v3.md) for the
+incident evidence and the canceled, uncommitted full-screen run.
 No migration, shared-fundamental edit,
 strategy promotion, activation or order path is added.

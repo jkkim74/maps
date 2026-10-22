@@ -32,6 +32,31 @@ Rollback: revert feature commits, restart established service; evidence is appen
 
 ## Progress / decisions / test ledger
 
+- 2026-10-22 morning resume: actual-time read-only checks confirmed production
+  `f847da1`, active/health 200, unchanged environment/control, zero orders/fills
+  and an unstarted trial. All 25 previously reviewed negative-EPS exclusions
+  are now valid; 14 unresolved sources remain blocked. Current official KRX
+  metadata and membership agree on 2,763 securities, resolving all 24 prior
+  classification gaps for today's date only. Fresh independent DART review
+  confirmed unchanged SL/Eugene annual receipts. Eugene's existing comparison
+  is now available and annual quality passes; SL's exact source/unit review
+  172150 was registered at 10:12:27 KST and becomes available October 23. Full DB backup
+  completed at 10:09:58 KST: 2,597,937,025 bytes, pg_restore list 532 lines.
+  Focused isolated valuation/current-use/sources/evidence/docs checks: 141 passed
+  in 38.08 seconds. Details and remaining after-close work are in
+  [the morning handoff](../../handoffs/2026-10-22-per-morning-resume.md).
+- Morning operations completed: appended 2,763 current classification sources
+  and refreshed all 39 EPS targets in 83 requests. Sources increased 39 to 42;
+  reviews remain 25 and all exclusions remain valid. Three new sources remain
+  receipt/context-mismatched. All 14 unresolved EPS names remain blocked.
+  Official classification is ordinary 2,537/excluded 178/unknown 48: the latter
+  are REIT/investment/foreign/depositary security groups outside the existing
+  explicit share-group policy, not missing raw metadata. Preserve that block.
+  All 24 prior missing rows now classify as 19 ordinary and 5 excluded. Read-only
+  final checks confirmed unchanged environment/control, health 200, zero orders
+  and unstarted trial. Candidate/screen counts remain 8,286/3; no morning screen
+  or new scheduling. Existing next jobs are 16:40 data, 21:10 DART, 22:00 screen.
+  Task 2 remains open for the actual after-close v3 screen and same-data comparison.
 - 2026-10-21: user approved final plan. Reusing clean existing isolated worktree C:/Users/jack/.codex/worktrees/9f3a/maps at 3680ba5; main workspace's four user document changes remain untouched.
 - Task 1 implementation/test progress: implemented version 3 shared screening,
   exact-date official security classification, signed common-EPS source/review
