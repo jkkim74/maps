@@ -182,6 +182,29 @@ evidence must not be called verified. Record implementation vs operational resul
 - Operational preparation scripts independently approved, including durable
   sector failure records and stopping quarterly work after incomplete annual
   collection. Actual manifest review/apply and deployment remain pending.
+- Implementation commit 2247849 was fast-forwarded to master and deployed at
+  15:05:22 KST. Service active; internal/external health and orders, upper-limit,
+  batch-monitor and Fujimoto APIs all HTTP 200. Environment/config/order counts
+  unchanged; orders blocked by trading_disabled, no pending/today fills;
+  recommend_only and observe retained. This short check is not full-session proof.
+- Actual price manifest narrowed from 633 to 239 missing Oct21 inserts. The 394
+  historical rows have identical OHLC and different volume, with no established
+  root cause; structurally valid existing bars remain outside this repair scope.
+  All 520 envelopes match preserved source audits; all 239 targets/source hashes
+  match independent review. Final narrowed manifest checksum/CAS approval pending.
+- During bounded current-sector/theme and targeted annual source operations,
+  SSH/HTTP stopped responding around 15:08 KST. No price apply occurred. Root is
+  attempting to terminate only one-off collectors and recover server access.
+  OOM is a hypothesis until kernel logs can be read. AWS API denied Lightsail
+  access; existing browser has no AWS session, so user login assistance requested.
+- Local investigation confirmed targeted AnnualCollector materialized every
+  candidate's full/raw payload. Narrow projection, target/time SQL filters and
+  streamed rows preserve latest-ID/as-of priority semantics. Regression initially
+  failed on full payload SELECT, then 54 source/docs checks passed; independent
+  PostgreSQL compilation/code review approved. Final full suite **2453 passed,
+  24 warnings in 450.06s**; fix committed as de86422. This additional fix is
+  not deployed while production SSH/HTTP remains unavailable. Source operation
+  termination/result is unconfirmed; no price apply has been attempted.
 
 ## Decisions / risks
 
