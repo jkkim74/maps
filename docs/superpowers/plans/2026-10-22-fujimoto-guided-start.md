@@ -29,23 +29,23 @@
 
 **Interfaces:** Existing `/api/v1/fujimoto/status`, `/candidates?limit=15`, `/validation`, `/evidence?limit=15`, and current mutation endpoints. Server readiness remains authoritative. Keep existing control IDs so current tests and controls can remain compatible; add semantic IDs for progress/next-action/refresh summary as needed.
 
-- [ ] Write failing behavioral checks first, run them and record failures. Cover budget-unset, saved budget with zero candidates, candidate present but operational/quote blocks, ready unchecked/checked, scheduled/active/stopped/expired, null status and read error. Test timer-triggered GET-only refresh preserving drafts; hidden-page polling skip; delayed GET overlapping explicit mutation cannot restore stale readiness; no overlapping polls; explicit mutation contracts remain unchanged. Preserve existing meaningful tests.
+- [x] Write failing behavioral checks first, run them and record failures. Cover budget-unset, saved budget with zero candidates, candidate present but operational/quote blocks, ready unchecked/checked, scheduled/active/stopped/expired, null status and read error. Test timer-triggered GET-only refresh preserving drafts; hidden-page polling skip; delayed GET overlapping explicit mutation cannot restore stale readiness; no overlapping polls; explicit mutation contracts remain unchanged. Preserve existing meaningful tests.
 
   Use the existing runner, for example:
   ```powershell
   & 'D:/workspace/maps/maps/maps/.venv/Scripts/python.exe' scripts/run_isolated_tests.py tests/test_fujimoto_ui.py -q --tb=short
   ```
 
-- [ ] Implement the approved sequence. Top next-action card and four linked steps: `1 예산 확인`, `2 자동 준비 점검`, `3 동의·시작 승인`, `4 진행 확인`. Put budget before approval, clearly display already-saved amounts, and place a stop-on-save note next to the save button. Keep the original no-price-stop warning and new-acquisition-only sell consent visible in the approval flow.
-- [ ] Render guidance from actual data: candidate wait is not a promise of future passes; operational blocking reasons need operator attention, with read-only navigation to existing operational pages if helpful, not a new toggle. Distinguish ordinary data wait from user action and unknown reasons. Active/scheduled states direct users to monitoring/start dates, not a new approval. Stopped/expired states retain their real reasons and do not imply reactivation permission.
-- [ ] Add sequential visibility-aware refresh using native timers; avoid duplicate reads and mutation races. Keep the latest successful status timestamp visible and show refreshing/error state. Initial and background requests are GET only. Preserve edited forms; a failed read disables approval until an actual successful reload. A successful write performs one fresh reload after any invalidated read.
-- [ ] Collapse measured validation activation under a clearly labelled `<details>` advanced section. Translate common candidate blocking codes and use `미통과`/`확인 필요` rather than presenting failed selection as ordinary waiting. Keep ticker codes if no names are available; do not invent names or expand the API.
-- [ ] Run the focused UI, API, paper-trial and docs checks:
+- [x] Implement the approved sequence. Top next-action card and four linked steps: `1 예산 확인`, `2 자동 준비 점검`, `3 동의·시작 승인`, `4 진행 확인`. Put budget before approval, clearly display already-saved amounts, and place a stop-on-save note next to the save button. Keep the original no-price-stop warning and new-acquisition-only sell consent visible in the approval flow.
+- [x] Render guidance from actual data: candidate wait is not a promise of future passes; operational blocking reasons need operator attention, with read-only navigation to existing operational pages if helpful, not a new toggle. Distinguish ordinary data wait from user action and unknown reasons. Active/scheduled states direct users to monitoring/start dates, not a new approval. Stopped/expired states retain their real reasons and do not imply reactivation permission.
+- [x] Add sequential visibility-aware refresh using native timers; avoid duplicate reads and mutation races. Keep the latest successful status timestamp visible and show refreshing/error state. Initial and background requests are GET only. Preserve edited forms; a failed read disables approval until an actual successful reload. A successful write performs one fresh reload after any invalidated read.
+- [x] Collapse measured validation activation under a clearly labelled `<details>` advanced section. Translate common candidate blocking codes and use `미통과`/`확인 필요` rather than presenting failed selection as ordinary waiting. Keep ticker codes if no names are available; do not invent names or expand the API.
+- [x] Run the focused UI, API, paper-trial and docs checks:
   ```powershell
   & 'D:/workspace/maps/maps/maps/.venv/Scripts/python.exe' scripts/run_isolated_tests.py tests/test_fujimoto_ui.py tests/test_fujimoto_api.py tests/test_fujimoto_paper_trial.py tests/test_docs_index.py -q --tb=short
   git diff --check
   ```
-- [ ] Update package usage documentation and test ledger. Commit only template/test/API-doc changes and this task's plan progress with a concise `feat:` message. Report exact failed/passing commands, changes, commit and any concerns.
+- [x] Update package usage documentation and test ledger. Commit only template/test/API-doc changes and this task's plan progress with a concise `feat:` message. Report exact failed/passing commands, changes, commit and any concerns.
 
 ## Parent verification and delivery
 
@@ -57,7 +57,30 @@
 ## Progress, decisions and test ledger
 
 - 2026-10-22: User approved the previously proposed guided screen. Existing isolated worktree `C:/Users/jack/.codex/worktrees/9f3a/maps` is reused; unrelated morning handoff modifications remain unstaged. Baseline product is `e3ec484` (deployed code `f847da1` differs only in handoff docs).
-- Implementation, behavioral verification, visual QA and independent review pending.
+- 2026-10-22 Task 1: Guided layout, saved budget summary, grouped Korean reasons,
+  lifecycle next actions and closed advanced activation implemented in the existing
+  template. Existing mutation contracts and backend/trading settings are unchanged.
+  Page-scoped viewport/CSS lets narrow screens use the guidance without changing
+  shared layout files; the mobile dashboard link preserves a navigation route.
+- RED: isolated `tests/test_fujimoto_ui.py -q --tb=short`: 14 failed, 10 passed
+  (5.16s), demonstrating missing next-action/timer behavior and stale approval
+  after a background error. Additional partial-batch failure RED: 1 failed,
+  24 passed (5.70s); recovered error-message RED: 1 failed, 28 passed (5.49s).
+- GREEN: first guided UI run 24 passed (4.36s); partial failure fix 25 passed
+  (4.64s). Focused UI/API/paper-trial/docs command above: 99 passed (33.18s).
+  UI now has 29 behavioral cases, retaining the 10 original cases and adding
+  offline timer/deferred-response checks. No real trial, broker call, setting
+  change or operational readiness assertion was made.
+- Self-review: read failures remove ready guidance immediately while pending
+  siblings drain; mutation revisions prevent old response/error rendering;
+  successful writes perform one fresh reload; edits during that reload survive;
+  candidate strings stay escaped, missing fields/dates remain explicit, and
+  stopped/expired states retain actual reasons. `git diff --check` passed.
+- Parent verification remains: independent reviews, full isolated regression,
+  actual browser visual QA/screenshots and integration/deployment decision.
+  Browser QA was unavailable when the implementer finished; no visual success
+  or deployment is claimed here. Full task report is in ignored workspace
+  `.superpowers/sdd/2026-10-22-fujimoto-guided-start/task-1-report.md`.
 
 ## Rollback
 

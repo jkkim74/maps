@@ -187,26 +187,54 @@ a live reservation. These views perform no writes, broker calls, activation or r
 
 ### `/fujimoto` trial usage
 
-1. Review the separate **자동 모의 체험 · 성과 미검증** rules: original has no price
-   stop. The total KRW 10m recommendation fills only an unset budget input; GET/load
-   never saves or activates. Existing saved budgets and unsaved drafts survive refresh.
-2. Save the approved total explicitly with the existing budget/book form (equal KRW
-   5m per mode). Review the Korean readiness reasons. Actual fresh reconciled account,
-   resolved costs/differences and actual screening/source/subscribed quote evidence
-   remain necessary; use existing operator procedures with genuine evidence.
-3. With readiness eligible, check the separate new-acquisition automatic-sell consent
-   and approve the trial. Only `{sell_consent:true}` goes to `/activate-paper-test`.
-   Consent is cleared after successful writes; failed reads/writes disable new approval
-   until status is refreshed. The measured replay-ID activation form remains separate.
-4. Check scheduled/active/stopped/expired, saved authorization ID and exact KST start/end,
-   setting/code/permission changes and recording capacity reasons. Before approval only
-   the next-session/20-session rule is shown, without predicting exchange closures.
+The next-action card links to four steps: **1 예산 확인 → 2 자동 준비 점검 →
+3 동의·시작 승인 → 4 진행 확인**. It distinguishes budget input, candidate/data wait,
+operator attention, unknown reasons, approval readiness and the saved campaign state.
+
+1. Review the saved total and each mode's actual allocation. An unset budget input
+   receives only the KRW 10m recommendation; GET/load never saves or activates.
+   Already-saved KRW 5m per mode needs no resave. Save budget/book changes explicitly;
+   the adjacent warning explains that saving stops new entries. Saved values and
+   unsaved budget/deposit/book drafts survive read-only refresh, including edits
+   made during a delayed post-write reload.
+2. Review the separate user, automatic collection/screening/quote and operator
+   reason groups. Actual fresh reconciled account, resolved costs/differences and
+   actual screening/source/subscribed quote evidence remain necessary. A passing
+   candidate does not override an execution/account block; waiting does not promise
+   future passing candidates or orders. Candidate failures show 미통과/확인 필요 with
+   translated common codes, preserving unknown codes and ticker-only identities.
+   Existing risk and batch-monitor links only navigate to operator evidence.
+3. Review **자동 모의 체험 · 성과 미검증**, including the visible original-mode
+   no-price-stop warning and new-acquisition-only automatic-sell consent. Only server
+   `paper_test.eligible === true` plus checked consent enables explicit approval.
+   Only `{sell_consent:true}` goes to `/activate-paper-test`. Successful writes clear
+   consent. Measured replay-ID activation stays a separate, initially closed advanced
+   section; its payload and the config/stop payloads are unchanged.
+4. Scheduled/active states direct users to monitoring and the exact saved KST start/end,
+   authorization ID and stop reasons. Stopped/expired retains actual reasons without
+   implying reactivation or extension. Before approval only the next-session/20-session
+   rule is shown, without predicting exchange closures. Missing dates stay unknown.
    Eligibility concerns a new approval, not current order execution permission.
-5. Inspect cycle ownership/stage and each order's status, cumulative fill, remainder and
+   Inspect cycle ownership/stage and each order's status, cumulative fill, remainder and
    live cash/share reservations. Cancellation requested and UNKNOWN are unresolved;
    terminal unfilled remainder is not a live reservation. Existing entry-stop remains
    available. Expiry/stop preserves approved exits and pending cancellation confirmation;
    no forced liquidation, guaranteed trades, holding adoption or automatic renewal.
+
+Initial load, manual refresh and visible-page polling read the same four GET endpoints
+every 15 seconds after the prior batch finishes. Hidden-page timers skip reads; returning
+to the page requests a fresh read without overlapping an existing batch. The latest
+successful local KST check time and refreshing/error state remain visible. A failed read
+immediately replaces ready guidance and disables approval, even if other GETs remain
+pending; only a subsequent successful read restores readiness. Mutations invalidate
+older responses before sending; successful writes drain invalidated reads and perform
+one fresh reload. This screen never changes trading switches through polling.
+
+`tests/test_fujimoto_ui.py` executes the shipped script in Node VM with offline DOM,
+native-timer substitutes and deferred fetch fixtures. Its regression checks include
+guidance states, escaped candidate reasons, GET-only/hidden-page polling, preservation
+of drafts and consent, failed partial batches and delayed-read/mutation races. These
+synthetic checks establish UI behavior, not operational readiness or measured results.
 
 ## Paper cost operator API and screen
 

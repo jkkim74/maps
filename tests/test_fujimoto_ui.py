@@ -47,7 +47,8 @@ def status(*, budget: int | None = None, eligible: bool = False,
     }
 
 
-def run_ui(data: dict, actions: list[dict] | None = None) -> dict:
+def run_ui(data: dict | None, actions: list[dict] | None = None,
+           *, candidates: list[dict] | None = None) -> dict:
     """Run actual inline JavaScript with only DOM/fetch replaced by offline fixtures."""
     template = (Path(__file__).resolve().parents[1] / "templates/fujimoto.html").read_text(encoding="utf-8")
     controls = Controls()
@@ -56,23 +57,44 @@ def run_ui(data: dict, actions: list[dict] | None = None) -> dict:
     harness = r"""
 const fs=require('node:fs'),vm=require('node:vm');
 const input=JSON.parse(fs.readFileSync(0,'utf8')),elements=input.elements,calls=[];
-let data=input.data,fail=false,reject=false;
+let data=input.data,candidates=input.candidates,fail=false,reject=false,delayReads=false,failStatus=false;
+let clock=0,nextTimer=0;const timers=new Map(),pending=[],snapshots=[];
+const document={hidden:false,getElementById:id=>elements[id],querySelector:()=>null,addEventListener(name,fn){this[name]=fn;}};
+// Match DOM replacement semantics so stale HTML cannot masquerade as a new message.
+for(const element of Object.values(elements)){
+  let html='',text='';
+  Object.defineProperties(element,{
+    innerHTML:{enumerable:true,get:()=>html,set:value=>{html=value;text='';}},
+    textContent:{enumerable:true,get:()=>text,set:value=>{text=value;html='';}}
+  });
+}
 const fetch=async(url,options)=>{
   calls.push({path:url,method:options.method,body:options.body?JSON.parse(options.body):null});
-  if(fail)throw new Error('offline status unavailable');
   const mutation=options.method!=='GET';
-  return {ok:!(mutation&&reject),json:async()=>mutation?
-    (reject?{detail:'paper_test_binding_changed;fresh_subscribed_recording_missing'}:{}):
-    (url.endsWith('/status')?data:[])};
+  const response=mutation?(reject?{detail:'paper_test_binding_changed;fresh_subscribed_recording_missing'}:{}):
+    (url.endsWith('/status')?data:url.includes('/candidates?')?candidates:[]);
+  const failed=fail||(failStatus&&url.endsWith('/status')),ok=!(mutation&&reject);
+  if(!mutation&&delayReads&&!failed)await new Promise(resolve=>pending.push(resolve));
+  if(failed)throw new Error('offline status unavailable');
+  return {ok,json:async()=>response};
 };
-vm.runInNewContext(input.script,{document:{getElementById:id=>elements[id]},fetch,Intl,Date});
+vm.runInNewContext(input.script,{document,fetch,Intl,Date,
+  setTimeout:(fn,ms)=>{const id=++nextTimer;timers.set(id,{fn,at:clock+ms});return id;},
+  clearTimeout:id=>timers.delete(id)});
 const settle=async()=>{for(let i=0;i<6;i++)await new Promise(resolve=>setImmediate(resolve));};
 (async()=>{
   await settle();
   for(const action of input.actions){
-    if(action.data)data=action.data;
+    if('data' in action)data=action.data;
+    if(action.candidates)candidates=action.candidates;
     if(action.fail!==undefined)fail=action.fail;
+    if(action.failStatus!==undefined)failStatus=action.failStatus;
     if(action.reject!==undefined)reject=action.reject;
+    if(action.delayReads!==undefined)delayReads=action.delayReads;
+    if(action.releaseReads)pending.splice(0).forEach(resolve=>resolve());
+    if(action.hidden!==undefined){document.hidden=action.hidden;if(document.visibilitychange)document.visibilitychange();}
+    if(action.tick){clock+=action.tick;const due=[...timers].filter(([,t])=>t.at<=clock);
+      for(const [id,t] of due){timers.delete(id);t.fn();}}
     if(action.id){
       const element=elements[action.id];
       if(action.value!==undefined)element.value=action.value;
@@ -80,12 +102,14 @@ const settle=async()=>{for(let i=0;i<6;i++)await new Promise(resolve=>setImmedia
       if(action.event)element[action.event]({preventDefault(){}});
     }
     await settle();
+    snapshots.push(JSON.parse(JSON.stringify({elements,calls,pending:pending.length,timers:timers.size})));
   }
-  process.stdout.write(JSON.stringify({elements,calls}));
+  process.stdout.write(JSON.stringify({elements,calls,snapshots}));
 })().catch(error=>{process.stderr.write(String(error.stack));process.exitCode=1;});
 """
     result = subprocess.run(["node", "-e", harness], input=json.dumps({"script": script,
-        "elements": controls.elements, "data": data, "actions": actions or []}),
+        "elements": controls.elements, "data": data, "actions": actions or [],
+        "candidates": candidates or []}),
         text=True, capture_output=True, encoding="utf-8", check=True, timeout=15)
     assert not result.stderr
     return json.loads(result.stdout)
@@ -180,3 +204,171 @@ def test_read_failure_and_api_rejection_remove_start_permission_and_explain_reas
     assert rejected["elements"]["fj-trial-start"]["disabled"] is True
     assert "설정·코드가 변경" in rejected["elements"]["fj-message"]["textContent"]
     assert "최근 3초" in rejected["elements"]["fj-message"]["textContent"]
+
+
+@pytest.mark.parametrize("budget,reasons,title,action", [
+    (None, ["paper_test_dedicated_budget_required"], "예산 확인", "예산"),
+    (5000000, ["usable_screen_candidate_source_missing"], "후보·데이터 대기", "보장하지"),
+    (5000000, ["fujimoto_runtime_disabled"], "운영자 확인 필요", "운영자"),
+    (5000000, ["fresh_subscribed_recording_missing"], "후보·데이터 대기", "호가"),
+    (5000000, ["unexpected_<reason>"], "확인 필요", "미확인"),
+])
+def test_next_action_distinguishes_budget_data_operator_and_unknown_blocks(budget, reasons, title, action):
+    data = status(budget=budget, reasons=reasons)
+    if reasons == ["usable_screen_candidate_source_missing"]:
+        data["screen"] = {"ref_date": "2026-10-21", "screened": 3, "selected": 0}
+    elements = run_ui(data)["elements"]
+    assert title in elements["fj-next-title"]["textContent"]
+    assert action in elements["fj-next-action"]["textContent"]
+    assert elements["fj-trial-start"]["disabled"] is True
+    if budget:
+        saved = elements["fj-saved-budget"]["textContent"]
+        assert "10,000,000원" in saved and "5,000,000원" in saved
+    if data["screen"]:
+        assert "최근 선별 통과: 0종목" in elements["fj-preparation"]["innerHTML"]
+
+
+def test_candidate_presence_does_not_override_operator_blocks_and_codes_are_translated_and_escaped():
+    candidates = [{"ticker": "<005930>", "payload": {"ref_date": "2026-10-21",
+        "rule": {"selection_passed": False, "blocking_reasons": ["incomplete_sector_valuation", "annual_growth_failed", "<unknown>"]}}}]
+    elements = run_ui(status(budget=5000000, reasons=["trading_disabled"]), candidates=candidates)["elements"]
+    assert "운영자 확인 필요" in elements["fj-next-title"]["textContent"]
+    rendered = elements["fj-candidates"]["innerHTML"]
+    assert "미통과" in rendered and "업종 PER" in rendered and "연간 성장" in rendered
+    assert "&lt;005930&gt;" in rendered and "&lt;unknown&gt;" in rendered
+    assert "확인 필요" in rendered
+
+
+@pytest.mark.parametrize("reason,title", [("trading_disabled", "운영자 확인 필요"),
+    ("fresh_subscribed_recording_missing", "후보·데이터 대기")])
+def test_passing_candidate_still_requires_server_readiness(reason, title):
+    candidate = {"ticker": "005930", "payload": {"ref_date": "2026-10-21",
+        "rule": {"selection_passed": True, "blocking_reasons": []}}}
+    elements = run_ui(status(budget=5000000, reasons=[reason]), candidates=[candidate])["elements"]
+    assert title in elements["fj-next-title"]["textContent"]
+    assert "<td>통과</td>" in elements["fj-candidates"]["innerHTML"]
+    assert elements["fj-trial-start"]["disabled"] is True
+
+
+@pytest.mark.parametrize("state,title", [("scheduled", "시작 예약"), ("active", "진행 중"),
+    ("stopped", "신규 진입 중지"), ("expired", "기간 만료")])
+def test_campaign_next_action_monitors_existing_authorization(state, title):
+    data = status(budget=5000000, state=state, reasons=["paper_test_binding_changed"])
+    data["control"]["stop_reason"] = "paper_test_binding_changed"
+    elements = run_ui(data)["elements"]
+    assert title in elements["fj-next-title"]["textContent"]
+    assert "진행 확인" in elements["fj-next-action"]["textContent"]
+    assert "설정·코드가 변경" in elements["fj-trial-state"]["innerHTML"]
+    assert elements["fj-trial-start"]["disabled"] is True
+
+
+def test_ready_guidance_tracks_explicit_consent_and_null_status_fails_closed():
+    ready = status(budget=5000000, eligible=True)
+    unchecked = run_ui(ready)["elements"]
+    assert "승인 준비 완료" in unchecked["fj-next-title"]["textContent"]
+    assert "동의" in unchecked["fj-next-action"]["textContent"]
+    failed = run_ui(ready, [{"id": "fj-trial-consent", "checked": True, "event": "onchange"},
+        {"data": None, "id": "fj-refresh", "event": "onclick"}])["elements"]
+    assert "조회 실패" in failed["fj-next-title"]["textContent"]
+    assert "준비 완료" not in failed["fj-next-action"]["textContent"]
+    assert failed["fj-trial-start"]["disabled"] is True
+    assert "최근 성공" in failed["fj-refresh-state"]["textContent"]
+
+
+def test_polling_is_get_only_preserves_drafts_and_skips_hidden_page():
+    result = run_ui(status(budget=5000000, eligible=True), [
+        {"id": "fj-budget", "value": 9000000, "event": "oninput"},
+        {"id": "fj-book", "checked": True, "event": "onchange"},
+        {"id": "fj-deposit", "value": -1000000, "event": "oninput"},
+        {"id": "fj-trial-consent", "checked": True, "event": "onchange"},
+        {"tick": 14999}, {"tick": 1}, {"hidden": True, "tick": 15000},
+        {"hidden": False},
+    ])
+    snapshots = result["snapshots"]
+    assert len(snapshots[4]["calls"]) == 4
+    assert len(snapshots[5]["calls"]) == 8
+    assert len(snapshots[6]["calls"]) == 8
+    assert len(result["calls"]) == 12
+    assert all(call["method"] == "GET" for call in result["calls"])
+    elements = result["elements"]
+    assert elements["fj-budget"]["value"] == 9000000
+    assert elements["fj-book"]["checked"] is True
+    assert elements["fj-deposit"]["value"] == -1000000
+    assert elements["fj-trial-consent"]["checked"] is True
+    assert "최근 성공" in elements["fj-refresh-state"]["textContent"]
+
+
+def test_pending_poll_does_not_overlap_and_pre_mutation_read_cannot_restore_readiness():
+    ready = status(budget=5000000, eligible=True)
+    result = run_ui(ready, [{"delayReads": True, "tick": 15000},
+        {"tick": 30000, "id": "fj-refresh", "event": "onclick"},
+        {"data": status(budget=5000000, reasons=["paper_test_binding_changed"]),
+         "id": "fj-stop", "event": "onclick"},
+        {"releaseReads": True},
+        {"delayReads": False, "releaseReads": True},
+        {"id": "fj-trial-consent", "checked": True, "event": "onchange"},
+    ])
+    snapshots = result["snapshots"]
+    assert len(snapshots[0]["calls"]) == 8
+    assert len(snapshots[1]["calls"]) == 8
+    assert "확인 중" in snapshots[0]["elements"]["fj-refresh-state"]["textContent"]
+    assert "승인 준비 완료" not in snapshots[3]["elements"]["fj-next-title"]["textContent"]
+    assert snapshots[3]["elements"]["fj-trial-start"]["disabled"] is True
+    assert len(result["calls"]) == 13  # initial + one pending GET batch + stop + one fresh batch
+    assert result["elements"]["fj-trial-start"]["disabled"] is True
+    assert "승인 준비 완료" not in result["elements"]["fj-next-title"]["textContent"]
+    assert "설정·코드가 변경" in result["elements"]["fj-trial-readiness"]["innerHTML"]
+
+
+def test_read_error_replaces_ready_guidance_and_later_success_is_required():
+    ready = status(budget=5000000, eligible=True)
+    result = run_ui(ready, [{"id": "fj-trial-consent", "checked": True, "event": "onchange"},
+        {"fail": True, "tick": 15000}, {"id": "fj-trial", "event": "onsubmit"},
+        {"fail": False, "tick": 15000}])
+    failed = result["snapshots"][1]["elements"]
+    assert failed["fj-trial-start"]["disabled"] is True
+    assert "조회 실패" in failed["fj-next-title"]["textContent"]
+    assert "확인할 수 없" in failed["fj-status"]["textContent"]
+    assert all(call["method"] == "GET" for call in result["calls"])
+    assert result["elements"]["fj-trial-start"]["disabled"] is False
+    assert result["elements"]["fj-message"]["textContent"] == ""
+
+
+def test_failed_status_disables_approval_while_other_gets_are_still_pending():
+    result = run_ui(status(budget=5000000, eligible=True), [
+        {"id": "fj-trial-consent", "checked": True, "event": "onchange"},
+        {"delayReads": True, "failStatus": True, "tick": 15000},
+        {"tick": 15000, "id": "fj-trial", "event": "onsubmit"},
+    ])
+    failed = result["snapshots"][1]
+    assert failed["pending"] == 3
+    assert "조회 실패" in failed["elements"]["fj-next-title"]["textContent"]
+    assert failed["elements"]["fj-trial-start"]["disabled"] is True
+    assert len(result["calls"]) == 8
+    assert all(call["method"] == "GET" for call in result["calls"])
+
+
+def test_missing_optional_status_and_candidate_data_remain_explicit():
+    data = status(budget=5000000)
+    data.update(paper_test=None, feed_quality=None, storage_limits=None)
+    elements = run_ui(data, candidates=[{"ticker": "005930", "payload": None}])["elements"]
+    assert "확인 필요" in elements["fj-next-title"]["textContent"]
+    assert "기록 없음" in elements["fj-trial-state"]["innerHTML"]
+    assert "확인 필요" in elements["fj-candidates"]["innerHTML"]
+    assert elements["fj-trial-start"]["disabled"] is True
+
+
+def test_edits_during_post_write_reload_are_preserved_and_consent_is_cleared():
+    result = run_ui(status(budget=5000000, eligible=True), [
+        {"id": "fj-trial-consent", "checked": True, "event": "onchange"},
+        {"delayReads": True, "id": "fj-config", "event": "onsubmit"},
+        {"id": "fj-budget", "value": 8000000, "event": "oninput"},
+        {"id": "fj-book", "checked": True, "event": "onchange"},
+        {"id": "fj-deposit", "value": -2000000, "event": "oninput"},
+        {"delayReads": False, "releaseReads": True},
+    ])
+    elements = result["elements"]
+    assert elements["fj-budget"]["value"] == 8000000
+    assert elements["fj-book"]["checked"] is True
+    assert elements["fj-deposit"]["value"] == -2000000
+    assert elements["fj-trial-consent"]["checked"] is False
