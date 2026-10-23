@@ -68,6 +68,10 @@ market history or measured validation. No trial test contacts KIS or grants prom
 and offline DOM/fetch fixtures (Node required, no added package). It checks read-only
 budget suggestions/draft retention, explicit consent/readiness, separate activation
 contracts, KST trial states, cumulative order reservations and fail-closed refresh.
+The task-focused layout tests also cover one actionable deduplicated issue list,
+collapsed settings/disclosure retention, readiness-only approval, stop confirmation,
+existing-campaign versus new-approval reasons, validated paper/live operation,
+unknown values and partial fills that must not advance buy stages.
 
 ## Fujimoto current valuation
 

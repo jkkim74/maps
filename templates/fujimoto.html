@@ -1,57 +1,59 @@
 {% extends "base.html" %}
 {% block extra_head %}
 <style>
-.fj-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}.fj-panel{background:var(--bg-card,#fff);border:1px solid var(--border,#ddd);border-radius:10px;padding:24px;margin-bottom:20px}.fj-panel h2{font-size:19px;margin:0 0 16px}.fj-label{color:#b0b9cc;font-size:13px}.fj-stat{font-size:26px;margin:7px 0 20px}.fj-warn{padding:14px 18px;background:#fff4dc;color:#694c16;border-left:4px solid #c99636;margin-bottom:20px;line-height:1.7}.fj-panel label{display:block;margin:12px 0 5px}.fj-panel input,.fj-panel select,.fj-panel button{padding:9px;border:1px solid #a8b5ae;border-radius:5px}.fj-panel button{background:#173e34;color:white;cursor:pointer;margin:12px 8px 0 0}.fj-panel table{width:100%;border-collapse:collapse;font-size:13px}.fj-panel th,.fj-panel td{padding:10px 6px;text-align:left;border-bottom:1px solid #dce3de}.fj-panel pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:300px;overflow:auto;font-size:12px}.fj-muted{color:#b0b9cc}.fj-inline{display:flex;gap:24px}.fj-panel .fj-danger{background:#842f2b}#fj-message{white-space:pre-wrap;margin:12px 0;color:var(--color-fail)}
-.fj-panel button:disabled{opacity:.5;cursor:not-allowed}.fj-scroll{overflow-x:auto}.fj-scroll table{min-width:780px}.fj-trial{border-left:4px solid #c99636}.fj-panel li{margin:8px 0;line-height:1.6}@media(max-width:760px){.fj-grid{grid-template-columns:1fr}.fj-panel{padding:18px}.fj-inline{flex-wrap:wrap}}
-.fj-steps{display:flex;flex-wrap:wrap;gap:12px;margin:16px 0}.fj-steps a{padding:10px 14px;border:1px solid var(--border,#ddd);border-radius:6px}.fj-next h2{margin-bottom:8px}.fj-panel{scroll-margin-top:24px}.fj-panel input[type=number]{max-width:100%;box-sizing:border-box}.fj-panel summary{cursor:pointer}body{min-width:0}.main{min-width:0}.fj-panel p{overflow-wrap:anywhere}.fj-mobile-home{display:none}@media(max-width:760px){.sidebar{display:none}.content{padding:16px}.topbar{padding:0 12px;gap:8px}.topbar-meta{display:none}.topbar-title{font-size:14px}.topbar-btn{padding:6px;font-size:11px}.fj-mobile-home{display:inline}.fj-steps a{flex:1 1 40%}.fj-stat{font-size:22px}}
+body[data-screen="fujimoto"],body[data-screen="fujimoto"] .main{min-width:0}
+.fj{max-width:1150px;margin:auto;color:var(--text-primary,#e8eaf0);--fj-line:var(--border,#30384b);--fj-muted:#aeb8cb;--fj-teal:#97e2cd}
+.fj [hidden]{display:none!important}.fj h1{font-size:28px;margin:6px 0 10px}.fj h2{font-size:21px;margin:0 0 12px}.fj h3{font-size:16px;margin:0 0 10px}.fj p{line-height:1.7;overflow-wrap:anywhere}.fj-label,.fj-muted{color:var(--fj-muted);font-size:13px}.fj-title{display:flex;justify-content:space-between;gap:18px;align-items:flex-start;margin-bottom:24px}.fj-pill{display:inline-block;border:1px solid #355b52;border-radius:20px;background:#19332d;color:#9de3cd;padding:5px 12px;font-size:12px;white-space:nowrap}
+.fj-panel,.fj-fold{background:var(--bg-card,#1e2333);border:1px solid var(--fj-line);border-radius:11px;padding:23px;margin:18px 0;scroll-margin-top:24px}.fj-next{background:#1a292b;border-color:#35514c}.fj-next[data-tone="warning"]{background:#28271f;border-color:#554b32}.fj-next[data-tone="error"]{background:#2d2229;border-color:#603b46}.fj-next h2{font-size:25px}.fj-next p{color:#c5d0d5}.fj-hero-actions{display:flex;justify-content:space-between;align-items:center;gap:18px;margin-top:20px}.fj-refresh{display:flex;align-items:center;gap:12px}.fj-refresh p{font-size:11px;margin:0}
+.fj .fj-button,.fj button{font:inherit;display:inline-flex;justify-content:center;align-items:center;gap:6px;padding:10px 15px;min-height:40px;border:1px solid #435068;border-radius:7px;background:#252c3d;color:#e8eaf0;text-decoration:none;cursor:pointer}.fj .fj-primary{background:var(--fj-teal);color:#142f28;border-color:var(--fj-teal);font-weight:600}.fj .fj-danger{background:transparent;color:#ffbdc1;border-color:#79515b}.fj .fj-quiet{background:transparent;color:#bdc9db;border-color:transparent}.fj button:disabled{opacity:.5;cursor:not-allowed}.fj a{color:#a3dccf}.fj a:focus-visible,.fj button:focus-visible,.fj summary:focus-visible,.fj input:focus-visible,.fj select:focus-visible{outline:3px solid #60a5fa;outline-offset:4px}
+.fj-steps{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));list-style:none;padding:0;gap:12px;margin:24px 0}.fj-steps li{display:flex;gap:8px;align-items:center;font-size:13px;color:#aeb8cb}.fj-steps span{border-radius:50%;display:grid;place-items:center;width:26px;height:26px;background:#252b3b;font-size:12px;flex-shrink:0}.fj-steps li[data-state="done"] span{background:#233c33;color:#9de3cd}.fj-steps li[data-state="current"]{color:#edf3ee}.fj-steps li[data-state="current"] span{background:var(--fj-teal);color:#16372c}
+.fj-budget-summary{display:flex;justify-content:space-between;gap:16px;align-items:center;border-top:1px solid var(--fj-line);border-bottom:1px solid var(--fj-line);padding:17px 0;margin:24px 0}.fj-budget-summary p{margin:0;font-size:14px}.fj-fold{padding:0}.fj-fold>summary{padding:17px 20px;cursor:pointer;font-size:14px}.fj-fold-body{padding:4px 22px 22px}.fj-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.fj-mode{padding:18px;background:#171d29;border:1px solid var(--fj-line);border-radius:9px}.fj-stat{font-size:25px;margin:8px 0}.fj-inline{display:flex;gap:24px}.fj form label{display:block;margin:15px 0 6px}.fj input[type="number"],.fj select{font:inherit;background:#151b28;color:#e8eaf0;border:1px solid #526179;border-radius:7px;padding:10px;width:min(100%,340px);box-sizing:border-box}.fj input[type="checkbox"]{accent-color:var(--fj-teal);width:18px;height:18px;vertical-align:middle}.fj-warn{background:#312b20;color:#ead6ae;border-left:3px solid #ffd480;padding:14px 17px;margin:18px 0;font-size:13px;line-height:1.7}.fj-warn strong{color:#ffe2a4}.fj-check{background:#172c29;border:1px solid #31544b;border-radius:8px;padding:16px;line-height:1.8}.fj-form-actions{display:flex;justify-content:flex-end;margin-top:20px}
+.fj-issues{border:1px solid var(--fj-line);border-radius:10px;overflow:hidden}.fj-issue{display:flex;align-items:flex-start;gap:18px;padding:20px;background:var(--bg-card,#1e2333);border-bottom:1px solid var(--fj-line)}.fj-issue:last-child{border:0}.fj-issue>div{flex:1;min-width:0}.fj-issue h3{font-size:15px}.fj-issue p{font-size:13px;color:var(--fj-muted);margin:6px 0}.fj-issue a{flex-shrink:0}.fj-section-head{display:flex;justify-content:space-between;align-items:center;gap:12px;margin:25px 0 12px}.fj-section-head h2{margin:0;font-size:18px}.fj-locked{padding:17px 20px;background:#171d27;border:1px dashed #3a4357;border-radius:9px;color:#b4becf;margin:22px 0}.fj-stop{display:flex;align-items:center;gap:16px;margin:24px 0}.fj-stop p{font-size:12px;color:var(--fj-muted)}.fj-metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin:20px 0}.fj-metrics>div{border:1px solid var(--fj-line);border-radius:9px;background:var(--bg-card,#1e2333);padding:18px}.fj-metrics strong{display:block;font-size:23px;margin-top:6px}.fj-kv{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;margin:20px 0}.fj-kv dt{font-size:12px;color:var(--fj-muted)}.fj-kv dd{margin:6px 0 0;font-size:14px}.fj-legs{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:18px 0}.fj-leg{background:#161c27;border-radius:7px;padding:12px;font-size:12px;color:var(--fj-muted)}.fj-leg strong{display:block;margin-bottom:6px}.fj-leg[data-done="true"]{background:#203b33;color:#9de3cd}.fj-empty{text-align:center;padding:25px 18px;color:var(--fj-muted)}
+.fj table{width:100%;border-collapse:collapse;font-size:13px}.fj th,.fj td{text-align:left;padding:11px 8px;border-bottom:1px solid var(--fj-line);overflow-wrap:anywhere}.fj pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:300px;overflow:auto;font-size:12px}.fj-scroll{overflow-x:auto}.fj li{line-height:1.7;margin:8px 0}.fj details details{margin-top:14px}.fj-screen-summary{margin:25px 0}.fj-screen-summary h2{font-size:17px}.fj-mobile-home{display:none}#fj-message{white-space:pre-wrap;margin:12px 0}#fj-status{font-size:12px;color:var(--fj-muted)}#fj-stale{border-left:3px solid #ffd480;background:#312b20;padding:12px 16px;color:#ead6ae;margin:15px 0}
+@media(max-width:760px){body[data-screen="fujimoto"] .sidebar{display:none}body[data-screen="fujimoto"] .content{padding:16px}body[data-screen="fujimoto"] .topbar{padding:0 12px;gap:8px}body[data-screen="fujimoto"] .topbar-meta{display:none}body[data-screen="fujimoto"] .topbar-title{font-size:14px}body[data-screen="fujimoto"] .topbar-btn{padding:6px;font-size:11px}.fj-mobile-home{display:inline}.fj h1{font-size:24px}.fj-next h2{font-size:21px}.fj-title,.fj-hero-actions,.fj-issue,.fj-stop{flex-direction:column;align-items:stretch}.fj-hero-actions>.fj-button{width:100%;box-sizing:border-box}.fj-refresh{flex-wrap:wrap}.fj-panel{padding:18px}.fj-fold-body{padding:4px 17px 18px}.fj-grid,.fj-metrics{grid-template-columns:1fr}.fj-metrics>div{display:flex;justify-content:space-between;align-items:center;padding:14px 18px}.fj-metrics strong{margin:0;font-size:20px}.fj-steps{gap:5px}.fj-steps li{flex-direction:column;font-size:11px;gap:6px}.fj-kv{gap:12px}.fj-inline{flex-wrap:wrap}.fj-form-actions>button{width:100%}.fj-orders-table thead{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}.fj-orders-table,.fj-orders-table tbody{display:block}.fj-orders-table tr{display:block;border:1px solid var(--fj-line);border-radius:8px;padding:12px;margin:12px 0}.fj-orders-table td{display:flex;justify-content:space-between;gap:12px;border:0;padding:5px 0;text-align:right}.fj-orders-table td:before{content:attr(data-label);color:var(--fj-muted);text-align:left;flex-shrink:0}.fj-orders-table td:last-child{padding-bottom:0}}
+.fj dialog.fj-panel{width:min(520px,calc(100% - 40px));box-sizing:border-box;margin:auto;color:var(--text-primary,#e8eaf0);max-height:90vh;overflow:auto}.fj dialog::backdrop{background:#070c18bd}.fj dialog .fj-form-actions{gap:12px;flex-wrap:wrap}
+.fj{word-break:keep-all}.fj-kv dd{overflow-wrap:anywhere}
 </style>
 {% endblock %}
 {% block content %}
-<div style="margin-bottom:24px"><a class="fj-mobile-home" href="/dashboard">대시보드로 이동</a><p class="fj-label">MAPS · 검증 우선 분할매매</p><h1 style="margin:8px 0">후지모토 전략 운영</h1><p class="fj-muted">동일 계좌, 독립된 두 원장. 실제 체결로만 차수가 진행됩니다.</p></div>
+<div class="fj">
+<a class="fj-mobile-home" href="/dashboard">대시보드로 이동</a>
+<header class="fj-title"><div><h1>후지모토 분할매매</h1><p class="fj-muted">종목을 자동으로 찾고, 조건에 따라 나누어 사고팝니다.</p></div><span id="fj-environment" class="fj-pill">운영 상태 확인 중</span></header>
 <div id="fj-message" role="status" aria-live="polite"></div>
-<section class="fj-panel fj-next" aria-labelledby="fj-next-title"><p id="fj-progress" class="fj-label">현재 단계 확인 중</p><h2 id="fj-next-title">준비 상태를 확인하고 있습니다</h2><p id="fj-next-action" role="status" aria-live="polite">잠시 후 지금 할 행동을 안내합니다.</p><a id="fj-next-link" href="#fj-step-readiness">준비 점검으로 이동</a><p id="fj-refresh-state" class="fj-label" aria-live="polite">최근 성공 조회: 없음 · 확인 중…</p><button id="fj-refresh" type="button">상태 새로고침</button><p class="fj-label">화면이 보이는 동안 15초마다 저장된 상태만 자동 조회합니다.</p></section>
-<nav class="fj-steps" aria-label="모의 체험 진행 단계"><a href="#fj-step-budget">1 예산 확인</a><a href="#fj-step-readiness">2 자동 준비 점검</a><a href="#fj-step-approval">3 동의·시작 승인</a><a href="#fj-step-monitor">4 진행 확인</a></nav>
-<div class="fj-warn" id="fj-status">저장된 운영 상태를 불러오는 중입니다.</div>
-<section class="fj-panel" id="fj-step-budget"><h2>1 예산 확인</h2><p id="fj-saved-budget" role="status">저장된 예산을 확인하는 중입니다.</p>
-<div class="fj-grid" id="fj-modes"></div>
-<p class="fj-label">전용 예산을 50:50으로 배분합니다. 미설정 시 승인된 체험 추천액을 입력란에만 표시합니다. 기존 저장 예산이 맞으면 다시 저장할 필요가 없습니다.</p>
-<form id="fj-config"><label for="fj-budget">전용 총예산 (원)</label><input id="fj-budget" type="number" min="1" required placeholder="운영자가 지정한 금액">
-<label for="fj-deposit">이전 예산 대비 입출금 (원)</label><input id="fj-deposit" type="number" value="0">
-<label><input id="fj-book" type="checkbox" checked> 기록된 호가 익절 사용 (30초 연속·순이익·비용 확인 필요)</label>
-<p class="fj-warn">예산·호가 설정을 저장하면 신규 진입이 중지됩니다. 변경이 있을 때만 명시적으로 저장하세요.</p><button type="submit">예산 저장 · 신규 진입 중지</button></form></section>
-<section class="fj-panel" id="fj-step-readiness"><h2>2 자동 준비 점검</h2><p>후보 선별과 분할매매는 자동입니다. 사용자는 예산을 확인하고, 준비가 완료되면 동의 후 시작을 승인합니다.</p>
-<div id="fj-preparation" aria-live="polite">사용자 설정 · 자동 수집 · 운영 상태를 확인하고 있습니다.</div>
-<h3>새 체험 승인 준비 상태</h3><div id="fj-trial-readiness" aria-live="polite">준비 상태 확인 전에는 시작할 수 없습니다.</div>
-<p class="fj-label">운영 확인: <a href="/risk">계좌·주문·비용 상태</a> · <a href="/batch-monitor">수집 작업 상태</a>. 실제 근거와 기존 운영 절차로 확인하세요.</p></section>
-<section class="fj-panel fj-trial" id="fj-step-approval"><h2>3 동의·시작 승인</h2><h3>자동 모의 체험 · 성과 미검증</h3>
-<p>이번 체험의 승인 예산은 총 <strong>10,000,000원</strong>, 안전형·원문 기반형 각 <strong>5,000,000원</strong>입니다. 실제 KIS 모의계좌에서만 실행하며 성과 검증이나 실거래 승격을 통과한 것으로 처리하지 않습니다.</p>
-<p>명시적으로 시작을 승인한 다음 KRX 거래일 09:00부터 20거래일 동안 진행합니다. 시작일을 1일째로 포함하고 20일째 15:20 KST에 신규·추가 매수를 중지합니다. 휴장일은 제외하며 정확한 시작·종료 시각은 승인 후 표시됩니다. 조건에 맞는 자연 신호가 없으면 20거래일 동안 주문이 없을 수 있습니다.</p>
-<details><summary>두 모드의 실제 매수·청산 규칙</summary><ul>
-<li>두 모드 모두 금액 비중 1:2:6 순서로 매수합니다. 1차는 일 RSI ≤ 40·주 RSI &lt; 70, 2차는 MACD 골든크로스 또는 전환선 상향 돌파, 3차는 일목 상승 확인·주 MACD와 히스토그램 상승 조건입니다. 종목 선별·실적 유지·현재 계좌 한도와 실제 호가 조건도 충족해야 합니다.</li>
+<section id="fj-hero" class="fj-panel fj-next" aria-labelledby="fj-next-title">
+<p id="fj-progress" class="fj-label">현재 단계 확인 중</p><h2 id="fj-next-title">준비 상태를 확인하고 있습니다</h2><p id="fj-next-action" role="status" aria-live="polite">잠시 후 지금 할 행동을 안내합니다.</p>
+<div class="fj-hero-actions"><a id="fj-next-link" class="fj-button fj-primary" href="#fj-step-readiness">준비 점검으로 이동</a><div class="fj-refresh"><p id="fj-refresh-state" aria-live="polite">최근 성공 조회: 없음 · 확인 중…</p><button id="fj-refresh" class="fj-quiet" type="button">↻ 새로고침</button></div></div>
+<p class="fj-label">화면이 보이는 동안 15초마다 저장된 상태를 확인합니다.</p></section>
+<ol class="fj-steps" aria-label="모의 체험 진행 단계"><li id="fj-step-1"><span>1</span>예산 설정</li><li id="fj-step-2"><span>2</span>준비 확인</li><li id="fj-step-3"><span>3</span>시작 예약</li><li id="fj-step-4"><span>4</span>진행 확인</li></ol>
+<p id="fj-status" role="status">저장된 운영 상태를 불러오는 중입니다.</p>
+<p id="fj-stale" role="status" hidden>이전 조회값입니다. 현재 상태를 다시 확인하세요.</p>
+<section id="fj-step-readiness"><div class="fj-section-head"><h2 id="fj-issues-title">시작 전 확인할 항목</h2><span id="fj-issue-count" class="fj-label"></span></div><div id="fj-preparation" aria-live="polite">준비 상태를 확인하고 있습니다.</div></section>
+<section id="fj-step-monitor" hidden><div class="fj-section-head"><h2>보유·매매 진행 확인</h2></div><div id="fj-trial-state" class="fj-panel" role="status" aria-live="polite">체험 상태 확인 중</div><div id="fj-metrics" class="fj-metrics"></div><h3>종목별 매매 진행</h3><div id="fj-cycles"></div><h3>주문 · 누적 체결</h3><div id="fj-orders" class="fj-scroll"></div><p class="fj-label">잔여 수량과 현재 예약은 다를 수 있습니다. 취소 요청·결과 불명은 종결이 아니며, 비용 미확정 손익은 잠정입니다.</p></section>
+<div id="fj-stop-area" class="fj-stop" hidden><button id="fj-stop" class="fj-danger" type="button">신규·추가 매수 중지</button><p>중지 후에도 승인된 보유분의 청산 규칙은 계속 적용됩니다.<br>미체결 매수는 취소 확인 전까지 예약을 유지합니다.</p></div>
+<dialog id="fj-stop-dialog" class="fj-panel" aria-labelledby="fj-stop-title"><h2 id="fj-stop-title">신규·추가 매수를 중지할까요?</h2><p>새로운 매수와 추가 매수를 중지합니다. 승인된 보유분의 청산 규칙은 계속 적용됩니다.</p><p>미체결 매수는 취소 확인 전까지 예약을 유지합니다. 보유 종목을 즉시 전량 매도하는 기능이 아닙니다.</p><div class="fj-form-actions"><button id="fj-stop-cancel" type="button">돌아가기</button><button id="fj-stop-commit" class="fj-danger" type="button">신규·추가 매수 중지</button></div></dialog>
+<section id="fj-step-budget"><div class="fj-budget-summary"><p id="fj-saved-budget" role="status">저장된 예산 확인 중</p><button id="fj-edit-budget" class="fj-quiet" type="button">설정 변경</button></div>
+<details id="fj-budget-details" class="fj-fold"><summary>예산·호가 설정</summary><div class="fj-fold-body"><div class="fj-grid" id="fj-modes"></div><p class="fj-label">모의 체험은 총 1,000만 원을 두 방식에 500만 원씩 배분합니다. 미설정 추천값은 저장하기 전까지 반영되지 않습니다.</p>
+<form id="fj-config"><label for="fj-budget">전용 총예산 (원)</label><input id="fj-budget" type="number" min="1" required placeholder="운영자가 지정한 금액"><label for="fj-deposit">이전 예산 대비 입출금 (원)</label><input id="fj-deposit" type="number" value="0"><label><input id="fj-book" type="checkbox" checked> 기록된 호가 익절 사용 (30초 연속·순이익·비용 확인 필요)</label><p class="fj-warn">예산·호가 설정을 저장하면 신규·추가 매수가 중지됩니다. 변경이 있을 때만 저장하세요.</p><button type="submit">예산 저장 · 신규 진입 중지</button></form></div></details></section>
+<section class="fj-panel" id="fj-step-approval" hidden><h2>동의 후 모의 체험 시작 예약</h2><p>총 <strong>1,000만 원</strong> · 안전형·원문 기반형 각 <strong>500만 원</strong> · 실제 KIS 모의계좌</p><p>승인 다음 KRX 거래일 09:00부터 시작일 포함 20거래일 동안 진행합니다. 20번째 거래일 15:20 KST에 신규·추가 매수를 중지합니다. 정확한 시작·종료 시각은 승인 후 표시됩니다. 조건에 맞는 자연 신호가 없으면 주문이 없을 수 있습니다.</p><p id="fj-trial-readiness" role="status">준비 상태 확인 전에는 시작할 수 없습니다.</p>
+<p class="fj-warn">원문 기반형은 <strong>가격 손절이 없습니다.</strong> 성과가 검증되지 않은 모의 체험입니다. 아래 동의는 이번 체험으로 새로 취득한 후지모토 수량에만 적용됩니다.</p><p><a href="#fj-rules">두 방식의 매수·매도 규칙 알아보기</a></p>
+<form id="fj-trial"><label class="fj-check"><input id="fj-trial-consent" type="checkbox" required> 성과 미검증과 원문 기반형의 가격 손절 없음을 확인했으며, 이번 체험으로 새로 취득한 후지모토 수량에 한해 명시된 자동 청산 규칙에 동의합니다.</label><div class="fj-form-actions"><button id="fj-trial-start" class="fj-primary" type="submit" disabled aria-describedby="fj-trial-readiness">동의하고 모의 체험 예약</button></div></form><p class="fj-label">중지·만료 후에도 승인된 보유분의 청산 규칙은 계속 적용되며 강제 청산하지 않습니다. 다른 전략이나 기존 계좌 보유분은 편입하지 않습니다.</p></section>
+<div id="fj-next-locked" class="fj-locked">준비가 완료되면 자동 청산 규칙을 확인하고 시작을 승인할 수 있습니다.</div>
+<section class="fj-screen-summary"><h2>종목은 시스템이 자동으로 찾습니다</h2><p id="fj-screen-summary" class="fj-label">최근 선별 상태 확인 중</p><p class="fj-label">선별 통과만으로 주문이 시작되지는 않습니다.</p></section>
+<details class="fj-fold" id="fj-rules"><summary>두 방식의 매수·매도 규칙 알아보기</summary><div class="fj-fold-body"><p class="fj-warn">원문 기반형은 <strong>가격 손절이 없습니다.</strong> 모의 체험은 성과 검증 통과나 실거래 승격을 의미하지 않습니다.</p><ul>
+<li>두 방식 모두 금액 비중 1:2:6 순서로 매수합니다. 1차는 일 RSI ≤ 40·주 RSI &lt; 70, 2차는 MACD 골든크로스 또는 전환선 상향 돌파, 3차는 일목 상승 확인·주 MACD와 히스토그램 상승 조건입니다. 종목 선별·실적 유지·현재 계좌 한도와 실제 호가 조건도 충족해야 합니다.</li>
 <li>안전형은 반전 확인 후에만 2차 매수합니다. 가격 손절은 고정 8% / ATR × 3, 최대 폭 16%를 적용하며 추가 매수로 기존 손절선을 낮추지 않습니다.</li>
-<li>원문 기반형은 <strong>가격 손절이 없습니다.</strong> 2차 반전 신호가 없어도 실적 유지·첫 체결가보다 낮은 종가·주 RSI 30 이상 40 미만이면 하락 추가 매수가 가능합니다. 이후 MACD 반등에서는 한 번만 1/3 축소합니다.</li>
-<li>두 모드 모두 RSI 70 상향 교차 또는 승인된 호가 익절에 누적 1/9, MACD 데드크로스에 누적 3/9, 전환선 하향 돌파·구름 하락에 전량 청산합니다. 실적 악화 시 전략 소유분을 청산합니다. 호가 익절은 비용 확인·순이익·실제 호가 30초 연속 조건이 필요합니다. 차수는 실제 체결이 종결 확인된 뒤에만 진행됩니다.</li>
-</ul></details>
-<p class="fj-warn">원문 기반형은 <strong>가격 손절이 없습니다.</strong> 성과가 검증되지 않은 모의 체험입니다. 아래 동의는 이 체험으로 새로 취득한 후지모토 수량에만 적용됩니다.</p>
-<form id="fj-trial"><label><input id="fj-trial-consent" type="checkbox" required> 성과 미검증과 원문 기반형의 가격 손절 없음에 대해 확인했으며, 이 체험으로 새로 취득한 후지모토 수량에 한해 위 자동 청산 규칙에 동의합니다.</label>
-<button id="fj-trial-start" type="submit" disabled aria-describedby="fj-trial-readiness">자동 모의 체험 시작 승인</button></form>
-<p class="fj-label">신규 진입 중지·만료 후에도 승인된 전략 보유분의 청산 규칙이 계속 적용되며 강제 청산하지 않습니다. 미체결 매수는 취소 확인을 기다립니다. 결과 불명·취소 요청 중인 주문의 잔여 현금·수량 예약은 확인 전까지 유지됩니다. 다른 전략이나 기존 계좌 보유분은 편입하지 않습니다.</p></section>
-<details class="fj-panel" id="fj-advanced"><summary>고급 설정 · 측정 검증 기반 모의·실거래 활성화 (체험과 별도)</summary><p class="fj-label">두 전략의 기존 승격 조건과 현재 계좌·비용·코드·데이터 합산 검증이 모두 필요합니다.</p>
-<form id="fj-activate"><label for="fj-mode">대상 환경</label><select id="fj-mode"><option value="paper">모의 계좌</option><option value="live">실거래 계좌</option></select>
-<label for="fj-replay">측정 리플레이 근거 ID</label><input id="fj-replay" type="number" min="1" required>
-<label><input id="fj-consent" type="checkbox" required> 이 전략이 새로 취득한 수량에 한해 명시된 자동 청산 규칙을 승인합니다.</label>
-<button type="submit">현재 근거 검증 · 활성화</button></form><p class="fj-label">기존 계좌 보유분은 편입되지 않습니다. 실거래 계좌를 모의 모드로 사용하는 것은 차단됩니다.</p></details>
-<p class="fj-label">계좌 차이·실제 비용 확인: <a href="/risk#pc-title">모의 계좌 비용 정산</a>. 명세서 정산 후 계좌 재검증을 확인하세요. 전략 시작 승인은 별도입니다.</p>
-<section class="fj-panel" id="fj-step-monitor"><h2>4 진행 확인</h2><div id="fj-trial-state" role="status" aria-live="polite">체험 상태를 확인하는 중입니다.</div><button id="fj-stop" class="fj-danger">신규 진입 중지</button><p class="fj-label">중지 후에도 미체결 예약과 승인된 전략 보유분의 청산 규칙은 유지됩니다.</p><h3>사이클 · 차수 · 소유 수량</h3><div id="fj-cycles" class="fj-scroll"></div><h3>주문 · 누적 체결 · 잔여 예약</h3><div id="fj-orders" class="fj-scroll"></div><p class="fj-label">잔여 수량은 주문량에서 누적 체결을 뺀 수량입니다. 취소 등 종결 주문의 잔여 수량은 현재 예약과 다를 수 있습니다. 비용 미확정은 잠정 정산이며, 결과 불명이나 취소 요청만으로 예약을 해제하지 않습니다.</p></section>
-<div class="fj-grid"><section class="fj-panel"><h2>시장 전체 선별 · 데이터 범위</h2><div id="fj-screen"></div><h3>최근 후보 근거</h3><div id="fj-candidates"></div></section>
-<section class="fj-panel"><h2>검증 · 피드 품질</h2><div id="fj-quality"></div><div id="fj-validation"></div><p class="fj-label">호가 공백·재연결·지연은 30초 연속성을 초기화합니다. 비용 미확정은 신규 매수와 호가 익절을 차단하며 원가·손익을 잠정 표시합니다.</p></section></div>
-<section class="fj-panel"><h2>근거 · 차단 이력</h2><p class="fj-label">공시 원문과 비교 가능한 주식 단위 검토가 없으면 연간 배당 조건은 미검증입니다. 실제 공시 출처, 문서 해시, 대상 연도와 주식 단위 검토 근거를 준비하세요. 확인된 근거는 기록 이후 다음 거래일부터 사용할 수 있습니다.</p><div id="fj-evidence"></div></section>
+<li>원문 기반형은 2차 반전 신호가 없어도 실적 유지·첫 체결가보다 낮은 종가·주 RSI 30 이상 40 미만이면 하락 추가 매수가 가능합니다. 이후 MACD 반등에서는 한 번만 1/3 축소합니다.</li>
+<li>두 방식 모두 RSI 70 상향 교차 또는 승인된 호가 익절에 누적 1/9, MACD 데드크로스에 누적 3/9, 전환선 하향 돌파·구름 하락에 전량 청산합니다. 실적 악화 시 전략 소유분을 청산합니다. 호가 익절은 비용 확인·순이익·실제 호가 30초 연속 조건이 필요합니다. 실제 체결이 종결 확인된 뒤에만 차수가 진행됩니다.</li></ul></div></details>
+<details class="fj-fold" id="fj-source-details"><summary>선별·수집 상세</summary><div class="fj-fold-body"><div id="fj-screen"></div><h3>최근 선별 기록 15건</h3><p class="fj-label">전체 후보의 일부입니다. 최근 기록의 미통과 여부를 전체 선별 결과로 해석하지 마세요.</p><div id="fj-candidates" class="fj-scroll"></div><h3 id="fj-feed-title">호가 수신 상태</h3><div id="fj-quality"></div><p class="fj-label">호가 공백·재연결·지연은 연속성을 초기화합니다. 비용 미확정은 신규 매수와 호가 익절을 차단합니다.</p><a href="/batch-monitor">수집 작업 확인</a></div></details>
+<details class="fj-fold" id="fj-records"><summary>검증 결과·운영 기록</summary><div class="fj-fold-body"><h3>실제 검증 결과</h3><div id="fj-validation" class="fj-scroll"></div><h3>근거 · 차단 이력</h3><p class="fj-label">공시 원문과 비교 가능한 주식 단위 검토가 없으면 연간 배당 조건은 미검증입니다. 실제 공시 출처, 문서 해시, 대상 연도와 주식 단위 검토 근거가 필요합니다. 확인된 근거는 기록 이후 다음 거래일부터 사용할 수 있습니다.</p><div id="fj-evidence" class="fj-scroll"></div><p><a href="/risk#paper-costs">모의 계좌 비용 정산 확인</a></p></div></details>
+<details class="fj-fold" id="fj-advanced"><summary>고급 운영 설정 · 측정 검증 기반 활성화</summary><div class="fj-fold-body"><p class="fj-label">모의 체험과 별도입니다. 두 전략의 기존 승격 조건과 현재 계좌·비용·코드·데이터 합산 검증이 모두 필요합니다.</p><form id="fj-activate"><label for="fj-mode">대상 환경</label><select id="fj-mode"><option value="paper">모의 계좌</option><option value="live">실거래 계좌</option></select><label for="fj-replay">측정 리플레이 근거 ID</label><input id="fj-replay" type="number" min="1" required><label><input id="fj-consent" type="checkbox" required> 이 전략이 새로 취득한 수량에 한해 명시된 자동 청산 규칙을 승인합니다.</label><button type="submit">현재 근거 검증 · 활성화</button></form><p class="fj-label">기존 보유분은 편입되지 않습니다. 실거래 계좌를 모의 모드로 사용하는 것은 차단됩니다.</p></div></details>
+</div>
 <script>
 (() => {
 const viewport=document.querySelector('meta[name="viewport"]');if(viewport)viewport.setAttribute('content','width=device-width, initial-scale=1');
 const $=id=>document.getElementById(id), base='/api/v1/fujimoto';
 const esc=s=>String(s??'—').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-let syncForm=true, trialEligible=false, busy=false, inFlight=null, revision=0, pollTimer=null, lastSuccess=null, latestStatus=null, formRevision=0, readError=false;
+let syncForm=true, trialEligible=false, busy=false, inFlight=null, revision=0, pollTimer=null, lastSuccess=null, latestStatus=null, formRevision=0, readError=false, budgetAttention=null;
 const labels={observe:'관찰',paper:'모의',live:'실거래',safe:'안전형',original:'원문 기반형',confirmed:'확정',provisional_costs_missing:'비용 미확정',account_not_reconciled:'계좌 대조 전',dedicated_budget_required:'전용 예산 미지정',new_entries_stopped:'신규 진입 중지',fujimoto_runtime_disabled:'실시간 수집 꺼짐',screening_coverage_missing:'선별 근거 수집 전',actual_order_costs_unresolved:'실제 주문 비용 확인 필요',no_recorded_feed:'호가 기록 없음',tape_capacity_exhausted:'호가 기록 용량 도달',candidate_capacity_exhausted:'후보 기록 용량 도달',missing_observed_universe:'해당 거래일 종목 목록 없음',reconnect:'재연결 · 연속성 재확인',disconnect:'연결 끊김',COMPLETE:'측정 완료',INSUFFICIENT:'검증 부족',with_orderbook:'사용',without_orderbook:'미사용',candidate:'후보',control:'운영 제어',quote:'호가',screen:'전 시장 선별',annual_source:'연간 공시',comparability:'주식 단위 검토',order_cost:'실제 비용',decision:'판단',block:'차단',feed_quality:'피드 품질',replay:'리플레이',universe:'시장 종목 목록'};
 Object.assign(labels,{not_started:'미시작',scheduled:'시작 예약',active:'진행 중',stopped:'신규 진입 중지',expired:'기간 만료',validated:'측정 검증',paper_test:'성과 미검증 모의 체험',buy:'매수',sell:'매도',RESERVED:'제출 전 예약',SUBMITTED:'제출됨',PARTIAL:'부분 체결',UNKNOWN:'결과 불명 · 대조 필요',CANCEL_REQUESTED:'취소 요청 · 확인 대기',FILLED:'전량 체결',CANCELLED:'취소 확인',REJECTED:'거절 확인',EXPIRED:'주문 유효기간 만료'});
 Object.assign(labels,{missing_annual_history:'연간 실적 근거 부족',expired_annual_history:'연간 실적 근거 기한 경과',nonconsecutive_annual_history:'연간 실적 연속성 부족',incomparable_annual_history:'연간 실적 비교 기준 확인 필요',pending_revision:'정정 공시 확인 필요',annual_growth_failed:'연간 성장 조건 미통과',missing_dividend:'연간 배당 근거 부족',dividend_failed:'배당 조건 미통과',ineligible_security:'대상 종목 조건 미통과',missing_historical_sector:'기준일 업종 근거 부족',missing_security_classification:'공식 증권 분류 확인 필요',excluded_security:'대상 제외 증권',negative_common_eps:'보통주 EPS 음수 · 대상 제외',incomplete_sector_valuation:'업종 PER 비교 근거 부족',missing_valuation:'종목 PER 근거 부족',expensive_per:'업종 대비 PER 조건 미통과',missing_price_history:'가격 이력 부족',price_session_gap:'거래일 가격 자료 공백',rapid_rise:'최근 급등 조건 미통과',missing_turnover:'거래대금 근거 부족',missing_current_daily_bar:'최근 완료 거래일 일봉 없음',daily_indicator_warmup:'일봉 지표 준비 자료 부족',weekly_indicator_warmup:'주봉 지표 준비 자료 부족',selection_failed:'종목 선별 미통과',financial_missing:'현재 실적 근거 부족',financial_deteriorated:'실적 악화'});
@@ -93,32 +95,101 @@ account_activity_incomplete:'실제 계좌 활동 자료가 불완전합니다. 
 explicit_strategy_sell_consent_required:'체험으로 새로 취득하는 전략 수량의 자동 청산에 명시적으로 동의해야 합니다.'};
 const label=s=>labels[s]||s||'기록 없음';
 const reason=s=>readiness[s]||(labels[s]?labels[s]+' · 관련 수집·운영 기록을 확인하세요.':'미확인 차단 코드 '+String(s??'기록 없음')+' · 운영 기록에서 실제 근거 확인 필요');
-const date=s=>s&&!Number.isNaN(new Date(s).getTime())?new Intl.DateTimeFormat('ko-KR',{timeZone:'Asia/Seoul',dateStyle:'medium',timeStyle:'short',hour12:false}).format(new Date(s))+' KST':'기록 없음 · 확인 필요';
+const date=s=>{const utc=typeof s==='string'&&/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?$/.test(s)?s+'Z':s;return utc&&!Number.isNaN(new Date(utc).getTime())?new Intl.DateTimeFormat('ko-KR',{timeZone:'Asia/Seoul',dateStyle:'medium',timeStyle:'short',hour12:false}).format(new Date(utc))+' KST':'기록 없음 · 확인 필요';};
 const updateTrialButton=()=>{$('fj-trial-start').disabled=busy||!trialEligible||!$('fj-trial-consent').checked;};
 const detail=o=>'<details><summary>원본 근거 보기</summary><pre>'+esc(JSON.stringify(o,null,2))+'</pre></details>';
-const won=n=>n==null?'미지정':Number.isFinite(Number(n))?Number(n).toLocaleString('ko-KR')+'원':'확인 필요';
+const won=n=>typeof n==='number'&&Number.isFinite(n)?n.toLocaleString('ko-KR')+'원':'확인 필요';
 async function call(path,method='GET',body){const r=await fetch(base+path,{method,headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});const data=await r.json();if(!r.ok)throw new Error(typeof data.detail==='string'?data.detail.split(';').map(reason).join('\n'):JSON.stringify(data.detail));return data;}
-const table=(headers,rows)=>rows.length?'<table><thead><tr>'+headers.map(h=>'<th>'+esc(h)+'</th>').join('')+'</tr></thead><tbody>'+rows.map(r=>'<tr>'+r.map(c=>'<td>'+esc(c)+'</td>').join('')+'</tr>').join('')+'</tbody></table>':'<p class="fj-muted">아직 기록된 데이터가 없습니다.</p>';
+const table=(headers,rows,mobile=false)=>rows.length?'<table'+(mobile?' class="fj-orders-table"':'')+'><thead><tr>'+headers.map(h=>'<th scope="col">'+esc(h)+'</th>').join('')+'</tr></thead><tbody>'+rows.map(r=>'<tr>'+r.map((c,i)=>'<td'+(mobile?' data-label="'+esc(headers[i])+'"':'')+'>'+esc(c)+'</td>').join('')+'</tr>').join('')+'</tbody></table>':'<p class="fj-empty">아직 기록된 데이터가 없습니다.</p>';
+// Preserve disclosure choices without replacing unchanged content during polling.
+function render(id,html){const el=$(id);if(el.innerHTML===html)return;const opened=Array.from(el.querySelectorAll('details')).map(d=>d.open);el.innerHTML=html;el.querySelectorAll('details').forEach((d,i)=>{if(opened[i])d.open=true;});}
+const terminal=new Set(['FILLED','CANCELLED','REJECTED','EXPIRED']);
+const campaignStates=new Set(['scheduled','active','stopped','expired']);
+const codes=value=>Array.isArray(value)?value.filter(r=>typeof r==='string'):[];
+const number=n=>typeof n==='number'&&Number.isFinite(n);
+const cyclesOf=s=>s.modes.flatMap(m=>Array.isArray(m.cycles)?m.cycles:[]);
+const ordersOf=s=>cyclesOf(s).flatMap(c=>Array.isArray(c.orders)?c.orders:[]);
+const measured=s=>s.control.authorization_policy==='validated'&&s.control.sell_consent===true&&['paper','live'].includes(s.control.execution_mode);
+const monitoring=s=>campaignStates.has(s.paper_test?.state)||measured(s)||cyclesOf(s).length>0;
 const userReasons=new Set(['dedicated_budget_required','paper_test_dedicated_budget_required','configuration_variant_mismatch','explicit_strategy_sell_consent_required']);
 const dataReasons=new Set(['screening_coverage_missing_or_stale','screening_coverage_missing','usable_screen_candidate_source_missing','fresh_subscribed_recording_missing']);
-function nextAction(title,text,step){$('fj-next-title').textContent=title;$('fj-next-action').textContent=text;$('fj-progress').textContent='현재 단계: '+['','1 예산 확인','2 자동 준비 점검','3 동의·시작 승인','4 진행 확인'][step];$('fj-next-link').href='#fj-step-'+['','budget','readiness','approval','monitor'][step];$('fj-next-link').textContent=['','예산 확인으로 이동','자동 준비 점검으로 이동','동의·시작 승인으로 이동','진행 확인으로 이동'][step];}
+const routes={
+  budget:{href:'#fj-budget-details',text:'예산·설정 확인',priority:1},
+  account:{href:'/risk',text:'계좌·주문 확인',priority:0},
+  costs:{href:'/risk#paper-costs',text:'비용 정산 확인',priority:0},
+  execution:{href:'/ops-config',text:'실행 설정 확인',priority:2},
+  feed:{href:'#fj-source-details',text:'호가 상태 보기',priority:3},
+  batch:{href:'/batch-monitor',text:'수집 작업 확인',priority:3},
+  records:{href:'#fj-records',text:'운영 기록 확인',priority:0},
+  orders:{href:'#fj-step-monitor',text:'보유·주문 확인',priority:0}
+};
+const executionReasons=new Set(['paper_environment_required','fujimoto_runtime_disabled','dry_run','trading_disabled','real_trading_unconfirmed','broker_execution_unsupported','account_identity_mismatch']);
+function route(code){
+  if(userReasons.has(code))return routes.budget;
+  if(code==='actual_order_costs_unresolved'||code==='account_costs_unavailable')return routes.costs;
+  if(code==='fujimoto_unknown_order'||code==='paper_test_existing_ownership_or_orders')return routes.orders;
+  if(code.startsWith('account_')||['order_outcome_unknown','active_order_missing','legacy_order_requires_resolution','fujimoto_ownership_disagreement','broker_query_incomplete'].includes(code))return routes.account;
+  if(executionReasons.has(code))return routes.execution;
+  if(code==='fresh_subscribed_recording_missing')return routes.feed;
+  if(dataReasons.has(code))return routes.batch;
+  return routes.records;
+}
+const issueTitles={trading_disabled:'주문 실행이 꺼져 있습니다',fresh_subscribed_recording_missing:'매매에 사용할 최신 호가가 없습니다',paper_test_binding_changed:'승인 이후 설정·코드가 변경됐습니다',account_unknown_order:'계좌 주문 결과를 확인해야 합니다',fujimoto_unknown_order:'후지모토 주문 결과를 확인해야 합니다'};
+Object.assign(issueTitles,{paper_environment_required:'모의계좌 설정 확인',paper_test_dedicated_budget_required:'체험에 사용할 예산 설정',account_not_fresh_reconciled:'최신 계좌 대조 필요',dry_run:'주문 전송 차단 상태',real_trading_unconfirmed:'계좌 실행 환경 확인',broker_execution_unsupported:'주문 실행 연결 확인',account_identity_mismatch:'승인 계좌와 현재 계좌 불일치',configuration_variant_mismatch:'두 방식의 호가 설정 불일치',paper_test_recording_capacity_exhausted:'기록 저장 용량 확인',recording_capacity_exhausted:'기록 저장 용량 도달',paper_test_existing_ownership_or_orders:'기존 보유·주문 확인',screening_coverage_missing_or_stale:'최신 종목 선별 근거 필요',usable_screen_candidate_source_missing:'선별 통과 종목의 근거 확인',account_difference_unclassified:'계좌 현금·수량 차이 확인',account_kill_switch:'계좌 안전 중지 상태',account_warmup:'계좌 대조 준비 중',order_outcome_unknown:'주문 결과 확인 필요',active_order_missing:'진행 중 주문 조회 누락',legacy_order_requires_resolution:'기존 미해결 주문 확인',fujimoto_ownership_disagreement:'전략 수량과 계좌 수량 불일치',account_costs_unavailable:'계좌 비용 자료 확인',account_snapshot_stale:'최신 계좌 조회 필요',broker_query_incomplete:'계좌 조회 불완전',account_activity_incomplete:'계좌 활동 자료 불완전',explicit_strategy_sell_consent_required:'자동 청산 규칙 동의 필요',paper_test_expired:'체험 기간 종료'});
+function nextAction(title,text,step,target=null,tone=''){
+  $('fj-next-title').textContent=title;$('fj-next-action').textContent=text;
+  $('fj-progress').textContent='현재 단계: '+['','1 예산 설정','2 준비 확인','3 시작 예약','4 진행 확인'][step];
+  const link=target||{href:'#fj-step-'+['','budget','readiness','approval','monitor'][step],text:['','예산 설정하기','준비 항목 확인','동의 후 시작 예약','보유·주문 확인'][step]};
+  $('fj-next-link').href=link.href;$('fj-next-link').textContent=link.text;$('fj-hero').setAttribute('data-tone',tone);
+  for(let i=1;i<=4;i++){$('fj-step-'+i).setAttribute('data-state',i<step?'done':i===step?'current':'pending');if(i===step)$('fj-step-'+i).setAttribute('aria-current','step');else $('fj-step-'+i).removeAttribute('aria-current');}
+}
 function guide(s){
-const trial=s.paper_test,reasons=trial?.block_reasons||[],state=trial?.state;
-if(['scheduled','active','stopped','expired'].includes(state)){
-  const action=state==='scheduled'?'진행 확인에서 확정된 시작일 '+date(trial.starts_at)+'과 주문 상태를 확인하세요.':state==='active'?'진행 확인에서 사이클·누적 체결·예약을 확인하세요. 자연 신호가 없으면 주문이 없을 수 있습니다.':'진행 확인에서 중지·만료 사유와 미체결 예약·승인된 청산 상태를 확인하세요. 새 승인이나 기간 연장을 뜻하지 않습니다.';
-  nextAction(label(state),action,4);
-}else if(s.modes.some(m=>m.budget==null)||reasons.some(r=>['dedicated_budget_required','paper_test_dedicated_budget_required'].includes(r)))nextAction('예산 확인','1단계에서 저장 예산을 확인하세요. 체험은 총 10,000,000원, 각 모드 5,000,000원이 필요합니다. 미설정 추천값은 저장 전까지 반영되지 않습니다.',1);
-else if(trialEligible)nextAction('승인 준비 완료',$('fj-trial-consent').checked?'동의가 선택되었습니다. 규칙을 확인한 뒤 시작 승인 버튼을 직접 누르세요.':'3단계에서 가격 손절 없음과 신규 취득분 자동 청산 규칙을 확인하고 명시적으로 동의한 뒤 시작을 승인하세요.',3);
-else if(reasons.some(r=>userReasons.has(r)))nextAction('설정 확인 필요','예산·호가 설정과 아래 사용자 확인 사유를 검토하세요. 저장하면 신규 진입이 중지됩니다.',1);
-else if(reasons.some(r=>!readiness[r]&&!labels[r]))nextAction('확인 필요','미확인 차단 사유가 있습니다. 자동으로 해결된다고 가정하지 말고 운영 기록의 실제 근거를 확인하세요.',2);
-else if(reasons.some(r=>!dataReasons.has(r)))nextAction('운영자 확인 필요','운영자가 아래 계좌·주문·수집 설정의 차단 사유를 확인해야 합니다. 후보가 있어도 시작할 수 없습니다.',2);
-else if(reasons.length)nextAction('후보·데이터 대기','저장 예산은 유지됩니다. 자동 수집·선별·실제 호가 근거를 확인하는 중이며 이후 후보 통과나 주문을 보장하지 않습니다. 아래 기준일과 차단 사유를 확인하세요.',2);
-else nextAction('확인 필요','서버의 준비 상태를 확인할 수 없습니다. 상태를 다시 조회하고 운영 기록을 확인하세요.',2);
-const group=(codes)=>codes.length?codes.map(r=>'<li>'+esc(reason(r))+'</li>').join(''):'<li>표시된 차단 사유 없음 · 최종 승인은 서버 준비 상태를 따릅니다.</li>';
-$('fj-preparation').innerHTML='<h3>사용자 확인</h3><ul>'+group(reasons.filter(r=>userReasons.has(r)))+'</ul><h3>자동 수집·선별·호가</h3><p>'+esc(s.screen?.selected==null?'선별 통과 종목 수: 기록 없음':'최근 선별 통과: '+s.screen.selected+'종목')+'</p><ul>'+group(reasons.filter(r=>dataReasons.has(r)))+'</ul><h3>운영자·기타 확인</h3><ul>'+group(reasons.filter(r=>!userReasons.has(r)&&!dataReasons.has(r)))+'</ul>';
+const trial=s.paper_test,state=trial?.state,ongoing=monitoring(s),ended=['stopped','expired'].includes(state);
+const informational=new Set(['new_entries_stopped',...(campaignStates.has(state)?['paper_test_already_authorized','paper_test_existing_ownership_or_orders']:[])]);
+const reasons=[...new Set([...codes(s.block_reasons),...(!measured(s)&&!ended?codes(trial?.block_reasons):[]),...(s.control.stop_reason?[s.control.stop_reason]:[]),...(ordersOf(s).some(o=>o.status==='UNKNOWN')?['fujimoto_unknown_order']:[])])].filter(r=>!informational.has(r));
+// Collapse equivalent general/trial reasons while preserving all raw API evidence.
+for(const [general,specific] of [['dedicated_budget_required','paper_test_dedicated_budget_required'],['screening_coverage_missing','screening_coverage_missing_or_stale']]){if(reasons.includes(specific)&&reasons.includes(general))reasons.splice(reasons.indexOf(general),1);}
+reasons.sort((a,b)=>route(a).priority-route(b).priority);
+const needsBudget=s.modes.some(m=>m.budget==null)||reasons.some(r=>userReasons.has(r));
+if(budgetAttention!==needsBudget){if(needsBudget)$('fj-budget-details').open=true;budgetAttention=needsBudget;}
+$('fj-step-monitor').hidden=!ongoing;$('fj-step-approval').hidden=!trialEligible;$('fj-stop-area').hidden=!ongoing&&s.control.entries_enabled!==true;
+$('fj-next-locked').hidden=trialEligible||ongoing;
+$('fj-step-readiness').hidden=!reasons.length;
+$('fj-issues-title').textContent=ongoing?'운영 중 확인할 항목':'시작 전 확인할 항목';$('fj-issue-count').textContent='확인 필요 '+reasons.length+'건';
+render('fj-preparation',reasons.length?'<div class="fj-issues">'+reasons.map(r=>{const dest=route(r);return '<article class="fj-issue"><div><h3>'+esc(issueTitles[r]||labels[r]||'추가 확인이 필요합니다')+'</h3><p>'+esc(reason(r))+'</p>'+(dest===routes.execution?'<p>설정 조회 화면입니다. 변경은 별도 서버 운영 절차가 필요합니다.</p>':'')+'</div><a class="fj-button" href="'+dest.href+'">'+dest.text+'</a></article>';}).join('')+'</div>':'');
+$('fj-trial-readiness').textContent=trialEligible?'시작 승인 시 서버가 현재 계좌·예산·근거를 다시 확인합니다.':'준비가 완료되면 시작을 승인할 수 있습니다.';
+if(ongoing){
+  if(reasons.length)nextAction('운영 중 확인할 항목이 '+reasons.length+'개 있습니다','아래 항목에서 원인과 해결 방법을 확인하세요. 진행 확인에는 현재 보유·주문이 표시됩니다.',4,route(reasons[0]),'warning');
+  else if(state==='scheduled')nextAction('모의 체험 시작이 예약됐습니다',date(trial.starts_at)+'부터 시작합니다. 진행 확인에서 확정된 기간을 확인하세요.',4);
+  else if(ended)nextAction(state==='expired'?'체험의 신규 매수 기간이 끝났습니다':'신규·추가 매수가 중지됐습니다','진행 확인에서 남은 주문·보유분을 확인하세요. 승인된 청산 규칙은 계속 적용됩니다.',4);
+  else if(measured(s))nextAction('측정 검증 기반 운영 · '+label(s.control.execution_mode),s.control.entries_enabled===true?'서버에 저장된 활성화 상태입니다. 진행 확인에서 현재 보유·주문을 확인하세요.':'신규·추가 매수가 중지된 상태입니다. 보유·주문을 확인하세요.',4);
+  else if(state==='active')nextAction('모의 체험 진행 중','진행 확인에서 실제 체결·예약을 확인하세요. 조건에 따라 주문이 없을 수 있습니다.',4);
+  else nextAction('기록된 보유·주문을 확인하세요','매매 기록이 있습니다. 현재 시작 승인 여부는 운영 기록에서 확인하세요.',4);
+}else if(needsBudget)nextAction('먼저 예산·설정을 확인하세요','모의 체험은 총 1,000만 원, 두 방식에 각각 500만 원이 필요합니다. 예산 저장은 시작 승인이 아닙니다.',1,routes.budget);
+else if(trialEligible)nextAction('모의 체험 시작을 예약할 수 있습니다',$('fj-trial-consent').checked?'동의를 확인했습니다. 아래 시작 예약 버튼을 직접 누르세요.':'가격 손절 없음과 신규 취득분 자동 청산 규칙을 확인한 뒤 동의해 주세요.',3);
+else if(reasons.length)nextAction('시작 전 확인할 항목이 '+reasons.length+'개 있습니다','저장 예산은 유지됩니다. 아래 항목에서 원인과 해결 방법을 확인하세요.',2,route(reasons[0]),'warning');
+else{nextAction('준비 상태 확인 필요','서버의 준비 상태를 확인할 수 없습니다. 다시 조회하고 실제 운영 기록을 확인하세요.',2,{href:'#fj-refresh',text:'상태 다시 확인'},'warning');$('fj-step-readiness').hidden=false;$('fj-preparation').textContent='확인 가능한 준비 항목이 없습니다. 준비 완료로 처리하지 않습니다.';}
+}
+function renderMonitoring(s){
+  const trial=s.paper_test,cs=cyclesOf(s),os=ordersOf(s),known=s.modes.every(m=>Array.isArray(m.cycles))&&cs.every(c=>c.state&&Array.isArray(c.orders));
+  const holdings=known&&cs.every(c=>number(c.state.quantity))?new Set(cs.filter(c=>c.state.quantity>0).map(c=>c.ticker)).size:null;
+  const pending=known&&os.every(o=>typeof o.status==='string')?os.filter(o=>!terminal.has(o.status)).length:null;
+  const total=s.modes.every(m=>number(m.budget))?s.modes.reduce((n,m)=>n+m.budget,0):null;
+  render('fj-metrics','<div><span>전용 예산</span><strong>'+won(total)+'</strong></div><div><span>보유 종목</span><strong>'+esc(holdings==null?'확인 필요':holdings+'종목')+'</strong></div><div><span>미완료 주문</span><strong>'+esc(pending==null?'확인 필요':pending+'건')+'</strong></div>');
+  let campaign='<p>아직 시작하지 않았습니다.</p>';
+  if(campaignStates.has(trial?.state))campaign='<p><strong>체험 상태: '+esc(label(trial.state))+'</strong> · 성과 미검증 모의 체험</p><dl class="fj-kv"><div><dt>시작</dt><dd>'+esc(date(trial.starts_at))+'</dd></div><div><dt>신규·추가 매수 종료</dt><dd>'+esc(date(trial.expires_at))+'</dd></div></dl>'+(trial.authorization_id?'<p class="fj-label">승인 시각: '+esc(date(trial.activated_at))+' · 승인 ID: '+esc(trial.authorization_id)+'</p>':'');
+  else if(measured(s))campaign='<p>측정 검증 기반 '+esc(label(s.control.execution_mode))+' 운영 · 신규 진입 '+(s.control.entries_enabled===true?'허용':'중지')+'</p><p class="fj-label">20거래일 모의 체험과 별도입니다. 현재 검증 결과는 아래 상세 기록에서 확인하세요.</p>';
+  else if(!trial||trial.state!=='not_started')campaign='<p>기록 없음 · 현재 승인 상태 확인 필요</p>';
+  render('fj-trial-state',campaign);
+  render('fj-cycles',cs.length?cs.map(c=>{
+    const stage=Number.isInteger(c.state?.buy_stage)&&c.state.buy_stage>=0&&c.state.buy_stage<=3?c.state.buy_stage:null;
+    const unresolved=(Array.isArray(c.orders)?c.orders:[]).filter(o=>!terminal.has(o.status));
+    return '<article class="fj-panel"><h3>'+esc(c.ticker)+' · '+esc(label(c.mode))+'</h3><p class="fj-label">매매 기록 #'+esc(c.id)+' · '+(unresolved.length?unresolved.map(o=>esc(label(o.status))).join(' / '):(!Array.isArray(c.orders)||typeof c.state?.pending_order!=='boolean'||c.state.pending_order===true)?'미해결 주문 확인 필요':'등록된 미완료 주문 없음')+'</p>'+(stage==null?'<p>매수 단계 확인 필요</p>':'<div class="fj-legs">'+[1,2,3].map(n=>'<div class="fj-leg" data-done="'+(n<=stage)+'"><strong>'+n+'차 '+(n<=stage?'완료':'미완료')+'</strong>'+(n<=stage?'종결 체결 확인':'실제 체결·조건 확인 필요')+'</div>').join('')+'</div>')+'<dl class="fj-kv"><div><dt>보유 수량</dt><dd>'+esc(number(c.state?.quantity)?c.state.quantity+'주':'확인 필요')+'</dd></div><div><dt>보유 원가</dt><dd>'+won(c.cost_basis)+'</dd></div><div><dt>실현손익'+(c.accounting==='provisional_costs_missing'?' · 잠정':'')+'</dt><dd>'+won(c.realized_pnl)+'</dd></div><div><dt>비용 정산</dt><dd>'+esc(label(c.accounting))+'</dd></div></dl></article>';
+  }).join(''):'<p class="fj-empty">'+(!known?'보유 자료 확인 필요':trial?.state==='scheduled'?'아직 매매를 시작하지 않았습니다. 예약된 시작 시각부터 조건을 확인합니다.':'기록된 매매가 없습니다. 조건에 따라 주문이 없을 수 있습니다.')+'</p>');
+  render('fj-orders',os.length?table(['주문 ID','매매 기록 / 방식 / 종목','구분','상태','주문량','누적 체결','잔여 수량','예약 현금','예약 수량'],cs.flatMap(c=>(Array.isArray(c.orders)?c.orders:[]).map(o=>[o.id,c.id+' / '+label(c.mode)+' / '+c.ticker,label(o.side),label(o.status),o.quantity,o.filled_quantity,o.remaining_quantity,won(o.reserved_cash),o.reserved_quantity])),true):'<p class="fj-empty">'+(known?'아직 주문이 없습니다.':'주문 자료 확인 필요')+'</p>');
 }
 const refreshState=text=>{$('fj-refresh-state').textContent='최근 성공 조회: '+(lastSuccess?date(lastSuccess):'없음')+' · '+text;};
-function failClosed(message){trialEligible=false;latestStatus=null;readError=true;updateTrialButton();nextAction('조회 실패 · 확인 필요',message,2);$('fj-status').textContent='현재 운영·준비 상태를 확인할 수 없습니다. 이전 표시로 시작하지 마세요.';$('fj-preparation').textContent='현재 준비 점검을 확인할 수 없습니다. 새로고침 후 실제 사유를 확인하세요.';$('fj-trial-readiness').textContent=message;refreshState('조회 실패');}
+function failClosed(message){trialEligible=false;latestStatus=null;readError=true;updateTrialButton();nextAction('조회 실패 · 확인 필요',message,2,{href:'#fj-refresh',text:'상태 다시 확인'},'error');$('fj-status').textContent='현재 운영·준비 상태를 확인할 수 없습니다. 이전 표시로 시작하지 마세요.';$('fj-preparation').textContent='현재 준비 점검을 확인할 수 없습니다. 새로고침 후 실제 사유를 확인하세요.';$('fj-trial-readiness').textContent=message;$('fj-step-approval').hidden=true;$('fj-stale').hidden=false;$('fj-stale').textContent=lastSuccess?'아래 정보는 이전 조회값입니다. 마지막 성공: '+date(lastSuccess):'현재 자료를 조회하지 못했습니다.';$('fj-stop-area').hidden=false;$('fj-environment').textContent='운영 상태 확인 불가';refreshState('조회 실패');}
 function schedulePoll(){clearTimeout(pollTimer);pollTimer=setTimeout(()=>{if(document.hidden||busy)schedulePoll();else load();},15000);}
 async function load(afterWrite=false){
 if(inFlight)return inFlight;if(busy&&!afterWrite)return;
@@ -127,29 +198,29 @@ const requests=[call('/status'),call('/candidates?limit=15'),call('/validation')
 inFlight=(async()=>{try{
 const [s,c,v,e]=await Promise.all(requests);
 if(currentRevision!==revision)return;
-if(!s||!s.control||!Array.isArray(s.modes)||!s.modes.length||![c,v,e].every(Array.isArray))throw new Error('저장된 상태 자료가 없거나 불완전합니다. 운영 기록을 확인하세요.');
-$('fj-status').textContent='운영: '+label(s.control.execution_mode)+' · 신규 진입: '+(s.control.entries_enabled===true?'허용':s.control.entries_enabled===false?'중지':'확인 필요')+' | '+(s.block_reasons||[]).map(label).join(' · ');
+if(!s||!s.control||!Array.isArray(s.modes)||s.modes.length!==2||new Set(s.modes.map(m=>m?.mode)).size!==2||s.modes.some(m=>!['safe','original'].includes(m?.mode)||(m.budget!=null&&!number(m.budget)))||![c,v,e].every(Array.isArray))throw new Error('저장된 상태 자료가 없거나 불완전합니다. 운영 기록을 확인하세요.');
+$('fj-stale').hidden=true;
+$('fj-status').textContent='운영: '+label(s.control.execution_mode)+' · 신규 진입: '+(s.control.entries_enabled===true?'허용':s.control.entries_enabled===false?'중지':'확인 필요');
+$('fj-environment').textContent=measured(s)?'측정 검증 기반 · '+label(s.control.execution_mode):campaignStates.has(s.paper_test?.state)?'모의 체험 · 성과 미검증':'관찰 · 체험 시작 전';
 if(syncForm){$('fj-budget').value=s.modes.every(m=>m.budget==null)?10000000:s.modes.some(m=>m.budget==null)?'':s.modes.reduce((n,m)=>n+Number(m.budget),0);if(typeof s.modes[0]?.settings?.with_orderbook==='boolean')$('fj-book').checked=s.modes[0].settings.with_orderbook;$('fj-deposit').value=0;syncForm=false;}
 $('fj-saved-budget').textContent=s.modes.some(m=>m.budget==null)?'저장 예산 미설정 · 추천액은 입력란에만 표시됩니다. 누락된 모드 예산을 확인하세요.':'저장 총예산 '+won(s.modes.reduce((n,m)=>n+Number(m.budget),0))+' · '+s.modes.map(m=>label(m.mode)+' '+won(m.budget)).join(' · ')+' · 변경이 없으면 재저장할 필요가 없습니다.';
 const trial=s.paper_test;
-trialEligible=trial?.eligible===true;
-$('fj-trial-state').innerHTML='<p><strong>체험 상태: '+esc(label(trial?.state))+'</strong> · 현재 승인 방식: '+esc(label(trial?.authorization_policy))+'</p><p>시작: '+esc(date(trial?.starts_at))+' · 신규·추가 매수 종료: '+esc(date(trial?.expires_at))+'</p>'+(trial?.authorization_id?'<p class="fj-label">승인 시각: '+esc(date(trial.activated_at))+' · 승인 ID: '+esc(trial.authorization_id)+'</p>':'')+(s.control.stop_reason?'<p>'+esc(reason(s.control.stop_reason))+'</p>':'');
-$('fj-trial-readiness').innerHTML=trialEligible?'<p>새 체험 승인 준비 완료. 저장된 예산·근거를 기준으로 시작 승인 시 서버가 다시 확인합니다. 동의란을 확인하세요.</p>':trial?.block_reasons?.length?'<ul>'+trial.block_reasons.map(r=>'<li>'+esc(reason(r))+'</li>').join('')+'</ul>':'<p>체험 준비 상태를 확인할 수 없습니다. 새로고침 후 운영 기록을 확인하세요.</p>';
+trialEligible=trial?.eligible===true&&!measured(s)&&['not_started','stopped','expired'].includes(trial?.state)&&s.modes.every(m=>number(m.budget));
 updateTrialButton();
-$('fj-modes').innerHTML=s.modes.map(m=>'<section class="fj-panel"><h2>'+esc(label(m.mode))+'</h2><p class="fj-label">'+(m.mode==='safe'?'반전 확인 후 추가 매수 · 가격 손절 8% / ATR × 3':m.mode==='original'?'실적 유지 시 하락 추가 매수 · 가격 손절 없음':'모드 규칙 확인 필요')+'</p><div class="fj-stat">'+won(m.budget)+'</div><div class="fj-inline"><div>현금<br><strong>'+won(m.cash)+'</strong></div><div>예약 현금<br><strong>'+won(m.reserved_cash)+'</strong></div></div></section>').join('');
-$('fj-cycles').innerHTML=table(['ID','모드','종목','매수 차수','소유 수량','예약','원가','실현손익','정산'],s.modes.flatMap(m=>(m.cycles||[]).map(c=>[c.id,label(c.mode),c.ticker,c.state?.buy_stage,c.state?.quantity,c.state?.pending_order===true?'미해결':c.state?.pending_order===false?'없음':'확인 필요',won(c.cost_basis),won(c.realized_pnl),label(c.accounting)])));
-$('fj-orders').innerHTML=table(['주문 ID','사이클 / 모드 / 종목','구분','상태','주문량','누적 체결','잔여 수량','예약 현금','예약 수량'],s.modes.flatMap(m=>(m.cycles||[]).flatMap(c=>(c.orders||[]).map(o=>[o.id,c.id+' / '+label(c.mode)+' / '+c.ticker,label(o.side),label(o.status),o.quantity,o.filled_quantity,o.remaining_quantity,won(o.reserved_cash),o.reserved_quantity]))));
-$('fj-screen').innerHTML=s.screen?esc('기준일 '+(s.screen.ref_date??'기록 없음')+' · 선별 '+(s.screen.screened??'미확인')+'종목 · 통과 '+(s.screen.selected??'미확인')+'종목'+(s.screen.reason?' · '+label(s.screen.reason):''))+detail(s.screen):'전 시장 선별 근거 없음. 장마감 데이터 수집과 후지모토 선별 작업을 확인하세요.';
-$('fj-candidates').innerHTML=table(['종목','기준일','선별','차단 사유'],c.map(r=>[r.ticker,r.payload?.ref_date,r.payload?.rule?.selection_passed===true?'통과':r.payload?.rule?.selection_passed===false?'미통과':'확인 필요',(r.payload?.rule?.blocking_reasons||[]).map(r=>labels[r]||reason(r)).join(', ')||'기록 없음']));
-$('fj-quality').innerHTML='<p>'+esc(label(s.feed_quality?.reason))+'</p><p class="fj-label">기록 한도: 호가 '+esc(s.storage_limits?.quote_rows?.toLocaleString()??'기록 없음')+'건 · 후보 '+esc(s.storage_limits?.candidate_rows?.toLocaleString()??'기록 없음')+'건</p>'+detail({blocks:s.block_reasons,feed:s.feed_quality,costs:s.unresolved_cost_orders});
-$('fj-validation').innerHTML=table(['전략','실행일','상태','호가 조건'],v.map(r=>[r.strategy_id,r.run_date,label(r.status),label(r.manifest?.variant)]));
-$('fj-evidence').innerHTML=table(['ID','종류','종목','관측 시각','근거'],e.map(r=>[r.id,label(r.kind),r.ticker,r.observed_at,r.payload?.reason?label(r.payload.reason):'원본 근거 참조']))+detail(e);
+render('fj-modes',s.modes.map(m=>'<section class="fj-mode"><h3>'+esc(label(m.mode))+'</h3><p class="fj-label">'+(m.mode==='safe'?'반전 확인 후 추가 매수 · 가격 손절 적용':'실적 유지 시 하락 추가 매수 · 가격 손절 없음')+'</p><div class="fj-stat">'+won(m.budget)+'</div><div class="fj-inline"><div>현금<br><strong>'+won(m.cash)+'</strong></div><div>미완료 매수 예약<br><strong>'+won(m.reserved_cash)+'</strong></div></div></section>').join(''));
+renderMonitoring(s);
+const screenText=s.screen?'기준일 '+(s.screen.ref_date??'기록 없음')+' · 선별 '+(s.screen.screened??'미확인')+'종목 · 최근 선별 통과: '+(s.screen.selected??'미확인')+'종목'+(s.screen.reason?' · '+label(s.screen.reason):''):'전 시장 선별 근거 없음. 장마감 데이터 수집·선별 작업을 확인하세요.';
+$('fj-screen-summary').textContent=screenText;render('fj-screen',esc(screenText)+(s.screen?detail(s.screen):''));
+render('fj-candidates',table(['종목','기준일','선별','차단 사유'],c.map(r=>[r.ticker,r.payload?.ref_date,r.payload?.rule?.selection_passed===true?'통과':r.payload?.rule?.selection_passed===false?'미통과':'확인 필요',codes(r.payload?.rule?.blocking_reasons).map(r=>labels[r]||reason(r)).join(', ')||'기록 없음'])));
+render('fj-quality','<p>'+esc(label(s.feed_quality?.reason))+'</p><p class="fj-label">기록 한도: 호가 '+esc(s.storage_limits?.quote_rows?.toLocaleString()??'기록 없음')+'건 · 후보 '+esc(s.storage_limits?.candidate_rows?.toLocaleString()??'기록 없음')+'건</p>'+detail({blocks:s.block_reasons,feed:s.feed_quality,costs:s.unresolved_cost_orders}));
+render('fj-validation',table(['전략','실행일','상태','호가 조건'],v.map(r=>[r.strategy_id,r.run_date,label(r.status),label(r.manifest?.variant)])));
+render('fj-evidence',table(['ID','종류','종목','관측 시각','근거'],e.map(r=>[r.id,label(r.kind),r.ticker,date(r.observed_at),r.payload?.reason?label(r.payload.reason):'원본 근거 참조']))+detail(e));
 latestStatus=s;guide(s);lastSuccess=new Date().toISOString();refreshState('확인 완료');if(readError){$('fj-message').textContent='';readError=false;}
 }catch(err){if(currentRevision!==revision)return;failClosed('상태 조회에 실패했습니다. 새로고침으로 현재 준비 상태를 다시 확인하세요.');$('fj-message').style.color='var(--color-fail)';$('fj-message').textContent=err.message;}
 finally{await Promise.allSettled(requests);inFlight=null;schedulePoll();}})();return inFlight;}
 async function change(path,method,body){
 if(busy)return;busy=true;revision++;const editRevision=formRevision;trialEligible=false;latestStatus=null;updateTrialButton();nextAction('처리 중 · 확인 필요','요청 결과와 최신 상태를 확인한 뒤 다음 행동을 안내합니다.',2);$('fj-message').textContent='처리 중…';
-try{await call(path,method,body);$('fj-message').style.color='var(--color-pass)';$('fj-message').textContent='저장되었습니다.';$('fj-trial-consent').checked=false;syncForm=formRevision===editRevision;
+try{await call(path,method,body);$('fj-message').style.color='var(--color-pass)';$('fj-message').textContent=({'/config':'예산·설정을 저장했습니다. 신규·추가 매수는 중지되었습니다.','/activate-paper-test':'모의 체험 시작을 예약했습니다. 확정된 기간을 확인하세요.','/stop':'신규·추가 매수를 중지했습니다. 남은 보유·주문을 확인하세요.','/activate':'활성화 요청이 반영되었습니다. 현재 운영 상태를 확인하세요.'})[path];$('fj-trial-consent').checked=false;syncForm=formRevision===editRevision;
 // Drain invalidated reads before the single post-write reload; no old response may render.
 if(inFlight)await inFlight;await load(true);
 }catch(err){failClosed('요청이 거절되었거나 결과를 확인할 수 없습니다. 새로고침 후 현재 상태를 확인하세요.');$('fj-message').style.color='var(--color-fail)';$('fj-message').textContent=err.message;}
@@ -159,7 +230,12 @@ $('fj-activate').onsubmit=e=>{e.preventDefault();change('/activate','POST',{exec
 $('fj-budget').oninput=$('fj-deposit').oninput=$('fj-book').onchange=()=>{syncForm=false;formRevision++;};
 $('fj-trial-consent').onchange=()=>{updateTrialButton();if(latestStatus)guide(latestStatus);};
 $('fj-trial').onsubmit=e=>{e.preventDefault();if(!trialEligible||!$('fj-trial-consent').checked||busy)return;change('/activate-paper-test','POST',{sell_consent:true});};
-$('fj-stop').onclick=()=>change('/stop','POST');$('fj-refresh').onclick=()=>load();
+$('fj-stop').onclick=()=>{if(!busy)$('fj-stop-dialog').showModal();};
+$('fj-stop-cancel').onclick=()=>$('fj-stop-dialog').close();
+$('fj-stop-commit').onclick=()=>{if(busy)return;$('fj-stop-dialog').close();change('/stop','POST');};
+$('fj-refresh').onclick=()=>load();
+$('fj-edit-budget').onclick=()=>{$('fj-budget-details').open=true;$('fj-budget').focus();};
+document.addEventListener('click',e=>{const anchor=e.target.closest('a[href^="#fj-"]');if(!anchor)return;const id=anchor.getAttribute('href').slice(1),target=$(id);if(!target)return;if(target.tagName==='DETAILS')target.open=true;if(id==='fj-refresh'){e.preventDefault();load();}});
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)load();});load();
 })();
 </script>
