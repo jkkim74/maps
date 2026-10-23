@@ -308,3 +308,10 @@ another cash deduction. Review the mapping, preview, and explicitly commit; edit
 inputs invalidates the preview. After success wait for the next broker reconciliation.
 The screen's refresh button only rereads saved state. Settlement never starts a
 trial, clears unrelated account blocks or grants strategy activation.
+
+## 재기동 없는 국내 주문 실행 설정
+
+GET/PUT `/api/v1/ops/config/execution`는 관리자 전용이다. PUT은 동일 Origin,
+`enabled` boolean, `scope=fujimoto_only`, `expected_version`을 요구한다.
+계좌 실행 잠금 안에서 정책과 감사 기록을 함께 저장하며 버전 충돌은 409다.
+설정 저장은 후지모토 실행 승인이나 주문이 아니다. 모의계좌에서만 변경 가능하다.

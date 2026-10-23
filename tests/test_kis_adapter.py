@@ -288,6 +288,33 @@ def test_order_guard_rechecks_after_delays_and_before_every_send(settings, monke
         assert sum(call["url"].endswith("tokenP") for call in http.calls) == 1
 
 
+def test_runtime_policy_rechecked_after_auth_and_before_http(settings, monkeypatch, db):
+    """Even a policy changed during broker preparation prevents the HTTP send."""
+    from maps.common.models import ExecutionPolicy
+    from maps.common.exceptions import ExecutionBlockedError
+    from maps.execution.runtime_policy import dispatch_source
+    from maps.execution.safety import account_key, execution_environment, utcnow
+    policy = ExecutionPolicy(account_key=account_key(settings), environment=execution_environment(settings),
+        enabled=True, scope="fujimoto_only", version=1, updated_by="test", updated_at=utcnow())
+    db.add(policy)
+    db.commit()
+    http = FakeSession()
+    broker = KISAdapter(settings, http=http)
+    original = http.post
+
+    def revoke_after_hash(url, **kwargs):
+        response = original(url, **kwargs)
+        if url.endswith("hashkey"):
+            policy.enabled = False
+            db.commit()
+        return response
+
+    monkeypatch.setattr(http, "post", revoke_after_hash)
+    with dispatch_source("fujimoto"), pytest.raises(ExecutionBlockedError, match="trading_disabled"):
+        broker.place_order(Order("fujimoto_original", "005930", OrderSide.BUY, OrderType.MARKET, 1))
+    assert not any(call["url"].endswith("order-cash") for call in http.calls)
+
+
 def test_rank_only_scan_defers_per_ticker_quote(settings, monkeypatch):
     """Early eligibility filtering can inspect ranks without N quote requests."""
     broker = KISAdapter(settings, http=FakeSession())

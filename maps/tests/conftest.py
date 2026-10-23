@@ -28,3 +28,21 @@ def db() -> Session:
         session.close()
         Base.metadata.drop_all(engine)
         engine.dispose()
+
+
+@pytest.fixture(autouse=True)
+def _execution_policy_storage(request):
+    """Isolate policy reads without building the full schema for pure unit tests."""
+    from maps.execution.runtime_policy import policy_database
+    if "db" in request.fixturenames:
+        with policy_database(request.getfixturevalue("db")):
+            yield
+        return
+    from maps.common.models import ExecutionPolicy
+    policy_engine = create_engine("sqlite:///:memory:")
+    ExecutionPolicy.__table__.create(policy_engine)
+    try:
+        with Session(policy_engine) as policy_db, policy_database(policy_db):
+            yield
+    finally:
+        policy_engine.dispose()

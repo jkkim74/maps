@@ -1,5 +1,17 @@
 {% extends "base.html" %}
 {% block content %}
+<div class="section-header"><span class="section-title">모의계좌 주문 실행</span><hr></div>
+<div class="card"><div class="card-body">
+  <p id="execution-policy-state" role="status" aria-live="polite">실행 설정을 확인하고 있습니다.</p>
+  <p id="execution-policy-details" class="text-muted"></p>
+  <p>후지모토만 허용하면 다른 국내 전략의 매수·매도·취소는 차단됩니다.
+    후지모토의 예산 저장·데이터 준비·실행 승인은 <a href="/fujimoto">후지모토 화면</a>에서 별도로 진행하세요.</p>
+  <button id="execution-policy-enable" class="topbar-btn" onclick="saveExecutionPolicy(true)" disabled>후지모토 주문 허용</button>
+  <button id="execution-policy-disable" class="topbar-btn" onclick="saveExecutionPolicy(false)" disabled>국내 주문 전체 차단</button>
+  <p id="execution-policy-result" role="status" aria-live="polite"></p>
+  <p class="text-muted">저장 완료 후 재기동 없이 적용되고 재기동 후에도 유지됩니다.
+    이미 접수된 주문은 유지되며, 차단 버튼은 주문 취소나 보유 주식 매도를 실행하지 않습니다.</p>
+</div></div>
 <div id="ops-summary">
   <div class="loading"><div class="spinner"></div>Loading...</div>
 </div>

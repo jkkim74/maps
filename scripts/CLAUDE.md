@@ -111,3 +111,10 @@ All require explicit `--database`/`--output`; writes require `--apply`. Sources
 never become reviewed decisions automatically. OFS without original-document
 non-applicability proof remains unknown. See `maps/fujimoto/CLAUDE.md` for schemas
 and causal availability. No broker, activation, promotion or shared fundamentals writes.
+
+## Historical completed watchlist repair
+
+`python scripts/reconcile_completed_picks.py --pick-ids 13 14 16 18` previews
+explicit IDs only. `--apply` rechecks same-account terminal buy/sell evidence
+under account locks, closes fully sold plans and records audit events. No broker
+call, fill rewrite, account reassignment or liquidation is performed.

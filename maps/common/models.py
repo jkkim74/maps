@@ -1359,6 +1359,19 @@ class OrderIntent(Base):
     updated_at: Mapped[datetime.datetime] = mapped_column(DateTime)
 
 
+class ExecutionPolicy(Base):
+    """Account-scoped hot execution permission; changes retain audit history."""
+
+    __tablename__ = "execution_policy"
+    account_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    environment: Mapped[str] = mapped_column(String(16), nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    scope: Mapped[str] = mapped_column(String(24), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    updated_at: Mapped[datetime.datetime] = mapped_column(DateTime, nullable=False)
+
+
 class ExecutionAccountState(Base):
     __tablename__ = "execution_account_state"
     account_key: Mapped[str] = mapped_column(String(64), primary_key=True)

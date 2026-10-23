@@ -423,12 +423,14 @@ def test_duplicate_blocks_appear_once_with_remedies_and_correct_navigation():
     elements = run_ui(data)["elements"]
     issues = elements["fj-preparation"]["innerHTML"]
     assert issues.count('class="fj-issue"') == 4
-    assert issues.count("주문 실행 스위치가 꺼져") == 1
+    assert issues.count("주문 실행이 차단되어") == 1
     assert 'href="/risk#paper-costs"' in issues
     assert 'href="/risk"' in issues
     assert 'href="/ops-config"' in issues
+    assert "재기동 없이 변경" in issues
+    assert "변경은 별도 서버 운영 절차" not in issues
     assert 'href="#fj-source-details"' in issues
-    assert "주문 실행 스위치" not in elements["fj-next-action"]["textContent"]
+    assert "주문 실행이 차단되어" not in elements["fj-next-action"]["textContent"]
 
 
 def test_equivalent_budget_and_screen_blocks_are_collapsed():

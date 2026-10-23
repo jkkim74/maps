@@ -27,6 +27,7 @@ from maps.execution.safety import (
     ExecutionContext, account_execution_lock, account_key,
     execution_environment, require_execution_enabled, require_quote_current, utcnow,
 )
+from maps.execution.runtime_policy import dispatch_source, effective_policy, policy_database
 from maps.ops.notifications import SlackNotifier
 
 logger = logging.getLogger(__name__)
@@ -130,14 +131,21 @@ class OrderManager:
         return None
 
     def _submit(self, order, *, context, check_entry_risk, exit_reason=None, risk_strategy_id=None):
+        with policy_database(self._db):
+            return self._submit_bound(order, context=context, check_entry_risk=check_entry_risk,
+                exit_reason=exit_reason, risk_strategy_id=risk_strategy_id)
+
+    def _submit_bound(self, order, *, context, check_entry_risk, exit_reason=None, risk_strategy_id=None):
         require_execution_enabled(self._settings)
         if order.strategy_id in self._research:
             raise ResearchStrategyError(order.strategy_id, "research")
         if isinstance(order.quantity, bool) or not isinstance(order.quantity, int) or order.quantity <= 0:
             raise ExecutionBlockedError("invalid_order_quantity")
         context = self._context(order, context)
+        require_execution_enabled(self._settings, source=context.source, check_scope=True)
         key = account_key(self._settings)
-        with account_execution_lock(key), self._session() as db:
+        with account_execution_lock(key), self._session() as db, policy_database(db):
+            require_execution_enabled(self._settings, source=context.source, check_scope=True)
             require_quote_current(context.quote_is_current)
             existing = db.query(OrderIntent).filter_by(account_key=key, event_key=context.event_key).first()
             if existing:
@@ -261,7 +269,7 @@ class OrderManager:
             db.commit()
             def pre_send_check() -> None:
                 """Revalidate transient evidence after broker preparation and pacing."""
-                require_execution_enabled(self._settings)
+                require_execution_enabled(self._settings, source=context.source, check_scope=True)
                 if utcnow() >= expires:
                     raise ExecutionBlockedError("intent_expired")
                 snapshot_age = (datetime.now(timezone.utc) - snapshot.as_of.astimezone(timezone.utc)).total_seconds()
@@ -273,7 +281,8 @@ class OrderManager:
 
             try:
                 pre_send_check()
-                result = self._broker.place_order(replace(order, pre_send_check=pre_send_check))
+                with dispatch_source(context.source):
+                    result = self._broker.place_order(replace(order, pre_send_check=pre_send_check))
             except BrokerOrderRejectedError:
                 intent.status = "REJECTED"
                 intent.reserved_amount = 0
@@ -374,16 +383,20 @@ class OrderManager:
 
     def sync_broker_state(self):
         key = account_key(self._settings)
-        with account_execution_lock(key), self._session() as db:
+        with account_execution_lock(key), self._session() as db, policy_database(db):
             summary, _, _ = reconcile(db, self._broker, self._settings)
             from maps.ops.safety_notifications import deliver_safety_events
             deliver_safety_events(db, self._notifier, key)
             return summary
 
     def cancel(self, order_id):
+        with policy_database(self._db):
+            return self._cancel_bound(order_id)
+
+    def _cancel_bound(self, order_id):
         require_execution_enabled(self._settings)
         key = account_key(self._settings)
-        with account_execution_lock(key), self._session() as db:
+        with account_execution_lock(key), self._session() as db, policy_database(db):
             row = db.query(OrderLog).filter_by(order_id=order_id, account_key=key).first()
             if row is None:
                 candidates = db.query(OrderLog).filter(OrderLog.account_key == key,
@@ -393,6 +406,9 @@ class OrderManager:
             if row is None:
                 raise ExecutionBlockedError("cancel_order_identity_unverified")
             order_id = row.order_id
+            intent = db.get(OrderIntent, row.intent_id) if row.intent_id else None
+            source = intent.request.get("source") if intent else None
+            require_execution_enabled(self._settings, source=source or "unverified", check_scope=True)
             if row.status in TERMINAL:
                 return CancelResult(False, row.status == "cancelled")
             if row.intent_id:
@@ -401,7 +417,8 @@ class OrderManager:
                 intent.version += 1
             event(db, key, "cancel_requested", {"order_id": order_id})
             db.commit()
-            accepted = bool(self._broker.cancel_order(order_id))
+            with dispatch_source(source):
+                accepted = bool(self._broker.cancel_order(order_id))
             reconcile(db, self._broker, self._settings)
             db.refresh(row)
             return CancelResult(accepted, row.status == "cancelled")
@@ -411,14 +428,32 @@ class OrderManager:
         return 0
 
     def eod_cleanup(self):
+        with policy_database(self._db):
+            return self._eod_cleanup_bound()
+
+    def _eod_cleanup_bound(self):
         require_execution_enabled(self._settings)
         key = account_key(self._settings)
-        with account_execution_lock(key), self._session() as db:
+        with account_execution_lock(key), self._session() as db, policy_database(db):
             ids = [row.order_id for row in db.query(OrderLog).filter(
                 OrderLog.account_key == key, OrderLog.intent_id.isnot(None),
                 OrderLog.status.in_(("pending", "partially_filled")))]
             for order_id in ids:
-                self.cancel(order_id)
+                if self.can_cancel(order_id):
+                    self.cancel(order_id)
+
+    def can_cancel(self, order_id) -> bool:
+        """Filter scheduled cancellations without granting execution permission."""
+        with self._session() as db:
+            policy = effective_policy(self._settings, db)
+            if not policy["enabled"]:
+                return False
+            if policy["scope"] == "all":
+                return True
+            rows = db.query(OrderLog, OrderIntent).join(OrderIntent, OrderLog.intent_id == OrderIntent.id).filter(
+                OrderLog.account_key == account_key(self._settings)).all()
+            matches = [(r, i) for r, i in rows if r.order_id == order_id or raw_broker_order_id(r.order_id) == order_id]
+            return len(matches) == 1 and matches[0][1].request.get("source") == "fujimoto"
 
     def block_strategy(self, strategy_id):
         self._research.add(strategy_id)

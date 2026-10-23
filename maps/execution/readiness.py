@@ -28,11 +28,18 @@ def execution_readiness(db: Session, settings: MapsSettings, now: dt.datetime) -
     key, environment = account_key(settings), execution_environment(settings)
     reasons: list[str] = []
     unknown: list[str] = []
-    if not settings.maps_live_trading_enabled:
+    from maps.execution.runtime_policy import effective_policy
+    from maps.common.exceptions import ExecutionBlockedError
+    try:
+        policy = effective_policy(settings, db)
+    except ExecutionBlockedError as exc:
+        policy = {"enabled": False}
+        reasons.append(str(exc))
+    if not policy["enabled"]:
         reasons.append("trading_disabled")
     if settings.maps_dry_run:
         reasons.append("dry_run")
-    if real_trading_unconfirmed(settings):
+    if real_trading_unconfirmed(settings.model_copy(update={"maps_live_trading_enabled": policy["enabled"]})):
         reasons.append("real_trading_unconfirmed")
     if settings.maps_broker_mode == "kiwoom":
         reasons.append("broker_execution_unsupported")

@@ -44,7 +44,8 @@ def execution_safety(db: Session = Depends(get_db)):
     reasons = list(state.block_reasons if state else ["account_unobserved"])
     if stale:
         reasons.append("reconciliation_stale")
-    if settings.maps_dry_run or not settings.maps_live_trading_enabled:
+    from maps.execution.runtime_policy import execution_allowed
+    if not execution_allowed(settings, db=db):
         reasons.append("execution_disabled")
     intents = db.query(OrderIntent).filter(OrderIntent.account_key == key,
         OrderIntent.status.in_(("SENDING", "UNKNOWN"))).all()

@@ -1379,7 +1379,64 @@ function _renderBtRunsTable(runs) {
 
 // ── 페이지별 초기화 디스패처 ──────────────────────────────────────────────────
 // Ops Config
+let executionPolicy = null;
+let executionPolicySaving = false;
+
+function renderExecutionPolicy(data) {
+  executionPolicy = data;
+  const scope = data.scope === 'fujimoto_only' ? '후지모토만 허용' : '기존 국내 전략 허용';
+  document.getElementById('execution-policy-state').textContent = data.enabled ? scope : '국내 주문 전체 차단';
+  const reasons = data.readiness?.block_reasons || [];
+  document.getElementById('execution-policy-details').textContent =
+    `환경: ${data.environment} · 설정: ${data.source === 'database' ? '저장된 실행 정책' : '서버 초기 설정'} · ` +
+    `마지막 변경: ${data.updated_by || '없음'} / ${data.updated_at ? new Date(data.updated_at).toLocaleString('ko-KR') : '없음'}` +
+    (reasons.length ? ` · 계좌 확인 필요: ${reasons.join(', ')}` : '');
+  document.getElementById('execution-policy-enable').disabled = executionPolicySaving || !data.editable ||
+    (data.enabled && data.scope === 'fujimoto_only');
+  document.getElementById('execution-policy-disable').disabled = executionPolicySaving || !data.editable || !data.enabled;
+}
+
+async function loadExecutionPolicy() {
+  try {
+    renderExecutionPolicy(await apiFetch('/ops/config/execution'));
+  } catch (error) {
+    executionPolicy = null;
+    document.getElementById('execution-policy-state').textContent = '실행 설정 조회 실패';
+    document.getElementById('execution-policy-result').textContent = error.message;
+    document.getElementById('execution-policy-enable').disabled = true;
+    document.getElementById('execution-policy-disable').disabled = true;
+  }
+}
+
+async function saveExecutionPolicy(enabled) {
+  if (!executionPolicy || executionPolicySaving) return;
+  if (enabled && !confirm('후지모토만 주문할 수 있도록 허용할까요? 다른 국내 전략의 매수·매도·취소는 차단됩니다. 후지모토 실행 승인은 별도입니다.')) return;
+  executionPolicySaving = true;
+  renderExecutionPolicy(executionPolicy);
+  const result = document.getElementById('execution-policy-result');
+  result.textContent = '저장·적용 중입니다. 진행 중인 주문 전송이 있다면 완료를 기다립니다.';
+  try {
+    const response = await fetch('/api/v1/ops/config/execution', {
+      method: 'PUT', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({enabled, scope: 'fujimoto_only', expected_version: executionPolicy.version}),
+    });
+    if (response.status === 401) { _redirectToLogin(); throw new Error('로그인이 필요합니다.'); }
+    const data = await response.json();
+    if (!response.ok) throw new Error(response.status === 409 ? '설정이 변경되었거나 적용 조건이 맞지 않습니다. 현재 상태를 다시 확인하세요.' : (data.detail || '설정 저장 실패'));
+    renderExecutionPolicy(data);
+    result.textContent = enabled ? '후지모토 전용 주문 허용이 적용됐습니다. 후지모토 화면에서 실행 준비 상태를 확인하세요.' : '국내 주문 전체 차단이 적용됐습니다.';
+    await loadOpsConfig();
+  } catch (error) {
+    result.textContent = `저장 완료를 확인하지 못했습니다: ${error.message}`;
+    await loadExecutionPolicy();
+  } finally {
+    executionPolicySaving = false;
+    if (executionPolicy) renderExecutionPolicy(executionPolicy);
+  }
+}
+
 async function loadOpsConfig() {
+  await loadExecutionPolicy();
   loading('ops-summary');
   loading('ops-config-area');
   try {

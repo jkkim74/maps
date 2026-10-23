@@ -29,7 +29,7 @@ from maps.execution.broker_adapter import (
     BuyingPower,
     AccountActivity,
 )
-from maps.execution.safety import require_execution_enabled
+from maps.execution.safety import broker_execution_boundary, require_execution_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +90,7 @@ class MockBroker(BrokerAdapter):
     # BrokerAdapter 구현
     # ------------------------------------------------------------------
 
+    @broker_execution_boundary
     def place_order(self, order: Order) -> OrderResult:
         """주문을 제출한다.
 
@@ -98,7 +99,7 @@ class MockBroker(BrokerAdapter):
             DuplicateOrderError: 당일 동일 전략+종목+방향 중복.
             BrokerAdapterError: 가격 정보 없음.
         """
-        require_execution_enabled()
+        require_execution_enabled(check_scope=True)
         # 1. Kill Switch
         if self._kill_switch and order.side == OrderSide.BUY:
             raise KillSwitchError("Kill Switch 발동 — 신규 주문 차단")
@@ -148,9 +149,10 @@ class MockBroker(BrokerAdapter):
         )
         return result
 
+    @broker_execution_boundary
     def cancel_order(self, order_id: str) -> bool:
         """미체결 주문을 취소한다. (MockBroker는 즉시 체결이라 대부분 False.)"""
-        require_execution_enabled()
+        require_execution_enabled(check_scope=True)
         if order_id in self._pending:
             order = self._pending.pop(order_id)
             result = self._make_result(order, OrderStatus.CANCELLED, 0, 0, 0)
@@ -243,7 +245,7 @@ class MockBroker(BrokerAdapter):
 
     def eod_cleanup(self) -> None:
         """장 마감 정리: 중복 탐지 초기화, 미체결 주문 전량 취소."""
-        require_execution_enabled()
+        require_execution_enabled(check_scope=True)
         cancelled = list(self._pending.keys())
         for order_id in cancelled:
             self.cancel_order(order_id)

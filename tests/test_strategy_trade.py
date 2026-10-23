@@ -27,7 +27,7 @@ from maps.execution.order_manager import OrderManager
 from maps.market.trading_rules import trading_days_ago, previous_trading_day
 from maps.ops.scheduler import OperationalPipeline
 from tests.execution_contract import prime_account
-from maps.execution.safety import account_key
+from maps.execution.safety import account_key, execution_environment
 
 # 픽 기준일은 today 상대값이어야 한다. 고정 날짜로 두면 신선도 가드가 들어온 뒤
 # 시간이 흐르면서 전 테스트가 조용히 만료 픽을 쓰게 된다.
@@ -207,6 +207,7 @@ def _seed_leg_order(db, leg, *, status, fill_qty, order_id="leg-order-1"):
     leg.pick.entry_order_id = order_id
     db.add(OrderLog(
         account_key=account_key(),
+        environment=execution_environment(),
         order_id=order_id,
         strategy_id=f"strategy_trade:{leg.pick_id}:leg:{leg.sequence}",
         ticker=leg.pick.ticker,
@@ -401,8 +402,10 @@ def test_split_pending_exit_stays_managed_until_position_is_zero(env, monkeypatc
     assert pick.exit_order_id == "pending-exit-1"
 
     exit_log = db.query(OrderLog).filter(OrderLog.order_id == "pending-exit-1").one()
-    exit_log.status = "filled"
-    exit_log.fill_qty = exit_log.qty
+    from maps.execution.reconciliation import apply_result
+    apply_result(db, exit_log, OrderResult(exit_log.order_id, exit_log.strategy_id,
+        pick.ticker, OrderSide.SELL, OrderStatus.FILLED, filled_quantity=exit_log.qty,
+        avg_price=81_000))
     broker._positions[pick.ticker].reduce(exit_log.qty)
     db.commit()
 
@@ -592,7 +595,12 @@ def _seed_unattached_filled_exit(db, pick, *, qty=9):
     pick.state = "BOUGHT"
     pick.entries_cancelled = True
     pick.exit_pending_reason = "stop_loss"
+    from maps.execution.safety import account_key, execution_environment
+    db.add(OrderLog(order_id="verified-legacy-entry", account_key=account_key(),
+        environment=execution_environment(), strategy_id=f"strategy_trade:{pick.id}:leg:1:try:1",
+        ticker=pick.ticker, side="buy", qty=qty, fill_qty=qty, fill_price=70_000, status="filled"))
     db.add(OrderLog(
+        account_key=account_key(), environment=execution_environment(),
         order_id="unattached-exit-filled-1",
         strategy_id=f"strategy_trade:{pick.id}:exit:try:1",
         ticker=pick.ticker,

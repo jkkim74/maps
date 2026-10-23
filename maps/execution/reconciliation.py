@@ -285,6 +285,8 @@ def reconcile(db, broker, settings=None):
         state.last_complete_at = now
     if previous_status != (state.status, state.block_reasons):
         event(db, key, "account_state_changed", {"status": state.status, "reasons": state.block_reasons})
+    from maps.execution.pick_reconciliation import reconcile_completed_picks
+    reconcile_completed_picks(db, key=key)
     db.commit()
     balance = snapshot.balance if snapshot else None
     return {"cash": balance.cash if balance else None, "positions_value": balance.positions_value if balance else None,

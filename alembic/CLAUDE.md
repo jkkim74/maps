@@ -22,7 +22,11 @@ alembic downgrade -1                             # 한 단계 되돌리기
 파일명이 아니라 각 파일의 `down_revision` 을 따라간다. 예: `efca8676041a` 의
 `down_revision` 은 `0005_stock_report_runs` 다.
 
-현재 head: **`0043_us_paper_trading`**.
+현재 head: **`0044_runtime_execution_policy`**.
+
+0044 adds an empty account-scoped execution_policy table. No permissions are
+backfilled. Populated policies cannot be downgraded; disable execution before
+code rollback and retain policy/audit history.
 
 `0042_paper_cost_settlement` adds empty `paper_cost_evidence` and
 `paper_cost_settlement` tables after 0041, with account-scoped unique fingerprints

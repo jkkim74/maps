@@ -10,6 +10,25 @@ from alembic.config import Config
 from sqlalchemy import create_engine, inspect, text
 
 
+def test_runtime_policy_migration_preserves_saved_permission(tmp_path, monkeypatch):
+    """Fresh migration grants nothing and refuses to discard a stored policy."""
+    path = tmp_path / "runtime-policy.db"
+    monkeypatch.setenv("MAPS_DB_URL", f"sqlite:///{path.as_posix()}")
+    config = Config("alembic.ini")
+    command.upgrade(config, "head")
+    engine = create_engine(f"sqlite:///{path.as_posix()}")
+    with engine.begin() as connection:
+        assert connection.execute(text("SELECT count(*) FROM execution_policy")).scalar_one() == 0
+        connection.execute(text("INSERT INTO execution_policy "
+            "(account_key,environment,enabled,scope,version,updated_by,updated_at) "
+            "VALUES ('test','kis_paper',false,'fujimoto_only',1,'operator',CURRENT_TIMESTAMP)"))
+    with pytest.raises(RuntimeError, match="Preserve populated execution_policy"):
+        command.downgrade(config, "0043_us_paper_trading")
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT enabled FROM execution_policy")).scalar_one() == 0
+    engine.dispose()
+
+
 def test_us_migration_preserves_nonempty_ledger(tmp_path, monkeypatch):
     """USD schema uses fixed precision and refuses to drop persisted broker truth."""
     path = tmp_path / "us-migration.db"
@@ -80,7 +99,7 @@ def test_fresh_database_reaches_current_schema(tmp_path, monkeypatch) -> None:
         revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
     engine.dispose()
 
-    assert revision == "0043_us_paper_trading"
+    assert revision == "0044_runtime_execution_policy"
     assert {"classification_run", "classification_member"} <= set(inspector.get_table_names())
     assert "classification_quality" in {c["name"] for c in inspector.get_columns("collection_log")}
     assert {"order_intent", "execution_account_state", "account_observation", "account_adjustment",
@@ -197,7 +216,7 @@ def test_both_existing_branches_upgrade_to_merged_schema(tmp_path, monkeypatch, 
         assert "shadow_probes" in {c["name"] for c in inspector.get_columns("limit_up_session")}
         assert {"classification_run", "classification_member", "order_intent"} <= set(inspector.get_table_names())
         with engine.connect() as connection:
-            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0043_us_paper_trading"
+            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0044_runtime_execution_policy"
     finally:
         engine.dispose()
 

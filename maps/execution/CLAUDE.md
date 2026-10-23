@@ -8,6 +8,8 @@
 execution/
 ├── readiness.py       # persisted account readiness without broker polling
 ├── safety.py          # 실행 모드·계좌별 단일 프로세스 잠금
+├── runtime_policy.py  # DB 실행 정책, 신뢰된 주문 출처와 재기동 없는 적용
+├── pick_reconciliation.py # 주문 체결 근거에 의한 워치리스트 종료 동기화
 ├── safety_admin.py    # 근거와 버전을 확인하는 관리자 해결 작업
 ├── reconciliation.py # 브로커 체결·계좌 검증, 입출금 보정 손실 한도
 ├── paper_costs.py     # KIS 모의 실제 비용 근거·계좌 정산·명세서 미리보기/확정
@@ -137,7 +139,7 @@ OrderManager(broker: BrokerAdapter, risk: RiskManager, db: Session)
 주문이 제출될 수 있다. 상한가 V1도 기존 감시 세션의 진입 신호와 나머지 조건이 충족되면
 적용된다. 배포 전 활성 픽과 상한가 세션을 확인한다.
 
-- `MAPS_LIVE_TRADING_ENABLED=false` 또는 dry-run이면 mock을 포함해 매수·매도·취소 금지.
+- 유효 실행 정책이 차단이거나 dry-run이면 mock을 포함해 매수·매도·취소 금지. DB 정책 미저장 시에만 `MAPS_LIVE_TRADING_ENABLED`를 기본값으로 사용한다.
 - `MAPS_BROKER_MODE=mock`이면 `MockBroker`만 사용.
 - Kiwoom은 새 계좌 검증 계약을 지원할 때까지 실행 금지.
 - 운영 복구·검증 자격·마이그레이션 절차: [계좌 실행 안전 안내](../../docs/execution_safety.md).
@@ -359,3 +361,19 @@ be automatically resent.
 eligible ticker's current quote and uses the same rank fallbacks/validity rules.
 `get_limit_up_candidates()` composes both for compatibility. Callers can reject
 ineligible/already-watched tickers before spending a detail HTTP request.
+
+## Durable runtime permission
+
+`runtime_policy.effective_policy` reads account-scoped DB permission without a
+TTL cache; no row means the existing environment gate. Once saved, DB permission
+overrides that startup switch only; dry-run, real confirmation and strategy
+authorization remain enforced. Storage failure blocks execution. Manager and
+direct KIS/mock dispatch share the account lock with policy writes. A trusted
+process-local source is supplied only after manager validation; Fujimoto-only
+policy rejects other buys, sells and cancellations. Already submitted orders
+remain unresolved until actual broker evidence arrives.
+
+`pick_reconciliation` closes owned, fully sold plans from matching terminal
+order evidence even when trading is disabled. Runtime sync is current-account
+scoped; historical correction requires explicit IDs in the repair tool. Missing
+holdings alone are never completion evidence.

@@ -78,7 +78,7 @@ ticker/date/reason을 제공한다. 가격 행이 하나라도 거부되면 다�
 
 #### `run_order_cycle` 안전 체크 (순서 중요)
 
-1. `MAPS_LIVE_TRADING_ENABLED=false` → 주문 제출 없음
+1. 유효 실행 정책이 차단 → 주문 제출 없음. DB 정책 미저장 시 `MAPS_LIVE_TRADING_ENABLED`를 사용한다.
 2. 시황 분석 → `entry_limit_ratio=0.0` → 매수 전량 스킵
 3. OHLCV 신선도 검사 (`_is_data_fresh`) → 5일 이상 오래된 데이터면 매수 스킵
 4. Kill Switch 발동 → 당일 매수 중단 (포지션 청산은 별도 승인)
@@ -409,3 +409,10 @@ the bounded annual collector then causal full-market screening. `run_once` uses
 the same job. Disabled defaults add no job or source collection. Missing universe,
 annual comparability and capacity remain visible blockers, not historical backfill.
 Controls, storage ceilings and offline research: `maps/fujimoto/CLAUDE.md`.
+
+## Runtime execution policy
+
+Order, intraday exit/watchlist and EOD jobs read effective DB execution policy.
+Fujimoto-only skips catalog/watchlist submissions and filters scheduled cancels
+by persisted source. Broker synchronization still reconciles confirmed watchlist
+completion while execution is disabled.

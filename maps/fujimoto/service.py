@@ -221,6 +221,7 @@ class FujimotoService:
     def _paper_environment(self, key: str) -> list[str]:
         """Actual KIS paper only, with the ordinary execution switches intact."""
         from maps.execution.safety import require_execution_enabled
+        from maps.execution.runtime_policy import policy_database
         reasons = []
         if key != account_key(self.settings):
             reasons.append("account_identity_mismatch")
@@ -230,7 +231,8 @@ class FujimotoService:
         if not self.settings.maps_fujimoto_enabled:
             reasons.append("fujimoto_runtime_disabled")
         try:
-            require_execution_enabled(self.settings)
+            with policy_database(self.db):
+                require_execution_enabled(self.settings, source="fujimoto", check_scope=True)
         except ExecutionBlockedError as exc:
             reasons.append(str(exc))
         return reasons
@@ -476,12 +478,15 @@ class FujimotoService:
         if execution_mode == "paper" and not self.settings.is_paper_account:
             raise ExecutionBlockedError("paper_account_required")
         from maps.execution.safety import require_execution_enabled
-        require_execution_enabled(self.settings)
+        from maps.execution.runtime_policy import policy_database
+        with policy_database(self.db):
+            require_execution_enabled(self.settings, source="fujimoto", check_scope=True)
         # Research can be expensive; never hold the shared account lock/pump.
         gate = self.validation_gate(key, replay_id, recompute=True)
         with account_execution_lock(key):
             self.owner(key, owner)
-            require_execution_enabled(self.settings)
+            with policy_database(self.db):
+                require_execution_enabled(self.settings, source="fujimoto", check_scope=True)
             if key != account_key(self.settings):
                 raise ExecutionBlockedError("account_identity_mismatch")
             if execution_mode == "paper" and not self.settings.is_paper_account:

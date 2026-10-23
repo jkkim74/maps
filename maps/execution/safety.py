@@ -12,9 +12,10 @@ from contextlib import contextmanager
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from functools import wraps
 
 from maps.common.exceptions import ExecutionBlockedError
-from maps.common.settings import get_settings, real_trading_unconfirmed
+from maps.common.settings import get_settings
 
 _locks: dict[str, threading.RLock] = {}
 _files: dict[str, object] = {}
@@ -43,14 +44,15 @@ def account_key(settings=None) -> str:
     return hashlib.sha256(f"{execution_environment(settings)}:{identity}".encode()).hexdigest()
 
 
-def require_execution_enabled(settings=None) -> None:
+def require_execution_enabled(settings=None, *, source=None, check_scope=False) -> None:
     settings = settings or get_settings()
     latest = get_settings()
     if settings.maps_dry_run or latest.maps_dry_run:
         raise ExecutionBlockedError("dry_run")
-    if not settings.maps_live_trading_enabled or not latest.maps_live_trading_enabled:
-        raise ExecutionBlockedError("trading_disabled")
-    if real_trading_unconfirmed(settings):
+    from maps.execution.runtime_policy import require_policy
+    require_policy(settings, source=source, check_scope=check_scope)
+    if (settings.maps_broker_mode in ("kis", "kiwoom") and settings.kis_real_trading
+            and not settings.maps_confirm_real_trading):
         raise ExecutionBlockedError("real_trading_unconfirmed")
     if settings.maps_broker_mode == "kiwoom":
         raise ExecutionBlockedError("broker_execution_unsupported")
@@ -78,6 +80,17 @@ def require_quote_current(is_current: Callable[[], bool] | None) -> None:
     """Reject a quote invalidated by feed reset/failure across blocking work."""
     if is_current is not None and not is_current():
         raise ExecutionBlockedError("quote_invalidated")
+
+
+def broker_execution_boundary(fn):
+    """Serialize even direct broker sends with policy writes and verify source."""
+    @wraps(fn)
+    def guarded(self, *args, **kwargs):
+        settings = getattr(self, "_settings", None) or get_settings()
+        with account_execution_lock(account_key(settings)):
+            require_execution_enabled(settings, check_scope=True)
+            return fn(self, *args, **kwargs)
+    return guarded
 
 
 def _own_process(key: str) -> None:

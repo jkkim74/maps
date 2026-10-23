@@ -1,8 +1,7 @@
 """Operational scheduler for data, candidates, validation, orders, and EOD.
 
-The scheduler deliberately keeps live ordering behind
-MAPS_LIVE_TRADING_ENABLED.  In paper/mock mode the order job only syncs
-broker state and records an audit log.
+The scheduler reads the effective account execution policy. Broker state and
+confirmed watchlist completion continue to synchronize while orders are blocked.
 """
 
 from __future__ import annotations
@@ -20,6 +19,7 @@ if TYPE_CHECKING:
     from maps.ops.classification_jobs import ClassificationJobs
 
 import pandas as pd
+from maps.execution.runtime_policy import execution_allowed
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
@@ -758,7 +758,7 @@ class OperationalPipeline:
             self._save_portfolio_snapshot(
                 db, ref_date, sync, holdings=holdings, holding_details=holding_details,
             )
-            live_enabled = self._settings.maps_live_trading_enabled
+            live_enabled = execution_allowed(self._settings, db=db)
             submitted_orders = 0
             skipped_orders = 0
             submitted_buy_orders = 0
@@ -770,7 +770,8 @@ class OperationalPipeline:
 
             dry_run = getattr(self._settings, "maps_dry_run", False)
 
-            if live_enabled and not dry_run:
+            catalog_enabled = execution_allowed(self._settings, "catalog", db)
+            if catalog_enabled:
                 submitted_sell_orders, skipped_sell_orders, exit_tickers = self._submit_exit_orders(
                     db=db,
                     broker=broker,
@@ -811,9 +812,9 @@ class OperationalPipeline:
                 note = "dry_run=True: order submission skipped, candidates logged only."
                 logger.info("[DRY-RUN] ref_date=%s — 모든 주문 제출 생략", ref_date)
             else:
-                note = "Order submission disabled by MAPS_LIVE_TRADING_ENABLED=false."
+                note = "Catalog order submission disabled by effective execution policy."
 
-            status = "success" if live_enabled and not dry_run else "skipped"
+            status = "success" if catalog_enabled else "skipped"
             self._write_log(
                 db,
                 ref_date=ref_date,
@@ -836,7 +837,7 @@ class OperationalPipeline:
                 "skipped_buy_orders": skipped_buy_orders,
                 "skipped_sell_orders": skipped_sell_orders,
                 "blocked_by_readiness": blocked_by_readiness,
-            }, status, "dry_run" if dry_run else "ok" if live_enabled else "execution_disabled")
+            }, status, "dry_run" if dry_run else "ok" if catalog_enabled else "execution_disabled")
 
         return self._job("order_cycle", _run)
 
@@ -852,7 +853,7 @@ class OperationalPipeline:
                 db, ref_date, sync, holdings=holdings, holding_details=holding_details,
             )
             daily_pnl = self._calc_daily_pnl(db, ref_date)
-            live_enabled = self._settings.maps_live_trading_enabled
+            live_enabled = execution_allowed(self._settings, db=db)
             market_open = False
             submitted_sell_orders = 0
             skipped_sell_orders = 0
@@ -864,7 +865,7 @@ class OperationalPipeline:
                 except NotImplementedError:
                     market_open = False
 
-            exit_monitor_active = live_enabled and not self._settings.maps_dry_run and market_open
+            exit_monitor_active = live_enabled and market_open and execution_allowed(self._settings, "catalog", db)
             strategy_trade_active = exit_monitor_active and self._settings.maps_strategy_trade_enabled
             st_submitted = 0
             st_closed = 0
@@ -972,7 +973,7 @@ class OperationalPipeline:
         def _run(db: Session) -> dict | JobResult:
             broker = get_broker(self._settings.maps_broker_mode)
             manager = OrderManager(broker=broker, risk=self._make_risk_manager(broker, db), db=db, settings=self._settings)
-            if self._settings.maps_dry_run or not self._settings.maps_live_trading_enabled:
+            if not execution_allowed(self._settings, db=db):
                 return JobResult({"ref_date": ref_date.isoformat(), "skipped": "execution_disabled"},
                                  "skipped", "execution_disabled")
             manager.sync_broker_state()
@@ -982,7 +983,7 @@ class OperationalPipeline:
             except NotImplementedError:
                 open_orders = []
             for order in open_orders:
-                if manager.cancel(order.order_id):
+                if manager.can_cancel(order.order_id) and manager.cancel(order.order_id):
                     cancelled += 1
             if hasattr(broker, "eod_cleanup"):
                 manager.eod_cleanup()  # type: ignore[attr-defined]
@@ -3285,12 +3286,10 @@ class OperationalPipeline:
             refreshed = broker.get_position(pick.ticker)
             held_qty = refreshed.quantity if refreshed is not None and refreshed.quantity > 0 else 0
             if held_qty <= 0:
-                pick.state = "CLOSED"
-                pick.strategy_trade_enabled = False
-                pick.exit_pending_reason = None
-                pick.last_action_at = now
+                from maps.execution.pick_reconciliation import reconcile_completed_picks
+                reconcile_completed_picks(db, pick_ids=[pick.id])
                 db.commit()
-                return 0, 1
+                return 0, int(pick.state == "CLOSED")
             if exit_row is not None and (exit_row.status or "").lower() in {
                 OrderStatus.PENDING.value,
                 OrderStatus.PARTIALLY_FILLED.value,
@@ -3380,11 +3379,10 @@ class OperationalPipeline:
             db.commit()
             refreshed = broker.get_position(pick.ticker)
             if refreshed is None or refreshed.quantity <= 0:
-                pick.state = "CLOSED"
-                pick.strategy_trade_enabled = False
-                pick.exit_pending_reason = None
+                from maps.execution.pick_reconciliation import reconcile_completed_picks
+                reconcile_completed_picks(db, pick_ids=[pick.id])
                 db.commit()
-                return 0, 1
+                return 0, int(pick.state == "CLOSED")
             return 0, 0
 
         if pick.entries_cancelled:

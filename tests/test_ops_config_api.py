@@ -7,9 +7,12 @@ from fastapi.testclient import TestClient
 import main
 from maps.api import ops_config
 from maps.common.settings import get_settings
+from maps.common.db import get_db
 
 
-def test_ops_config_endpoint_returns_masked_sections() -> None:
+def test_ops_config_endpoint_returns_masked_sections(db, monkeypatch) -> None:
+    db.connection()  # Share this isolated SQLite connection with TestClient's worker.
+    monkeypatch.setitem(main.app.dependency_overrides, get_db, lambda: db)
     client = TestClient(main.app)
 
     response = client.get("/api/v1/ops/config")

@@ -48,7 +48,7 @@ from maps.execution.broker_adapter import (
     BuyingPower,
     AccountActivity,
 )
-from maps.execution.safety import require_execution_enabled
+from maps.execution.safety import broker_execution_boundary, require_execution_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -323,9 +323,10 @@ class KISAdapter(BrokerAdapter):
             "unknown" if start_gap_ms is None else f"{start_gap_ms:.0f}ms", latency_ms, outcome,
         )
 
+    @broker_execution_boundary
     def place_order(self, order: Order) -> OrderResult:
         """Submit a domestic cash stock order through KIS."""
-        require_execution_enabled(self._settings)
+        require_execution_enabled(self._settings, check_scope=True)
         tr_id = self._tr_id("buy" if order.side == OrderSide.BUY else "sell")
         order_price = self._resolve_order_price(order)
         body = {
@@ -363,6 +364,7 @@ class KISAdapter(BrokerAdapter):
             filled_at=None,
         )
 
+    @broker_execution_boundary
     def cancel_order(self, order_id: str) -> bool:
         """Cancel an open KIS domestic-stock order.
 
@@ -370,7 +372,7 @@ class KISAdapter(BrokerAdapter):
         the exchange-forwarding organization number; " " is accepted by the
         common domestic stock flow when that value is not supplied.
         """
-        require_execution_enabled(self._settings)
+        require_execution_enabled(self._settings, check_scope=True)
         body = {
             "CANO": self._account_prefix,
             "ACNT_PRDT_CD": self._account_product_code,
@@ -1200,7 +1202,7 @@ class KISAdapter(BrokerAdapter):
             try:
                 with self._paced_send(pre_send_check) as (started, start_gap_ms, gate_wait_ms):
                     if path in (_ORDER_PATH, _CANCEL_PATH):
-                        require_execution_enabled(self._settings)
+                        require_execution_enabled(self._settings, check_scope=True)
                     diagnostics = dict(
                         path=path, tr_id=headers.get("tr_id", ""), attempt=attempt,
                         gate_wait_ms=gate_wait_ms, start_gap_ms=start_gap_ms,

@@ -60,7 +60,8 @@ def automatic_mode_blocked_reason(settings: "MapsSettings") -> str | None:
     """
     if settings.maps_dry_run:
         return "dry_run"
-    if not settings.maps_live_trading_enabled:
+    from maps.execution.runtime_policy import execution_allowed
+    if not execution_allowed(settings, "limit_up"):
         return "live_trading_disabled"
     if settings.maps_broker_mode != "kis":
         return "broker_not_kis"
