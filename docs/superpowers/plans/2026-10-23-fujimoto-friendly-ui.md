@@ -87,7 +87,7 @@ in that screen. This fix changes the preview wrapper only, not production naviga
 
 The change does not touch any file in `maps/fujimoto/replay.py::code_fingerprint`;
 strategy code bindings, APIs, permissions, database schema and operational switches
-remain unchanged. No dependency additions, production deployment or trading activation.
+remain unchanged. No product dependency additions or trading activation.
 Synthetic QA does not establish trading readiness.
 
 ## Authorized production deployment — 2026-10-23
@@ -101,10 +101,30 @@ Synthetic QA does not establish trading readiness.
   the local virtualenv lacked the existing `exchange-calendars>=4.11,<5` requirement;
   repaired only that local verification environment, then reran: **2,471 passed**,
   2,602 dependency/deprecation warnings, 524.13 seconds. Product requirements unchanged.
-- [ ] Commit only reviewed UI/tests/docs/screenshots, push a fast-forward release.
-- [ ] Fast-forward production, restart according to the existing runbook, check health,
+- [x] Commit only reviewed UI/tests/docs/screenshots, push a fast-forward release.
+- [x] Fast-forward production, restart according to the existing runbook, check health,
   authenticated screen and `/ops-config` navigation, compare deployment baseline.
-- [ ] Record deployed revision, verification and rollback result/instructions.
+- [x] Record deployed revision, verification and rollback result/instructions.
+
+Deployed product revision: **`64dab4844d004b704e2e38b7b0aaf2499bf7b8c9`**.
+Service restarted **2026-10-23 15:18:27 KST**; internal and external health OK at
+15:18:40 KST. Service active/running, `NRestarts=0`, `ExecMainStatus=0`.
+Post-restart log check: 121 lines, 0 ERROR/Traceback/CRITICAL markers.
+Production template Git blob `87d626b85f354a23c8eb05e965329c55c13c0552`
+matches the tested committed template. Production tracked files remain clean.
+
+Read-only before/after comparisons: environment file, execution settings, dedicated
+configurations/budgets, approval/control, Fujimoto order count and fill count all
+unchanged. No broker calls, activation, settings changes or DB migrations performed
+by the deployment checks. Existing runtime tasks continue normally after restart.
+
+Authenticated browser verification: new task-focused `/fujimoto` rendered with actual
+GET data, fresh successful-read time and hidden approval while blocked. The execution
+settings link targets `/ops-config`; that page loaded its configuration table and
+section headings without a 404. A transient Chrome extension interference delayed
+the interaction, but the original tab subsequently navigated and was verified.
+Returned the user tab to `/fujimoto`. A private local production screenshot was saved
+outside Git; only synthetic review screenshots are committed.
 
 Production rollback baseline: `1bb4e1279925c99a165127d1a1cb045599d24e53`.
 Use a targeted Git revert and normal service restart if the UI deployment fails;
