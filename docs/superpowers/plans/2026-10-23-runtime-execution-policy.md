@@ -36,9 +36,49 @@ explicit correction of picks 13, 14, 16 and 18. It does not enable trading.
 - [x] Confirm clean tracked production files, baseline commit 56021f6 and migration 0043.
 - [x] Back up the four picks and their linked orders privately on the server;
   record environment/control and complete order/fill fingerprints.
-- [ ] Deploy the reviewed commit and apply migration 0044 before restarting.
-- [ ] Preview and apply the four evidence-backed historical closures.
-- [ ] Verify health, effective disabled policy, audit events and unchanged orders/settings.
+- [x] Deploy the reviewed commit and apply migration 0044 before restarting.
+- [x] Preview and apply the four evidence-backed historical closures.
+- [x] Verify health, effective disabled policy, audit events and unchanged orders/settings.
+
+## Production results (2026-10-23 KST)
+- Deployed application commit `d44bb710a7e44a318ef0a4e4ccfd21c4589dec85`.
+  Alembic upgraded `0043_us_paper_trading` to `0044_runtime_execution_policy`
+  before systemd restart at **17:13:20**. Service active, automatic restarts 0.
+- Private before-image: `/opt/maps/backups/runtime-policy-20261023-before.json`
+  (mode 0600). Includes selected picks/orders and hashes of settings and all
+  order/fill records; no private snapshot is committed.
+- Preview marked all four IDs eligible. Applied at **17:13:47**:
+  13 / 048770 / 1,414 shares, 14 / 092790 / 495 shares,
+  16 / 000660 / 5 shares, 18 / 066570 / 30 shares.
+  Each linked buy and sell was fully filled for the same historical account.
+  Changed BOUGHT to CLOSED, disabled strategy execution for those completed
+  picks, cleared pending reason and updated action/update timestamps.
+  Preserved all other pick fields, entry/exit IDs, stop-loss reasons and account
+  identities. Exactly four `analysis_pick_completed` audit events were added.
+  Repeated preview returned no candidates.
+- Before/after full-record fingerprints matched: order_log 92, order_intent 6,
+  Fujimoto orders/fills 0/0, Fujimoto configs 8. Environment file, strategy
+  settings and Fujimoto control history also matched. No orders were submitted.
+- New policy table remains empty. Effective policy is disabled, environment
+  fallback, version 0, editable for kis_paper. Readiness reason is
+  `trading_disabled`; Fujimoto remains observe, entries disabled, no sell consent
+  or paper-test approval. Other strategy switches remain as configured.
+- Internal and external `/health` returned 200; published JavaScript exactly
+  matched the deployed file. Auth guards remain active (settings page redirects
+  to login; unauthenticated execution API returns 401).
+  Through 17:15 KST, post-restart logs contained no ERROR/CRITICAL/traceback;
+  systemd reported zero automatic restarts.
+- Browser verification was retried on production but the browser connection
+  detached. A fresh visual check is still unverified; backend/readiness,
+  static asset delivery and the isolated HTTP/JavaScript tests passed.
+
+## Rollback
+Keep orders disabled before any code rollback. The previous application commit
+is `56021f6`; reverting the application change does not require dropping the
+additive policy table. Preserve saved policy and audit history. Do not restore
+whole database snapshots or alter historical orders. The four closures reflect
+actual full fills; any later corrective restoration must use the private row
+before-images and explicit evidence, preserving the repair audit trail.
 
 ## Validation evidence
 - Focused watchlist/policy suite: 75 passed.
