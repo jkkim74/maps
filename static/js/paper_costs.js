@@ -4,8 +4,20 @@
   const endpoint = '/api/v1/risk/execution-safety';
   let current = null, preview = null, busy = false, generation = 0;
   const orderRows = [];
-  const invalidate = () => { generation++; preview = null; get('commit').disabled = true; };
+  const invalidate = () => { generation++; preview = null; get('commit').disabled = true; updatePreview(); };
   const display = value => value == null ? '확인 불가' : String(value);
+  const emptyRows = rows => Array.isArray(rows) && rows.length === 0;
+  const noActionNeeded = () => {
+    const b = current?.breakdown, residual = b?.residual;
+    const zero = residual === 0 || (typeof residual === 'string' && /^[+-]?0+(\.0+)?$/.test(residual.trim()));
+    return current?.cost_coverage?.complete === true && zero
+      && b.quantity_changes != null && typeof b.quantity_changes === 'object'
+      && !Array.isArray(b.quantity_changes) && Object.keys(b.quantity_changes).length === 0
+      && [current.pending_adjustments, b.trades, current.order_cost_candidates].every(emptyRows);
+  };
+  const canPreview = () => !!current && !busy && !noActionNeeded()
+    && (!get('order-only').checked || orderRows.some(row => row.fields.selected.checked));
+  const updatePreview = () => { get('preview').disabled = !canPreview(); };
   const reasonLabels = {
     paper_costs_missing:'증권사 비용 자료가 없습니다',paper_costs_unstable:'비용 자료의 연속 관측 확인이 필요합니다',
     paper_costs_coverage_missing:'전체 비교 구간의 비용 근거가 부족합니다',paper_costs_overlap:'기확정 비용과 중복되는 구간입니다',
@@ -45,9 +57,17 @@
         }
         orderRows.push({trade,fields}); get('orders').appendChild(row);
       }
+    get('order-help').textContent = orderRows.length
+      ? '주문 목록은 명세서 파일이 아닙니다. 증권사에서 직접 확인한 명세서가 있고 비용 보완이 필요한 주문만 선택하세요.'
+      : current.order_cost_candidates?.length
+      ? '현재 비교 구간의 주문은 없습니다. 과거 주문의 비용 근거를 보완하려면 위의 주문별 명세서만 보완 항목을 선택하세요.'
+      : '현재 주문별 비용 근거를 보완할 대상 주문이 없습니다. 계좌 비용 근거가 부족한 경우에는 계좌 명세서만 입력할 수 있습니다.';
+    updatePreview();
   };
   const load = async () => {
     invalidate(); current = null; get('preview').disabled = true; orderRows.length = 0; get('orders').replaceChildren();
+    get('status').textContent = '계좌 비용 확인 중입니다.'; get('form').hidden = true;
+    get('order-only').disabled = true; get('result').textContent = '';
     try {
       const data = await request(''); current = data.paper_costs;
       if (!current || !current.supported || !current.breakdown?.available) throw new Error('현재 비교 구간 확인 불가');
@@ -57,9 +77,20 @@
       for (const row of current.pending_adjustments || []) line(details, `과거 미확인 차이 (현재 비용 총액 아님): ${row.amount}원 · ID ${row.id} · 버전 ${row.version} · 근거 ${JSON.stringify(row.evidence ?? {})}`);
       for (const row of b.confirmed_adjustments || []) line(details, `기확정 보정: ${row.kind} ${row.amount}원 · ID ${row.id} · 버전 ${row.version}`);
       for (const row of b.settlements || []) line(details, `기정산 영수증: ID ${row.id} · 차감 ${row.deduction}원`);
+      get('order-only').disabled = !Array.isArray(current.order_cost_candidates) || current.order_cost_candidates.length === 0;
+      if (get('order-only').disabled) get('order-only').checked = false;
       renderOrders();
-      get('reviewed').checked = false; get('preview').disabled = false;
-    } catch (error) { current = null; get('summary').textContent = `조회 실패: ${error.message}. 정산 불가`; }
+      const noAction = noActionNeeded();
+      get('status').textContent = noAction ? '비용 확인 완료 — 사용자 조치 없음. 현재 정산할 비용이나 주문이 없습니다.'
+        : '계좌 비용 또는 주문별 비용 근거를 확인하세요. 확인이 필요한 경우에만 명세서로 수동 정산합니다.';
+      get('form').hidden = noAction; get('form').open = !noAction && current.cost_coverage?.complete !== true;
+      get('reviewed').checked = false;
+    } catch (error) {
+      current = null; get('form').hidden = true;
+      get('status').textContent = '계좌 비용 상태를 확인할 수 없습니다. 다시 조회하세요.';
+      get('summary').textContent = `조회 실패: ${error.message}. 정산 불가`;
+    }
+    updatePreview();
   };
   const evidence = (source, hash) => {
     if (new URL(source).protocol !== 'https:' || !/^[a-fA-F0-9]{64}$/.test(hash)) throw new Error('실제 증권사 명세서 HTTPS URL과 SHA-256이 필요합니다');
@@ -81,19 +112,20 @@
       evidence(f.source.value.trim(),f.hash.value.trim());
       items.push({...base,...(orderOnly ? {account_evidence_id:trade.account_evidence_id,period_start:trade.period_start,period_end:trade.period_end} : {}),scope:'order',broker_order_id:trade.broker_order_id,gross:f.gross.value,fees:f.fees.value,tax:f.tax.value,amount:sumCosts(f.fees.value.trim(),f.tax.value.trim()),source_url:f.source.value.trim(),document_hash:f.hash.value.trim()});
     }
-    if (!items.length) throw new Error('명세서가 있는 주문을 하나 이상 선택하세요');
+    if (!items.length) throw new Error('비용 근거를 보완할 주문을 선택하세요');
     return {reason,items};
   };
   get('refresh').onclick = load;
   get('order-only').onchange = () => {invalidate(); if (current) renderOrders();};
   for (const id of ['amount','source','hash','reason','reviewed']) {get(id).oninput = invalidate; get(id).onchange = invalidate;}
   get('preview').onclick = async () => {
+    if (!canPreview()) return;
     invalidate(); const token = generation;
     try { const body = draft(); busy = true; get('preview').disabled = true; const result = await request('/settlements/preview',body);
       if (token !== generation) return;
       get('result').textContent = `차감 ${display(result.deduction)}원 · 남은 잔차 ${display(result.remaining_residual)}원 · ${reasonText(result.message)}`;
       if (result.can_commit && result.fingerprint && result.version != null) {preview = {body,result}; get('commit').disabled = false;}
-    } catch(error) {invalidate(); get('result').textContent = error.message;} finally {busy = false; get('preview').disabled = !current;}
+    } catch(error) {invalidate(); get('result').textContent = error.message;} finally {busy = false; updatePreview();}
   };
   get('commit').onclick = async () => {
     if (!preview || busy) return;

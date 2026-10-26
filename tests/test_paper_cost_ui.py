@@ -3,6 +3,9 @@ import json
 from html.parser import HTMLParser
 from pathlib import Path
 import subprocess
+from urllib.parse import parse_qs, urlsplit
+
+from jinja2 import Environment, FileSystemLoader
 
 
 class ControlIds(HTMLParser):
@@ -11,11 +14,14 @@ class ControlIds(HTMLParser):
     def __init__(self):
         super().__init__()
         self.ids = set()
+        self.scripts = []
 
     def handle_starttag(self, tag, attrs):
         values = dict(attrs)
         if 'id' in values:
             self.ids.add(values['id'])
+        if tag == 'script' and values.get('src'):
+            self.scripts.append(values['src'])
 
 
 def test_template_ships_script_and_native_controls():
@@ -23,8 +29,23 @@ def test_template_ships_script_and_native_controls():
     template = (Path(__file__).resolve().parents[1] / 'templates/risk.html').read_text(encoding='utf-8')
     controls = ControlIds()
     controls.feed(template)
-    assert {f'pc-{name}' for name in ['refresh','summary','details','amount','source','hash','reason','orders','reviewed','preview','commit','result','order-only']} <= controls.ids
-    assert 'src="/static/js/paper_costs.js"' in template
+    assert {f'pc-{name}' for name in ['refresh','status','summary','details','form','amount','source','hash','reason','orders','reviewed','preview','commit','result','order-only','order-help']} <= controls.ids
+    assert 'src="/static/js/paper_costs.js' in template
+
+
+def test_settlement_script_url_changes_with_deployment_version():
+    """A fresh page must not reuse the previous deployment's settlement script."""
+    templates = Path(__file__).resolve().parents[1] / 'templates'
+    template = Environment(loader=FileSystemLoader(templates)).get_template('risk.html')
+    urls = []
+    for version in ('before-deployment', 'after-deployment'):
+        controls = ControlIds()
+        controls.feed(template.render(nav_keys=set(), static_ver=version))
+        url = next(src for src in controls.scripts
+                   if urlsplit(src).path == '/static/js/paper_costs.js')
+        assert parse_qs(urlsplit(url).query).get('v') == [version]
+        urls.append(url)
+    assert urls[0] != urls[1]
 
 
 def test_statement_preview_commit_and_fail_closed():
@@ -63,6 +84,7 @@ elements['pc-amount'].value='';elements['pc-source'].value='';elements['pc-hash'
 const before=calls.length;await elements['pc-preview'].onclick();await settle();assert.equal(calls.length,before);
 const historical=elements['pc-orders'].children[0].children.slice(1).map(label=>label.children[0]);
 historical[0].checked=true;for(const [i,v] of [[1,'2000'],[2,'3'],[3,'2'],[4,'https://broker.example/historical'],[5,'c'.repeat(64)]])historical[i].value=v;
+historical[0].onchange();assert.equal(elements['pc-preview'].disabled,false);
 await elements['pc-preview'].onclick();await settle();const orderOnly=calls.filter(c=>c.path.endsWith('/preview')).at(-1).body;
 assert.equal(orderOnly.items.length,1);assert.equal(orderOnly.items[0].scope,'order');assert.equal(orderOnly.items[0].account_evidence_id,77);assert.equal(orderOnly.items[0].period_start,'2026-09-01');assert.equal(orderOnly.items[0].broker_order_id,'old-order');
 await elements['pc-preview'].onclick();await settle();await elements['pc-commit'].onclick();await settle();
@@ -71,4 +93,85 @@ fail=true;await elements['pc-refresh'].onclick();await settle();assert.equal(ele
 })().catch(e=>{console.error(e);process.exitCode=1});
 '''
     result = subprocess.run(['node', '-e', harness, str(script)], capture_output=True, text=True, encoding='utf-8', timeout=20)
+    assert result.returncode == 0, result.stderr
+
+
+def test_no_settlement_needed_and_empty_order_supplements():
+    """Hide unnecessary manual work without blocking genuine account statements."""
+    script = Path(__file__).resolve().parents[1] / 'static/js/paper_costs.js'
+    harness = r'''
+const assert=require('node:assert/strict');
+const elements={},calls=[];
+function el(){return {value:'',checked:false,disabled:false,hidden:false,open:false,textContent:'',children:[],appendChild(x){this.children.push(x)},replaceChildren(){this.children=[]}}}
+const document={getElementById(id){return elements[id] ||= el()},createElement(){return el()}};
+const clean={supported:true,mode:'observe',version:1,breakdown:{available:true,period_start:'2026-10-26',period_end:'2026-10-26',residual:'0.0000',quantity_changes:{},trades:[],confirmed_adjustments:[],settlements:[]},order_cost_candidates:[],pending_adjustments:[],cost_coverage:{complete:true,stable:true,reason:'settled_interval_unchanged'}};
+for(const id of ['status','form','order-help'])document.getElementById('pc-'+id);
+let costs=structuredClone(clean),fail=false;
+const fetch=async(path,options={})=>{calls.push({path,body:options.body&&JSON.parse(options.body)});if(fail)throw Error('offline');return {ok:true,json:async()=>path.endsWith('/preview')?{can_commit:false,message:'statement_cash_mismatch'}:{paper_costs:costs}}};
+require('node:vm').runInNewContext(require('node:fs').readFileSync(process.argv[1],'utf8'),{document,fetch,crypto:require('node:crypto').webcrypto,URL});
+const settle=async()=>{for(let i=0;i<6;i++)await new Promise(r=>setImmediate(r))};
+const reload=async()=>{await elements['pc-refresh'].onclick();await settle()};
+(async()=>{
+await settle();
+assert.match(elements['pc-status'].textContent,/비용 확인 완료.*사용자 조치 없음/);
+assert.equal(elements['pc-form'].hidden,true);
+assert.equal(elements['pc-order-only'].disabled,true);
+assert.equal(elements['pc-preview'].disabled,true);
+assert.equal(elements['pc-commit'].disabled,true);
+await elements['pc-preview'].onclick();
+assert.equal(calls.filter(c=>c.body).length,0);
+assert.doesNotMatch(elements['pc-result'].textContent,/명세서가 있는 주문/);
+
+// An empty order list must still allow a genuine account-level statement.
+costs=structuredClone(clean);costs.cost_coverage={complete:false,reason:'paper_costs_coverage_missing'};
+await reload();
+assert.equal(elements['pc-form'].hidden,false);
+assert.equal(elements['pc-form'].open,true);
+assert.equal(elements['pc-order-only'].disabled,true);
+assert.match(elements['pc-order-help'].textContent,/대상 주문이 없습니다/);
+assert.equal(elements['pc-preview'].disabled,false);
+for(const [id,value] of [['pc-amount','0'],['pc-source','https://broker.example/statement'],['pc-hash','a'.repeat(64)],['pc-reason','Actual zero-cost statement']])elements[id].value=value;
+elements['pc-reviewed'].checked=true;
+await elements['pc-preview'].onclick();
+assert.equal(calls.filter(c=>c.body).at(-1).body.items[0].amount,'0');
+
+// No-order supplements cannot be submitted, including after the handler finishes.
+elements['pc-order-only'].checked=true;elements['pc-order-only'].onchange();
+assert.equal(elements['pc-preview'].disabled,true);
+const before=calls.length;
+await elements['pc-preview'].onclick();
+assert.equal(calls.length,before);
+assert.equal(elements['pc-preview'].disabled,true);
+await reload();
+assert.equal(elements['pc-order-only'].checked,false);
+assert.equal(elements['pc-amount'].disabled,false);
+
+// A zero-looking or incomplete response is never evidence of no work needed.
+for(const change of [c=>c.breakdown.residual='-12',c=>c.breakdown.residual=null,c=>c.breakdown.residual='',c=>c.breakdown.residual='1e-999',c=>c.cost_coverage.complete=null,c=>c.breakdown.quantity_changes={'005930':1},c=>c.pending_adjustments=[{id:1,amount:'12'}],c=>c.order_cost_candidates=null]){
+  costs=structuredClone(clean);change(costs);await reload();
+  assert.doesNotMatch(elements['pc-status'].textContent,/사용자 조치 없음/);
+  assert.equal(elements['pc-form'].hidden,false);
+}
+costs=structuredClone(clean);
+costs.order_cost_candidates=[{broker_order_id:'old-order',ticker:'005930',side:'sell',qty:1,notional:'1000',account_evidence_id:1,period_start:'2026-10-23',period_end:'2026-10-23'}];
+await reload();
+assert.equal(elements['pc-form'].hidden,false);
+assert.equal(elements['pc-order-only'].disabled,false);
+assert.match(elements['pc-order-help'].textContent,/과거 주문/);
+assert.doesNotMatch(elements['pc-order-help'].textContent,/보완할 대상 주문이 없습니다/);
+elements['pc-order-only'].checked=true;elements['pc-order-only'].onchange();
+assert.equal(elements['pc-preview'].disabled,true);
+const selected=elements['pc-orders'].children[0].children[1].children[0];
+selected.checked=true;selected.onchange();
+assert.equal(elements['pc-preview'].disabled,false);
+costs=structuredClone(clean);await reload();
+fail=true;await reload();
+assert.doesNotMatch(elements['pc-status'].textContent,/확인 완료/);
+assert.equal(elements['pc-form'].hidden,true);
+assert.equal(elements['pc-preview'].disabled,true);
+assert.equal(elements['pc-commit'].disabled,true);
+})().catch(e=>{console.error(e);process.exitCode=1});
+'''
+    result = subprocess.run(['node', '-e', harness, str(script)], capture_output=True,
+                            text=True, encoding='utf-8', timeout=20)
     assert result.returncode == 0, result.stderr

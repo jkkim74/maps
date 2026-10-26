@@ -31,10 +31,15 @@
 <section id="paper-costs" class="card" aria-labelledby="pc-title"><div class="card-body">
   <h3 id="pc-title">KIS 모의 계좌 비용 정산</h3>
   <button id="pc-refresh" class="btn" type="button">현재 계좌 다시 조회</button>
-  <p id="pc-summary" role="status">현재 비교 구간 조회 중</p>
+  <p id="pc-status" role="status">계좌 비용 확인 중입니다.</p>
+  <details><summary>계좌 비용 대조 상세</summary>
+  <p id="pc-summary">현재 비교 구간 조회 중</p>
   <div id="pc-details"></div>
-  <p>실제 증권사 명세서를 확인하세요. 비용 총액은 전체 비교 구간의 기확정 수수료와 기정산 비용을 포함합니다. 과거 미확인 차이를 비용으로 복사하지 마세요. 주문별 근거는 선택 사항이며 계좌 총액과 합계가 같을 필요는 없습니다.</p>
+  </details>
+  <details id="pc-form" hidden><summary>명세서로 수동 정산하기</summary>
+  <p>이 화면은 명세서 파일을 자동으로 가져오거나 제공하지 않습니다. 비용 근거를 보완해야 할 때 증권사에서 직접 확인한 명세서의 금액·출처를 입력하세요. 비용 총액은 전체 비교 구간의 기확정 수수료와 기정산 비용을 포함합니다. 과거 미확인 차이를 비용으로 복사하지 마세요. 주문별 근거는 선택 사항이며 계좌 총액과 합계가 같을 필요는 없습니다.</p>
   <label class="pc-check"><input id="pc-order-only" type="checkbox">계좌 비용은 이미 반영됨: 기존 계좌 근거에 연결한 주문별 명세서만 보완 (계좌 추가 차감 없음)</label>
+  <p id="pc-order-help"></p>
   <div class="pc-fields">
   <label>비교 구간 전체 비용 총액 (원) <input id="pc-amount" type="number" min="0" step="any"></label>
   <label>실제 증권사 계좌 명세서 HTTPS URL <input id="pc-source" type="url"></label>
@@ -47,6 +52,7 @@
   <button id="pc-preview" class="btn" type="button" disabled>정산 미리보기</button>
   <button id="pc-commit" class="btn btn-primary" type="button" disabled>검토한 정산 확정</button>
   </div>
+  </details>
   <p id="pc-result" role="status"></p>
 </div></section>
 
@@ -73,7 +79,7 @@
 {% endblock %}
 
 {% block extra_scripts %}
-<script src="/static/js/paper_costs.js"></script>
+<script src="/static/js/paper_costs.js?v={{ static_ver }}"></script>
 <script>
 (async () => {
   const status = document.getElementById('execution-safety-status');

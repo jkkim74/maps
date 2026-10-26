@@ -309,6 +309,17 @@ inputs invalidates the preview. After success wait for the next broker reconcili
 The screen's refresh button only rereads saved state. Settlement never starts a
 trial, clears unrelated account blocks or grants strategy activation.
 
+The screen shows “비용 확인 완료 — 사용자 조치 없음” and hides manual settlement
+when coverage is explicitly complete, the cash residual is exactly zero, and
+quantity differences, pending adjustments, current orders and historical order
+candidates are all explicitly empty. Missing values never establish completion.
+Otherwise manual statement entry remains available; absent order candidates disable
+order-only supplements, and order-only preview requires a selected order. An empty
+order list does not block an account statement, including an actual zero-cost
+statement. The screen does not retrieve statement files; the operator supplies
+reviewed broker evidence. Automatic reconciliation settings are unchanged.
+The settlement script uses the page's deployment version to refresh browser caches.
+
 ## 재기동 없는 국내 주문 실행 설정
 
 GET/PUT `/api/v1/ops/config/execution`는 관리자 전용이다. PUT은 동일 Origin,
