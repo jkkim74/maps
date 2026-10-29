@@ -1,5 +1,14 @@
 # HANDOFF
 
+> ## 2026-10-29 장중 메타데이터 사전 점검·신규 상장 누락 복구
+>
+> KRX 로그인 정상, 현재 KOSPI 940·KOSDAQ 1825종목의 이름·상장일 수집 100% 확인.
+> 12:00:06 KST 누락된 오늘 신규 상장 `0053F0` 기본정보 1건만 추가했다.
+> 기존 2806행 불변, 현재 원천 2765종목 일치, 정책·예산·승인·주문/체결 불변.
+> 운영 스캐너가 즉시 감시를 시작했고 세션은 `observe_only`다. 과거 근거나 당일
+> 완료된 일봉/유니버스를 만들지 않았다. 관련 테스트 59개 통과, health 200.
+> [원천·검증·남은 작업](docs/superpowers/plans/2026-10-29-index-ws-readiness.md#next-operation-metadata-preflight-and-missing-new-listing).
+
 > ## 2026-10-29 KIS 지수 WebSocket — 운영 수신 확인
 >
 > 11:46:31 KST 기존 `MAPS_LIMIT_UP_INDEX_WS_ENABLED=true`를 운영에 적용·재기동했다.

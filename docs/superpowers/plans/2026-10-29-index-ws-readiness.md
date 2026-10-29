@@ -52,3 +52,30 @@ If actual index delivery ceases or sockets repeatedly disconnect, disable the
 index flag and restart outside the 16:00–16:45 KST protected analysis window.
 Preserve any later unrelated `.env` edits: the full backup is for comparison, not
 an unconditional future overwrite. REST fallback remains active automatically.
+
+## Next operation: metadata preflight and missing new listing
+
+At 11:58:58 KST, fetched current official KRX metadata through the login guard.
+Login succeeded, breaker unblocked with zero consecutive failures. Metadata was
+complete: KOSPI 940/940 and KOSDAQ 1825/1825, with no missing names or listing dates.
+Compared current source with all 2,806 stored metadata rows: no conflicting fields,
+but today's newly listed `0053F0` (티앤이코리아, KOSDAQ, listing 2026-10-29) was absent.
+
+At 12:00:06 inserted only that missing row (id 2807), preserving null sector/theme
+and `has_adjusted_price=false`. No historical universe, price, screening or collection
+success record was fabricated. Official response, comparison, insert intent,
+pre/post invariants and verification are stored privately under
+`/opt/maps/backups/metadata-preflight-20261029/`.
+
+Verified all 2,765 current source records match name/market/type/listing date;
+all pre-existing metadata rows retain their full-row aggregate hash. Execution
+policy/config/control and order/fill counts are unchanged. At 12:00:09 the live
+scanner began watching the new listing; persisted session is `watching` with
+`execution_mode=observe_only`. The under-100-day restriction remains in force.
+External health is 200; no restart or application code change was needed.
+
+Validation: `scripts/run_isolated_tests.py tests/test_krx_adapter.py
+tests/test_limit_up_runtime.py -q --tb=short`: **59 passed, 1 existing pykrx
+deprecation warning, 13.89s**. This verifies metadata acquisition and runtime
+gates, not completed-session candidate readiness. Today's universe capture and
+screening must still use actual post-close collection.
