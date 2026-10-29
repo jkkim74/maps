@@ -21,7 +21,7 @@
 - [x] Add regression coverage for bounded classification log output with detailed results preserved.
 - [x] Reproduce and fix empty recorded universe being reported as a zero-candidate screen without a source failure reason.
 - [x] Update package contracts, run focused and full isolated suites, review final diff and safety boundaries.
-- [ ] Record delivered changes, validation and remaining production observation requirements.
+- [x] Record delivered changes, validation and remaining production observation requirements.
 
 ## Verification commands
 
@@ -44,3 +44,25 @@ Read-only production readiness check after data recovery: trial not started, blo
 Final product verification: **2515 passed, 26 warnings in 745.06 seconds**, using the full isolated `tests maps/tests` suite. Targeted final repair/source checks: 48 passed. Changed modules compile, `git diff --check` passes. Independent reviewer approved the repaired quantity boundary and found no remaining critical/important issues.
 
 Pre-deployment baseline 10:54:52–10:59:52 KST: 190 KIS attempts, 0 rate limits, 1 transport exception; per-minute request-gate p95 values 3873/3608/4760/4785/3719 ms. Classification failures awaiting notification: 13. This short window is a comparison baseline, not an availability or latency guarantee.
+
+## Production delivery
+
+Feature commit **bf06e85** was fast-forwarded to master and deployed on 2026-10-29
+at **11:09:24 KST**. Internal/external health returned 200 after startup, service
+active with zero automatic restarts. By 11:11:17, five broker sync cycles succeeded
+and there were no new ERROR/CRITICAL records or overlapping-job skips.
+All 13 previously undelivered classification failures acquired delivery timestamps;
+four recovery publications were also marked delivered. Watchdog INFO output is now
+a bounded aggregate with `pending_notifications=0`.
+
+The environment-file hash, execution policy, Fujimoto configuration/control and
+order/fill invariants all matched before deployment. No schema migration, budget
+change, activation, manual broker order or liquidation occurred. Original local
+user documents were verified unchanged by SHA-256. Private before/after evidence
+is at `/opt/maps/backups/ops-readiness-20261029/`.
+
+The initial startup-inclusive request window recorded 27 successful calls, zero
+rate limits/errors, two daily-order calls and three balance calls, with request-gate
+p95 3143 ms. This is not a controlled latency benchmark. Account-lock latency warnings
+remain possible; observe ongoing market load and the next completed-session data
+collection/screening before claiming full trading readiness.
