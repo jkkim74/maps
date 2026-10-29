@@ -66,3 +66,10 @@ rate limits/errors, two daily-order calls and three balance calls, with request-
 p95 3143 ms. This is not a controlled latency benchmark. Account-lock latency warnings
 remain possible; observe ongoing market load and the next completed-session data
 collection/screening before claiming full trading readiness.
+
+The next full minute (11:11:27 summary) recorded three daily-order calls and three
+successful balance calls, confirming one history request per sync rather than two.
+However, 38 total attempts included one rate-limited balance retry and request-gate
+p95 remained 4117 ms. Duplicate-query reduction is verified; complete resolution of
+KIS contention is **not** established. No pacing/freshness thresholds were changed.
+At 11:12:17 internal/external health remained healthy and automatic restarts were zero.
