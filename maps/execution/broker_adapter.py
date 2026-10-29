@@ -333,6 +333,12 @@ class BrokerAdapter(abc.ABC):
     def get_account_activity(self, start: datetime.date, end: datetime.date) -> AccountActivity:
         return AccountActivity(complete=False, unsupported=("costs", "cash_transfers", "security_transfers"))
 
+    def get_reconciliation_orders(
+        self, start: datetime.date, end: datetime.date,
+    ) -> tuple[list[OrderResult], list[PendingOrder]]:
+        """Read fresh history and open orders; brokers may share one response."""
+        return self.get_order_history(start, end), self.get_open_orders()
+
     def get_open_orders(self) -> list[PendingOrder]:
         """Return open/unfilled orders when the broker supports it."""
         raise NotImplementedError

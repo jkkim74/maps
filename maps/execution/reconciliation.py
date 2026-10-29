@@ -113,8 +113,12 @@ def reconcile(db, broker, settings=None):
     reasons, updated = [], 0
     snapshot, open_orders, results = None, [], []
     try:
-        results = broker.get_order_history(start, today)
-        open_orders = broker.get_open_orders()
+        if callable(getattr(type(broker), "get_reconciliation_orders", None)):
+            results, open_orders = broker.get_reconciliation_orders(start, today)
+        else:
+            # Compatibility for injected legacy brokers without the new method.
+            results = broker.get_order_history(start, today)
+            open_orders = broker.get_open_orders()
         snapshot = broker.get_execution_snapshot()
         age = (dt.datetime.now(dt.timezone.utc) - snapshot.as_of.astimezone(dt.timezone.utc)).total_seconds()
         if age < -5 or age > settings.maps_execution_snapshot_max_age_seconds:

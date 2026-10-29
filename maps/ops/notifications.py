@@ -344,6 +344,30 @@ class TelegramNotifier:
         return ok
 
 
+class ClassificationNotifier:
+    """Deliver classification alerts to Telegram, falling back to Slack."""
+
+    def __init__(self, settings: MapsSettings, *, telegram: TelegramNotifier | None = None,
+                 slack: SlackNotifier | None = None) -> None:
+        """Reuse configured clients and allow offline transport injection."""
+        self._telegram = telegram if telegram is not None else TelegramNotifier(settings)
+        self._slack = slack if slack is not None else SlackNotifier(settings)
+
+    def send(self, notification: Notification) -> bool:
+        """Return delivery truth so durable claims can commit or retry."""
+        lines = [f"[{notification.level}] {notification.title}", notification.message]
+        lines.extend(f"{key}: {value}" for key, value in notification.fields.items())
+        # Source errors can contain markup and long payloads. One bounded plain
+        # message avoids parse failures and partial multi-message delivery.
+        text = "\n".join(lines)[:3500]
+        try:
+            if self._telegram.send_message(text, parse_mode=""):
+                return True
+        except Exception as exc:
+            logger.warning("Classification Telegram delivery failed: %s", type(exc).__name__)
+        return self._slack.send(notification)
+
+
 _telegram_notifier: TelegramNotifier | None = None
 
 

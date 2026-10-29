@@ -88,7 +88,7 @@ from maps.market.trading_rules import (
     round_to_krx_tick,
     round_up_krx_price,
 )
-from maps.ops.notifications import Notification, SlackNotifier
+from maps.ops.notifications import ClassificationNotifier, Notification, SlackNotifier
 from maps.ops.liquidity_cap import apply_liquidity_cap
 from maps.ops.candidate_selection import (
     candidate_min_score_expression,
@@ -352,6 +352,7 @@ class OperationalPipeline:
         self._settings = settings or get_settings()
         self._session_factory = session_factory
         self._notifier = notifier or SlackNotifier(self._settings)
+        self._classification_notifier = notifier if notifier is not None else ClassificationNotifier(self._settings)
         self._last_collection: CollectionResult | None = None
         self._last_universe: UniverseResult | None = None
 
@@ -404,7 +405,7 @@ class OperationalPipeline:
     def _classification_jobs(self) -> ClassificationJobs:
         """Create independent classification operations with the configured notifier."""
         from maps.ops.classification_jobs import ClassificationJobs
-        return ClassificationJobs(self._settings, self._session_factory, self._notifier)
+        return ClassificationJobs(self._settings, self._session_factory, self._classification_notifier)
 
     def collect_themes(self, ref_date: dt.date | None = None) -> JobRun:
         """Run public theme collection independently from candidate generation."""
@@ -4420,7 +4421,19 @@ class MapsOperationalScheduler:
             run.details = {"recording_error": run.message, "business_status": original_status}
         self._last_runs[name] = run
         self._persist_run(run)
-        details = json.dumps(run.details, ensure_ascii=False, allow_nan=False)
+        log_details = run.details
+        if name == "classification_check" and isinstance(run.details.get("runs"), list):
+            rows = run.details["runs"]
+            statuses: dict[str, int] = {}
+            pending = 0
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                status = str(row.get("status", "unknown"))
+                statuses[status] = statuses.get(status, 0) + 1
+                pending += int(status in {"failed", "partial", "missed"} and not row.get("notified_at"))
+            log_details = {"runs": len(rows), "statuses": statuses, "pending_notifications": pending}
+        details = json.dumps(log_details, ensure_ascii=False, allow_nan=False)
         if run.status == "failed":
             logger.error("Scheduler job %s: failed error=%s %s", name, run.message, details)
         else:

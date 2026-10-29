@@ -644,6 +644,42 @@ class KISAdapter(BrokerAdapter):
             )
         return results
 
+    def get_reconciliation_orders(
+        self, start: dt.date, end: dt.date,
+    ) -> tuple[list[OrderResult], list[PendingOrder]]:
+        """Use fully paginated all-order evidence for both reconciliation views.
+
+        No cross-cycle cache: every call performs a fresh request. Historical
+        pending rows stay in history but cannot masquerade as today's open orders.
+        """
+        today = dt.datetime.now(_KST).date()
+        if end != today:
+            raise BrokerAdapterError("reconciliation_requires_current_day")
+        results = self.get_order_history(start, end)
+        if dt.datetime.now(_KST).date() != today:
+            raise BrokerAdapterError("reconciliation_date_changed")
+        pending: list[PendingOrder] = []
+        for result in results:
+            stamp = result.submitted_at
+            if stamp is None:
+                raise BrokerAdapterError("order_timestamp_missing")
+            order_day = stamp.astimezone(_KST).date() if stamp.tzinfo else stamp.date()
+            if order_day != today:
+                continue
+            if (result.quantity is None or result.remaining_quantity is None
+                    or result.quantity <= 0 or result.filled_quantity < 0
+                    or result.remaining_quantity < 0
+                    or result.filled_quantity + result.remaining_quantity > result.quantity):
+                raise BrokerAdapterError("open_order_quantity_incomplete")
+            if result.status in {OrderStatus.CANCELLED, OrderStatus.REJECTED, OrderStatus.FILLED}:
+                continue
+            if result.remaining_quantity == 0:
+                raise BrokerAdapterError("open_order_quantity_incomplete")
+            pending.append(PendingOrder(order_id=result.order_id, ticker=result.ticker,
+                side=result.side, quantity=result.quantity, remaining_quantity=result.remaining_quantity,
+                order_price=result.order_price, submitted_at=stamp))
+        return results, pending
+
     def _fetch_daily_order_rows(self, *, ccld_dvsn: str = "00", start=None, end=None) -> list[dict[str, Any]]:
         # ccld_dvsn: "00"=전체, "01"=체결, "02"=미체결
         params = {

@@ -28,6 +28,13 @@ ops/
 
 ## scheduler.py — 핵심 오케스트레이터
 
+분류 수집 실패·복구 알림은 `ClassificationNotifier`가 설정된 Telegram을 우선 사용하고,
+전달 실패/비활성 시 Slack으로 대체한다. 두 경로 모두 실패하면 `notified_at`을 기록하지
+않아 기존 영속 재시도가 유지된다. 사용자 주입 notifier는 그대로 사용한다. 다른 주문·
+안전 알림 경로는 이 분류 전용 변경의 영향을 받지 않는다.
+`classification_check`의 INFO 로그는 건수·상태별 집계·실패 알림 미전달 건수만 출력한다.
+작업 결과와 DB의 상세 기록, 실패 원인 및 분류 이력은 그대로 보존한다.
+
 `run_fujimoto_screen` refreshes current official security metadata once, then
 bounded missing-EPS ordinary peers independently of eligibility/growth, followed
 by annual growth collection and version 3 screening. EPS and annual requests share

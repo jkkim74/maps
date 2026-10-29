@@ -43,6 +43,12 @@ results by descending turnover then ticker. Ineligible/insufficient results reta
 blocking reasons.
 
 `screen_market` isolates `DataQualityError` from each candidate's shared rule builder:
+
+An observed universe with no members is a missing-source failure, not a successful
+zero-candidate screen. It records `reason=missing_observed_universe`, the existing
+`universe_id` and `universe_state=empty`, so job/readiness checks stay blocked and
+the existing UI explains missing session membership. Historical evidence is unchanged.
+
 the malformed ticker retains a blocked `RuleEvidence` with no close or buy signals,
 and later tickers are still processed. Candidate raw sources preserve original finite
 values; nonfinite numbers are recorded as explicit strings, which shared replay and

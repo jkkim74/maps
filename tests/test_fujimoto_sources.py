@@ -50,6 +50,21 @@ def test_screening_missing_universe_is_visible_and_never_rebuilt_from_metadata(d
     assert result["selected"] == 0
 
 
+def test_empty_observed_universe_is_a_visible_source_failure(db):
+    from maps.fujimoto.sources import screen_market
+    from maps.fujimoto.repository import FujimotoRepository
+    now = datetime(2026, 10, 28, 13, tzinfo=timezone.utc)
+    repo = FujimotoRepository(db)
+    universe = repo.record_evidence("universe", "*", now, now,
+        {"ref_date": "2026-10-28", "members": [], "metadata_quality": {"status": "unavailable"}})
+    db.commit()
+    result = screen_market(db, date(2026, 10, 28), now=now)
+    assert result["reason"] == "missing_observed_universe"
+    assert result["universe_id"] == universe.id
+    assert result["selected"] == 0
+    assert repo.evidence_as_of("screen", "*", now)[-1].payload["reason"] == result["reason"]
+
+
 def test_recorded_storage_gap_cannot_validate_as_complete_tape(db):
     from maps.fujimoto.replay import ReplayInput
     from maps.fujimoto.repository import FujimotoRepository

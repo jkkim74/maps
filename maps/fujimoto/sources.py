@@ -351,8 +351,10 @@ def screen_market(db, ref_date: date, *, now: datetime | None = None) -> dict:
     repo = FujimotoRepository(db)
     universes = [r for r in repo.evidence_as_of("universe", "*", now)
                  if r.payload["ref_date"] == ref_date.isoformat()]
-    if not universes:
+    if not universes or not universes[-1].payload.get("members"):
         payload = {"ref_date": ref_date, "selected": 0, "reason": "missing_observed_universe", "ranked": []}
+        if universes:
+            payload.update(universe_id=universes[-1].id, universe_state="empty")
         repo.record_evidence("screen", "*", now, now, payload)
         db.commit()
         return payload
