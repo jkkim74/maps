@@ -28,3 +28,19 @@ Review approved after correction (reviewer independently ran 57 passing tests).
 Final isolated logging/runtime/feed/freshness/gap/shared-recording suite: **131
 passed in 40.58s**. Changed Python files compile; `git diff --check` passes. This is
 targeted validation, not a rerun of the entire repository test suite.
+
+## Production delivery
+
+Commit `3acb173` deployed at 13:43:31 KST. Actual subscription acknowledgement now
+matches the fixed-status format; actual index reception resumed. At 13:43:50,
+internal/external health returned 200, service active with zero automatic restarts,
+328 quote records from 14 tickers since restart, and no ERROR/CRITICAL records.
+Environment hash and execution policy/config/control/order/fill invariants match.
+Private evidence is in `/opt/maps/backups/index-ack-logging-20261029/`.
+Existing user-edited documents match their original SHA-256 hashes.
+At 13:44:32, two broker-sync cycles succeeded; health remained 200 and new
+ERROR/CRITICAL records remained zero.
+
+Historical logs were retained; the repair prevents new acknowledgement payload
+logging and does not claim past log contents have been removed. Whole-system
+candidate/source readiness remains a separate pending requirement.
