@@ -79,3 +79,36 @@ tests/test_limit_up_runtime.py -q --tb=short`: **59 passed, 1 existing pykrx
 deprecation warning, 13.89s**. This verifies metadata acquisition and runtime
 gates, not completed-session candidate readiness. Today's universe capture and
 screening must still use actual post-close collection.
+
+## Next operation: bounded annual-source collection
+
+Investigated October 28 persisted jobs: annual ingestion processed 20 securities
+with 15 partial results; EPS ingestion attempted none because the latest observed
+universe was empty. The separate DART job reached its normal 500-request budget.
+Do not invent a universe or expand budgets to disguise those incomplete results.
+
+Ran the existing `AnnualCollector` once on October 29 with `batch=20`, using its
+normal 1-second request pacing, 500-request/900-second bounds and actual observation
+timestamps. Result: **8 collected, 12 partial, 207 requests, 0 transient failures**.
+Stored financial snapshots grew from 5544 to 5641 (+97); annual sources grew from
+574 to 623 (+49), covering 182 distinct tickers instead of 169. Annual collection
+checks cover 343 distinct tickers instead of 323. Partial results remain partial.
+
+Recorded source failures (counts can overlap within a ticker): missing exact
+annual DPS/receipt/period 16, missing financial accounts 9, missing corporate code
+3, receipt/period mismatch 3, invalid monetary value 1. No zero substitution or
+manual comparability approval was introduced. EPS and screening were not rerun
+against an empty or unfinished universe.
+
+All 49 newly stored annual-source fingerprints validate. Their availability is
+2026-10-29 15:00 UTC (**October 30 00:00 KST**), never backdated to publication.
+Execution policy/config/control and order/fill counts matched before/after;
+external health returned 200. No application code, environment, restart or trading
+activation change. Private evidence: `/opt/maps/backups/annual-preflight-20261029/`.
+
+Tests: `scripts/run_isolated_tests.py tests/test_fujimoto_sources.py
+tests/test_dart_financials.py -q --tb=short`: **38 passed in 7.93s**.
+Confirmed configured KST schedules: data 16:40, candidate 16:50, themes 17:00,
+validation 17:10, DART 21:10, Fujimoto screening 22:00. Whole-market annual coverage,
+source comparability, usable candidate evidence and actual post-close jobs remain
+unfinished; this bounded ingestion does not establish full trading readiness.
