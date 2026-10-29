@@ -707,9 +707,20 @@ class KISIntradayRuntime:
             if self.fujimoto:
                 await self._reset_fujimoto_feed("parse_gap")
             return 0
-        if raw.startswith("{") and _INDEX_TR_ID in raw:
-            # 구독 응답(성공/오류). 모의 서버의 지수 TR 지원 여부를 로그로 판정한다.
-            logger.info("코스닥 지수 WS 구독 응답: %s", raw[:300])
+        if raw.startswith("{"):
+            # Control responses can contain session keys, even on errors. Log
+            # only a locally defined status, never raw fields or exception text.
+            try:
+                acknowledgement = json.loads(raw)
+            except (ValueError, RecursionError):
+                logger.warning("KIS control response has invalid JSON")
+                acknowledgement = {}
+            header = acknowledgement.get("header") if isinstance(acknowledgement, dict) else None
+            if isinstance(header, dict) and header.get("tr_id") == _INDEX_TR_ID:
+                body = acknowledgement.get("body")
+                code = body.get("rt_cd") if isinstance(body, dict) else None
+                status = "success" if code == "0" else "failure" if code == "1" else "unknown"
+                logger.info("코스닥 지수 WS 구독 응답: status=%s", status)
         now = self.wall_now()
         for event in events:
             if isinstance(event, FeedIndex):

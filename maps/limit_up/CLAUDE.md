@@ -154,6 +154,8 @@ WARNING 상한가 진입 차단 — kosdaq_drawdown 래치 (고점 815.79 → �
 > `코스닥 지수 WS 가 10초 넘게 끊김 — REST 폴백`. 프레임이 안 오거나 소켓 끊김이 반복되면 끈다.
 > 관측 중 지수 수신 간격이 10초 경계에 걸려 REST가 잠시 재개되기도 했다. 기존 10초 신선도와
 > 5초 폴백 주기는 유지한다. 구독 성공 응답만으로 수신 정상이나 호출 제한 해소를 판정하지 않는다.
+> 구독 응답 로그는 `status=success|failure|unknown`만 기록한다. JSON `header.tr_id`가
+> 지수 TR과 일치해야 하며, 응답 원문·메시지·암호화 key/iv는 로그에 쓰지 않는다.
 
 > 나머지 세 래치(`max_attempts`·`pattern_failures`·`daily_loss`)는 아직 발현한 적이
 > 없어 전이 신호를 만들지 않았다. 필요해지는 시점은 `automatic` 이 실제로 주문을 내기
