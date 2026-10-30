@@ -312,7 +312,17 @@ class KRXAdapter(KRXAdapterBase):
     }
 
     def get_ohlcv(self, ref_date: datetime.date) -> list[OHLCVData]:
+        """Compatibility view of normalized current-session prices, never bulk closes."""
+        result = self.get_ohlcv_result(ref_date)
+        if not result.market_complete:
+            raise DataCollectionError(result.error or "normalized_source_unavailable")
+        return [OHLCVData(**vars(bar)) for bar in result.bars]
+
+    def get_legacy_history_ohlcv(self, ref_date: datetime.date) -> list[OHLCVData]:
         """ref_date 기준 KOSPI + KOSDAQ 전 종목 OHLCV를 반환한다."""
+        from zoneinfo import ZoneInfo
+        if ref_date >= datetime.datetime.now(ZoneInfo("Asia/Seoul")).date():
+            raise DataCollectionError("legacy_history_requires_past_date")
         try:
             from pykrx import stock as _krx
         except ImportError as e:
@@ -366,6 +376,11 @@ class KRXAdapter(KRXAdapterBase):
                 logger.debug("OHLCV 행 변환 오류 [%s]: %s", ticker, exc)
         logger.info("KRX OHLCV 수집 완료 [%s]: %d종목", date_str, len(result))
         return result
+
+    def get_ohlcv_result(self, ref_date: datetime.date):
+        """Return bounded regular-session observations with explicit source quality."""
+        from maps.data.ohlcv_source import NormalizedKRXSource
+        return NormalizedKRXSource().collect(ref_date)
 
     def get_security_meta(self, ref_date: datetime.date) -> list[SecurityMeta]:
         return self.get_security_meta_result(ref_date).items

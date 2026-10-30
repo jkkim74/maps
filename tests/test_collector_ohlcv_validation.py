@@ -160,3 +160,19 @@ def test_history_job_status_matches_saved_and_incomplete_days(
     assert run.details["partial_days"] == partial_days
     assert run.details["failed_days"] == failed_days
     assert db.query(HistoricalOHLCV).count() == expected_rows
+
+
+def test_legacy_writer_cannot_overwrite_normalized_price(db, bar):
+    collector=DataCollector(MockKRXAdapter(),db)
+    collector._upsert_ohlcv([bar])
+    row=db.query(HistoricalOHLCV).one();row.source='krx_per_security';db.commit()
+    assert collector._upsert_ohlcv([replace(bar,close=4180,low=4180)])==0
+    assert db.query(HistoricalOHLCV).one().close==4185
+
+
+def test_legacy_adapter_rejects_current_session_before_network():
+    from maps.data.krx_adapter import KRXAdapter
+    from zoneinfo import ZoneInfo
+    today=dt.datetime.now(ZoneInfo('Asia/Seoul')).date()
+    with pytest.raises(DataCollectionError,match='legacy_history_requires_past_date'):
+        KRXAdapter().get_legacy_history_ohlcv(today)

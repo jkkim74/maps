@@ -74,7 +74,7 @@
 |---|---|---|
 | `tests/` | pytest 스위트 — **`maps/tests/` 8개는 별도** | [tests/CLAUDE.md](tests/CLAUDE.md) |
 | `scripts/` | 백필·진단·연구·cron 도구 | [scripts/CLAUDE.md](scripts/CLAUDE.md) |
-| `alembic/` | 마이그레이션 (head `0043_us_paper_trading`) | [alembic/CLAUDE.md](alembic/CLAUDE.md) |
+| `alembic/` | 마이그레이션 (head `0045_ohlcv_normalization`) | [alembic/CLAUDE.md](alembic/CLAUDE.md) |
 | `apps/mobile/` | Vite+Capacitor 모바일 앱 | [apps/mobile/CLAUDE.md](apps/mobile/CLAUDE.md) |
 | `main.py` | FastAPI 앱 조립·라우터 등록·세션 게이트 (저장소 루트) | — |
 | `templates/`, `static/` | Jinja2 대시보드 화면과 JS·CSS | — |

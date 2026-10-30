@@ -12,6 +12,7 @@ import hashlib
 import json
 import logging
 import math
+import threading
 from dataclasses import dataclass, field
 from typing import Callable, TYPE_CHECKING
 
@@ -430,9 +431,17 @@ class OperationalPipeline:
         def _run(db: Session) -> dict:
             collection = self._last_collection
             if collection is None or collection.ref_date != ref_date:
-                collector = DataCollector(self._make_krx_adapter(), db)
-                collection = collector.collect_daily(ref_date)
+                from maps.data.ohlcv_runs import load_collection
+                collection = load_collection(db, ref_date)
+                if collection is None:
+                    return JobResult({"ref_date": ref_date.isoformat()}, "skipped", "collection_pending")
                 self._last_collection = collection
+            if self._settings.maps_data_provider != "mock":
+                # A memory cache is not publication evidence after retry/restart.
+                from maps.data.ohlcv_runs import load_collection
+                collection = load_collection(db, ref_date)
+                if collection is None:
+                    return JobResult({"ref_date": ref_date.isoformat()}, "skipped", "collection_pending")
 
             quality = collection.metadata_quality
             latest_collection = (db.query(CollectionLog)
@@ -1031,6 +1040,15 @@ class OperationalPipeline:
                 return JobResult({"ref_date": ref_date.isoformat(), "skipped": "telegram_disabled"},
                                  "skipped", "telegram_disabled")
             text = build_close_report(db, self._settings, ref_date)
+            if self._settings.maps_data_provider != "mock":
+                from maps.common.models import DailyPipelineStage
+                from maps.ops.daily_pipeline import STAGES
+                rows = db.query(DailyPipelineStage).filter_by(ref_date=ref_date).all()
+                states = {row.name: row.status for row in rows}
+                if any(states.get(name) not in {"success", "partial"} for name in STAGES):
+                    progress = ", ".join(f"{name}={states.get(name, 'pending')}" for name in STAGES)
+                    text += "\n\n일봉 파이프라인 미완료: " + progress
+                    text += "\n수집 완료 전 자료는 당일 완료 결과로 간주하지 않습니다."
             if not notifier.send_long(text):
                 raise RuntimeError("Telegram send failed for the close report")
             return {"ref_date": ref_date.isoformat(), "sent": True, "chars": len(text)}
@@ -1719,10 +1737,8 @@ class OperationalPipeline:
                     sector=getattr(item, "sector", None) or getattr(metadata_by_ticker.get(item.ticker), "sector", None),
                     listing_date=item.listing_date or getattr(metadata_by_ticker.get(item.ticker), "listing_date", None),
                     delisting_date=item.delisting_date,
-                    # The current collector does not persist a separate
-                    # adjusted-price history yet.  Treat present live OHLCV as
-                    # usable so the daily candidate job remains operational.
-                    has_adjusted_price=bool(ohlcv),
+                    has_adjusted_price=(bool(ohlcv) if self._settings.maps_data_provider == "mock"
+                                        else bool(ohlcv and ohlcv.has_adjusted)),
                     latest_ohlcv_date=ohlcv.date if ohlcv else None,
                     missing_ohlcv_fields=missing_fields,
                     halt_periods=(
@@ -4228,6 +4244,14 @@ class MapsOperationalScheduler:
         self._pipeline = pipeline or OperationalPipeline(settings=self._settings)
         self._scheduler = BackgroundScheduler(timezone=self._settings.maps_scheduler_timezone)
         self._last_runs: dict[str, JobRun] = {}
+        self._daily_pipeline = None
+        if self._settings.maps_data_provider != "mock":
+            from maps.ops.daily_pipeline import DailyPipeline
+            self._daily_pipeline = DailyPipeline(self._pipeline._session_factory, {
+                "data_collection": self._settings.maps_data_collection_time,
+                "candidate_generation": self._settings.maps_candidate_time,
+                "validation": self._settings.maps_validation_time,
+            }, self._settings.maps_scheduler_timezone)
         self._restore_last_runs()
 
     @property
@@ -4256,13 +4280,17 @@ class MapsOperationalScheduler:
             }
             for job in self._scheduler.get_jobs()
         ]
-        return {
+        result = {
             "enabled": self._settings.maps_scheduler_enabled,
             "running": self.running,
             "timezone": self._settings.maps_scheduler_timezone,
             "jobs": jobs,
             "last_runs": {name: self._serialize_run(run) for name, run in self._last_runs.items()},
         }
+        if self._daily_pipeline is not None:
+            ref_date = dt.datetime.now(ZoneInfo(self._settings.maps_scheduler_timezone)).date()
+            result["daily_pipeline"] = self._daily_pipeline.status(ref_date)
+        return result
 
     def run_once(self, job_name: str) -> JobRun:
         mapping = {
@@ -4284,7 +4312,63 @@ class MapsOperationalScheduler:
         }
         if job_name not in mapping:
             raise ValueError(f"Unknown scheduler job: {job_name}")
+        if self._daily_pipeline is not None and job_name in {"data_collection", "candidate_generation", "validation"}:
+            return self._run_daily_stage(job_name, mapping[job_name])
         return self._record(job_name, mapping[job_name])
+
+    def _run_daily_stage(self, name: str, fn: Callable[[], JobRun]) -> JobRun:
+        """Use one durable claim for cron, catch-up and manual execution."""
+        now = dt.datetime.now(dt.timezone.utc)
+        day = now.astimezone(ZoneInfo(self._settings.maps_scheduler_timezone)).date()
+        if not _is_krx_market_day(day):
+            return JobRun(name, "skipped", now, now, "krx_market_closed")
+        claim = self._daily_pipeline.claim(name, day, now)
+        if not claim.acquired:
+            # Waiting is durable through prerequisites, not a new failure/skip
+            # history row every minute. Expose it without obscuring last results.
+            return JobRun(name, "skipped", now, now, claim.reason,
+                          {"ref_date": day.isoformat(), "deferred": True})
+        stop = threading.Event()
+
+        def heartbeat() -> None:
+            while not stop.wait(20):
+                try:
+                    if not self._daily_pipeline.heartbeat(claim):
+                        return
+                except Exception:
+                    logger.exception("Daily pipeline heartbeat failed: %s", name)
+                    return
+
+        worker = threading.Thread(target=heartbeat, name=f"daily-{name}-lease", daemon=True)
+        worker.start()
+        try:
+            def invoke() -> JobRun:
+                run = fn()
+                if name == "data_collection" and run.status in {"success", "partial"}:
+                    from maps.data.ohlcv_runs import load_collection
+                    with self._pipeline._session_factory() as db:
+                        collection = load_collection(db, day)
+                        if collection is None or not collection.ohlcv:
+                            run.status, run.message = "failed", "collection_not_published"
+                return run
+            run = self._record(name, invoke)
+            if not self._daily_pipeline.finish(claim, run.status, run.details | {"message": run.message}):
+                run.status, run.message = "failed", "daily_stage_ownership_lost"
+                # Record the fencing failure too; a previously recorded business
+                # success must not remain the latest externally visible result.
+                self._record(name, lambda: run)
+            return run
+        except Exception as exc:
+            self._daily_pipeline.finish(claim, "failed", {"reason": type(exc).__name__})
+            raise
+        finally:
+            stop.set()
+            worker.join(timeout=5)
+
+    def _advance_daily_pipeline(self) -> None:
+        """Retry dependency checks after minimum times and after process restart."""
+        for name in ("data_collection", "candidate_generation", "validation"):
+            self.run_once(name)
 
     def backfill_ohlcv(self, start: dt.date, end: dt.date) -> JobRun:
         return self._record("ohlcv_backfill", lambda: self._pipeline.backfill_ohlcv(start, end))
@@ -4311,6 +4395,10 @@ class MapsOperationalScheduler:
 
     def _register_jobs(self) -> None:
         self._add_weekday_job("data_collection", self._settings.maps_data_collection_time)
+        if self._daily_pipeline is not None:
+            self._scheduler.add_job(self._advance_daily_pipeline,
+                IntervalTrigger(seconds=60), id="daily_pipeline_watchdog",
+                replace_existing=True, coalesce=True, max_instances=1)
         if self._settings.maps_fujimoto_enabled:
             self._add_weekday_job("fujimoto_screen", self._settings.maps_fujimoto_screen_time)
         self._scheduler.add_job(lambda: self.run_once("classification_check"),

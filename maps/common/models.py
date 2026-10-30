@@ -1562,3 +1562,46 @@ class USMockTruth(Base):
     account_key: Mapped[str] = mapped_column(String(64), primary_key=True)
     cash: Mapped[Decimal] = mapped_column(Numeric(24, 6))
     payload: Mapped[dict] = mapped_column(JSON, default=dict)
+
+class OhlcvCollectionRun(Base):
+    """One resumable, bounded normalized observation per session date."""
+    __tablename__ = "ohlcv_collection_run"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ref_date: Mapped[datetime.date] = mapped_column(Date, unique=True, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    owner: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    lease_until: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)
+    started_at: Mapped[datetime.datetime] = mapped_column(DateTime, nullable=False)
+    finished_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)
+    published_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)
+    expected: Mapped[dict] = mapped_column(JSON, default=dict)
+    requests: Mapped[int] = mapped_column(Integer, default=0)
+    quality: Mapped[dict] = mapped_column(JSON, default=dict)
+    snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+
+class OhlcvCollectionItem(Base):
+    """Immutable checkpoint of one source item, including request evidence."""
+    __tablename__ = "ohlcv_collection_item"
+    __table_args__ = (UniqueConstraint("run_id", "ticker", name="uq_ohlcv_run_ticker"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("ohlcv_collection_run.id"), nullable=False)
+    ticker: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    observed_at: Mapped[datetime.datetime] = mapped_column(DateTime, nullable=False)
+
+
+class DailyPipelineStage(Base):
+    """Durable dependency claim shared by scheduled and manual daily jobs."""
+    __tablename__ = "daily_pipeline_stage"
+    __table_args__ = (UniqueConstraint("ref_date", "name", name="uq_daily_pipeline_stage"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ref_date: Mapped[datetime.date] = mapped_column(Date, nullable=False)
+    name: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    owner: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    lease_until: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)
+    started_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)
+    details: Mapped[dict | None] = mapped_column(JSON, nullable=True)

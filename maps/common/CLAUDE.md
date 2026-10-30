@@ -235,3 +235,9 @@ cash, positions and timestamps; unexplained account changes block new orders.
 계좌·환경별 실행 허용과 범위를 DB에 저장한다. 버전·변경자·시각을 보존하며
 ExecutionSafetyEvent와 같은 트랜잭션으로 변경한다. 환경변수는 미저장 시에만
 주문 허용의 기본값이다. 인증정보와 실계좌 전환은 이 정책에 포함하지 않는다.
+
+
+0045 adds OhlcvCollectionRun/OhlcvCollectionItem source checkpoints and
+DailyPipelineStage durable dependency claims. Existing prices, account policies and
+historical decisions are not backfilled. Source settings `maps_ohlcv_*` bound
+request spacing, count, total duration and network timeouts.

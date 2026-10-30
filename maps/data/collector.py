@@ -12,6 +12,7 @@ import pandas as pd
 from sqlalchemy.orm import Session
 
 from maps.common.exceptions import DataCollectionError
+from maps.common.settings import get_settings
 from maps.common.models import (
     CollectionLog,
     HistoricalOHLCV,
@@ -20,7 +21,7 @@ from maps.common.models import (
     SecurityMetadata,
 )
 from maps.data.classifications import ClassificationPayload, ClassificationRepository, valid_label
-from maps.data.krx_adapter import CollectionResult, KRXAdapterBase, MetadataCollection, MockKRXAdapter
+from maps.data.krx_adapter import CollectionResult, KRXAdapter, KRXAdapterBase, MetadataCollection, MockKRXAdapter
 
 if TYPE_CHECKING:
     from maps.data.naver_fundamental import NaverFundamentalAdapter
@@ -62,7 +63,12 @@ class DataCollector:
         metadata_quality = None
         classification_quality = None
         try:
-            ohlcv = self._krx.get_ohlcv(ref_date)
+            normalized_quality = None
+            if isinstance(self._krx, KRXAdapter):
+                from maps.data.ohlcv_runs import NormalizedDailyCollector
+                ohlcv, normalized_quality = NormalizedDailyCollector(self._db).collect(ref_date)
+            else:
+                ohlcv = self._krx.get_ohlcv(ref_date)
             try:
                 metadata = self._krx.get_security_meta_result(ref_date)
             except Exception as exc:
@@ -70,7 +76,9 @@ class DataCollector:
                 metadata = MetadataCollection.unavailable(f"{type(exc).__name__}: {exc}")
             meta = metadata.items
             metadata_quality = metadata.as_dict()
-            halts = self._krx.get_halt_list(ref_date)
+            # Zero-volume observations are not authoritative suspension evidence.
+            halts = (sorted({t.strip() for t in get_settings().maps_halted_tickers.split(",") if t.strip()})
+                     if normalized_quality is not None else self._krx.get_halt_list(ref_date))
             managed = self._krx.get_managed_list(ref_date)
 
             # 수정주가 폴백
@@ -141,7 +149,8 @@ class DataCollector:
                 sectors,
             )
             rejected_rows: list[dict[str, str]] = []
-            saved_rows = self._upsert_ohlcv(ohlcv, rejected_rows)
+            saved_rows = (normalized_quality["saved_count"] if normalized_quality is not None
+                          else self._upsert_ohlcv(ohlcv, rejected_rows))
             result.ohlcv_quality = {
                 "status": "partial" if rejected_rows else "complete",
                 "received_count": len(ohlcv),
@@ -149,6 +158,9 @@ class DataCollector:
                 "rejected_count": len(rejected_rows),
                 "rejected_rows": rejected_rows,
             }
+            if normalized_quality is not None:
+                result.ohlcv_quality = normalized_quality
+                rejected_rows = normalized_quality["rejected_rows"]
             self._upsert_fundamentals(fundamentals)
             self._upsert_investor_flows(investor_flows)
             result.investor_flow_count = len(investor_flows)
@@ -157,6 +169,8 @@ class DataCollector:
 
             collect_market_news_sentiment(self._db, ref_date)
             notes = []
+            if normalized_quality and normalized_quality["status"] != "complete":
+                notes.append("normalized_ohlcv_incomplete")
             if rejected_rows:
                 notes.append(f"ohlcv_rejected_rows={len(rejected_rows)}: {json.dumps(rejected_rows)}")
             if classification_quality["status"] != "complete":
@@ -169,6 +183,9 @@ class DataCollector:
                 logger.error("투자자 수급 0건 [%s] — 다음 거래일 신규매수 차단", ref_date)
             self._write_log(ref_date, "partial" if notes else "success", saved_rows,
                             note="; ".join(notes) or None, metadata_quality=metadata_quality, classification_quality=classification_quality)
+            if normalized_quality is not None:
+                from maps.data.ohlcv_runs import save_collection
+                save_collection(self._db, result)
             return result
 
         except Exception as exc:
@@ -206,7 +223,10 @@ class DataCollector:
 
         for day in requested_days:
             try:
-                rows = self._krx.get_ohlcv(day)
+                # Historical backfill remains a separate legacy operation; it is
+                # never the current-session normalized daily ingestion path.
+                rows = (self._krx.get_legacy_history_ohlcv(day) if isinstance(self._krx, KRXAdapter)
+                        else self._krx.get_ohlcv(day))
                 rejected_rows: list[dict[str, str]] = []
                 saved_rows = self._upsert_ohlcv(rows, rejected_rows)
                 note = None
@@ -396,6 +416,14 @@ class DataCollector:
                 )
                 .first()
             )
+            if existing and existing.source == "krx_per_security":
+                saved_rows -= 1
+                rejection = {"ticker": row.ticker, "date": row.date.isoformat(),
+                             "reason": "normalized_price_requires_audited_repair"}
+                if rejected_rows is not None:
+                    rejected_rows.append(rejection)
+                logger.warning("Legacy price update blocked ticker=%s date=%s", row.ticker, row.date)
+                continue
             if existing:
                 existing.open = row.open
                 existing.high = row.high

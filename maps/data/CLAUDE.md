@@ -2,10 +2,13 @@
 
 KRX OHLCV 및 종목 메타데이터 수집·조회 패키지.
 
+
 ## Directory structure
 
 ```
 data/
+├── ohlcv_source.py        # bounded regular-session source and adjusted close
+├── ohlcv_runs.py          # durable checkpoints and atomic publication
 ├── classifications.py     # immutable classification snapshots
 ├── naver_themes.py        # public Npay multi-theme collector
 ├── recovery.py            # audited offline operational data repair manifests
@@ -242,3 +245,24 @@ Same-day rows remain incomplete even after the regular-session close.
 It does not fetch network data, invent historical
 availability, or mutate immutable decisions. The entrypoint is
 `scripts/recover_operational_data.py`.
+
+
+## Normalized daily OHLCV (0045)
+
+Real daily collection uses `NormalizedDailyCollector` and `MDCSTAT01701` regular
+unadjusted OHLC plus separately observed adjusted close. Total volume is an actual
+observation, not a finalized daily total. Exact dated membership and official ISIN
+binding precede collection. Raw observation evidence remains in durable item records.
+OHLV-zero no-trade records are not invalid prices and do not manufacture bars or
+claim official suspension. Missing adjusted close stays unavailable.
+
+One current-session run owns a 60-second renewable lease, checkpoints each item,
+and atomically publishes validated prices with quality. Concurrent owners are
+fenced; completed runs replay frozen inputs, not current mutable prices. Auxiliary
+metadata/flow completion saves the full CollectionResult used after restart.
+No network operation holds a DB transaction. Budgets/timeouts use MapsSettings.
+
+`get_ohlcv` is a normalized list compatibility view; `get_ohlcv_result` includes
+quality. Historical `collect_ohlcv_history` explicitly retains the legacy historical
+source and does not imply normalized/corrected history. Historical repairs require
+separate audited recovery; current daily collection never routes to that helper.

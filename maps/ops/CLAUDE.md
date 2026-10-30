@@ -13,6 +13,7 @@ ops/
 ├── candidate_selection.py  # AI 모드별 후보 주문 자격 SQL 식
 ├── close_report.py         # 장마감 텔레그램 리포트 — 다이제스트 + 당일 실패 잡 렌더
 ├── daily_digest.py         # 하루치 매매 기록 결정적 조립 (블로그 입력)
+├── daily_pipeline.py       # durable daily dependency claims and progress
 ├── liquidity_cap.py        # 주문 수량 유동성 한도 (순수 함수)
 ├── notifications.py        # Slack / Telegram / FCM 알림
 ├── order_preview.py        # 다음 거래일 예정 주문 미리보기
@@ -334,6 +335,23 @@ broker sync는 기존 손절·익절·전략 청산을 먼저 처리한 뒤 보�
 shadow 후보라는 뜻이다.
 
 ## 의존성
+
+Normalized daily OHLCV collection, candidate generation and validation share
+`DailyPipelineStage` claims for production manual, scheduled and catch-up runs.
+Configured times are minimum start times. A 60-second watchdog retries dependency
+checks, while a 20-second worker heartbeat renews a 60-second ownership lease.
+Only successful/partial completed dependencies release the next stage. Collection
+requires a durable published snapshot with valid prices. Candidates never trigger
+collection implicitly and reload their exact-date snapshot after restart. Missing
+adjusted-price evidence remains a candidate blocker.
+
+Expired collection claims can resume the collection repository's fenced,
+checkpointed work. Expired candidate/validation claims become failed with
+`interrupted_requires_review`; ambiguous business effects are never blindly
+replayed. Completed/failed stages are not automatically rerun. Scheduler status
+includes current daily progress, and close reports explicitly identify unfinished
+stages instead of calling incomplete inputs a completed daily result. Historical
+reports are not regenerated.
 
 ```
 maps.common.*         → 전체 모델·설정·예외

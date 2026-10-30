@@ -96,6 +96,12 @@ class MapsSettings(BaseSettings):
     maps_fujimoto_candidate_rows: int = Field(default=10000, ge=1, le=2000000)
     maps_scheduler_timezone: str = "Asia/Seoul"
     maps_data_collection_time: str = "16:10"
+    maps_halted_tickers: str = ""
+    maps_ohlcv_request_interval_seconds: float = Field(default=1.0, ge=1.0, allow_inf_nan=False)
+    maps_ohlcv_max_requests: int = Field(default=6500, ge=1, le=6500)
+    maps_ohlcv_max_seconds: float = Field(default=10800, gt=0, le=10800, allow_inf_nan=False)
+    maps_ohlcv_connect_timeout: float = Field(default=3.0, gt=0, le=3, allow_inf_nan=False)
+    maps_ohlcv_read_timeout: float = Field(default=15.0, gt=0, le=15, allow_inf_nan=False)
     maps_theme_collection_enabled: bool = False
     maps_theme_collection_time: str = "17:00"
     maps_classification_check_time: str = "17:25"

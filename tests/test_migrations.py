@@ -99,7 +99,7 @@ def test_fresh_database_reaches_current_schema(tmp_path, monkeypatch) -> None:
         revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
     engine.dispose()
 
-    assert revision == "0044_runtime_execution_policy"
+    assert revision == "0045_ohlcv_normalization"
     assert {"classification_run", "classification_member"} <= set(inspector.get_table_names())
     assert "classification_quality" in {c["name"] for c in inspector.get_columns("collection_log")}
     assert {"order_intent", "execution_account_state", "account_observation", "account_adjustment",
@@ -216,7 +216,7 @@ def test_both_existing_branches_upgrade_to_merged_schema(tmp_path, monkeypatch, 
         assert "shadow_probes" in {c["name"] for c in inspector.get_columns("limit_up_session")}
         assert {"classification_run", "classification_member", "order_intent"} <= set(inspector.get_table_names())
         with engine.connect() as connection:
-            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0044_runtime_execution_policy"
+            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0045_ohlcv_normalization"
     finally:
         engine.dispose()
 
@@ -326,4 +326,30 @@ def test_paper_cost_empty_history_can_downgrade(tmp_path, monkeypatch):
     command.downgrade(config, "0041_fujimoto_trading")
     engine = create_engine(f"sqlite:///{path.as_posix()}")
     assert not {"paper_cost_evidence", "paper_cost_settlement"} & set(inspect(engine).get_table_names())
+    engine.dispose()
+
+
+def test_ohlcv_migration_preserves_history_and_audit(tmp_path, monkeypatch):
+    """Normalization adds empty tables and cannot discard populated observations."""
+    path = tmp_path / "ohlcv-migration.db"
+    monkeypatch.setenv("MAPS_DB_URL", f"sqlite:///{path.as_posix()}")
+    config = Config("alembic.ini")
+    command.upgrade(config, "0044_runtime_execution_policy")
+    engine = create_engine(f"sqlite:///{path.as_posix()}")
+    with engine.begin() as connection:
+        connection.execute(text("INSERT INTO historical_ohlcv "
+            "(ticker,date,open,high,low,close,volume,source,created_at,updated_at) "
+            "VALUES ('005930','2026-10-29',10,12,9,11,100,'legacy',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)"))
+    command.upgrade(config, "head")
+    with engine.begin() as connection:
+        assert connection.execute(text("SELECT close FROM historical_ohlcv")).scalar_one() == 11
+        for table in ("ohlcv_collection_run", "ohlcv_collection_item", "daily_pipeline_stage"):
+            assert connection.execute(text("SELECT count(*) FROM " + table)).scalar_one() == 0
+        connection.execute(text("INSERT INTO ohlcv_collection_run "
+            "(ref_date,status,started_at,expected,requests,quality) "
+            "VALUES ('2026-10-30','failed',CURRENT_TIMESTAMP,'{}',0,'{}')"))
+    with pytest.raises(RuntimeError, match="Preserve populated OHLCV"):
+        command.downgrade(config, "0044_runtime_execution_policy")
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT count(*) FROM ohlcv_collection_run")).scalar_one() == 1
     engine.dispose()

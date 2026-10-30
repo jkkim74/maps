@@ -22,7 +22,7 @@ alembic downgrade -1                             # 한 단계 되돌리기
 파일명이 아니라 각 파일의 `down_revision` 을 따라간다. 예: `efca8676041a` 의
 `down_revision` 은 `0005_stock_report_runs` 다.
 
-현재 head: **`0044_runtime_execution_policy`**.
+현재 head: **`0045_ohlcv_normalization`**.
 
 0044 adds an empty account-scoped execution_policy table. No permissions are
 backfilled. Populated policies cannot be downgraded; disable execution before
@@ -73,3 +73,8 @@ and performs no historical backfill. Downgrade removes only these additive objec
 tables. Downgrade removes only these additive objects. No account data is backfilled.
 
 `0043_us_paper_trading` adds isolated USD paper ledger tables after the deployed paper cost settlement revision. No backfill or domestic cost changes. Downgrade refuses nonempty US records.
+
+
+0045 creates empty ohlcv_collection_run, ohlcv_collection_item and daily_pipeline_stage
+without price repair or historical backfill. Populated tables cannot be downgraded;
+stop new publication and preserve evidence when rolling application code back.
